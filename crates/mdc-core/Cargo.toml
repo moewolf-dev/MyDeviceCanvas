@@ -1,0 +1,10 @@
+[package]
+name = "mdc-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mdc-protocol = { path = "../mdc-protocol" }
+mdc-transport = { path = "../mdc-transport" }
+thiserror.workspace = true

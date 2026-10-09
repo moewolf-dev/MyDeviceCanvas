@@ -1,0 +1,11 @@
+version: 1.0
+header:
+  size: 20
+  endian: little
+  fields: [magic, major, minor, type, reserved, flags_u16, request_id_u32, payload_length_u32, checksum_u32]
+limits:
+  control_payload: 4096
+  chunk: 16384
+  host_frame: 1048576
+pixel_formats: [RGB565_LE]
+message_types: {HELLO: 1, CAPABILITIES: 2, FRAME: 16, TILE: 17, INPUT: 32, OTA: 48, PING: 64, PONG: 65, ACK: 80, ERROR: 127}

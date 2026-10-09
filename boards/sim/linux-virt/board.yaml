@@ -1,0 +1,18 @@
+# Virtual Linux peer for Host API parity (framebuffer sim backend).
+id: linux-virt
+status: sim-baseline
+source: project-defined virtual peer
+mcu: linux-host
+flash_bytes: 1
+psram_bytes: 1
+usb: none
+baud_default: 1
+display: {width: 800, height: 480, format: RGB565_LE, rotation: 0, bus: framebuffer, controller: sim}
+touch: false
+ota: false
+max_framebuffer_bytes: 768000
+min_internal_free_bytes: 1
+min_internal_largest_block_bytes: 1
+max_psram_used_bytes: 1
+dma_align_bytes: 1
+reset_strategy: none

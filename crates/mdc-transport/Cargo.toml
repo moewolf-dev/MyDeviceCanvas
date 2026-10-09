@@ -1,0 +1,16 @@
+[package]
+name = "mdc-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+serial = ["dep:serialport"]
+websocket = ["dep:tungstenite", "dep:url"]
+
+[dependencies]
+thiserror.workspace = true
+serialport = { version = "=4.2.2", optional = true }
+tungstenite = { version = "=0.20.1", optional = true }
+url = { version = "=2.4.1", optional = true }

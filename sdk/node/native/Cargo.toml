@@ -1,0 +1,15 @@
+[package]
+name = "mdc-node-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "=2.16.13", features = ["napi8"] }
+napi-derive = "=2.16.13"
+
+[build-dependencies]
+napi-build = "=2.1.3"

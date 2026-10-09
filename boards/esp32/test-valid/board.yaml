@@ -1,0 +1,7 @@
+id: test-valid
+mcu: esp32-s3
+flash_bytes: 16777216
+psram_bytes: 8388608
+display: {width: 480, height: 320, format: RGB565_LE, rotation: 0, bus: spi}
+touch: false
+ota: false

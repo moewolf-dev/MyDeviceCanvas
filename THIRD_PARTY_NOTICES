@@ -1,0 +1,5 @@
+MyDeviceCanvas does not copy source code from AgentDeck or FrameOS. Their repositories were consulted as design references only.
+
+AgentDeck: MIT License, as documented by its upstream repository. FrameOS: AGPL-3.0, as documented by its upstream repository. No FrameOS code is included here.
+
+Project license: Apache-2.0.

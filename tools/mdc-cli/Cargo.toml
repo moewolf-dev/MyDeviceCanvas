@@ -1,0 +1,11 @@
+[package]
+name = "mdc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mdc-core = { path = "../../crates/mdc-core" }
+mdc-protocol = { path = "../../crates/mdc-protocol" }
+mdc-transport = { path = "../../crates/mdc-transport" }
+image = { version = "=0.24.9", default-features = false, features = ["png", "jpeg"] }

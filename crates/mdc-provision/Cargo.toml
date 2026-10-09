@@ -1,0 +1,11 @@
+[package]
+name = "mdc-provision"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mdc-protocol = { path = "../mdc-protocol" }
+serde.workspace = true
+sha2 = "=0.10.8"
+thiserror.workspace = true

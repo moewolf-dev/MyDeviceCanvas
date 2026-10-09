@@ -1,0 +1,1 @@
+{"name":"@mydevicecanvas/electron-demo","private":true,"type":"module","main":"main.js","scripts":{"start":"electron ."},"devDependencies":{"electron":"^30.0.0"}}
