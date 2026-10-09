@@ -19,7 +19,7 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Provision / SimFlasher | sim-verified | physical: pending |
 | Node NativeManager sim | architecture / sim when `.node` built | physical: pending |
 | C ABI `mdc_c` | architecture | physical: pending |
-| Linux runtime framebuffer peer | architecture | physical: pending |
+| Linux runtime framebuffer peer | sim-verified (`mdc_linux_peer` TCP) | physical: pending |
 | Scene capability bit | architecture (reserved) | physical: pending |
 
 ## G03 sim exit

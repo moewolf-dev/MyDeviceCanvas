@@ -9,7 +9,7 @@ namespace mdc {
 /// Linux host peer: owns SimDisplay framebuffer and SessionDispatcher.
 class LinuxRuntime {
  public:
-  LinuxRuntime(std::uint16_t width, std::uint16_t height);
+  LinuxRuntime(std::uint16_t width, std::uint16_t height, PeerIdentity identity = {});
   DisplayBackend& display() { return display_; }
   const DisplayBackend& display() const { return display_; }
   bool handle_packet(const Packet& packet);
@@ -18,6 +18,7 @@ class LinuxRuntime {
   std::uint16_t height() const { return display_.height(); }
   const std::vector<Packet>& replies() const { return replies_; }
   void clear_replies() { replies_.clear(); }
+  const PeerIdentity& identity() const { return dispatcher_.identity(); }
 
  private:
   SimDisplay display_;

@@ -18,9 +18,15 @@ c++ -std=c++17 -I runtime/esp32/include \
   runtime/esp32/src/frame_store.cpp \
   runtime/esp32/src/sim_display.cpp \
   runtime/esp32/src/dispatcher.cpp \
+  runtime/esp32/src/cbor_control.cpp \
   runtime/esp32/tests/parser_test.cpp \
   -o /tmp/mdc_runtime_tests
 /tmp/mdc_runtime_tests
+c++ -std=c++17 -I runtime/esp32/include \
+  runtime/esp32/src/cbor_control.cpp \
+  runtime/esp32/tests/cbor_control_test.cpp \
+  -o /tmp/mdc_cbor_control_tests
+/tmp/mdc_cbor_control_tests
 c++ -std=c++17 -I runtime/esp32/include \
   runtime/esp32/src/sim_display.cpp \
   runtime/esp32/tests/adapter_test.cpp \
@@ -30,6 +36,7 @@ if [[ -d runtime/linux ]]; then
   c++ -std=c++17 -I runtime/linux/include -I runtime/esp32/include \
     runtime/esp32/src/parser.cpp runtime/esp32/src/frame_store.cpp \
     runtime/esp32/src/sim_display.cpp runtime/esp32/src/dispatcher.cpp \
+    runtime/esp32/src/cbor_control.cpp \
     runtime/linux/src/linux_runtime.cpp runtime/linux/tests/linux_runtime_test.cpp \
     -o /tmp/mdc_linux_runtime_tests
   /tmp/mdc_linux_runtime_tests

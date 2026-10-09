@@ -1,4 +1,5 @@
 #pragma once
+#include "mdc_cbor.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -87,14 +88,16 @@ using ReplyFn = std::function<void(const Packet&)>;
 /// Dispatches HELLO / Ping / Frame / Tile against a DisplayBackend.
 class SessionDispatcher {
  public:
-  SessionDispatcher(DisplayBackend& display, ReplyFn reply);
+  SessionDispatcher(DisplayBackend& display, ReplyFn reply, PeerIdentity identity = {});
   bool handle(const Packet& packet);
   bool busy() const { return transport_busy_; }
   void set_transport_busy(bool busy) { transport_busy_ = busy; }
+  const PeerIdentity& identity() const { return identity_; }
 
  private:
   DisplayBackend& display_;
   ReplyFn reply_;
+  PeerIdentity identity_;
   FrameStore store_;
   bool transport_busy_ = false;
   std::uint64_t current_frame_id_ = 0;
@@ -104,6 +107,7 @@ class SessionDispatcher {
   bool handle_tile(const Packet& packet);
   void send_ack(std::uint32_t request_id, std::uint64_t frame_id, bool displayed);
   void send_pong(std::uint32_t request_id);
+  void send_capabilities(std::uint32_t request_id);
 };
 
 std::vector<std::uint8_t> encode_packet(MessageType type, std::uint32_t request_id,

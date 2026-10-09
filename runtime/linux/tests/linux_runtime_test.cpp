@@ -15,6 +15,15 @@ int main() {
   assert(!runtime.replies().empty());
   assert(runtime.replies().back().type == mdc::MessageType::Pong);
 
+  runtime.clear_replies();
+  mdc::Packet hello;
+  hello.type = mdc::MessageType::Hello;
+  hello.request_id = 7;
+  assert(runtime.handle_packet(hello));
+  assert(runtime.replies().back().type == mdc::MessageType::Capabilities);
+  assert(!runtime.replies().back().payload.empty());
+  assert(runtime.replies().back().payload[0] == 0xab);  // CBOR map(11)
+
   std::vector<std::uint8_t> legacy;
   legacy.push_back(0);  // phase
   legacy.push_back(1);

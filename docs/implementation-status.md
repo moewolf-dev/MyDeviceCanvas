@@ -17,8 +17,9 @@ Do not mark physical verification from host-only or simulator tests.
 | 7 | Linux Runtime / Scene / 1.0 candidate docs | sim-verified architecture complete |
 | 8 | H01 pairing + I03 endpoint switch / full-frame barrier | sim-verified |
 | 9 | Network display gate (TCP/WS) + IDF panel bring-up stages | architecture / sim-verified |
+| 10 | Linux virt C++ TCP peer + CBOR Capabilities/Ack alignment | sim-verified |
 
-Waves **3–8** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay paths exercise the design. Physical board work remains `physical: pending`.
+Waves **3–10** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` paths exercise the design. Physical board work remains `physical: pending`.
 
 ## Honesty rules
 

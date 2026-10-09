@@ -16,8 +16,11 @@ std::uint32_t u32le(const std::uint8_t* p) {
 }
 }  // namespace
 
-SessionDispatcher::SessionDispatcher(DisplayBackend& display, ReplyFn reply)
-    : display_(display), reply_(std::move(reply)), store_(display.width(), display.height()) {}
+SessionDispatcher::SessionDispatcher(DisplayBackend& display, ReplyFn reply, PeerIdentity identity)
+    : display_(display),
+      reply_(std::move(reply)),
+      identity_(std::move(identity)),
+      store_(display.width(), display.height()) {}
 
 bool SessionDispatcher::handle(const Packet& packet) {
   if (transport_busy_ && packet.type != MessageType::Ping) return false;
@@ -25,17 +28,9 @@ bool SessionDispatcher::handle(const Packet& packet) {
     case MessageType::Ping:
       send_pong(packet.request_id);
       return true;
-    case MessageType::Hello: {
-      // Minimal CBOR-free capabilities stub: empty payload ack via Pong-like Capabilities marker.
-      // Host tests use Rust FakeDevice; this path answers Ping/Frame for C++ host tests.
-      Packet caps;
-      caps.type = MessageType::Capabilities;
-      caps.flags = 0;
-      caps.request_id = packet.request_id;
-      caps.payload = {'s', 'i', 'm'};
-      reply_(caps);
+    case MessageType::Hello:
+      send_capabilities(packet.request_id);
       return true;
-    }
     case MessageType::Frame:
       return handle_frame(packet);
     case MessageType::Tile:
@@ -43,6 +38,22 @@ bool SessionDispatcher::handle(const Packet& packet) {
     default:
       return false;
   }
+}
+
+void SessionDispatcher::send_capabilities(std::uint32_t request_id) {
+  SurfaceDesc surface;
+  surface.id = "main";
+  surface.width = display_.width();
+  surface.height = display_.height();
+  surface.pixel_format = "RGB565";
+  surface.stride = static_cast<std::uint32_t>(display_.width()) * 2u;
+  surface.rotation = 0;
+  Packet caps;
+  caps.type = MessageType::Capabilities;
+  caps.flags = 0;
+  caps.request_id = request_id;
+  caps.payload = encode_capabilities_cbor(identity_, surface);
+  reply_(caps);
 }
 
 bool SessionDispatcher::handle_frame(const Packet& packet) {
@@ -111,7 +122,7 @@ bool SessionDispatcher::handle_frame(const Packet& packet) {
 
 bool SessionDispatcher::handle_tile(const Packet& packet) {
   // surface_id_len + id + base_frame_id + x + y + w + h + pixels
-  if (packet.payload.size() < 1) return false;
+  if (packet.payload.empty()) return false;
   const auto id_len = packet.payload[0];
   const std::size_t header = 1 + id_len + 8 + 2 + 2 + 2 + 2;
   if (packet.payload.size() < header) return false;
@@ -131,16 +142,11 @@ bool SessionDispatcher::handle_tile(const Packet& packet) {
 }
 
 void SessionDispatcher::send_ack(std::uint32_t request_id, std::uint64_t frame_id, bool displayed) {
-  // Minimal CBOR map-free marker payload understood by host tests as opaque bytes.
-  std::vector<std::uint8_t> payload(10);
-  payload[0] = displayed ? 1 : 0;
-  payload[1] = 1;  // received
-  for (int i = 0; i < 8; ++i) payload[2 + i] = static_cast<std::uint8_t>(frame_id >> (8 * i));
   Packet ack;
   ack.type = MessageType::Ack;
   ack.flags = 0;
   ack.request_id = request_id;
-  ack.payload = std::move(payload);
+  ack.payload = encode_ack_cbor(true, displayed, frame_id);
   reply_(ack);
 }
 

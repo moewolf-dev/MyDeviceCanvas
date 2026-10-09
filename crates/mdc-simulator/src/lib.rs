@@ -79,8 +79,8 @@ impl BoardProfile {
             "esp32-jc3248w535-sim" | "default" | "" => Self::default(),
             "linux-virt" => Self {
                 device_id: "sim-linux-virt".into(),
-                width: 480,
-                height: 320,
+                width: 800,
+                height: 480,
                 touch: false,
                 ota: false,
             },
@@ -656,6 +656,16 @@ mod tests {
 
         device.faults.request_disconnect();
         assert_eq!(device.poll(), Err(SimError::Disconnected));
+    }
+
+    #[test]
+    fn linux_virt_profile_matches_board_yaml() {
+        let p = BoardProfile::from_board_id("linux-virt");
+        assert_eq!(p.device_id, "sim-linux-virt");
+        assert_eq!(p.width, 800);
+        assert_eq!(p.height, 480);
+        assert!(!p.touch);
+        assert!(!p.ota);
     }
 
     #[test]

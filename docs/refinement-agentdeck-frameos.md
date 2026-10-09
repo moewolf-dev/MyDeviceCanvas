@@ -67,3 +67,12 @@ Live esptool: set `MDC_ESPTOOL_LIVE=1` and pass `--port`. Default remains dry-ru
 | `authorize_display_control` after HELLO | CLI `send-image --address` |
 | Panel stages bus→Canvas→READY | `runtime/esp32/idf/port/mdc_panel_init.h` |
 | Host `panel_bringup_test` | `runtime/esp32/idf/tests/` |
+
+## Wave: Linux virt C++ TCP peer
+
+| Item | Location |
+|---|---|
+| CBOR Capabilities / Ack (serde_cbor-compatible) | `runtime/esp32/src/cbor_control.cpp` |
+| `SessionDispatcher` HELLO → CBOR caps | `dispatcher.cpp` |
+| `mdc_linux_peer` TCP binary | `runtime/linux/main/mdc_linux_peer.cpp` |
+| `linux-virt` 800×480 BoardProfile | `mdc-simulator` + `boards/sim/linux-virt` |
