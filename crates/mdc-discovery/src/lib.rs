@@ -1,5 +1,7 @@
 mod serial_scan;
+mod ws_discovery;
 pub use serial_scan::SerialDiscovery;
+pub use ws_discovery::{CombinedDiscovery, WsDiscovery};
 
 use std::collections::BTreeMap;
 

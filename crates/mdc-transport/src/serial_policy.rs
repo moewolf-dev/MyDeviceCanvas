@@ -13,8 +13,83 @@ pub const FOREIGN_MAX_PROBE_FAILURES: u32 = 3;
 pub const FOREIGN_DENYLIST_COOLDOWN_MS: u64 = 10 * 60_000;
 
 /// Post-flash DTR/RTS pulse sequence from AgentDeck flash path.
-/// Format: D{0|1}|R{0|1}|W{ms}|… — raise IO0 (DTR), pulse EN (RTS), wait, release.
+/// Format: `D{0|1}|R{0|1}|W{ms}|…`
+/// - `D0` drives DTR inactive (IO0 high on typical adapters — load-bearing)
+/// - `R1`/`R0` pulse RTS (EN)
+/// - `W100` waits 100 ms
 pub const POST_WRITE_RESET_SEQUENCE: &str = "D0|R1|W100|R0";
+
+/// One step of a post-write / ClassicReset-style line control sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetStep {
+    /// Set DTR level (`true` = asserted / 1).
+    Dtr(bool),
+    /// Set RTS level (`true` = asserted / 1).
+    Rts(bool),
+    /// Sleep milliseconds.
+    WaitMs(u64),
+}
+
+/// Parse `D0|R1|W100|R0` into steps. Unknown tokens are errors.
+pub fn parse_reset_sequence(seq: &str) -> Result<Vec<ResetStep>, String> {
+    let mut steps = Vec::new();
+    for token in seq.split('|').filter(|t| !t.is_empty()) {
+        let bytes = token.as_bytes();
+        if bytes.len() < 2 {
+            return Err(format!("invalid reset token: {token}"));
+        }
+        match bytes[0] {
+            b'D' | b'd' => {
+                let v = parse_01(&token[1..])?;
+                steps.push(ResetStep::Dtr(v));
+            }
+            b'R' | b'r' => {
+                let v = parse_01(&token[1..])?;
+                steps.push(ResetStep::Rts(v));
+            }
+            b'W' | b'w' => {
+                let ms: u64 = token[1..]
+                    .parse()
+                    .map_err(|_| format!("invalid wait token: {token}"))?;
+                steps.push(ResetStep::WaitMs(ms));
+            }
+            _ => return Err(format!("unknown reset token: {token}")),
+        }
+    }
+    if steps.is_empty() {
+        return Err("empty reset sequence".into());
+    }
+    Ok(steps)
+}
+
+fn parse_01(s: &str) -> Result<bool, String> {
+    match s {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        _ => Err(format!("expected 0 or 1, got {s}")),
+    }
+}
+
+/// Apply parsed steps through line-control callbacks (testable without hardware).
+pub fn apply_reset_steps<F, S>(
+    steps: &[ResetStep],
+    mut set_dtr: F,
+    mut set_rts: S,
+    sleep_ms: &mut dyn FnMut(u64),
+) -> Result<(), String>
+where
+    F: FnMut(bool) -> Result<(), String>,
+    S: FnMut(bool) -> Result<(), String>,
+{
+    for step in steps {
+        match *step {
+            ResetStep::Dtr(v) => set_dtr(v)?,
+            ResetStep::Rts(v) => set_rts(v)?,
+            ResetStep::WaitMs(ms) => sleep_ms(ms),
+        }
+    }
+    Ok(())
+}
 
 /// Backoff before retrying `open` after a failure.
 ///
@@ -85,6 +160,44 @@ impl SerialOpenGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_post_write_reset_sequence() {
+        let steps = parse_reset_sequence(POST_WRITE_RESET_SEQUENCE).unwrap();
+        assert_eq!(
+            steps,
+            vec![
+                ResetStep::Dtr(false),
+                ResetStep::Rts(true),
+                ResetStep::WaitMs(100),
+                ResetStep::Rts(false),
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_reset_records_line_toggles_without_sleep_side_effects() {
+        let steps = parse_reset_sequence("D0|R1|W10|R0").unwrap();
+        let mut dtr = Vec::new();
+        let mut rts = Vec::new();
+        let mut waited = 0u64;
+        apply_reset_steps(
+            &steps,
+            |v| {
+                dtr.push(v);
+                Ok(())
+            },
+            |v| {
+                rts.push(v);
+                Ok(())
+            },
+            &mut |ms| waited += ms,
+        )
+        .unwrap();
+        assert_eq!(dtr, vec![false]);
+        assert_eq!(rts, vec![true, false]);
+        assert_eq!(waited, 10);
+    }
 
     #[test]
     fn backoff_matches_agentdeck_cadence() {

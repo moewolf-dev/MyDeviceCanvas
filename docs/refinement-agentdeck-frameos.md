@@ -29,3 +29,11 @@ This note tracks the first refinement pass after A–L architecture scaffolding.
 | CLI | `mdc discover`, `mdc flash-sim <merged.bin>` |
 
 Live esptool: set `MDC_ESPTOOL_LIVE=1` and pass `--port`. Default remains dry-run.
+
+## Wave: DTR/RTS reset + WS discovery + IDF skeleton
+
+| Item | Location |
+|---|---|
+| Parse/apply `D0\|R1\|W100\|R0` | `mdc-transport` `parse_reset_sequence` / `SerialTransport::apply_post_write_reset` |
+| Combined serial+WS discovery | `mdc-discovery` `WsDiscovery` / `CombinedDiscovery` |
+| ESP-IDF AXS15231B entry | `runtime/esp32/idf/` (pins header + app_main stub) |

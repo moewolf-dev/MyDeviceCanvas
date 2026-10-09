@@ -1,7 +1,7 @@
 //! MyDeviceCanvas CLI — sim-first host tooling (Apache-2.0).
 use image::imageops::FilterType;
 use mdc_core::{ConnectionState, DeviceManager, Frame, Session};
-use mdc_discovery::{DiscoveryProvider, MockMdnsProvider, SerialDiscovery};
+use mdc_discovery::{CombinedDiscovery, DiscoveryProvider, MockMdnsProvider};
 use mdc_flasher::{flags_for_board, EspToolFlasher, SimFlasher};
 use mdc_protocol::VERSION;
 use mdc_provision::{Artifact, InstallPlan, Installer, PortLeases};
@@ -447,31 +447,18 @@ fn cmd_discover(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
         device_id: Option<String>,
         endpoints: Vec<String>,
     }
-    let mut rows = Vec::new();
+    let mut combined = CombinedDiscovery::sim_defaults();
     if opts.sim {
-        let mut mdns = MockMdnsProvider::with_defaults();
-        for c in mdns.discover() {
-            rows.push(Row {
-                device_id: c.device_id,
-                endpoints: c
-                    .endpoints
-                    .iter()
-                    .map(|e| format!("{e:?}"))
-                    .collect(),
-            });
-        }
+        combined.push_provider(Box::new(MockMdnsProvider::with_defaults()));
     }
-    let mut serial = SerialDiscovery::new();
-    for c in serial.discover() {
-        rows.push(Row {
+    let rows: Vec<Row> = combined
+        .discover()
+        .into_iter()
+        .map(|c| Row {
             device_id: c.device_id,
-            endpoints: c
-                .endpoints
-                .iter()
-                .map(|e| format!("{e:?}"))
-                .collect(),
-        });
-    }
+            endpoints: c.endpoints.iter().map(|e| format!("{e:?}")).collect(),
+        })
+        .collect();
     println!("{}", serde_json::to_string_pretty(&rows)?);
     Ok(())
 }

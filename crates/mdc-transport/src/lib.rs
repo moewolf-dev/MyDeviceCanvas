@@ -1,10 +1,10 @@
 mod serial_policy;
 
 pub use serial_policy::{
-    is_candidate_serial_port, serial_open_failure_backoff_ms, SerialOpenGuard,
-    FOREIGN_DENYLIST_COOLDOWN_MS, FOREIGN_MAX_PROBE_FAILURES, POST_WRITE_RESET_SEQUENCE,
-    SERIAL_OPEN_FAIL_ESCALATION_THRESHOLD, SERIAL_OPEN_PERMANENT_BLOCK_MS,
-    SERIAL_TRANSIENT_MAX_BACKOFF_MS,
+    apply_reset_steps, is_candidate_serial_port, parse_reset_sequence,
+    serial_open_failure_backoff_ms, ResetStep, SerialOpenGuard, FOREIGN_DENYLIST_COOLDOWN_MS,
+    FOREIGN_MAX_PROBE_FAILURES, POST_WRITE_RESET_SEQUENCE, SERIAL_OPEN_FAIL_ESCALATION_THRESHOLD,
+    SERIAL_OPEN_PERMANENT_BLOCK_MS, SERIAL_TRANSIENT_MAX_BACKOFF_MS,
 };
 
 use std::collections::VecDeque;
@@ -193,6 +193,31 @@ impl SerialTransport {
                 .map_err(|e| TransportError::Io(e.to_string()))?;
         }
         Ok(Self { port })
+    }
+
+    /// Execute a DTR/RTS sequence such as [`POST_WRITE_RESET_SEQUENCE`].
+    /// Uses real `thread::sleep` for `W` steps (unit tests should call
+    /// [`apply_reset_steps`] with a mock sleeper).
+    pub fn apply_reset_sequence(&mut self, seq: &str) -> Result<(), TransportError> {
+        let steps = parse_reset_sequence(seq).map_err(TransportError::Io)?;
+        for step in steps {
+            match step {
+                ResetStep::Dtr(v) => self
+                    .port
+                    .write_data_terminal_ready(v)
+                    .map_err(|e| TransportError::Io(e.to_string()))?,
+                ResetStep::Rts(v) => self
+                    .port
+                    .write_request_to_send(v)
+                    .map_err(|e| TransportError::Io(e.to_string()))?,
+                ResetStep::WaitMs(ms) => std::thread::sleep(Duration::from_millis(ms)),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn apply_post_write_reset(&mut self) -> Result<(), TransportError> {
+        self.apply_reset_sequence(POST_WRITE_RESET_SEQUENCE)
     }
 }
 #[cfg(feature = "serial")]

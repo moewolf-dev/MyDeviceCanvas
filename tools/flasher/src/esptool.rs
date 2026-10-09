@@ -136,8 +136,15 @@ impl Flasher for EspToolFlasher {
 
     fn reset(&mut self) -> Result<(), String> {
         self.reset_count = self.reset_count.saturating_add(1);
-        // Document the required pulse; live DTR/RTS application is transport-owned.
+        // Live boards: open SerialTransport on the plan port and call
+        // `apply_post_write_reset()` (`D0|R1|W100|R0`). Dry-run only records the sequence.
         let _seq = post_write_reset_sequence();
+        if !self.dry_run {
+            return Err(
+                "live reset requires SerialTransport::apply_post_write_reset on an open port"
+                    .into(),
+            );
+        }
         Ok(())
     }
 
