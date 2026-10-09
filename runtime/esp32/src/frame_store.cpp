@@ -1,4 +1,5 @@
 #include "mdc_runtime.hpp"
+#include <algorithm>
 #include <limits>
 
 namespace mdc {

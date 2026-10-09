@@ -7,14 +7,16 @@ Do not mark physical verification from host-only or simulator tests.
 
 | Wave | Focus | State |
 |---|---|---|
-| 0 | Repo baseline, sim hardware baseline, quality entry | in progress |
-| 1 | Protocol completeness + simulator peer | pending |
-| 2 | Transport / Session / Manager wiring | pending |
-| 3 | Board HAL + Runtime + SimDisplay | pending |
-| 4 | CLI / Node SDK / G03 sim exit | pending |
-| 5 | Discovery / Provision / Touch / OTA | pending |
-| 6 | C/Swift / cache / Inspector | pending |
-| 7 | Linux Runtime / Scene / 1.0 candidate docs | pending |
+| 0 | Repo baseline, sim hardware baseline, quality entry | sim-verified (architecture complete) |
+| 1 | Protocol completeness + simulator peer | sim-verified |
+| 2 | Transport / Session / Manager wiring | sim-verified |
+| 3 | Board HAL + Runtime + SimDisplay | sim-verified (C++ host tests) |
+| 4 | CLI / Node SDK / G03 sim exit | sim-verified |
+| 5 | Discovery / Provision / Touch / OTA | sim-verified |
+| 6 | C/Swift / cache / Inspector | sim-verified (architecture + host tests) |
+| 7 | Linux Runtime / Scene / 1.0 candidate docs | sim-verified architecture complete |
+
+Waves **3–7** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay paths exercise the design. Physical board work remains `physical: pending`.
 
 ## Honesty rules
 

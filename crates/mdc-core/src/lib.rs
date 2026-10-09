@@ -1,7 +1,7 @@
 use mdc_protocol::{
     encode_control, encode_frame_begin, encode_frame_chunk, encode_frame_commit,
     encode_frame_payload, encode_tile_payload, Ack, Capabilities, ErrorPayload, Hello,
-    MessageType, Packet, Surface, VERSION,
+    InputEvent, MessageType, OtaCommand, Packet, Surface, VERSION,
 };
 use mdc_transport::Transport;
 use std::collections::BTreeMap;
@@ -351,12 +351,16 @@ pub struct Device {
     pub state: ConnectionState,
     pub surfaces: Vec<SurfaceQueue>,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ManagerEvent {
     Added(String),
     Removed(String),
     Connected(String),
     Disconnected(String),
+    Input {
+        device_id: String,
+        event: InputEvent,
+    },
     Error { device_id: String, message: String },
 }
 #[derive(Default)]
@@ -672,6 +676,17 @@ impl<T: Transport> Session<T> {
             .insert(request_id, (tile.surface_id, tile.base_frame_id));
         Ok(request_id)
     }
+    /// Send an OTA control command; gated by device `ota` capability.
+    pub fn send_ota(&mut self, command: OtaCommand) -> Result<u32, CoreError> {
+        if self.state != ConnectionState::Ready {
+            return Err(CoreError::NotReady);
+        }
+        let device = self.device.as_ref().ok_or(CoreError::NotReady)?;
+        device.ota()?;
+        let payload =
+            encode_control(&command).map_err(|e| CoreError::Protocol(e.to_string()))?;
+        self.write_packet(MessageType::Ota, payload)
+    }
     fn alloc_request_id(&mut self) -> Result<u32, CoreError> {
         let id = self.next_request_id;
         self.next_request_id = self
@@ -769,6 +784,29 @@ impl<T: Transport> Session<T> {
                 let _err: Result<ErrorPayload, _> =
                     mdc_protocol::decode_control(&packet.payload);
                 Err(CoreError::Protocol("device returned error".into()))
+            }
+            MessageType::Input => {
+                let event: InputEvent = mdc_protocol::decode_control(&packet.payload)
+                    .map_err(|e| CoreError::Protocol(e.to_string()))?;
+                let device_id = self
+                    .device
+                    .as_ref()
+                    .map(|d| d.capabilities.device_id.clone())
+                    .unwrap_or_default();
+                if let Some(mgr) = &self.manager {
+                    mgr.lock()
+                        .map_err(|e| CoreError::Transport(e.to_string()))?
+                        .push_event(ManagerEvent::Input {
+                            device_id,
+                            event,
+                        });
+                }
+                Ok(())
+            }
+            MessageType::Ota => {
+                // Device-originated OTA status replies are acknowledged silently;
+                // host-initiated OTA uses send_ota + Ack/Error.
+                Ok(())
             }
             _ => Ok(()),
         }
@@ -1270,6 +1308,46 @@ mod tests {
         assert_eq!(pkt.kind, MessageType::Tile);
         let tile = mdc_protocol::decode_tile_payload(&pkt.payload).unwrap();
         assert_eq!(tile.bytes, vec![0x11, 0x22]);
+    }
+
+    #[test]
+    fn connect_disconnect_loop_is_cheap() {
+        for _ in 0..1000 {
+            let (host_link, mut device_link) = MemoryLink::pair();
+            let mut session = Session::new(host_link);
+            session.connect().unwrap();
+            let hello_bytes = device_link.read().unwrap().unwrap();
+            let (hello, _) = Packet::decode(&hello_bytes, 4096).unwrap();
+            let caps = Capabilities {
+                device_id: "loop".into(),
+                firmware: "simulator".into(),
+                surfaces: vec![s()],
+                frame: true,
+                tile: true,
+                touch: false,
+                ota: false,
+                max_message: 4096,
+                max_chunk: 16384,
+                max_in_flight: 1,
+                max_fps: 30,
+            };
+            device_link
+                .write(
+                    &Packet {
+                        version: VERSION,
+                        kind: MessageType::Capabilities,
+                        flags: 0,
+                        request_id: hello.request_id,
+                        payload: encode_control(&caps).unwrap(),
+                    }
+                    .encode(4096)
+                    .unwrap(),
+                )
+                .unwrap();
+            assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+            session.disconnect();
+            assert_eq!(session.state, ConnectionState::Disconnected);
+        }
     }
 
     #[test]

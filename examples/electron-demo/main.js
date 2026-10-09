@@ -17,7 +17,9 @@ function createWindow() {
 }
 
 ipcMain.handle("mdc:devices", async () => {
-  manager ??= new MyDeviceCanvas();
+  // Prefer NativeManager simulate path when the .node artifact is built;
+  // otherwise the JS facade returns [] (honest sim / empty hardware state).
+  manager ??= await MyDeviceCanvas.create();
   return (await manager.devices()).map((device) => device.info);
 });
 

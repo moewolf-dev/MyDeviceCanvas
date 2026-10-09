@@ -2,9 +2,11 @@
 use mdc_core::{validate_tile_base, FrameAssembler, Tile, TransactionNack, MAX_FRAME_BYTES};
 use mdc_protocol::{
     decode_control, decode_frame_payload, decode_tile_payload, encode_control, Ack, Capabilities,
-    ErrorPayload, FramePayload, Hello, MessageType, Packet, Surface, VERSION,
+    ErrorPayload, FramePayload, Hello, InputEvent, MessageType, OtaCommand, Packet, Surface,
+    VERSION,
 };
 use mdc_transport::{MemoryLink, Transport, TransportError};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -70,6 +72,39 @@ impl Default for BoardProfile {
         }
     }
 }
+impl BoardProfile {
+    /// Resolve a known board id used by CLI `--board`.
+    pub fn from_board_id(id: &str) -> Self {
+        match id {
+            "esp32-jc3248w535-sim" | "default" | "" => Self::default(),
+            "linux-virt" => Self {
+                device_id: "sim-linux-virt".into(),
+                width: 480,
+                height: 320,
+                touch: false,
+                ota: false,
+            },
+            other => Self {
+                device_id: format!("sim-{other}"),
+                ..Self::default()
+            },
+        }
+    }
+}
+
+/// Counters from the last simulate / poll session (inspector JSON).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SimMetrics {
+    pub device_id: String,
+    pub frames_received: u64,
+    pub tiles_received: u64,
+    pub inputs_emitted: u64,
+    pub ota_commands: u64,
+    pub acks_sent: u64,
+    pub errors_sent: u64,
+    pub current_frame_id: u64,
+    pub pixel_bytes: usize,
+}
 
 struct PendingDelay {
     ready_at: u64,
@@ -90,11 +125,14 @@ pub struct FakeDevice {
     pub max_chunk: usize,
     delayed: Vec<PendingDelay>,
     connected: bool,
+    pub metrics: SimMetrics,
+    ota_active: bool,
 }
 impl FakeDevice {
     pub fn pair(profile: BoardProfile) -> (MemoryLink, Self) {
         let (host, device) = MemoryLink::pair();
         let pixels = vec![0u8; usize::from(profile.width) * usize::from(profile.height) * 2];
+        let device_id = profile.device_id.clone();
         (
             host,
             Self {
@@ -110,6 +148,12 @@ impl FakeDevice {
                 max_chunk: mdc_protocol::DEFAULT_MAX_CHUNK,
                 delayed: Vec::new(),
                 connected: true,
+                metrics: SimMetrics {
+                    device_id,
+                    pixel_bytes: 0,
+                    ..SimMetrics::default()
+                },
+                ota_active: false,
             },
         )
     }
@@ -122,8 +166,26 @@ impl FakeDevice {
     pub fn current_frame_id(&self) -> u64 {
         self.current_frame_id
     }
+    pub fn profile(&self) -> &BoardProfile {
+        &self.profile
+    }
+    pub fn metrics_snapshot(&self) -> SimMetrics {
+        let mut m = self.metrics.clone();
+        m.current_frame_id = self.current_frame_id;
+        m.pixel_bytes = self.pixels.len();
+        m.device_id = self.profile.device_id.clone();
+        m
+    }
     pub fn assert_pixels_eq(&self, expected: &[u8]) {
         assert_eq!(self.pixels, expected, "pixel buffer mismatch");
+    }
+    /// Emit a touch/input event toward the host session (capability-gated).
+    pub fn emit_input(&mut self, event: InputEvent) -> Result<(), SimError> {
+        if !self.profile.touch {
+            return Err(SimError::Protocol("touch capability disabled".into()));
+        }
+        self.metrics.inputs_emitted = self.metrics.inputs_emitted.saturating_add(1);
+        self.write_control(MessageType::Input, 0, &event)
     }
     pub fn capabilities(&self) -> Capabilities {
         let stride = u32::from(self.profile.width) * 2;
@@ -233,10 +295,10 @@ impl FakeDevice {
             MessageType::Frame => self.handle_frame(packet),
             MessageType::Tile => self.handle_tile(packet),
             MessageType::Ping => self.write_packet(MessageType::Pong, packet.request_id, Vec::new()),
-            MessageType::Input | MessageType::Ota => {
-                if (packet.kind == MessageType::Input && !self.profile.touch)
-                    || (packet.kind == MessageType::Ota && !self.profile.ota)
-                {
+            MessageType::Ota => self.handle_ota(packet),
+            MessageType::Input => {
+                // Host→device input is unusual; reject unless touch is enabled.
+                if !self.profile.touch {
                     return self.reply_error(
                         packet.request_id,
                         "E_UNSUPPORTED",
@@ -246,6 +308,40 @@ impl FakeDevice {
                 Ok(())
             }
             _ => Ok(()),
+        }
+    }
+    fn handle_ota(&mut self, packet: Packet) -> Result<(), SimError> {
+        if !self.profile.ota {
+            return self.reply_error(
+                packet.request_id,
+                "E_UNSUPPORTED",
+                "ota capability disabled",
+            );
+        }
+        let cmd: OtaCommand =
+            decode_control(&packet.payload).map_err(|e| SimError::Protocol(e.to_string()))?;
+        self.metrics.ota_commands = self.metrics.ota_commands.saturating_add(1);
+        match cmd.action.as_str() {
+            "begin" => {
+                self.ota_active = true;
+                self.ack(packet.request_id, self.current_frame_id, true, false)
+            }
+            "abort" => {
+                self.ota_active = false;
+                self.ack(packet.request_id, self.current_frame_id, true, false)
+            }
+            "confirm" => {
+                if !self.ota_active {
+                    return self.reply_error(packet.request_id, "E_OTA", "no active ota");
+                }
+                self.ota_active = false;
+                self.ack(packet.request_id, self.current_frame_id, true, true)
+            }
+            other => self.reply_error(
+                packet.request_id,
+                "E_OTA",
+                &format!("unknown action {other}"),
+            ),
         }
     }
     fn handle_frame(&mut self, packet: Packet) -> Result<(), SimError> {
@@ -265,6 +361,7 @@ impl FakeDevice {
                 self.pixels = bytes;
                 self.current_frame_id = frame_id;
                 self.assembler = None;
+                self.metrics.frames_received = self.metrics.frames_received.saturating_add(1);
                 self.ack(packet.request_id, frame_id, true, true)
             }
             FramePayload::Begin {
@@ -313,6 +410,8 @@ impl FakeDevice {
                     Ok(bytes) => {
                         self.pixels = bytes;
                         self.current_frame_id = frame_id;
+                        self.metrics.frames_received =
+                            self.metrics.frames_received.saturating_add(1);
                         self.ack(packet.request_id, frame_id, true, true)
                     }
                     Err(TransactionNack::Incomplete) => {
@@ -351,6 +450,7 @@ impl FakeDevice {
             self.pixels[dst_off..dst_off + row_bytes]
                 .copy_from_slice(&core_tile.bytes[src_off..src_off + row_bytes]);
         }
+        self.metrics.tiles_received = self.metrics.tiles_received.saturating_add(1);
         self.ack(packet.request_id, self.current_frame_id, true, true)
     }
     fn ack(
@@ -360,6 +460,7 @@ impl FakeDevice {
         received: bool,
         displayed: bool,
     ) -> Result<(), SimError> {
+        self.metrics.acks_sent = self.metrics.acks_sent.saturating_add(1);
         let ack = Ack {
             received,
             displayed,
@@ -369,6 +470,7 @@ impl FakeDevice {
         self.write_control(MessageType::Ack, request_id, &ack)
     }
     fn reply_error(&mut self, request_id: u32, code: &str, message: &str) -> Result<(), SimError> {
+        self.metrics.errors_sent = self.metrics.errors_sent.saturating_add(1);
         let err = ErrorPayload {
             code: code.into(),
             message: message.into(),
@@ -551,5 +653,90 @@ mod tests {
         let (_, device) = FakeDevice::with_default_profile();
         assert_eq!((device.profile.width, device.profile.height), (480, 320));
         assert_eq!(device.pixels().len(), 480 * 320 * 2);
+    }
+
+    #[test]
+    fn emit_input_reaches_session_manager() {
+        use mdc_core::{DeviceManager, ManagerEvent};
+        use std::sync::{Arc, Mutex};
+        let profile = BoardProfile {
+            width: 2,
+            height: 2,
+            touch: true,
+            ..BoardProfile::default()
+        };
+        let (host, mut device) = FakeDevice::pair(profile);
+        let manager = Arc::new(Mutex::new(DeviceManager::new()));
+        let mut session = Session::new(host);
+        session.set_manager(manager.clone());
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        device
+            .emit_input(InputEvent {
+                surface_id: "main".into(),
+                pointer_id: 0,
+                phase: "down".into(),
+                x: 1,
+                y: 1,
+            })
+            .unwrap();
+        session.poll().unwrap();
+        let events: Vec<_> = manager.lock().unwrap().drain_events().collect();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            ManagerEvent::Input {
+                event,
+                ..
+            } if event.phase == "down"
+        )));
+    }
+
+    #[test]
+    fn ota_gated_by_capability() {
+        use mdc_protocol::OtaCommand;
+        let profile = BoardProfile {
+            width: 2,
+            height: 2,
+            ota: false,
+            ..BoardProfile::default()
+        };
+        let (host, mut device) = FakeDevice::pair(profile);
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(
+            session.send_ota(OtaCommand {
+                action: "begin".into(),
+                version: None,
+                size: None,
+                sha256: None,
+            }),
+            Err(mdc_core::CoreError::Unsupported)
+        );
+
+        let profile = BoardProfile {
+            width: 2,
+            height: 2,
+            ota: true,
+            ..BoardProfile::default()
+        };
+        let (host, mut device) = FakeDevice::pair(profile);
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .send_ota(OtaCommand {
+                action: "begin".into(),
+                version: Some("1.0.0".into()),
+                size: Some(10),
+                sha256: None,
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.metrics.ota_commands, 1);
     }
 }

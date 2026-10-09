@@ -1,0 +1,12 @@
+[package]
+name = "mdc-compatibility-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dev-dependencies]
+mdc-core = { path = "../../crates/mdc-core" }
+mdc-protocol = { path = "../../crates/mdc-protocol" }
+mdc-transport = { path = "../../crates/mdc-transport" }
+mdc-simulator = { path = "../../crates/mdc-simulator" }

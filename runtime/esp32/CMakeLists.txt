@@ -1,7 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 project(mdc_runtime_parser LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
-add_library(mdc_runtime STATIC src/parser.cpp src/frame_store.cpp)
+add_library(mdc_runtime STATIC
+  src/parser.cpp
+  src/frame_store.cpp
+  src/sim_display.cpp
+  src/dispatcher.cpp)
 target_include_directories(mdc_runtime PUBLIC include)
 add_executable(mdc_runtime_tests tests/parser_test.cpp)
 target_link_libraries(mdc_runtime_tests PRIVATE mdc_runtime)

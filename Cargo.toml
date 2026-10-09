@@ -1,5 +1,20 @@
 [workspace]
-members = ["crates/mdc-protocol", "crates/mdc-transport", "crates/mdc-core", "crates/mdc-simulator", "crates/mdc-discovery", "crates/mdc-provision", "tools/mdc-cli", "sdk/node/native"]
+members = [
+  "crates/mdc-protocol",
+  "crates/mdc-transport",
+  "crates/mdc-core",
+  "crates/mdc-simulator",
+  "crates/mdc-discovery",
+  "crates/mdc-provision",
+  "crates/mdc-assets",
+  "tools/mdc-cli",
+  "tools/flasher",
+  "tools/inspector",
+  "sdk/node/native",
+  "sdk/c",
+  "examples/rust-hello",
+  "tests/compatibility",
+]
 resolver = "2"
 
 [workspace.package]

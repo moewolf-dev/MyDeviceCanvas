@@ -1,0 +1,30 @@
+# Board profile template — copy to boards/<vendor>/<id>/board.yaml
+# status: unverified | sim-baseline | physical-verified
+id: vendor-board-id
+status: unverified
+source: datasheet-or-upstream-ref
+mcu: esp32-s3
+flash_bytes: 16777216
+flash_mode: dio
+flash_freq_mhz: 80
+psram_bytes: 0
+usb: native-usb-jtag
+baud_default: 115200
+baud_flash: 460800
+display:
+  width: 480
+  height: 320
+  format: RGB565_LE
+  rotation: 0
+  bus: qspi
+  controller: unknown
+touch: false
+ota: false
+max_framebuffer_bytes: 307200
+min_internal_free_bytes: 65536
+min_internal_largest_block_bytes: 32768
+max_psram_used_bytes: 0
+dma_align_bytes: 4
+reset_strategy: document-before-use
+# Optional pin map (omit if unknown)
+# pin_backlight: 1

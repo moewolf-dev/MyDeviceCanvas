@@ -10,6 +10,9 @@ crate-type = ["cdylib"]
 [dependencies]
 napi = { version = "=2.16.13", features = ["napi8"] }
 napi-derive = "=2.16.13"
+mdc-core = { path = "../../../crates/mdc-core" }
+mdc-transport = { path = "../../../crates/mdc-transport" }
+mdc-simulator = { path = "../../../crates/mdc-simulator" }
 
 [build-dependencies]
 napi-build = "=2.1.3"

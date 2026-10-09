@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 pub enum Endpoint {
     Serial { port: String },
     WebSocket { address: String },
+    /// In-process / simulator endpoint label (not a network URL).
+    Memory { label: String },
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
@@ -73,6 +75,61 @@ impl DiscoveryProvider for StaticDiscovery {
         self.candidates.clear();
     }
 }
+
+/// Deterministic mDNS stand-in for simulator / host tests (no network).
+#[derive(Debug, Clone)]
+pub struct MockMdnsProvider {
+    pub service: String,
+    seeded: Vec<Candidate>,
+    cancelled: bool,
+}
+impl Default for MockMdnsProvider {
+    fn default() -> Self {
+        Self {
+            service: "_mdc._tcp.local".into(),
+            seeded: vec![Candidate {
+                device_id: Some("sim-esp32-jc3248w535".into()),
+                endpoints: vec![
+                    Endpoint::Memory {
+                        label: "fake-device".into(),
+                    },
+                    Endpoint::WebSocket {
+                        address: "ws://127.0.0.1:9/mdc".into(),
+                    },
+                ],
+            }],
+            cancelled: false,
+        }
+    }
+}
+impl MockMdnsProvider {
+    pub fn new(service: impl Into<String>, candidates: Vec<Candidate>) -> Self {
+        Self {
+            service: service.into(),
+            seeded: candidates,
+            cancelled: false,
+        }
+    }
+    pub fn with_defaults() -> Self {
+        Self::default()
+    }
+}
+impl DiscoveryProvider for MockMdnsProvider {
+    fn discover(&mut self) -> Vec<Candidate> {
+        if self.cancelled {
+            return Vec::new();
+        }
+        let mut set = CandidateSet::default();
+        for candidate in self.seeded.clone() {
+            set.insert(candidate);
+        }
+        set.into_vec()
+    }
+    fn cancel(&mut self) {
+        self.cancelled = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,5 +159,21 @@ mod tests {
         }]);
         provider.cancel();
         assert!(provider.discover().is_empty());
+    }
+    #[test]
+    fn mock_mdns_returns_seeded_candidates() {
+        let mut mdns = MockMdnsProvider::with_defaults();
+        let found = mdns.discover();
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].device_id.as_deref(),
+            Some("sim-esp32-jc3248w535")
+        );
+        assert!(found[0]
+            .endpoints
+            .iter()
+            .any(|e| matches!(e, Endpoint::Memory { .. })));
+        mdns.cancel();
+        assert!(mdns.discover().is_empty());
     }
 }

@@ -13,16 +13,22 @@ python3 tools/validate_board.py boards/sim/linux-virt/board.yaml
 python3 tools/validate_board.py boards/esp32/test-valid/board.yaml
 python3 -m unittest discover -s tools -p 'test_*.py'
 
-CPP_SRCS=(
-  runtime/esp32/src/parser.cpp
-  runtime/esp32/src/frame_store.cpp
-)
-if [[ -f runtime/esp32/src/sim_display.cpp ]]; then
-  CPP_SRCS+=(runtime/esp32/src/sim_display.cpp)
-fi
-c++ -std=c++17 -I runtime/esp32/include "${CPP_SRCS[@]}" \
-  runtime/esp32/tests/parser_test.cpp -o /tmp/mdc_runtime_tests
+c++ -std=c++17 -I runtime/esp32/include \
+  runtime/esp32/src/parser.cpp \
+  runtime/esp32/src/frame_store.cpp \
+  runtime/esp32/src/sim_display.cpp \
+  runtime/esp32/src/dispatcher.cpp \
+  runtime/esp32/tests/parser_test.cpp \
+  -o /tmp/mdc_runtime_tests
 /tmp/mdc_runtime_tests
+if [[ -d runtime/linux ]]; then
+  c++ -std=c++17 -I runtime/linux/include -I runtime/esp32/include \
+    runtime/esp32/src/parser.cpp runtime/esp32/src/frame_store.cpp \
+    runtime/esp32/src/sim_display.cpp runtime/esp32/src/dispatcher.cpp \
+    runtime/linux/src/linux_runtime.cpp runtime/linux/tests/linux_runtime_test.cpp \
+    -o /tmp/mdc_linux_runtime_tests
+  /tmp/mdc_linux_runtime_tests
+fi
 
 if [[ -d sdk/node ]]; then
   (cd sdk/node && node --test index.test.js)

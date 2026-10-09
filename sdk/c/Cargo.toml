@@ -1,0 +1,15 @@
+[package]
+name = "mdc_c"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "C ABI for MyDeviceCanvas host Session (sim MemoryLink)"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+name = "mdc_c"
+
+[dependencies]
+mdc-core = { path = "../../crates/mdc-core" }
+mdc-simulator = { path = "../../crates/mdc-simulator" }
+mdc-transport = { path = "../../crates/mdc-transport" }

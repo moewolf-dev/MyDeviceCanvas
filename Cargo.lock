@@ -340,6 +340,27 @@ dependencies = [
  "image",
  "mdc-core",
  "mdc-protocol",
+ "mdc-simulator",
+ "mdc-transport",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "mdc-assets"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
+name = "mdc-compatibility-tests"
+version = "0.1.0"
+dependencies = [
+ "mdc-core",
+ "mdc-protocol",
+ "mdc-simulator",
  "mdc-transport",
 ]
 
@@ -357,9 +378,28 @@ name = "mdc-discovery"
 version = "0.1.0"
 
 [[package]]
+name = "mdc-flasher"
+version = "0.1.0"
+dependencies = [
+ "mdc-provision",
+]
+
+[[package]]
+name = "mdc-inspector"
+version = "0.1.0"
+dependencies = [
+ "mdc-core",
+ "mdc-simulator",
+ "serde_json",
+]
+
+[[package]]
 name = "mdc-node-native"
 version = "0.1.0"
 dependencies = [
+ "mdc-core",
+ "mdc-simulator",
+ "mdc-transport",
  "napi",
  "napi-build",
  "napi-derive",
@@ -385,6 +425,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdc-rust-hello"
+version = "0.1.0"
+dependencies = [
+ "mdc-core",
+ "mdc-simulator",
+]
+
+[[package]]
 name = "mdc-simulator"
 version = "0.1.0"
 dependencies = [
@@ -403,6 +451,15 @@ dependencies = [
  "thiserror",
  "tungstenite",
  "url",
+]
+
+[[package]]
+name = "mdc_c"
+version = "0.1.0"
+dependencies = [
+ "mdc-core",
+ "mdc-simulator",
+ "mdc-transport",
 ]
 
 [[package]]
@@ -626,6 +683,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -665,6 +728,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.46",
+]
+
+[[package]]
+name = "serde_json"
+version = "1.0.100"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f1e14e89be7aa4c4b78bdbdc9eb5bf8517829a600ae8eaa39a6e1d960b5185c"
+dependencies = [
+ "itoa",
+ "ryu",
+ "serde",
 ]
 
 [[package]]

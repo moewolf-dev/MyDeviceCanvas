@@ -1,0 +1,9 @@
+[package]
+name = "mdc-flasher"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SimFlasher implementing mdc-provision Flasher trait"
+
+[dependencies]
+mdc-provision = { path = "../../crates/mdc-provision" }
