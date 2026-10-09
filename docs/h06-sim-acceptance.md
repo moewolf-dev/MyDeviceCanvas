@@ -41,11 +41,15 @@ cargo run -p mdc -- --address 127.0.0.1:9876 send-image ./some.png
 ```sh
 cargo run -p mdc -- pair demo-device secret-token
 cargo run -p mdc -- authorize demo-device ws ws://127.0.0.1/mdc
+cargo run -p mdc -- authorize demo-device tcp 127.0.0.1:9876
 cargo run -p mdc -- unpair demo-device
 cargo run -p mdc -- switch-demo
+# After handshake, TCP send-image refuses unpaired device_id:
+# cargo run -p mdc -- pair sim-esp32-jc3248w535 tok
+# cargo run -p mdc -- --address 127.0.0.1:9876 send-image ./x.png
 ```
 
-WS endpoints require a stored pairing credential; Serial/Memory do not. After `switch_transport`, tiles are blocked until a full frame receives a displayed ACK.
+WS/TCP require a stored pairing credential before Frame/Tile/OTA; Serial/Memory do not. After `switch_transport`, tiles are blocked until a full frame receives a displayed ACK.
 
 ## Acceptance
 

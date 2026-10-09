@@ -360,6 +360,17 @@ fn cmd_send_image(
         if session.state != ConnectionState::Ready {
             return Err("tcp peer did not complete handshake".into());
         }
+        let device_id = session
+            .device
+            .as_ref()
+            .map(|d| d.capabilities.device_id.clone())
+            .unwrap_or_default();
+        gate_network_display(
+            &device_id,
+            &Endpoint::Tcp {
+                address: addr.clone(),
+            },
+        )?;
         let (w, h) = session
             .device
             .as_ref()
@@ -377,7 +388,7 @@ fn cmd_send_image(
             height: h,
             bytes,
         })?;
-        println!("sent frame to {addr}");
+        println!("sent frame to {addr} device_id={device_id}");
         return Ok(());
     }
     if !opts.sim {
@@ -522,9 +533,28 @@ fn pairing_path() -> std::path::PathBuf {
     std::env::temp_dir().join("mdc-pairing-store.json")
 }
 
+fn load_pairing_store() -> PairingStore {
+    PairingStore::load_json(&pairing_path()).unwrap_or_default()
+}
+
+/// After handshake, refuse Frame/Tile/OTA on network endpoints without pairing (H01).
+fn gate_network_display(
+    device_id: &str,
+    endpoint: &Endpoint,
+) -> Result<(), Box<dyn std::error::Error>> {
+    load_pairing_store()
+        .authorize_display_control(device_id, endpoint)
+        .map_err(|e| -> Box<dyn std::error::Error> {
+            format!(
+                "{e}; run `mdc pair {device_id} <token>` before network display control"
+            )
+            .into()
+        })
+}
+
 fn cmd_pair(device_id: &str, token: &str) -> Result<(), Box<dyn std::error::Error>> {
     let path = pairing_path();
-    let mut store = PairingStore::load_json(&path).unwrap_or_default();
+    let mut store = load_pairing_store();
     store.pair(device_id, token)?;
     store.save_json(&path)?;
     println!("paired device_id={device_id} store={}", path.display());
@@ -533,7 +563,7 @@ fn cmd_pair(device_id: &str, token: &str) -> Result<(), Box<dyn std::error::Erro
 
 fn cmd_unpair(device_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     let path = pairing_path();
-    let mut store = PairingStore::load_json(&path).unwrap_or_default();
+    let mut store = load_pairing_store();
     if store.revoke(device_id) {
         store.save_json(&path)?;
         println!("revoked pairing for {device_id}");
@@ -544,10 +574,12 @@ fn cmd_unpair(device_id: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn cmd_authorize(device_id: &str, kind: &str, value: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let path = pairing_path();
-    let store = PairingStore::load_json(&path).unwrap_or_default();
+    let store = load_pairing_store();
     let endpoint = match kind {
         "ws" | "websocket" => Endpoint::WebSocket {
+            address: value.into(),
+        },
+        "tcp" => Endpoint::Tcp {
             address: value.into(),
         },
         "serial" | "port" => Endpoint::Serial {
@@ -558,7 +590,7 @@ fn cmd_authorize(device_id: &str, kind: &str, value: &str) -> Result<(), Box<dyn
         },
         other => return Err(format!("unknown endpoint kind {other}").into()),
     };
-    match store.authorize(device_id, &endpoint) {
+    match store.authorize_display_control(device_id, &endpoint) {
         Ok(()) => println!("authorized"),
         Err(e) => {
             eprintln!("denied: {e}");
@@ -666,7 +698,7 @@ fn usage() {
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|pair <id> <token>|unpair <id>|\
-authorize <id> <ws|serial|memory> <ep>|switch-demo"
+authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo"
     );
 }
 
@@ -753,7 +785,7 @@ fn main() {
             let kind = args.get(2).cloned().unwrap_or_default();
             let value = args.get(3).cloned().unwrap_or_default();
             if id.is_empty() || kind.is_empty() || value.is_empty() {
-                eprintln!("authorize <device_id> <ws|serial|memory> <endpoint>");
+                eprintln!("authorize <device_id> <ws|tcp|serial|memory> <endpoint>");
                 std::process::exit(2);
             }
             cmd_authorize(&id, &kind, &value)

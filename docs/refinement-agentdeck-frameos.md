@@ -58,3 +58,12 @@ Live esptool: set `MDC_ESPTOOL_LIVE=1` and pass `--port`. Default remains dry-ru
 | Tile gated until displayed full-frame ACK | `Session::send_tile` → `NeedFullFrame` |
 | Manager `EndpointSwitched` | `DeviceManager::connect_session` |
 | CLI | `mdc pair` / `unpair` / `authorize` / `switch-demo` |
+
+## Wave: network display gate + IDF panel bring-up
+
+| Item | Location |
+|---|---|
+| `Endpoint::Tcp` + pairing required | `mdc-discovery` `PairingStore` |
+| `authorize_display_control` after HELLO | CLI `send-image --address` |
+| Panel stages bus→Canvas→READY | `runtime/esp32/idf/port/mdc_panel_init.h` |
+| Host `panel_bringup_test` | `runtime/esp32/idf/tests/` |

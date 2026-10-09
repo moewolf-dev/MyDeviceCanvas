@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 pub enum Endpoint {
     Serial { port: String },
     WebSocket { address: String },
+    /// Raw TCP peer (`host:port`); treated as a network endpoint for pairing.
+    Tcp { address: String },
     /// In-process / simulator endpoint label (not a network URL).
     Memory { label: String },
 }

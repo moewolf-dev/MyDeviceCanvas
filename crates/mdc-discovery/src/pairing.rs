@@ -1,5 +1,5 @@
 //! Pairing credentials for network endpoints (H01).
-//! Serial / Memory links do not require pairing; WebSocket (and future TCP labels)
+//! Serial / Memory links do not require pairing; WebSocket and TCP
 //! require a stored credential before display / control / upgrade.
 
 use crate::Endpoint;
@@ -73,7 +73,7 @@ impl PairingStore {
 
     /// Network endpoints require pairing; USB serial and in-process memory do not.
     pub fn endpoint_requires_pairing(endpoint: &Endpoint) -> bool {
-        matches!(endpoint, Endpoint::WebSocket { .. })
+        matches!(endpoint, Endpoint::WebSocket { .. } | Endpoint::Tcp { .. })
     }
 
     /// Gate display/control/upgrade for a known device on an endpoint.
@@ -86,6 +86,15 @@ impl PairingStore {
         } else {
             Err(PairingError::NotPaired)
         }
+    }
+
+    /// After HELLO/Capabilities, refuse display control if the network peer is unpaired.
+    pub fn authorize_display_control(
+        &self,
+        device_id: &str,
+        endpoint: &Endpoint,
+    ) -> Result<(), PairingError> {
+        self.authorize(device_id, endpoint)
     }
 
     pub fn list(&self) -> Vec<&PairingCredential> {
@@ -138,8 +147,16 @@ mod tests {
             Err(PairingError::NotPaired)
         );
         assert!(store.authorize("dev", &serial).is_ok());
+        let tcp = Endpoint::Tcp {
+            address: "127.0.0.1:9876".into(),
+        };
+        assert_eq!(
+            store.authorize_display_control("dev", &tcp),
+            Err(PairingError::NotPaired)
+        );
         store.pair("dev", "secret").unwrap();
         assert!(store.authorize("dev", &ws).is_ok());
+        assert!(store.authorize_display_control("dev", &tcp).is_ok());
         assert!(store.verify("dev", "secret").is_ok());
         assert_eq!(
             store.verify("dev", "wrong"),
