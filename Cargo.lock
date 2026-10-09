@@ -382,6 +382,9 @@ name = "mdc-discovery"
 version = "0.1.0"
 dependencies = [
  "mdc-transport",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

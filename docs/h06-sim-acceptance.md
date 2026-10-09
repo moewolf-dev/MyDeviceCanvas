@@ -36,6 +36,17 @@ cargo run -p mdc-sim-peer -- 127.0.0.1:9876 esp32-jc3248w535-sim
 cargo run -p mdc -- --address 127.0.0.1:9876 send-image ./some.png
 ```
 
+## Related (H01 / I03)
+
+```sh
+cargo run -p mdc -- pair demo-device secret-token
+cargo run -p mdc -- authorize demo-device ws ws://127.0.0.1/mdc
+cargo run -p mdc -- unpair demo-device
+cargo run -p mdc -- switch-demo
+```
+
+WS endpoints require a stored pairing credential; Serial/Memory do not. After `switch_transport`, tiles are blocked until a full frame receives a displayed ACK.
+
 ## Acceptance
 
 All five stages pass under `cargo test --workspace` / CLI simulate. Mark **sim-verified**; physical remains pending.

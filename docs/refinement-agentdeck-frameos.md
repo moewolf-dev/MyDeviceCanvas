@@ -47,3 +47,14 @@ Live esptool: set `MDC_ESPTOOL_LIVE=1` and pass `--port`. Default remains dry-ru
 | TCP peer binary | `tools/mdc-sim-peer` |
 | EspTool live reset → `apply_post_write_reset` | `tools/flasher` (feature `serial`) |
 | `mdc h06-demo` | `tools/mdc-cli` |
+
+## Wave: H01 pairing + I03 connection switch
+
+| Item | Location |
+|---|---|
+| `PairingStore` (pair/revoke/verify/authorize) | `crates/mdc-discovery/src/pairing.rs` |
+| WS requires pairing; Serial/Memory do not | `PairingStore::authorize` |
+| Session `needs_full_frame` + `switch_transport` | `mdc-core` |
+| Tile gated until displayed full-frame ACK | `Session::send_tile` → `NeedFullFrame` |
+| Manager `EndpointSwitched` | `DeviceManager::connect_session` |
+| CLI | `mdc pair` / `unpair` / `authorize` / `switch-demo` |

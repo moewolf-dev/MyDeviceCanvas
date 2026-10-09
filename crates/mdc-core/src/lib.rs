@@ -36,6 +36,10 @@ pub enum CoreError {
     AckTimeout,
     #[error("connect timeout")]
     ConnectTimeout,
+    #[error("network endpoint is not paired")]
+    NotPaired,
+    #[error("full frame required after reconnect or endpoint switch before tiles")]
+    NeedFullFrame,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -357,6 +361,8 @@ pub enum ManagerEvent {
     Removed(String),
     Connected(String),
     Disconnected(String),
+    /// Active endpoint replaced; old Session ACKs must not affect the new one.
+    EndpointSwitched { device_id: String },
     Input {
         device_id: String,
         event: InputEvent,
@@ -413,16 +419,33 @@ impl DeviceManager {
         self.events.drain(..)
     }
     /// Store the single active session endpoint for `device_id` (replaces any prior).
-    pub fn connect_session(&mut self, device_id: &str, endpoint: impl Into<String>) {
-        self.active_endpoints
-            .insert(device_id.to_string(), endpoint.into());
+    /// Returns the previous endpoint if this is a switch.
+    pub fn connect_session(
+        &mut self,
+        device_id: &str,
+        endpoint: impl Into<String>,
+    ) -> Option<String> {
+        let endpoint = endpoint.into();
+        let previous = self.active_endpoints.insert(device_id.to_string(), endpoint);
         if let Some(device) = self.devices.get_mut(device_id) {
             device.state = ConnectionState::Ready;
         }
-        self.push_event(ManagerEvent::Connected(device_id.into()));
+        if previous.is_some() {
+            self.push_event(ManagerEvent::EndpointSwitched {
+                device_id: device_id.into(),
+            });
+        } else {
+            self.push_event(ManagerEvent::Connected(device_id.into()));
+        }
+        previous
     }
     pub fn active_endpoint(&self, device_id: &str) -> Option<&str> {
         self.active_endpoints.get(device_id).map(|s| s.as_str())
+    }
+    pub fn clear_endpoint(&mut self, device_id: &str) {
+        if self.active_endpoints.remove(device_id).is_some() {
+            self.push_event(ManagerEvent::Disconnected(device_id.into()));
+        }
     }
     fn push_event(&mut self, event: ManagerEvent) {
         if self.events.len() >= 128 {
@@ -455,6 +478,8 @@ pub struct Session<T: Transport> {
     /// After reconnect backoff, host must supply a fresh transport via
     /// [`provide_transport`](Self::provide_transport) before HELLO is resent.
     pub awaiting_transport: bool,
+    /// After reconnect / endpoint switch, tiles are blocked until a full frame is ACKed.
+    pub needs_full_frame: bool,
     manager: Option<Arc<Mutex<DeviceManager>>>,
 }
 impl<T: Transport> Session<T> {
@@ -482,6 +507,7 @@ impl<T: Transport> Session<T> {
             last_heartbeat_ms: 0,
             reconnect_ready_ms: None,
             awaiting_transport: false,
+            needs_full_frame: false,
             manager: None,
         }
     }
@@ -599,7 +625,27 @@ impl<T: Transport> Session<T> {
         self.pending_requests.clear();
         self.pending_frames.clear();
         self.device = None;
+        self.needs_full_frame = true;
         self.state = ConnectionState::Disconnected;
+        self.connect()
+    }
+
+    /// Cancel the current Session and attach a different endpoint (I03).
+    /// Old ACKs are dropped; after handshake the host must send a full frame
+    /// before any Tile (`needs_full_frame`).
+    pub fn switch_transport(&mut self, transport: T) -> Result<(), CoreError> {
+        let reconnect = self.reconnect_enabled;
+        self.transport.close();
+        self.rx.clear();
+        self.pending_requests.clear();
+        self.pending_frames.clear();
+        self.device = None;
+        self.awaiting_transport = false;
+        self.needs_full_frame = true;
+        self.reconnect_ready_ms = None;
+        self.state = ConnectionState::Disconnected;
+        self.reconnect_enabled = reconnect;
+        self.transport = transport;
         self.connect()
     }
     pub fn disconnect(&mut self) {
@@ -694,6 +740,9 @@ impl<T: Transport> Session<T> {
     pub fn send_tile(&mut self, tile: Tile) -> Result<u32, CoreError> {
         if self.state != ConnectionState::Ready {
             return Err(CoreError::NotReady);
+        }
+        if self.needs_full_frame {
+            return Err(CoreError::NeedFullFrame);
         }
         let device = self.device.as_ref().ok_or(CoreError::NotReady)?;
         if !device.capabilities.tile {
@@ -801,6 +850,7 @@ impl<T: Transport> Session<T> {
                     && (ack.received || ack.displayed)
                 {
                     self.pending_requests.remove(&packet.request_id);
+                    let was_frame = self.pending_frames.contains_key(&packet.request_id);
                     if let Some((surface_id, frame_id)) =
                         self.pending_frames.remove(&packet.request_id)
                     {
@@ -815,6 +865,9 @@ impl<T: Transport> Session<T> {
                         for surface in &mut device.surfaces {
                             surface.ack(ack.frame_id);
                         }
+                    }
+                    if was_frame && ack.displayed {
+                        self.needs_full_frame = false;
                     }
                 }
                 Ok(())
@@ -1184,10 +1237,142 @@ mod tests {
     #[test]
     fn manager_connect_session_stores_single_endpoint() {
         let mut manager = DeviceManager::new();
-        manager.connect_session("dev-a", "memory:1");
+        assert!(manager.connect_session("dev-a", "memory:1").is_none());
         assert_eq!(manager.active_endpoint("dev-a"), Some("memory:1"));
-        manager.connect_session("dev-a", "tcp:127.0.0.1:9");
+        let prev = manager.connect_session("dev-a", "tcp:127.0.0.1:9");
+        assert_eq!(prev.as_deref(), Some("memory:1"));
         assert_eq!(manager.active_endpoint("dev-a"), Some("tcp:127.0.0.1:9"));
+        let events: Vec<_> = manager.drain_events().collect();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            ManagerEvent::EndpointSwitched { device_id } if device_id == "dev-a"
+        )));
+    }
+
+    #[test]
+    fn switch_transport_blocks_tiles_until_full_frame_acked() {
+        let (host_a, mut dev_a) = MemoryLink::pair();
+        let mut session = Session::new(host_a);
+        session.connect().unwrap();
+        let hello = Packet::decode(&dev_a.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        dev_a
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: hello.request_id,
+                    payload: encode_control(&Capabilities {
+                        device_id: "sw".into(),
+                        firmware: "1".into(),
+                        surfaces: vec![s()],
+                        frame: true,
+                        tile: true,
+                        touch: false,
+                        ota: false,
+                        max_message: 4096,
+                        max_chunk: 16384,
+                        max_in_flight: 1,
+                        max_fps: 30,
+                    })
+                    .unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+
+        let (host_b, mut dev_b) = MemoryLink::pair();
+        session.switch_transport(host_b).unwrap();
+        assert!(session.needs_full_frame);
+        let hello2 = Packet::decode(&dev_b.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        dev_b
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: hello2.request_id,
+                    payload: encode_control(&Capabilities {
+                        device_id: "sw".into(),
+                        firmware: "1".into(),
+                        surfaces: vec![s()],
+                        frame: true,
+                        tile: true,
+                        touch: false,
+                        ota: false,
+                        max_message: 4096,
+                        max_chunk: 16384,
+                        max_in_flight: 1,
+                        max_fps: 30,
+                    })
+                    .unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        assert_eq!(
+            session.send_tile(Tile {
+                surface_id: "main".into(),
+                base_frame_id: 1,
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                bytes: vec![0, 0],
+            }),
+            Err(CoreError::NeedFullFrame)
+        );
+        let req = session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![0; 8],
+            })
+            .unwrap();
+        let frame_pkt = Packet::decode(&dev_b.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        dev_b
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Ack,
+                    flags: 0,
+                    request_id: frame_pkt.request_id,
+                    payload: encode_control(&Ack {
+                        received: true,
+                        displayed: true,
+                        frame_id: req as u64,
+                        error: None,
+                    })
+                    .unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        assert!(!session.needs_full_frame);
+        assert!(session
+            .send_tile(Tile {
+                surface_id: "main".into(),
+                base_frame_id: 1,
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                bytes: vec![0, 0],
+            })
+            .is_ok());
     }
     #[test]
     fn repeated_transactions_release_owned_staging() {

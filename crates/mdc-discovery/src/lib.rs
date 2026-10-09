@@ -1,5 +1,7 @@
+mod pairing;
 mod serial_scan;
 mod ws_discovery;
+pub use pairing::{PairingCredential, PairingError, PairingStore};
 pub use serial_scan::SerialDiscovery;
 pub use ws_discovery::{CombinedDiscovery, WsDiscovery};
 

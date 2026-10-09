@@ -1,7 +1,9 @@
 //! MyDeviceCanvas CLI — sim-first host tooling (Apache-2.0).
 use image::imageops::FilterType;
 use mdc_core::{ConnectionState, DeviceManager, Frame, Session};
-use mdc_discovery::{CombinedDiscovery, DiscoveryProvider, MockMdnsProvider};
+use mdc_discovery::{
+    CombinedDiscovery, DiscoveryProvider, Endpoint, MockMdnsProvider, PairingStore,
+};
 use mdc_flasher::{flags_for_board, EspToolFlasher, SimFlasher};
 use mdc_protocol::{InputEvent, OtaCommand, VERSION};
 use mdc_provision::{Artifact, InstallPlan, Installer, PortLeases};
@@ -516,6 +518,97 @@ fn cmd_flash_sim(
     Ok(())
 }
 
+fn pairing_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("mdc-pairing-store.json")
+}
+
+fn cmd_pair(device_id: &str, token: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let path = pairing_path();
+    let mut store = PairingStore::load_json(&path).unwrap_or_default();
+    store.pair(device_id, token)?;
+    store.save_json(&path)?;
+    println!("paired device_id={device_id} store={}", path.display());
+    Ok(())
+}
+
+fn cmd_unpair(device_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let path = pairing_path();
+    let mut store = PairingStore::load_json(&path).unwrap_or_default();
+    if store.revoke(device_id) {
+        store.save_json(&path)?;
+        println!("revoked pairing for {device_id}");
+    } else {
+        println!("no pairing for {device_id}");
+    }
+    Ok(())
+}
+
+fn cmd_authorize(device_id: &str, kind: &str, value: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let path = pairing_path();
+    let store = PairingStore::load_json(&path).unwrap_or_default();
+    let endpoint = match kind {
+        "ws" | "websocket" => Endpoint::WebSocket {
+            address: value.into(),
+        },
+        "serial" | "port" => Endpoint::Serial {
+            port: value.into(),
+        },
+        "memory" => Endpoint::Memory {
+            label: value.into(),
+        },
+        other => return Err(format!("unknown endpoint kind {other}").into()),
+    };
+    match store.authorize(device_id, &endpoint) {
+        Ok(()) => println!("authorized"),
+        Err(e) => {
+            eprintln!("denied: {e}");
+            std::process::exit(1);
+        }
+    }
+    Ok(())
+}
+
+fn cmd_switch_demo(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
+    use mdc_core::Tile;
+    println!("switch-demo: cancel old Session, renegotiate, full frame before tile");
+    let (host_a, mut peer_a) = FakeDevice::pair(BoardProfile::from_board_id(&opts.board));
+    let mut session = Session::new(host_a);
+    session.connect()?;
+    peer_a.poll()?;
+    session.poll()?;
+    let (host_b, mut peer_b) = FakeDevice::pair(BoardProfile::from_board_id(&opts.board));
+    session.switch_transport(host_b)?;
+    peer_b.poll()?;
+    session.poll()?;
+    assert!(session.needs_full_frame);
+    let w = peer_b.profile().width;
+    let h = peer_b.profile().height;
+    let tile_err = session.send_tile(Tile {
+        surface_id: "main".into(),
+        base_frame_id: 1,
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1,
+        bytes: vec![0, 0],
+    });
+    assert!(tile_err.is_err(), "tile must be blocked until full frame ACK");
+    session.send_frame(Frame {
+        surface_id: "main".into(),
+        width: w,
+        height: h,
+        bytes: vec![0; usize::from(w) * usize::from(h) * 2],
+    })?;
+    peer_b.poll()?;
+    session.poll()?;
+    assert!(
+        !session.needs_full_frame,
+        "displayed ACK should clear needs_full_frame"
+    );
+    println!("switch-demo ok");
+    Ok(())
+}
+
 fn cmd_h06_demo(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
     println!("H06 sim demo: install → discover → display → input → OTA");
     let board = opts.board.clone();
@@ -572,7 +665,8 @@ fn usage() {
     println!(
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
-flash-sim <merged.bin>|h06-demo"
+flash-sim <merged.bin>|h06-demo|pair <id> <token>|unpair <id>|\
+authorize <id> <ws|serial|memory> <ep>|switch-demo"
     );
 }
 
@@ -636,6 +730,38 @@ fn main() {
             let mut o = opts.clone();
             o.sim = true;
             cmd_h06_demo(&o)
+        }
+        Some("pair") => {
+            let id = args.get(1).cloned().unwrap_or_default();
+            let token = args.get(2).cloned().unwrap_or_default();
+            if id.is_empty() || token.is_empty() {
+                eprintln!("pair <device_id> <token>");
+                std::process::exit(2);
+            }
+            cmd_pair(&id, &token)
+        }
+        Some("unpair") => {
+            let id = args.get(1).cloned().unwrap_or_default();
+            if id.is_empty() {
+                eprintln!("unpair <device_id>");
+                std::process::exit(2);
+            }
+            cmd_unpair(&id)
+        }
+        Some("authorize") => {
+            let id = args.get(1).cloned().unwrap_or_default();
+            let kind = args.get(2).cloned().unwrap_or_default();
+            let value = args.get(3).cloned().unwrap_or_default();
+            if id.is_empty() || kind.is_empty() || value.is_empty() {
+                eprintln!("authorize <device_id> <ws|serial|memory> <endpoint>");
+                std::process::exit(2);
+            }
+            cmd_authorize(&id, &kind, &value)
+        }
+        Some("switch-demo") => {
+            let mut o = opts.clone();
+            o.sim = true;
+            cmd_switch_demo(&o)
         }
         Some("help") | Some("-h") | Some("--help") | None => {
             usage();
