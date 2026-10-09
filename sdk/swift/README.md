@@ -28,9 +28,17 @@ final class MdcSession {
     }
     guard rc == 0 else { throw MdcError.sendFailed(rc) }
   }
+  func sendTile(baseFrameId: UInt64, x: UInt16, y: UInt16, width: UInt16, height: UInt16, bytes: Data) throws {
+    let rc = bytes.withUnsafeBytes { buf in
+      mdc_session_send_tile(UnsafeMutablePointer(raw), baseFrameId, x, y, width, height,
+                            buf.bindMemory(to: UInt8.self).baseAddress, bytes.count)
+    }
+    guard rc == 0 else { throw MdcError.sendFailed(rc) }
+  }
 }
 ```
 
 Default session is **simulator FakeDevice** (same as CLI `--sim`). Physical transports are not exposed through the C ABI in 0.1.
+Also: `mdc_session_current_frame_id`, `mdc_session_surface_size`, `mdc_session_needs_full_frame`.
 
 License: Apache-2.0

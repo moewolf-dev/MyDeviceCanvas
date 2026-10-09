@@ -76,3 +76,11 @@ Live esptool: set `MDC_ESPTOOL_LIVE=1` and pass `--port`. Default remains dry-ru
 | `SessionDispatcher` HELLO → CBOR caps | `dispatcher.cpp` |
 | `mdc_linux_peer` TCP binary | `runtime/linux/main/mdc_linux_peer.cpp` |
 | `linux-virt` 800×480 BoardProfile | `mdc-simulator` + `boards/sim/linux-virt` |
+
+## Wave: Node / C SDK alignment
+
+| Item | Location |
+|---|---|
+| Native `sendTile` / `pollEvents` / `simulateInput` | `sdk/node/native` |
+| JS `pollEvents` → `emit("input")` | `sdk/node/index.js` |
+| C `mdc_session_send_tile` + surface helpers | `sdk/c` |

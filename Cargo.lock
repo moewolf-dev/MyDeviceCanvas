@@ -409,6 +409,7 @@ name = "mdc-node-native"
 version = "0.1.0"
 dependencies = [
  "mdc-core",
+ "mdc-protocol",
  "mdc-simulator",
  "mdc-transport",
  "napi",

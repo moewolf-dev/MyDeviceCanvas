@@ -2,9 +2,9 @@
 
 ## Public API
 
-- [ ] Rust: `Session`, `DeviceManager`, `Frame`/`Tile` stable surface in `mdc-core`
-- [ ] Node: `MyDeviceCanvas` / `Device` / `Surface` facade matches native `devices` + `sendFrame`
-- [ ] C ABI: `mdc_session_create` / `destroy` / `send_frame` / `device_id` / `mdc_free`
+- [x] Rust: `Session`, `DeviceManager`, `Frame`/`Tile` stable surface in `mdc-core` (sim-verified)
+- [x] Node: facade matches native `devices` + `sendFrame` + `sendTile` + `pollEvents` (sim path)
+- [x] C ABI: `mdc_session_create` / `destroy` / `send_frame` / `send_tile` / `device_id` / surface helpers
 - [ ] No breaking CBOR field renames without protocol minor bump
 
 ## Protocol

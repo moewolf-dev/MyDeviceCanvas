@@ -1,10 +1,11 @@
-//! Node native bindings: optional MemoryLink FakeDevice session (sim path).
-use mdc_core::{ConnectionState, DeviceManager, Frame, Session};
+//! Node native bindings: MemoryLink FakeDevice session (sim path).
+use mdc_core::{ConnectionState, DeviceManager, Frame, ManagerEvent, Session, Tile};
+use mdc_protocol::InputEvent;
 use mdc_simulator::{BoardProfile, FakeDevice};
 use mdc_transport::MemoryLink;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[napi(object)]
 pub struct SurfaceInfo {
@@ -25,10 +26,47 @@ pub struct DeviceInfo {
     pub surfaces: Vec<SurfaceInfo>,
 }
 
+#[napi(object)]
+pub struct TileRequest {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+    /// Frame id as JS number (protocol uses u64; sim ids stay in u32 range).
+    #[napi(js_name = "baseFrameId")]
+    pub base_frame_id: u32,
+    #[napi(js_name = "surfaceId")]
+    pub surface_id: String,
+    pub bytes: Buffer,
+}
+
+#[napi(object)]
+pub struct InputEventDto {
+    #[napi(js_name = "deviceId")]
+    pub device_id: String,
+    #[napi(js_name = "surfaceId")]
+    pub surface_id: String,
+    #[napi(js_name = "pointerId")]
+    pub pointer_id: u16,
+    pub phase: String,
+    pub x: u16,
+    pub y: u16,
+}
+
+#[napi(object)]
+pub struct NativeEvent {
+    /// "input" | "connected" | "disconnected" | "endpointSwitched" | "error"
+    pub kind: String,
+    #[napi(js_name = "deviceId")]
+    pub device_id: Option<String>,
+    pub input: Option<InputEventDto>,
+    pub message: Option<String>,
+}
+
 struct SimSession {
     session: Session<MemoryLink>,
     device: FakeDevice,
-    manager: DeviceManager,
+    manager: Arc<Mutex<DeviceManager>>,
 }
 
 struct State {
@@ -53,8 +91,9 @@ fn ensure_sim(state: &mut State) -> Result<()> {
     }
     let profile = BoardProfile::default();
     let (host, mut device) = FakeDevice::pair(profile);
+    let manager = Arc::new(Mutex::new(DeviceManager::new()));
     let mut session = Session::new(host);
-    let mut manager = DeviceManager::new();
+    session.set_manager(manager.clone());
     session
         .connect()
         .map_err(|e| Error::from_reason(e.to_string()))?;
@@ -68,8 +107,11 @@ fn ensure_sim(state: &mut State) -> Result<()> {
         return Err(Error::from_reason("sim session not ready"));
     }
     if let Some(dev) = session.device.as_ref() {
-        let _ = manager.upsert(dev.capabilities.clone());
-        manager.connect_session(&dev.capabilities.device_id, "memory:sim");
+        let mut mgr = manager
+            .lock()
+            .map_err(|_| Error::from_reason("manager lock poisoned"))?;
+        let _ = mgr.upsert(dev.capabilities.clone());
+        mgr.connect_session(&dev.capabilities.device_id, "memory:sim");
     }
     state.sim = Some(SimSession {
         session,
@@ -77,6 +119,55 @@ fn ensure_sim(state: &mut State) -> Result<()> {
         manager,
     });
     Ok(())
+}
+
+fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<NativeEvent>> {
+    let mut mgr = manager
+        .lock()
+        .map_err(|_| Error::from_reason("manager lock poisoned"))?;
+    let mut out = Vec::new();
+    for event in mgr.drain_events() {
+        out.push(match event {
+            ManagerEvent::Added(id) | ManagerEvent::Connected(id) => NativeEvent {
+                kind: "connected".into(),
+                device_id: Some(id),
+                input: None,
+                message: None,
+            },
+            ManagerEvent::Removed(id) | ManagerEvent::Disconnected(id) => NativeEvent {
+                kind: "disconnected".into(),
+                device_id: Some(id),
+                input: None,
+                message: None,
+            },
+            ManagerEvent::EndpointSwitched { device_id } => NativeEvent {
+                kind: "endpointSwitched".into(),
+                device_id: Some(device_id),
+                input: None,
+                message: None,
+            },
+            ManagerEvent::Input { device_id, event } => NativeEvent {
+                kind: "input".into(),
+                device_id: Some(device_id.clone()),
+                input: Some(InputEventDto {
+                    device_id,
+                    surface_id: event.surface_id,
+                    pointer_id: event.pointer_id,
+                    phase: event.phase,
+                    x: event.x,
+                    y: event.y,
+                }),
+                message: None,
+            },
+            ManagerEvent::Error { device_id, message } => NativeEvent {
+                kind: "error".into(),
+                device_id: Some(device_id),
+                input: None,
+                message: Some(message),
+            },
+        });
+    }
+    Ok(out)
 }
 
 #[napi]
@@ -105,8 +196,12 @@ impl NativeManager {
         }
         ensure_sim(&mut state)?;
         let sim = state.sim.as_ref().unwrap();
+        let mgr = sim
+            .manager
+            .lock()
+            .map_err(|_| Error::from_reason("manager lock poisoned"))?;
         let mut out = Vec::new();
-        for d in sim.manager.devices() {
+        for d in mgr.devices() {
             out.push(DeviceInfo {
                 device_id: d.capabilities.device_id.clone(),
                 firmware: d.capabilities.firmware.clone(),
@@ -129,7 +224,6 @@ impl NativeManager {
     }
 
     /// Send RGB565 frame bytes to `surfaceId` via the sim Session.
-    /// JS facade: `sendFrame(surfaceId, bytes)`.
     #[napi(js_name = "sendFrame")]
     pub fn send_frame(&self, surface_id: String, bytes: Buffer) -> Result<u32> {
         let mut state = self
@@ -174,6 +268,117 @@ impl NativeManager {
             .poll()
             .map_err(|e| Error::from_reason(e.to_string()))?;
         Ok(req)
+    }
+
+    /// Send an RGB565 tile (blocked after reconnect until a full frame ACK).
+    #[napi(js_name = "sendTile")]
+    pub fn send_tile(&self, tile: TileRequest) -> Result<u32> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let copy = tile.bytes.to_vec();
+        let expected = usize::from(tile.width) * usize::from(tile.height) * 2;
+        if copy.len() != expected {
+            return Err(Error::from_reason(format!(
+                "tile length {} != expected {}",
+                copy.len(),
+                expected
+            )));
+        }
+        let sim = state.sim.as_mut().unwrap();
+        let req = sim
+            .session
+            .send_tile(Tile {
+                surface_id: tile.surface_id,
+                base_frame_id: u64::from(tile.base_frame_id),
+                x: tile.x,
+                y: tile.y,
+                width: tile.width,
+                height: tile.height,
+                bytes: copy,
+            })
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        sim.device
+            .poll()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        sim.session
+            .poll()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(req)
+    }
+
+    /// Peer-reported current frame id (for tile baseFrameId).
+    #[napi(js_name = "currentFrameId")]
+    pub fn current_frame_id(&self) -> Result<u32> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        Ok(state.sim.as_ref().unwrap().device.current_frame_id() as u32)
+    }
+
+    /// Drain ManagerEvent queue into JS-friendly DTOs.
+    #[napi(js_name = "pollEvents")]
+    pub fn poll_events(&self) -> Result<Vec<NativeEvent>> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        sim.device
+            .poll()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        sim.session
+            .poll()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        drain_manager_events(&sim.manager)
+    }
+
+    /// Sim-only: emit a touch event from FakeDevice toward the host Session.
+    #[napi(js_name = "simulateInput")]
+    pub fn simulate_input(
+        &self,
+        surface_id: String,
+        pointer_id: u16,
+        phase: String,
+        x: u16,
+        y: u16,
+    ) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        sim.device
+            .emit_input(InputEvent {
+                surface_id,
+                pointer_id,
+                phase,
+                x,
+                y,
+            })
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        sim.session
+            .poll()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(())
     }
 
     #[napi(js_name = "lastFrame")]
