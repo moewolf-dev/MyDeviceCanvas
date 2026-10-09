@@ -50,6 +50,8 @@ pub struct EspToolFlasher {
     pub reset_count: u32,
     pub expected_device_id: String,
     pub identity_override: Option<String>,
+    /// Port used for post-write DTR/RTS pulse when not dry_run.
+    pub reset_port: Option<String>,
 }
 
 impl EspToolFlasher {
@@ -63,6 +65,7 @@ impl EspToolFlasher {
             reset_count: 0,
             expected_device_id: String::new(),
             identity_override: None,
+            reset_port: None,
         }
     }
 
@@ -115,6 +118,7 @@ impl EspToolFlasher {
 impl Flasher for EspToolFlasher {
     fn flash(&mut self, plan: &InstallPlan) -> Result<(), String> {
         self.expected_device_id = plan.expected_device_id.clone();
+        self.reset_port = Some(plan.port.clone());
         if plan.port.starts_with("sim://") {
             return Err("EspToolFlasher refuses sim:// ports; use SimFlasher".into());
         }
@@ -136,16 +140,38 @@ impl Flasher for EspToolFlasher {
 
     fn reset(&mut self) -> Result<(), String> {
         self.reset_count = self.reset_count.saturating_add(1);
-        // Live boards: open SerialTransport on the plan port and call
-        // `apply_post_write_reset()` (`D0|R1|W100|R0`). Dry-run only records the sequence.
-        let _seq = post_write_reset_sequence();
-        if !self.dry_run {
-            return Err(
-                "live reset requires SerialTransport::apply_post_write_reset on an open port"
-                    .into(),
-            );
+        let seq = post_write_reset_sequence();
+        if self.dry_run {
+            // Record that the AgentDeck sequence would run.
+            self.last_argv.push(format!("# post-write-reset {seq}"));
+            return Ok(());
         }
-        Ok(())
+        #[cfg(feature = "serial")]
+        {
+            use mdc_transport::{SerialConfig, SerialTransport};
+            use std::time::Duration;
+            let port = self
+                .reset_port
+                .clone()
+                .ok_or_else(|| "reset_port missing".to_string())?;
+            let mut serial = SerialTransport::open_with_config(
+                &port,
+                SerialConfig {
+                    baud: 115_200,
+                    timeout: Duration::from_millis(100),
+                    reset_on_open: false,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            serial
+                .apply_post_write_reset()
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        #[cfg(not(feature = "serial"))]
+        {
+            Err("live reset requires the serial feature".into())
+        }
     }
 
     fn read_device_id(&mut self) -> Result<String, String> {

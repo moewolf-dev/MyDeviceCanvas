@@ -111,9 +111,9 @@ struct PendingDelay {
     packet: Packet,
 }
 
-/// FakeDevice peer speaking Protocol v1 over MemoryLink.
+/// FakeDevice peer speaking Protocol v1 over any [`Transport`].
 pub struct FakeDevice {
-    link: MemoryLink,
+    link: Box<dyn Transport>,
     profile: BoardProfile,
     pixels: Vec<u8>,
     current_frame_id: u64,
@@ -129,36 +129,46 @@ pub struct FakeDevice {
     ota_active: bool,
 }
 impl FakeDevice {
-    pub fn pair(profile: BoardProfile) -> (MemoryLink, Self) {
-        let (host, device) = MemoryLink::pair();
+    pub fn from_transport(link: Box<dyn Transport>, profile: BoardProfile) -> Self {
         let pixels = vec![0u8; usize::from(profile.width) * usize::from(profile.height) * 2];
         let device_id = profile.device_id.clone();
-        (
-            host,
-            Self {
-                link: device,
-                profile,
-                pixels,
-                current_frame_id: 0,
-                assembler: None,
-                clock: VirtualClock::default(),
-                faults: FaultInjector::default(),
-                rx: Vec::new(),
-                max_message: MAX_FRAME_BYTES,
-                max_chunk: mdc_protocol::DEFAULT_MAX_CHUNK,
-                delayed: Vec::new(),
-                connected: true,
-                metrics: SimMetrics {
-                    device_id,
-                    pixel_bytes: 0,
-                    ..SimMetrics::default()
-                },
-                ota_active: false,
+        Self {
+            link,
+            profile,
+            pixels,
+            current_frame_id: 0,
+            assembler: None,
+            clock: VirtualClock::default(),
+            faults: FaultInjector::default(),
+            rx: Vec::new(),
+            max_message: MAX_FRAME_BYTES,
+            max_chunk: mdc_protocol::DEFAULT_MAX_CHUNK,
+            delayed: Vec::new(),
+            connected: true,
+            metrics: SimMetrics {
+                device_id,
+                pixel_bytes: 0,
+                ..SimMetrics::default()
             },
-        )
+            ota_active: false,
+        }
+    }
+
+    pub fn pair(profile: BoardProfile) -> (MemoryLink, Self) {
+        let (host, device) = MemoryLink::pair();
+        (host, Self::from_transport(Box::new(device), profile))
     }
     pub fn with_default_profile() -> (MemoryLink, Self) {
         Self::pair(BoardProfile::default())
+    }
+
+    /// Replace the byte channel (e.g. after host reconnect with a new MemoryLink pair).
+    pub fn replace_transport(&mut self, link: Box<dyn Transport>) {
+        self.link = link;
+        self.connected = true;
+        self.rx.clear();
+        self.delayed.clear();
+        self.assembler = None;
     }
     pub fn pixels(&self) -> &[u8] {
         &self.pixels

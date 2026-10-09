@@ -441,6 +441,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdc-sim-peer"
+version = "0.1.0"
+dependencies = [
+ "mdc-simulator",
+ "mdc-transport",
+]
+
+[[package]]
 name = "mdc-simulator"
 version = "0.1.0"
 dependencies = [

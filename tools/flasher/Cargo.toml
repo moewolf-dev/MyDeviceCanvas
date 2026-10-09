@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 description = "SimFlasher implementing mdc-provision Flasher trait"
 
+[features]
+default = ["serial"]
+serial = ["mdc-transport/serial"]
+
 [dependencies]
 mdc-provision = { path = "../../crates/mdc-provision" }
 mdc-transport = { path = "../../crates/mdc-transport" }

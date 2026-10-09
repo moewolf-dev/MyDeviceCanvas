@@ -3,7 +3,7 @@ use image::imageops::FilterType;
 use mdc_core::{ConnectionState, DeviceManager, Frame, Session};
 use mdc_discovery::{CombinedDiscovery, DiscoveryProvider, MockMdnsProvider};
 use mdc_flasher::{flags_for_board, EspToolFlasher, SimFlasher};
-use mdc_protocol::VERSION;
+use mdc_protocol::{InputEvent, OtaCommand, VERSION};
 use mdc_provision::{Artifact, InstallPlan, Installer, PortLeases};
 use mdc_simulator::{BoardProfile, FakeDevice, SimMetrics};
 use mdc_transport::{MemoryLink, TcpTransport};
@@ -516,10 +516,63 @@ fn cmd_flash_sim(
     Ok(())
 }
 
+fn cmd_h06_demo(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
+    println!("H06 sim demo: install → discover → display → input → OTA");
+    let board = opts.board.clone();
+    // 1) install (SimFlasher)
+    let image = std::env::temp_dir().join("mdc-h06-merged.bin");
+    std::fs::write(&image, b"MERGED-H06")?;
+    cmd_flash_sim(opts, image.to_str().unwrap_or(""))?;
+    println!("[ok] install");
+
+    // 2) discover
+    cmd_discover(opts)?;
+    println!("[ok] discover");
+
+    // 3) display + 4) input + 5) OTA on FakeDevice
+    let (mut session, mut device, _) = open_sim(&board)?;
+    let w = device.profile().width;
+    let h = device.profile().height;
+    session.send_frame(Frame {
+        surface_id: "main".into(),
+        width: w,
+        height: h,
+        bytes: vec![0xAB; usize::from(w) * usize::from(h) * 2],
+    })?;
+    pump_sim(&mut session, &mut device)?;
+    println!("[ok] display frame");
+
+    device.emit_input(InputEvent {
+        surface_id: "main".into(),
+        pointer_id: 1,
+        phase: "down".into(),
+        x: 10,
+        y: 10,
+    })?;
+    session.poll()?;
+    println!("[ok] input");
+
+    if device.profile().ota {
+        session.send_ota(OtaCommand {
+            action: "begin".into(),
+            version: Some("0.1.0-sim".into()),
+            size: Some(6),
+            sha256: Some("0".repeat(64)),
+        })?;
+        pump_sim(&mut session, &mut device)?;
+        println!("[ok] ota");
+    } else {
+        println!("[skip] ota (board capability false)");
+    }
+    println!("H06 sim demo complete board={board}");
+    Ok(())
+}
+
 fn usage() {
     println!(
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
-         devices|inspect|send-image <path>|benchmark [N]|simulate|discover|flash-sim <merged.bin>"
+         devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
+flash-sim <merged.bin>|h06-demo"
     );
 }
 
@@ -578,6 +631,11 @@ fn main() {
                 std::process::exit(2);
             }
             cmd_flash_sim(&opts, &image)
+        }
+        Some("h06-demo") => {
+            let mut o = opts.clone();
+            o.sim = true;
+            cmd_h06_demo(&o)
         }
         Some("help") | Some("-h") | Some("--help") | None => {
             usage();

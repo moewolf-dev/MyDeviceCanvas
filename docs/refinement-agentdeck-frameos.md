@@ -37,3 +37,13 @@ Live esptool: set `MDC_ESPTOOL_LIVE=1` and pass `--port`. Default remains dry-ru
 | Parse/apply `D0\|R1\|W100\|R0` | `mdc-transport` `parse_reset_sequence` / `SerialTransport::apply_post_write_reset` |
 | Combined serial+WS discovery | `mdc-discovery` `WsDiscovery` / `CombinedDiscovery` |
 | ESP-IDF AXS15231B entry | `runtime/esp32/idf/` (pins header + app_main stub) |
+
+## Wave: reconnect + TCP peer + H06 CLI
+
+| Item | Location |
+|---|---|
+| Session `awaiting_transport` + `provide_transport` | `mdc-core` |
+| FakeDevice over `Box<dyn Transport>` | `mdc-simulator` |
+| TCP peer binary | `tools/mdc-sim-peer` |
+| EspTool live reset → `apply_post_write_reset` | `tools/flasher` (feature `serial`) |
+| `mdc h06-demo` | `tools/mdc-cli` |

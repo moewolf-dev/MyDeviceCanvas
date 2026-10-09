@@ -27,6 +27,13 @@ cargo test -p mdc-discovery
 cargo test -p mdc-simulator emit_input
 cargo test -p mdc-simulator ota_gated
 cargo run -p mdc -- simulate --board esp32-jc3248w535-sim
+
+# End-to-end H06 orchestration (sim):
+cargo run -p mdc -- h06-demo
+
+# TCP peer for --address (separate terminal):
+cargo run -p mdc-sim-peer -- 127.0.0.1:9876 esp32-jc3248w535-sim
+cargo run -p mdc -- --address 127.0.0.1:9876 send-image ./some.png
 ```
 
 ## Acceptance

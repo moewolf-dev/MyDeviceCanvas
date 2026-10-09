@@ -452,6 +452,9 @@ pub struct Session<T: Transport> {
     last_send_ms: u64,
     last_heartbeat_ms: u64,
     reconnect_ready_ms: Option<u64>,
+    /// After reconnect backoff, host must supply a fresh transport via
+    /// [`provide_transport`](Self::provide_transport) before HELLO is resent.
+    pub awaiting_transport: bool,
     manager: Option<Arc<Mutex<DeviceManager>>>,
 }
 impl<T: Transport> Session<T> {
@@ -478,6 +481,7 @@ impl<T: Transport> Session<T> {
             last_send_ms: 0,
             last_heartbeat_ms: 0,
             reconnect_ready_ms: None,
+            awaiting_transport: false,
             manager: None,
         }
     }
@@ -556,8 +560,7 @@ impl<T: Transport> Session<T> {
             ConnectionState::Reconnecting => {
                 if let Some(ready_at) = self.reconnect_ready_ms {
                     if virtual_ms >= ready_at {
-                        self.state = ConnectionState::Connecting;
-                        self.reconnect_ready_ms = None;
+                        self.prepare_transport_replace();
                     }
                 }
             }
@@ -565,8 +568,43 @@ impl<T: Transport> Session<T> {
         }
         Ok(self.state)
     }
+
+    /// Close the dead link and wait for [`provide_transport`](Self::provide_transport).
+    fn prepare_transport_replace(&mut self) {
+        self.transport.close();
+        self.rx.clear();
+        self.pending_requests.clear();
+        self.pending_frames.clear();
+        self.device = None;
+        self.max_message = MAX_FRAME_BYTES;
+        self.max_chunk = mdc_protocol::DEFAULT_MAX_CHUNK;
+        self.reconnect_ready_ms = None;
+        self.awaiting_transport = true;
+        self.state = ConnectionState::Connecting;
+    }
+
+    /// Supply a new transport after reconnect backoff and resend HELLO.
+    pub fn provide_transport(&mut self, transport: T) -> Result<(), CoreError> {
+        if !self.awaiting_transport
+            && self.state != ConnectionState::Disconnected
+            && self.state != ConnectionState::Connecting
+        {
+            return Err(CoreError::Transport(
+                "session is not awaiting a replacement transport".into(),
+            ));
+        }
+        self.transport = transport;
+        self.awaiting_transport = false;
+        self.rx.clear();
+        self.pending_requests.clear();
+        self.pending_frames.clear();
+        self.device = None;
+        self.state = ConnectionState::Disconnected;
+        self.connect()
+    }
     pub fn disconnect(&mut self) {
         self.reconnect_enabled = false;
+        self.awaiting_transport = false;
         self.state = ConnectionState::Closing;
         self.transport.close();
         self.state = ConnectionState::Disconnected;
@@ -582,6 +620,7 @@ impl<T: Transport> Session<T> {
     pub fn mark_transport_failure(&mut self) -> Option<u64> {
         if !self.reconnect_enabled {
             self.state = ConnectionState::Disconnected;
+            self.transport.close();
             return None;
         }
         self.reconnect_attempt = self.reconnect_attempt.saturating_add(1);
@@ -1310,7 +1349,107 @@ mod tests {
         let _ = device_link.read().unwrap();
         assert_eq!(session.tick(30 + 50), Err(CoreError::AckTimeout));
         assert_eq!(session.state, ConnectionState::Reconnecting);
-        assert_eq!(session.tick(30 + 50 + 1_000).unwrap(), ConnectionState::Connecting);
+        assert_eq!(
+            session.tick(30 + 50 + 1_000).unwrap(),
+            ConnectionState::Connecting
+        );
+        assert!(session.awaiting_transport);
+    }
+
+    #[test]
+    fn session_provide_transport_rehandshakes_after_reconnect() {
+        let (host_link, mut device_link) = MemoryLink::pair();
+        let mut session = Session::with_config(
+            host_link,
+            SessionConfig {
+                ack_timeout_ms: 10,
+                heartbeat_ms: 0,
+                connect_timeout_ms: 1_000,
+                reconnect: true,
+            },
+        );
+        session.reconnect_policy = ReconnectPolicy {
+            max_attempts: 3,
+            base_delay_ms: 100,
+            max_delay_ms: 100,
+            jitter_ms: 0,
+        };
+        session.connect().unwrap();
+        let hello = device_link.read().unwrap().unwrap();
+        let (hello_pkt, _) = Packet::decode(&hello, 4096).unwrap();
+        device_link
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: hello_pkt.request_id,
+                    payload: encode_control(&Capabilities {
+                        device_id: "re".into(),
+                        firmware: "1".into(),
+                        surfaces: vec![s()],
+                        frame: true,
+                        tile: true,
+                        touch: false,
+                        ota: false,
+                        max_message: 4096,
+                        max_chunk: 16384,
+                        max_in_flight: 1,
+                        max_fps: 30,
+                    })
+                    .unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![0; 8],
+            })
+            .unwrap();
+        let _ = device_link.read();
+        assert!(session.tick(20).is_err());
+        assert_eq!(session.tick(120).unwrap(), ConnectionState::Connecting);
+        assert!(session.awaiting_transport);
+
+        let (host2, mut device2) = MemoryLink::pair();
+        session.provide_transport(host2).unwrap();
+        let hello2 = device2.read().unwrap().unwrap();
+        let (hello2_pkt, _) = Packet::decode(&hello2, 4096).unwrap();
+        assert_eq!(hello2_pkt.kind, MessageType::Hello);
+        device2
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: hello2_pkt.request_id,
+                    payload: encode_control(&Capabilities {
+                        device_id: "re".into(),
+                        firmware: "1".into(),
+                        surfaces: vec![s()],
+                        frame: true,
+                        tile: true,
+                        touch: false,
+                        ota: false,
+                        max_message: 4096,
+                        max_chunk: 16384,
+                        max_in_flight: 1,
+                        max_fps: 30,
+                    })
+                    .unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        assert!(!session.awaiting_transport);
     }
 
     #[test]

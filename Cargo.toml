@@ -8,6 +8,7 @@ members = [
   "crates/mdc-provision",
   "crates/mdc-assets",
   "tools/mdc-cli",
+  "tools/mdc-sim-peer",
   "tools/flasher",
   "tools/inspector",
   "sdk/node/native",
