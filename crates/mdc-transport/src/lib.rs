@@ -1,3 +1,12 @@
+mod serial_policy;
+
+pub use serial_policy::{
+    is_candidate_serial_port, serial_open_failure_backoff_ms, SerialOpenGuard,
+    FOREIGN_DENYLIST_COOLDOWN_MS, FOREIGN_MAX_PROBE_FAILURES, POST_WRITE_RESET_SEQUENCE,
+    SERIAL_OPEN_FAIL_ESCALATION_THRESHOLD, SERIAL_OPEN_PERMANENT_BLOCK_MS,
+    SERIAL_TRANSIENT_MAX_BACKOFF_MS,
+};
+
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};

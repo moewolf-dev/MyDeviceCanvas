@@ -7,3 +7,4 @@ description = "SimFlasher implementing mdc-provision Flasher trait"
 
 [dependencies]
 mdc-provision = { path = "../../crates/mdc-provision" }
+mdc-transport = { path = "../../crates/mdc-transport" }

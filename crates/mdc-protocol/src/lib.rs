@@ -1,4 +1,7 @@
 //! MyDeviceCanvas Protocol v1. Binary images never pass through CBOR.
+mod geometry;
+pub use geometry::{canvas_bytes_per_pixel, dual_rgb565_budget, rgb565_bytes};
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

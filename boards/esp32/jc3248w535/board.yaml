@@ -1,8 +1,47 @@
+# Physical candidate JC3248W535 / AgentDeck ips_35.
+# status reference-unverified: parameters from upstream MIT sources, NOT measured
+# on a purchased unit. Do not flash unknown hardware from this profile alone.
 id: jc3248w535
-status: unverified
-requires_hardware_baseline: true
-mcu: unknown
-flash_bytes: unknown
-psram_bytes: unknown
-touch: unknown
-ota: unknown
+status: reference-unverified
+source: AgentDeck board_35_ips.h + esp32-boards.ts ips_35
+agentdeck_env: ips35
+mcu: esp32-s3
+chip_family: ESP32-S3
+flash_bytes: 16777216
+flash_mode: dio
+flash_freq_mhz: 80
+bootloader_offset: 0x0
+psram_bytes: 8388608
+psram_mode: qio_opi
+usb: native-usb-jtag
+native_usb: true
+baud_default: 115200
+baud_flash: 460800
+flash_before: no_reset
+flash_after: hard_reset
+flash_stub: false
+stub_axis: unknown
+display: {width: 480, height: 320, format: RGB565_LE, rotation: 1, bus: qspi, controller: axs15231b, native_width: 320, native_height: 480}
+touch: true
+touch_addr: 59
+ota: true
+pin_qspi_cs: 45
+pin_qspi_clk: 47
+pin_qspi_d0: 21
+pin_qspi_d1: 48
+pin_qspi_d2: 40
+pin_qspi_d3: 39
+pin_backlight: 1
+pin_te: 38
+pin_touch_sda: 4
+pin_touch_scl: 8
+pin_touch_int: 11
+pin_touch_rst: 12
+max_framebuffer_bytes: 614400
+min_internal_free_bytes: 65536
+min_internal_largest_block_bytes: 32768
+max_psram_used_bytes: 4194304
+dma_align_bytes: 4
+reset_strategy: native-usb-no_reset-before
+post_write_reset: D0|R1|W100|R0
+bus_note: qspi-display-i2c-touch-isolated

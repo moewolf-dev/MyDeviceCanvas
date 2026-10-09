@@ -1,3 +1,6 @@
+mod preflight;
+pub use preflight::{preflight_verdict, ImageGeometry, PreflightInput, PreflightVerdict};
+
 use mdc_protocol::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -27,7 +30,7 @@ pub struct BoardFacts {
     pub flash: FlashSize,
     pub profile_verified: bool,
 }
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum PreflightError {
     #[error("board profile is not verified")]
     UnverifiedProfile,
@@ -35,6 +38,10 @@ pub enum PreflightError {
     BoardMismatch,
     #[error("artifact MCU does not match detected MCU")]
     McuMismatch,
+    #[error("detected chip family does not match board profile")]
+    ChipMismatch,
+    #[error("image geometry does not match board profile")]
+    ImageGeometryMismatch,
     #[error("flash capacity is unknown; refusing automatic provisioning")]
     UnknownFlash,
     #[error("artifact size exceeds physical flash")]

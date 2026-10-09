@@ -8,6 +8,10 @@ license.workspace = true
 name = "mdc"
 path = "src/main.rs"
 
+[features]
+default = ["serial"]
+serial = ["mdc-transport/serial"]
+
 [dependencies]
 mdc-core = { path = "../../crates/mdc-core" }
 mdc-protocol = { path = "../../crates/mdc-protocol" }

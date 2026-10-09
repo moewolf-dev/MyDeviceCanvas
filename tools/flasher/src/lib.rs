@@ -1,5 +1,15 @@
-//! Simulator flasher: fake write + identity readout (no serial hardware).
+//! Flasher adapters: SimFlasher + disk port lease + post-write reset sequence.
+//! Reset sequence string comes from AgentDeck flash experience (MIT, reimplemented).
+mod file_lease;
+pub use file_lease::{FilePortLease, LeaseStatus};
+
 use mdc_provision::{Flasher, InstallPlan};
+use mdc_transport::POST_WRITE_RESET_SEQUENCE;
+
+/// AgentDeck post-write reset: `D0|R1|W100|R0` (raise IO0, pulse EN).
+pub fn post_write_reset_sequence() -> &'static str {
+    POST_WRITE_RESET_SEQUENCE
+}
 
 /// Records flash plans in memory and returns a configured device id on readback.
 #[derive(Debug, Clone)]
@@ -57,6 +67,11 @@ impl Flasher for SimFlasher {
 mod tests {
     use super::*;
     use mdc_provision::{Artifact, Installer, InstallState, PortLeases};
+
+    #[test]
+    fn post_write_reset_matches_agentdeck() {
+        assert_eq!(post_write_reset_sequence(), "D0|R1|W100|R0");
+    }
 
     #[test]
     fn sim_flasher_install_succeeds() {

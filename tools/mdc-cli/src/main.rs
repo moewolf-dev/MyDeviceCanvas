@@ -18,6 +18,8 @@ const DEFAULT_BENCHMARK_FRAMES: u32 = 30;
 struct GlobalOpts {
     sim: bool,
     address: Option<String>,
+    /// Explicit serial device path (AgentDeck-style candidate ports).
+    port: Option<String>,
     board: String,
 }
 
@@ -78,6 +80,12 @@ fn parse_globals(args: &[String]) -> (GlobalOpts, Vec<String>) {
                     opts.address = Some(args[i].clone());
                 }
             }
+            "--port" => {
+                i += 1;
+                if i < args.len() {
+                    opts.port = Some(args[i].clone());
+                }
+            }
             "--board" => {
                 i += 1;
                 if i < args.len() {
@@ -86,6 +94,9 @@ fn parse_globals(args: &[String]) -> (GlobalOpts, Vec<String>) {
             }
             other if other.starts_with("--address=") => {
                 opts.address = Some(other["--address=".len()..].into());
+            }
+            other if other.starts_with("--port=") => {
+                opts.port = Some(other["--port=".len()..].into());
             }
             other if other.starts_with("--board=") => {
                 opts.board = other["--board=".len()..].into();
@@ -255,10 +266,80 @@ fn cmd_inspect(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
     })
 }
 
+#[cfg(feature = "serial")]
+fn open_serial_session(
+    port: &str,
+) -> Result<Session<mdc_transport::SerialTransport>, Box<dyn std::error::Error>> {
+    use mdc_transport::{is_candidate_serial_port, SerialConfig, SerialOpenGuard, SerialTransport};
+    if !is_candidate_serial_port(port) {
+        return Err(format!("port {port} does not look like an ESP32 USB-serial candidate").into());
+    }
+    let mut guard = SerialOpenGuard::default();
+    let gen = guard.generation;
+    let config = SerialConfig {
+        baud: 115_200,
+        timeout: Duration::from_millis(100),
+        reset_on_open: false,
+    };
+    let transport = match SerialTransport::open_with_config(port, config) {
+        Ok(t) => {
+            guard.note_success();
+            t
+        }
+        Err(e) => {
+            let permanent = e.to_string().contains("Permission") || e.to_string().contains("Access");
+            let backoff = guard.note_failure(permanent);
+            return Err(format!(
+                "serial open failed ({e}); retry after {backoff}ms (gen={gen})"
+            )
+            .into());
+        }
+    };
+    if guard.is_stale(gen) {
+        return Err("serial open raced with cancel".into());
+    }
+    let mut session = Session::new(transport);
+    session.connect()?;
+    for _ in 0..50 {
+        if session.poll()? == ConnectionState::Ready {
+            return Ok(session);
+        }
+    }
+    Err("serial peer did not complete handshake".into())
+}
+
 fn cmd_send_image(
     opts: &GlobalOpts,
     path: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "serial")]
+    if let Some(port) = &opts.port {
+        let bytes = load_rgb565(Path::new(path), TARGET_WIDTH, TARGET_HEIGHT)?;
+        let mut session = open_serial_session(port)?;
+        let (w, h) = session
+            .device
+            .as_ref()
+            .and_then(|d| d.capabilities.surfaces.first())
+            .map(|s| (s.width, s.height))
+            .unwrap_or((TARGET_WIDTH as u16, TARGET_HEIGHT as u16));
+        let bytes = if w as u32 == TARGET_WIDTH && h as u32 == TARGET_HEIGHT {
+            bytes
+        } else {
+            load_rgb565(Path::new(path), w as u32, h as u32)?
+        };
+        session.send_frame(Frame {
+            surface_id: "main".into(),
+            width: w,
+            height: h,
+            bytes,
+        })?;
+        println!("sent frame to serial {port}");
+        return Ok(());
+    }
+    #[cfg(not(feature = "serial"))]
+    if opts.port.is_some() {
+        return Err("this build was compiled without the serial feature".into());
+    }
     if let Some(addr) = &opts.address {
         let bytes = load_rgb565(Path::new(path), TARGET_WIDTH, TARGET_HEIGHT)?;
         let transport = TcpTransport::connect(addr.as_str(), Duration::from_secs(2))?;
@@ -358,7 +439,7 @@ fn cmd_benchmark(
 
 fn usage() {
     println!(
-        "mdc [--sim] [--board id] [--address host:port] \
+        "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices|inspect|send-image <path>|benchmark [N]|simulate"
     );
 }
