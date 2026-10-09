@@ -878,6 +878,38 @@ impl Device {
             Err(CoreError::Unsupported)
         }
     }
+
+    /// Apply runtime-detected surface geometry (FrameOS display_detect idea).
+    /// Returns Ok(true) when values changed, Ok(false) when unchanged.
+    pub fn update_surface_geometry(
+        &mut self,
+        surface_id: &str,
+        width: u16,
+        height: u16,
+    ) -> Result<bool, CoreError> {
+        if width == 0 || height == 0 {
+            return Err(CoreError::Dimensions);
+        }
+        let _ = mdc_protocol::rgb565_bytes(width, height).map_err(|_| CoreError::TooLarge)?;
+        let surface = self
+            .capabilities
+            .surfaces
+            .iter_mut()
+            .find(|s| s.id == surface_id)
+            .ok_or(CoreError::Dimensions)?;
+        if surface.width == width && surface.height == height {
+            return Ok(false);
+        }
+        surface.width = width;
+        surface.height = height;
+        surface.stride = u32::from(width) * 2;
+        if let Some(queue) = self.surfaces.iter_mut().find(|q| q.info.id == surface_id) {
+            queue.info.width = width;
+            queue.info.height = height;
+            queue.info.stride = u32::from(width) * 2;
+        }
+        Ok(true)
+    }
 }
 
 #[cfg(test)]
@@ -915,6 +947,29 @@ mod tests {
             }),
             Err(CoreError::TooLarge)
         );
+    }
+
+    #[test]
+    fn surface_geometry_writeback_updates_caps_and_queue() {
+        let caps = Capabilities {
+            device_id: "x".into(),
+            firmware: "0".into(),
+            surfaces: vec![s()],
+            frame: true,
+            tile: true,
+            touch: false,
+            ota: false,
+            max_message: 4096,
+            max_chunk: 16384,
+            max_in_flight: 1,
+            max_fps: 30,
+        };
+        let mut d = Device::new(caps);
+        assert_eq!(d.update_surface_geometry("main", 2, 2).unwrap(), false);
+        assert_eq!(d.update_surface_geometry("main", 480, 320).unwrap(), true);
+        assert_eq!(d.capabilities.surfaces[0].width, 480);
+        assert_eq!(d.capabilities.surfaces[0].stride, 960);
+        assert_eq!(d.surfaces[0].info.height, 320);
     }
     #[test]
     fn tile_bounds_checked() {

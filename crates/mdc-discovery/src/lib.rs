@@ -1,3 +1,6 @@
+mod serial_scan;
+pub use serial_scan::SerialDiscovery;
+
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

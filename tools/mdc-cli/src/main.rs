@@ -1,10 +1,14 @@
 //! MyDeviceCanvas CLI — sim-first host tooling (Apache-2.0).
 use image::imageops::FilterType;
 use mdc_core::{ConnectionState, DeviceManager, Frame, Session};
+use mdc_discovery::{DiscoveryProvider, MockMdnsProvider, SerialDiscovery};
+use mdc_flasher::{flags_for_board, EspToolFlasher, SimFlasher};
 use mdc_protocol::VERSION;
+use mdc_provision::{Artifact, InstallPlan, Installer, PortLeases};
 use mdc_simulator::{BoardProfile, FakeDevice, SimMetrics};
 use mdc_transport::{MemoryLink, TcpTransport};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -437,10 +441,98 @@ fn cmd_benchmark(
     Ok(())
 }
 
+fn cmd_discover(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Serialize)]
+    struct Row {
+        device_id: Option<String>,
+        endpoints: Vec<String>,
+    }
+    let mut rows = Vec::new();
+    if opts.sim {
+        let mut mdns = MockMdnsProvider::with_defaults();
+        for c in mdns.discover() {
+            rows.push(Row {
+                device_id: c.device_id,
+                endpoints: c
+                    .endpoints
+                    .iter()
+                    .map(|e| format!("{e:?}"))
+                    .collect(),
+            });
+        }
+    }
+    let mut serial = SerialDiscovery::new();
+    for c in serial.discover() {
+        rows.push(Row {
+            device_id: c.device_id,
+            endpoints: c
+                .endpoints
+                .iter()
+                .map(|e| format!("{e:?}"))
+                .collect(),
+        });
+    }
+    println!("{}", serde_json::to_string_pretty(&rows)?);
+    Ok(())
+}
+
+fn cmd_flash_sim(
+    opts: &GlobalOpts,
+    image: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new(image);
+    let bytes = std::fs::read(path)?;
+    let hash = format!("{:x}", Sha256::digest(&bytes));
+    let board = opts.board.clone();
+    let _flags = flags_for_board(&board).ok_or("unknown board for flash flags")?;
+    let plan = InstallPlan {
+        port: opts
+            .port
+            .clone()
+            .unwrap_or_else(|| "sim:///flash".into()),
+        artifact: Artifact {
+            board_id: board.clone(),
+            mcu: "esp32-s3".into(),
+            runtime: "0.1.0".into(),
+            protocol_major: VERSION.major,
+            protocol_minor: VERSION.minor,
+            image_size: bytes.len() as u64,
+            sha256: hash,
+            source: "cli-flash-sim".into(),
+        },
+        expected_device_id: format!("sim-{board}"),
+    };
+    if plan.port.starts_with("sim://") {
+        let mut flasher = SimFlasher::new(plan.expected_device_id.clone());
+        let mut installer = Installer::default();
+        let mut leases = PortLeases::default();
+        installer.run(&mut leases, &plan, &mut flasher)?;
+        println!(
+            "flash-sim ok board={board} bytes={} reset={}",
+            flasher.written.len(),
+            flasher.reset_count
+        );
+        return Ok(());
+    }
+    // Dry-run EspTool argv for a real port (does not invoke esptool unless MDC_ESPTOOL_LIVE=1).
+    let mut flasher = EspToolFlasher::new(path);
+    if let Some(flags) = flags_for_board(&board) {
+        flasher.flags = flags;
+    }
+    flasher.dry_run = std::env::var("MDC_ESPTOOL_LIVE").is_err();
+    flasher.identity_override = Some(plan.expected_device_id.clone());
+    let mut installer = Installer::default();
+    let mut leases = PortLeases::default();
+    installer.run(&mut leases, &plan, &mut flasher)?;
+    println!("esptool argv: {}", flasher.last_argv.join(" "));
+    println!("flash plan ok (dry_run={})", flasher.dry_run);
+    Ok(())
+}
+
 fn usage() {
     println!(
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
-         devices|inspect|send-image <path>|benchmark [N]|simulate"
+         devices|inspect|send-image <path>|benchmark [N]|simulate|discover|flash-sim <merged.bin>"
     );
 }
 
@@ -484,6 +576,21 @@ fn main() {
             let mut o = opts.clone();
             o.sim = true;
             cmd_benchmark(&o, n)
+        }
+        Some("discover") => {
+            let mut o = opts.clone();
+            if o.address.is_none() && o.port.is_none() {
+                o.sim = true;
+            }
+            cmd_discover(&o)
+        }
+        Some("flash-sim") => {
+            let image = args.get(1).cloned().unwrap_or_default();
+            if image.is_empty() {
+                eprintln!("flash-sim requires a merged.bin path");
+                std::process::exit(2);
+            }
+            cmd_flash_sim(&opts, &image)
         }
         Some("help") | Some("-h") | Some("--help") | None => {
             usage();

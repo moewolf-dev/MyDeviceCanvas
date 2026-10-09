@@ -17,6 +17,10 @@ mdc-core = { path = "../../crates/mdc-core" }
 mdc-protocol = { path = "../../crates/mdc-protocol" }
 mdc-transport = { path = "../../crates/mdc-transport" }
 mdc-simulator = { path = "../../crates/mdc-simulator" }
+mdc-discovery = { path = "../../crates/mdc-discovery" }
+mdc-flasher = { path = "../flasher" }
+mdc-provision = { path = "../../crates/mdc-provision" }
 image = { version = "=0.24.9", default-features = false, features = ["png", "jpeg"] }
 serde = { workspace = true }
 serde_json = "=1.0.100"
+sha2 = "=0.10.8"

@@ -17,3 +17,15 @@ This note tracks the first refinement pass after A–L architecture scaffolding.
 
 - AgentDeck: reimplement under Apache-2.0 with attribution in `upstream-porting.md`.
 - FrameOS: **no source copy** (AGPL). Only numeric/ownership rules rewritten by us.
+
+## Wave: esptool + serial discover + display adapter
+
+| Item | Location |
+|---|---|
+| EspToolFlasher dry-run argv `@0x0` / `--no-stub` | `tools/flasher/src/esptool.rs` |
+| SerialDiscovery + denylist | `crates/mdc-discovery/src/serial_scan.rs` |
+| BoardDisplayAdapter + geometry dirty | `runtime/esp32/include/mdc_display_adapter.hpp` |
+| Host surface geometry write-back | `Device::update_surface_geometry` |
+| CLI | `mdc discover`, `mdc flash-sim <merged.bin>` |
+
+Live esptool: set `MDC_ESPTOOL_LIVE=1` and pass `--port`. Default remains dry-run.

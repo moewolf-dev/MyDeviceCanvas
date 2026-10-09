@@ -339,11 +339,15 @@ version = "0.1.0"
 dependencies = [
  "image",
  "mdc-core",
+ "mdc-discovery",
+ "mdc-flasher",
  "mdc-protocol",
+ "mdc-provision",
  "mdc-simulator",
  "mdc-transport",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -376,6 +380,9 @@ dependencies = [
 [[package]]
 name = "mdc-discovery"
 version = "0.1.0"
+dependencies = [
+ "mdc-transport",
+]
 
 [[package]]
 name = "mdc-flasher"

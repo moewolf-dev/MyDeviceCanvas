@@ -21,6 +21,11 @@ c++ -std=c++17 -I runtime/esp32/include \
   runtime/esp32/tests/parser_test.cpp \
   -o /tmp/mdc_runtime_tests
 /tmp/mdc_runtime_tests
+c++ -std=c++17 -I runtime/esp32/include \
+  runtime/esp32/src/sim_display.cpp \
+  runtime/esp32/tests/adapter_test.cpp \
+  -o /tmp/mdc_adapter_tests
+/tmp/mdc_adapter_tests
 if [[ -d runtime/linux ]]; then
   c++ -std=c++17 -I runtime/linux/include -I runtime/esp32/include \
     runtime/esp32/src/parser.cpp runtime/esp32/src/frame_store.cpp \
