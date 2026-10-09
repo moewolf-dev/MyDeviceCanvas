@@ -1,0 +1,5 @@
+{
+  "name": "frame_legacy",
+  "description": "Legacy full frame phase=0, 2x2 RGB565 zeros, frame_id=1",
+  "hex": "00046d61696e0100000000000000020002000000000000000000"
+}

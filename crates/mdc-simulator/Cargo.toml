@@ -1,0 +1,13 @@
+[package]
+name = "mdc-simulator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Fake device peer over MemoryLink for Host Core integration tests"
+
+[dependencies]
+mdc-protocol = { path = "../mdc-protocol" }
+mdc-transport = { path = "../mdc-transport" }
+mdc-core = { path = "../mdc-core" }
+thiserror.workspace = true
+serde.workspace = true

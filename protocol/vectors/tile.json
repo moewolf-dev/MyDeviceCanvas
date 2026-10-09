@@ -1,0 +1,5 @@
+{
+  "name": "tile",
+  "description": "Tile 1x1 at 0,0 base_frame_id=1",
+  "hex": "046d61696e01000000000000000000000001000100aabb"
+}

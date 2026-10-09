@@ -1,0 +1,5 @@
+{
+  "name": "frame_begin",
+  "description": "Frame begin phase=1, 2x2 total_bytes=8, frame_id=7",
+  "hex": "01046d61696e07000000000000000200020008000000"
+}

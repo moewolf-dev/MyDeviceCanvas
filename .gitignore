@@ -3,5 +3,7 @@ node_modules/
 dist/
 *.log
 .DS_Store
+__pycache__/
+*.pyc
 runtime/esp32/build/
 runtime/esp32/generated/

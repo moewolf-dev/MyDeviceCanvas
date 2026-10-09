@@ -1,10 +1,12 @@
 use std::collections::VecDeque;
-#[cfg(any(feature = "serial", feature = "websocket"))]
 use std::io::{Read, Write};
-#[cfg(feature = "websocket")]
-use std::net::ToSocketAddrs;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use thiserror::Error;
+
+/// Maximum queued writes on MemoryLink before Backpressure.
+pub const MEMORY_LINK_MAX_QUEUE: usize = 64;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TransportError {
@@ -17,11 +19,18 @@ pub enum TransportError {
     #[error("invalid endpoint: {0}")]
     Endpoint(String),
 }
+
+/// Byte channel. `close` cancels the link; `cancel` is an alias (default impl).
 pub trait Transport: Send {
     fn write(&mut self, bytes: &[u8]) -> Result<(), TransportError>;
     fn read(&mut self) -> Result<Option<Vec<u8>>, TransportError>;
     fn close(&mut self);
+    /// Alias for [`close`](Transport::close); cancels outstanding I/O.
+    fn cancel(&mut self) {
+        self.close();
+    }
 }
+
 #[derive(Clone, Default)]
 pub struct MemoryLink {
     incoming: Arc<Mutex<VecDeque<Vec<u8>>>>,
@@ -44,14 +53,85 @@ impl Transport for MemoryLink {
         if *self.closed.lock().unwrap() {
             return Err(TransportError::Closed);
         }
-        self.outgoing.lock().unwrap().push_back(b.to_vec());
+        let mut q = self.outgoing.lock().unwrap();
+        if q.len() >= MEMORY_LINK_MAX_QUEUE {
+            return Err(TransportError::Backpressure);
+        }
+        q.push_back(b.to_vec());
         Ok(())
     }
     fn read(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        if *self.closed.lock().unwrap() {
+            return Err(TransportError::Closed);
+        }
         Ok(self.incoming.lock().unwrap().pop_front())
     }
     fn close(&mut self) {
         *self.closed.lock().unwrap() = true;
+    }
+}
+
+/// Std TCP stream transport for simulator processes (no extra deps).
+pub struct TcpTransport {
+    stream: Option<TcpStream>,
+}
+impl TcpTransport {
+    pub fn connect<A: ToSocketAddrs>(addr: A, timeout: Duration) -> Result<Self, TransportError> {
+        let address = addr
+            .to_socket_addrs()
+            .map_err(|e| TransportError::Io(e.to_string()))?
+            .next()
+            .ok_or_else(|| TransportError::Endpoint("host has no addresses".into()))?;
+        let stream = TcpStream::connect_timeout(&address, timeout)
+            .map_err(|e| TransportError::Io(e.to_string()))?;
+        stream
+            .set_read_timeout(Some(timeout))
+            .map_err(|e| TransportError::Io(e.to_string()))?;
+        stream
+            .set_write_timeout(Some(timeout))
+            .map_err(|e| TransportError::Io(e.to_string()))?;
+        stream
+            .set_nodelay(true)
+            .map_err(|e| TransportError::Io(e.to_string()))?;
+        Ok(Self {
+            stream: Some(stream),
+        })
+    }
+    pub fn from_stream(stream: TcpStream) -> Result<Self, TransportError> {
+        stream
+            .set_nonblocking(false)
+            .map_err(|e| TransportError::Io(e.to_string()))?;
+        Ok(Self {
+            stream: Some(stream),
+        })
+    }
+}
+impl Transport for TcpTransport {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+        let stream = self.stream.as_mut().ok_or(TransportError::Closed)?;
+        stream
+            .write_all(bytes)
+            .map_err(|e| TransportError::Io(e.to_string()))
+    }
+    fn read(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        let stream = self.stream.as_mut().ok_or(TransportError::Closed)?;
+        let mut buffer = [0u8; 16 * 1024];
+        match stream.read(&mut buffer) {
+            Ok(0) => Err(TransportError::Closed),
+            Ok(n) => Ok(Some(buffer[..n].to_vec())),
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(TransportError::Io(e.to_string())),
+        }
+    }
+    fn close(&mut self) {
+        if let Some(stream) = self.stream.take() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
     }
 }
 
@@ -191,9 +271,13 @@ impl Transport for WebSocketTransport {
         let _ = self.socket.close(None);
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+    use std::thread;
+
     #[test]
     fn memory_pair() {
         let (a, mut b) = MemoryLink::pair();
@@ -202,5 +286,50 @@ mod tests {
         assert_eq!(b.read().unwrap(), Some(vec![1, 2]));
         b.close();
         assert_eq!(a.write(&[3]), Err(TransportError::Closed));
+    }
+
+    #[test]
+    fn memory_backpressure_when_queue_full() {
+        let (mut a, _b) = MemoryLink::pair();
+        for i in 0..MEMORY_LINK_MAX_QUEUE {
+            a.write(&[i as u8]).unwrap();
+        }
+        assert_eq!(a.write(&[0xff]), Err(TransportError::Backpressure));
+    }
+
+    #[test]
+    fn close_is_idempotent_and_write_after_close_fails() {
+        let (mut a, mut b) = MemoryLink::pair();
+        a.close();
+        a.close(); // idempotent
+        a.cancel(); // alias
+        assert_eq!(a.write(&[1]), Err(TransportError::Closed));
+        assert_eq!(b.write(&[2]), Err(TransportError::Closed));
+        assert_eq!(a.read(), Err(TransportError::Closed));
+    }
+
+    #[test]
+    fn tcp_transport_round_trip_and_close_contract() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4];
+            stream.read_exact(&mut buf).unwrap();
+            assert_eq!(&buf, &[9, 8, 7, 6]);
+            stream.write_all(&[1, 2, 3]).unwrap();
+        });
+        let mut client = TcpTransport::connect(addr, Duration::from_secs(2)).unwrap();
+        client.write(&[9, 8, 7, 6]).unwrap();
+        let reply = loop {
+            if let Some(bytes) = client.read().unwrap() {
+                break bytes;
+            }
+        };
+        assert_eq!(reply, vec![1, 2, 3]);
+        client.close();
+        client.close(); // idempotent
+        assert_eq!(client.write(&[0]), Err(TransportError::Closed));
+        server.join().unwrap();
     }
 }

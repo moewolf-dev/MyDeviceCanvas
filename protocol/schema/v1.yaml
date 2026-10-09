@@ -1,11 +1,105 @@
-version: 1.0
+version: "1.0"
+endian: little
+description: >
+  MyDeviceCanvas wire protocol. Control messages use CBOR payloads.
+  Frame and Tile image bytes are raw RGB565 little-endian and never pass through CBOR.
+
 header:
   size: 20
-  endian: little
-  fields: [magic, major, minor, type, reserved, flags_u16, request_id_u32, payload_length_u32, checksum_u32]
+  fields:
+    - {name: magic, offset: 0, size: 2, value: "MD"}
+    - {name: major, offset: 2, size: 1}
+    - {name: minor, offset: 3, size: 1}
+    - {name: type, offset: 4, size: 1}
+    - {name: reserved, offset: 5, size: 1, value: 0}
+    - {name: flags, offset: 6, size: 2, type: u16}
+    - {name: request_id, offset: 8, size: 4, type: u32}
+    - {name: payload_length, offset: 12, size: 4, type: u32}
+    - {name: checksum, offset: 16, size: 4, type: u32, algo: fnv1a-style}
+
 limits:
   control_payload: 4096
   chunk: 16384
   host_frame: 1048576
-pixel_formats: [RGB565_LE]
-message_types: {HELLO: 1, CAPABILITIES: 2, FRAME: 16, TILE: 17, INPUT: 32, OTA: 48, PING: 64, PONG: 65, ACK: 80, ERROR: 127}
+
+pixel_formats:
+  - RGB565_LE
+
+message_types:
+  HELLO: {code: 1, payload: cbor, struct: Hello}
+  CAPABILITIES: {code: 2, payload: cbor, struct: Capabilities}
+  FRAME: {code: 16, payload: binary, struct: FramePayload}
+  TILE: {code: 17, payload: binary, struct: TilePayload}
+  INPUT: {code: 32, payload: cbor, struct: InputEvent}
+  OTA: {code: 48, payload: cbor, struct: OtaCommand}
+  PING: {code: 64, payload: empty}
+  PONG: {code: 65, payload: empty}
+  ACK: {code: 80, payload: cbor, struct: Ack}
+  ERROR: {code: 127, payload: cbor, struct: ErrorPayload}
+
+# Frame payloads use a leading u8 phase (preferred over MessageType flags).
+# Optional flag bits on MessageType::Frame (legacy alternative): bit0=begin, bit1=chunk, bit2=commit.
+frame_phases:
+  legacy: {phase: 0, layout: [phase_u8, surface_id_len_u8, surface_id, frame_id_u64, width_u16, height_u16, rgb565_bytes]}
+  begin: {phase: 1, layout: [phase_u8, surface_id_len_u8, surface_id, frame_id_u64, width_u16, height_u16, total_bytes_u32]}
+  chunk: {phase: 2, layout: [phase_u8, frame_id_u64, offset_u32, data]}
+  commit: {phase: 3, layout: [phase_u8, frame_id_u64]}
+
+tile_payload:
+  layout: [surface_id_len_u8, surface_id, base_frame_id_u64, x_u16, y_u16, w_u16, h_u16, rgb565_bytes]
+  notes: bytes length must equal w * h * 2
+
+structs:
+  Hello:
+    major: u8
+    minor: u8
+    max_message: u32
+    max_chunk: u32
+  Capabilities:
+    device_id: string
+    firmware: string
+    surfaces: [Surface]
+    frame: bool
+    tile: bool
+    touch: bool
+    ota: bool
+    max_message: u32
+    max_chunk: u32
+    max_in_flight: u8
+    max_fps: u16
+  Surface:
+    id: string
+    width: u16
+    height: u16
+    pixel_format: string
+    stride: u32
+    rotation: u16
+  Ack:
+    received: bool
+    displayed: bool
+    frame_id: u64
+    error: optional_string
+  InputEvent:
+    surface_id: string
+    pointer_id: u16
+    phase: string  # down | move | up
+    x: u16
+    y: u16
+  OtaCommand:
+    action: string  # begin | abort | confirm
+    version: optional_string
+    size: optional_u64
+    sha256: optional_string
+  ErrorPayload:
+    code: string
+    message: string
+
+vectors:
+  directory: protocol/vectors
+  fixtures:
+    - frame_legacy.json
+    - frame_begin.json
+    - frame_chunk.json
+    - frame_commit.json
+    - tile.json
+    - truncated.bin
