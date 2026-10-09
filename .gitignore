@@ -7,3 +7,4 @@ __pycache__/
 *.pyc
 runtime/esp32/build/
 runtime/esp32/generated/
+runtime/linux/build/

@@ -1,5 +1,0 @@
-/Volumes/13EjectionPlug/hardware/secondary-screen-VTuber-simulator/MyDeviceCanvas/runtime/linux/build/CMakeFiles/mdc_linux_runtime.dir
-/Volumes/13EjectionPlug/hardware/secondary-screen-VTuber-simulator/MyDeviceCanvas/runtime/linux/build/CMakeFiles/linux_runtime_test.dir
-/Volumes/13EjectionPlug/hardware/secondary-screen-VTuber-simulator/MyDeviceCanvas/runtime/linux/build/CMakeFiles/test.dir
-/Volumes/13EjectionPlug/hardware/secondary-screen-VTuber-simulator/MyDeviceCanvas/runtime/linux/build/CMakeFiles/edit_cache.dir
-/Volumes/13EjectionPlug/hardware/secondary-screen-VTuber-simulator/MyDeviceCanvas/runtime/linux/build/CMakeFiles/rebuild_cache.dir
