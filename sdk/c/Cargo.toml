@@ -11,5 +11,6 @@ name = "mdc_c"
 
 [dependencies]
 mdc-core = { path = "../../crates/mdc-core" }
+mdc-protocol = { path = "../../crates/mdc-protocol" }
 mdc-simulator = { path = "../../crates/mdc-simulator" }
 mdc-transport = { path = "../../crates/mdc-transport" }

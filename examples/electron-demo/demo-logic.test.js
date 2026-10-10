@@ -18,6 +18,7 @@ test("origin tile copies the first pixel only", () => {
 
 test("non-sim endpoints are refused before any port is opened", () => {
   assert.equal(rejectNonSimEndpoint("sim"), null);
+  assert.equal(rejectNonSimEndpoint("tcp:127.0.0.1:9876"), null);
   assert.match(rejectNonSimEndpoint("/dev/cu.usbmodem"), /未打开/);
 });
 

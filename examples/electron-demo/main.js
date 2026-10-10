@@ -36,10 +36,14 @@ ipcMain.handle("mdc:connect", async (_event, requested) => {
     endpoint = "";
     return { ok: false, error: rejected };
   }
+  const target = String(requested ?? "sim").trim() || "sim";
   try {
     const active = await ensureSim();
+    if (target.startsWith("tcp:")) {
+      await active.connectTcp(target.slice("tcp:".length));
+    }
     const devices = (await active.devices()).map((device) => device.info);
-    endpoint = "sim";
+    endpoint = target;
     return { ok: true, endpoint, devices };
   } catch (error) {
     endpoint = "";

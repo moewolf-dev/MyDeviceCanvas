@@ -50,6 +50,7 @@ export declare class MyDeviceCanvas {
   static create(): Promise<MyDeviceCanvas>;
   nativeLoaded(): boolean;
   currentFrameId(): Promise<number>;
+  connectTcp(address: string): Promise<void>;
   devices(): Promise<Device[]>;
   pollEvents(): Promise<NativeEvent[]>;
   on(event: string, listener: (value: unknown) => void): () => void;

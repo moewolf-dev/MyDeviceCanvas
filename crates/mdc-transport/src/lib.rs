@@ -40,6 +40,18 @@ pub trait Transport: Send {
     }
 }
 
+impl Transport for Box<dyn Transport> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+        (**self).write(bytes)
+    }
+    fn read(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        (**self).read()
+    }
+    fn close(&mut self) {
+        (**self).close();
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct MemoryLink {
     incoming: Arc<Mutex<VecDeque<Vec<u8>>>>,

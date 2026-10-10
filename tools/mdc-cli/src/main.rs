@@ -141,10 +141,12 @@ fn devices_json(manager: &DeviceManager) -> String {
 
 fn inspect_json(manager: &DeviceManager, metrics: Option<&SimMetrics>) -> String {
     #[derive(Serialize)]
-    struct Inspect {
+    struct Inspect<'a> {
         protocol: String,
         devices: Vec<DeviceDto>,
-        metrics: Option<SimMetrics>,
+        metrics: Option<&'a SimMetrics>,
+        image_bytes_included: bool,
+        last_error: Option<String>,
     }
     let devices: Vec<DeviceDto> = manager
         .devices()
@@ -170,7 +172,9 @@ fn inspect_json(manager: &DeviceManager, metrics: Option<&SimMetrics>) -> String
     serde_json::to_string_pretty(&Inspect {
         protocol: format!("{}.{}", VERSION.major, VERSION.minor),
         devices,
-        metrics: metrics.cloned(),
+        metrics,
+        image_bytes_included: false,
+        last_error: None,
     })
     .unwrap_or_else(|_| "{}".into())
 }
@@ -820,5 +824,22 @@ mod tests {
         assert!(opts.sim);
         assert_eq!(opts.board, "linux-virt");
         assert_eq!(rest, vec!["simulate".to_string()]);
+    }
+
+    fn bound_message(message: &str) -> String {
+        let mut owned: String = message.chars().take(160).collect();
+        if message.chars().count() > 160 {
+            owned.push('…');
+        }
+        owned
+    }
+
+    #[test]
+    fn inspect_json_omits_pixel_buffers() {
+        let json = inspect_json(&DeviceManager::new(), None);
+        assert!(json.contains("\"image_bytes_included\": false"));
+        assert!(!json.contains("\"pixels\""));
+        assert!(json.len() < 4096);
+        assert_eq!(bound_message(&"x".repeat(10_000)).chars().count(), 161);
     }
 }

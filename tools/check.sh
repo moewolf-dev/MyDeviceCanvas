@@ -43,16 +43,27 @@ if [[ -d runtime/linux ]]; then
     -o /tmp/mdc_linux_runtime_tests
   /tmp/mdc_linux_runtime_tests
 fi
+c++ -std=c++17 runtime/esp32/tests/vector_test.cpp -o /tmp/mdc_vector_tests
+/tmp/mdc_vector_tests protocol/vectors
 
 if [[ -d sdk/node ]]; then
+  rm -f sdk/node/mdc-node-native.node
   (cd sdk/node && node --test index.test.js)
+  cargo build -p mdc-node-native
+  if [[ -f target/debug/libmdc_node_native.dylib ]]; then
+    cp target/debug/libmdc_node_native.dylib sdk/node/mdc-node-native.node
+  elif [[ -f target/debug/libmdc_node_native.so ]]; then
+    cp target/debug/libmdc_node_native.so sdk/node/mdc-node-native.node
+  fi
+  node --test sdk/node/native-smoke.test.js
+  rm -f sdk/node/mdc-node-native.node
 fi
 if [[ -f examples/electron-demo/demo-logic.test.js ]]; then
   node --test examples/electron-demo/demo-logic.test.js
 fi
 if command -v swiftc >/dev/null 2>&1; then
   cargo build -p mdc_c
-  swiftc -import-objc-header sdk/c/include/mdc.h \
+  swiftc -parse-as-library -import-objc-header sdk/c/include/mdc.h \
     -L target/debug -lmdc_c \
     -Xlinker -rpath -Xlinker "$ROOT/target/debug" \
     sdk/swift/Sources/MdcSession.swift sdk/swift/main.swift \

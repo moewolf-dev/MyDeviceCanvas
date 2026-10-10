@@ -6,6 +6,13 @@ public enum MdcError: Error {
     case sendFailed(Int32)
 }
 
+public struct MdcUiEvent {
+    public let kind: Int32
+    public let phase: String
+    public let x: UInt16
+    public let y: UInt16
+}
+
 /// Opaque session. Swift only calls the C ABI and releases the handle in `close` / `deinit`.
 public final class MdcSession {
     private var raw: OpaquePointer?
@@ -48,5 +55,44 @@ public final class MdcSession {
     public func sendScene() -> Int32 {
         guard let raw else { return -1 }
         return mdc_session_send_scene(raw, nil, 0)
+    }
+
+    public func simulateInput(phase: String, x: UInt16, y: UInt16) -> Int32 {
+        guard let raw else { return -1 }
+        return phase.withCString { text in
+            mdc_session_simulate_input(raw, text, x, y)
+        }
+    }
+
+    public func pollEvent() -> MdcUiEvent? {
+        guard let raw else { return nil }
+        var kind: Int32 = 0
+        var deviceId = [CChar](repeating: 0, count: 64)
+        var phase = [CChar](repeating: 0, count: 16)
+        var x: UInt16 = 0
+        var y: UInt16 = 0
+        let rc = deviceId.withUnsafeMutableBufferPointer { deviceBuf in
+            phase.withUnsafeMutableBufferPointer { phaseBuf in
+                mdc_session_poll_event(
+                    raw, &kind, deviceBuf.baseAddress, deviceBuf.count,
+                    phaseBuf.baseAddress, phaseBuf.count, &x, &y)
+            }
+        }
+        guard rc == 1 else { return nil }
+        return MdcUiEvent(kind: kind, phase: String(cString: phase), x: x, y: y)
+    }
+
+    /// Poll the C event queue until the task is cancelled.
+    public func events() -> AsyncStream<MdcUiEvent> {
+        let session = self
+        return AsyncStream(unfolding: {
+            while !Task.isCancelled {
+                if let event = session.pollEvent() {
+                    return event
+                }
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            }
+            return nil
+        })
     }
 }

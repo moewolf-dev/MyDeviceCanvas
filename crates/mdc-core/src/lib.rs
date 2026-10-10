@@ -3,6 +3,9 @@ use mdc_protocol::{
     encode_frame_payload, encode_tile_payload, Ack, Capabilities, ErrorPayload, Hello, InputEvent,
     MessageType, OtaCommand, Packet, Surface, VERSION,
 };
+mod ledger;
+pub use ledger::AllocationLedger;
+
 use mdc_transport::Transport;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};

@@ -57,6 +57,20 @@ test("sendTile copies caller buffer and forwards surfaceId", async () => {
   assert.deepEqual([...received.bytes], [1, 2]);
 });
 
+test("connectTcp forwards the address to the native binding", async () => {
+  let seen;
+  const mdc = new MyDeviceCanvas({
+    devices() {},
+    sendFrame() {},
+    connectTcp(address) {
+      seen = address;
+      return Promise.resolve();
+    },
+  });
+  await mdc.connectTcp("127.0.0.1:9");
+  assert.equal(seen, "127.0.0.1:9");
+});
+
 test("nativeLoaded reflects a bound sendFrame", () => {
   const bare = new MyDeviceCanvas({});
   assert.equal(bare.nativeLoaded(), false);

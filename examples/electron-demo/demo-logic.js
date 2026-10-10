@@ -36,7 +36,7 @@ export function originTile(frame, width) {
 /** Non-sim endpoints are refused here so the demo never opens a serial port implicitly. */
 export function rejectNonSimEndpoint(endpoint) {
   const target = String(endpoint ?? "sim").trim() || "sim";
-  if (target === "sim") return null;
+  if (target === "sim" || target.startsWith("tcp:")) return null;
   return `端点 ${target} 未打开。本演示只通过公开 SDK 连接模拟器；串口和网络地址不会被静默打开。`;
 }
 

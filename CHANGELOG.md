@@ -2,6 +2,17 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.2] — Simulator batch without physical gates
+
+### Added
+
+- C ABI `poll_event`, `simulate_input`, and `connect_tcp`
+- Swift `AsyncStream` over the C event queue
+- Node `connectTcp` and an Electron `tcp:` endpoint
+- Simulator OTA rollback that keeps the installed firmware on failure
+- Shared protocol vector check in the C++ host test
+- `AllocationLedger` short soak and a Linux systemd unit contract
+
 ## [0.1.1] — Wave 12 host gaps
 
 ### Added

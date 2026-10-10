@@ -1,0 +1,15 @@
+[Unit]
+Description=MyDeviceCanvas Linux framebuffer peer (simulator or local display)
+After=network.target
+
+[Service]
+Type=simple
+User=mdc
+ExecStart=/usr/local/bin/mdc-linux-peer 127.0.0.1:9877 800 480
+Restart=on-failure
+# No display session: the process must exit 2 from mdc_linux_probe and must not claim a panel.
+# First install copies this unit, then `systemctl enable --now mdc-linux`.
+# Upgrade replaces the binary and restarts the unit. Uninstall is `systemctl disable --now mdc-linux`.
+
+[Install]
+WantedBy=multi-user.target

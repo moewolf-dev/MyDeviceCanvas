@@ -1,5 +1,8 @@
 #include "linux_runtime.hpp"
 #include <cassert>
+#include <fstream>
+#include <sstream>
+#include <string>
 #include <vector>
 
 int main() {
@@ -68,5 +71,14 @@ int main() {
   assert(runtime.handle_packet(resized_frame));
   assert(runtime.framebuffer().size() == 16);
   assert(runtime.framebuffer()[0] == 0xAB);
+
+  std::ifstream unit("runtime/linux/install/mdc-linux.service");
+  assert(unit.good());
+  std::ostringstream text;
+  text << unit.rdbuf();
+  const auto service = text.str();
+  assert(service.find("Restart=on-failure") != std::string::npos);
+  assert(service.find("exit 2") != std::string::npos);
+  assert(mdc::mdc_linux_probe(0, 800, 480) == 2);
   return 0;
 }

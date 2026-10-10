@@ -50,6 +50,20 @@ int mdc_session_device_id(MdcSession* session, char* buf, size_t buflen);
  */
 int mdc_session_send_scene(MdcSession* session, const uint8_t* bytes, size_t len);
 
+/** Connect to a TCP simulator peer (`host:port`). Returns NULL on failure. */
+MdcSession* mdc_session_connect_tcp(const char* addr);
+
+/**
+ * Write one queued event.
+ * kind: 1 input, 2 error, 3 connected, 4 disconnected, 5 endpoint switch.
+ * Returns 1 when an event was written, 0 when empty, negative on error.
+ */
+int mdc_session_poll_event(MdcSession* session, int* kind, char* device_id, size_t device_id_len,
+                           char* phase, size_t phase_len, uint16_t* x, uint16_t* y);
+
+/** Simulator-only touch injection. Returns 0, or negative when the session is not a FakeDevice. */
+int mdc_session_simulate_input(MdcSession* session, const char* phase, uint16_t x, uint16_t y);
+
 /** Free a heap buffer returned by future helpers (no-op placeholder for symmetry). */
 void mdc_free(void* ptr);
 

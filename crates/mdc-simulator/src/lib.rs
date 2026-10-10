@@ -120,6 +120,7 @@ pub struct SimMetrics {
     pub tiles_received: u64,
     pub inputs_emitted: u64,
     pub ota_commands: u64,
+    pub ota_rollbacks: u64,
     pub acks_sent: u64,
     pub errors_sent: u64,
     pub current_frame_id: u64,
@@ -147,6 +148,8 @@ pub struct FakeDevice {
     connected: bool,
     pub metrics: SimMetrics,
     ota_active: bool,
+    firmware: String,
+    pending_version: Option<String>,
 }
 impl FakeDevice {
     pub fn from_transport(link: Box<dyn Transport>, profile: BoardProfile) -> Self {
@@ -171,6 +174,8 @@ impl FakeDevice {
                 ..SimMetrics::default()
             },
             ota_active: false,
+            firmware: "1.0.0".into(),
+            pending_version: None,
         }
     }
 
@@ -195,6 +200,12 @@ impl FakeDevice {
     }
     pub fn current_frame_id(&self) -> u64 {
         self.current_frame_id
+    }
+    pub fn firmware(&self) -> &str {
+        &self.firmware
+    }
+    pub fn pending_version(&self) -> Option<&str> {
+        self.pending_version.as_deref()
     }
     pub fn profile(&self) -> &BoardProfile {
         &self.profile
@@ -221,7 +232,7 @@ impl FakeDevice {
         let stride = u32::from(self.profile.width) * 2;
         Capabilities {
             device_id: self.profile.device_id.clone(),
-            firmware: "mdc-simulator".into(),
+            firmware: self.firmware.clone(),
             surfaces: vec![Surface {
                 id: "main".into(),
                 width: self.profile.width,
@@ -349,18 +360,41 @@ impl FakeDevice {
         let cmd: OtaCommand =
             decode_control(&packet.payload).map_err(|e| SimError::Protocol(e.to_string()))?;
         self.metrics.ota_commands = self.metrics.ota_commands.saturating_add(1);
+        let rollback = |device: &mut Self| {
+            device.pending_version = None;
+            device.ota_active = false;
+            device.metrics.ota_rollbacks = device.metrics.ota_rollbacks.saturating_add(1);
+        };
         match cmd.action.as_str() {
             "begin" => {
+                if cmd.size.unwrap_or(0) > 1024 * 1024 {
+                    return self.reply_error(packet.request_id, "E_OTA", "image exceeds 1 MiB");
+                }
+                self.pending_version = Some(cmd.version.unwrap_or_else(|| "pending".into()));
                 self.ota_active = true;
                 self.ack(packet.request_id, self.current_frame_id, true, false)
             }
-            "abort" => {
-                self.ota_active = false;
+            "chunk" => {
+                if cmd.sha256.as_deref() == Some("bad") {
+                    rollback(self);
+                    return self.reply_error(packet.request_id, "E_OTA", "bad image");
+                }
                 self.ack(packet.request_id, self.current_frame_id, true, false)
+            }
+            "abort" | "timeout" => {
+                rollback(self);
+                if cmd.action == "timeout" {
+                    self.reply_error(packet.request_id, "E_OTA", "chunk timeout")
+                } else {
+                    self.ack(packet.request_id, self.current_frame_id, true, false)
+                }
             }
             "confirm" => {
                 if !self.ota_active {
                     return self.reply_error(packet.request_id, "E_OTA", "no active ota");
+                }
+                if let Some(version) = self.pending_version.take() {
+                    self.firmware = version;
                 }
                 self.ota_active = false;
                 self.ack(packet.request_id, self.current_frame_id, true, true)
@@ -544,6 +578,8 @@ impl FakeDevice {
 mod tests {
     use super::*;
     use mdc_core::{ConnectionState, Frame, Session, Tile};
+    use mdc_protocol::OtaCommand;
+    use mdc_transport::MemoryLink;
 
     #[test]
     fn hello_capabilities_and_legacy_frame() {
@@ -777,5 +813,125 @@ mod tests {
         device.poll().unwrap();
         session.poll().unwrap();
         assert_eq!(device.metrics.ota_commands, 1);
+    }
+
+    fn ota(
+        session: &mut Session<MemoryLink>,
+        device: &mut FakeDevice,
+        action: &str,
+        version: Option<&str>,
+        size: Option<u64>,
+        sha: Option<&str>,
+        expect_error: bool,
+    ) {
+        session
+            .send_ota(OtaCommand {
+                action: action.into(),
+                version: version.map(str::to_string),
+                size,
+                sha256: sha.map(str::to_string),
+            })
+            .unwrap();
+        device.poll().unwrap();
+        let polled = session.poll();
+        if expect_error {
+            assert!(polled.is_err());
+        } else {
+            polled.unwrap();
+        }
+    }
+
+    #[test]
+    fn ota_failure_keeps_installed_firmware() {
+        let profile = BoardProfile {
+            width: 2,
+            height: 2,
+            ota: true,
+            ..BoardProfile::default()
+        };
+        let (host, mut device) = FakeDevice::pair(profile);
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.firmware(), "1.0.0");
+
+        ota(
+            &mut session,
+            &mut device,
+            "begin",
+            Some("9.9.9"),
+            Some(2 * 1024 * 1024),
+            None,
+            true,
+        );
+        assert_eq!(device.firmware(), "1.0.0");
+        assert!(device.pending_version().is_none());
+
+        ota(
+            &mut session,
+            &mut device,
+            "begin",
+            Some("2.0.0"),
+            Some(32),
+            None,
+            false,
+        );
+        assert_eq!(device.firmware(), "1.0.0");
+        ota(
+            &mut session,
+            &mut device,
+            "chunk",
+            None,
+            None,
+            Some("bad"),
+            true,
+        );
+        assert_eq!(device.firmware(), "1.0.0");
+        assert!(device.metrics.ota_rollbacks >= 1);
+
+        ota(
+            &mut session,
+            &mut device,
+            "begin",
+            Some("2.0.0"),
+            Some(32),
+            None,
+            false,
+        );
+        ota(&mut session, &mut device, "abort", None, None, None, false);
+        assert_eq!(device.firmware(), "1.0.0");
+
+        ota(
+            &mut session,
+            &mut device,
+            "begin",
+            Some("2.0.0"),
+            Some(32),
+            None,
+            false,
+        );
+        ota(&mut session, &mut device, "timeout", None, None, None, true);
+        assert_eq!(device.firmware(), "1.0.0");
+
+        ota(
+            &mut session,
+            &mut device,
+            "begin",
+            Some("2.0.0"),
+            Some(32),
+            None,
+            false,
+        );
+        ota(
+            &mut session,
+            &mut device,
+            "confirm",
+            None,
+            None,
+            None,
+            false,
+        );
+        assert_eq!(device.firmware(), "2.0.0");
     }
 }

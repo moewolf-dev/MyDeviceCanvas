@@ -2,10 +2,12 @@
 use mdc_core::{ConnectionState, DeviceManager, Frame, ManagerEvent, Session, Tile};
 use mdc_protocol::InputEvent;
 use mdc_simulator::{BoardProfile, FakeDevice};
-use mdc_transport::MemoryLink;
+use mdc_transport::{TcpTransport, Transport};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 #[napi(object)]
 pub struct SurfaceInfo {
@@ -64,9 +66,33 @@ pub struct NativeEvent {
 }
 
 struct SimSession {
-    session: Session<MemoryLink>,
-    device: FakeDevice,
+    session: Session<Box<dyn Transport>>,
+    device: Option<FakeDevice>,
     manager: Arc<Mutex<DeviceManager>>,
+}
+
+fn pump_link(sim: &mut SimSession) -> Result<()> {
+    let rounds = if sim.device.is_some() { 1 } else { 30 };
+    for _ in 0..rounds {
+        if let Some(device) = sim.device.as_mut() {
+            device
+                .poll()
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+        }
+        sim.session
+            .poll()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        if sim.device.is_none()
+            && sim.session.state == ConnectionState::Ready
+            && sim.session.pending_request_count() == 0
+        {
+            break;
+        }
+        if sim.device.is_none() {
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -83,7 +109,7 @@ fn ensure_sim(state: &mut State) -> Result<()> {
     let profile = BoardProfile::default();
     let (host, mut device) = FakeDevice::pair(profile);
     let manager = Arc::new(Mutex::new(DeviceManager::new()));
-    let mut session = Session::new(host);
+    let mut session = Session::new(Box::new(host) as Box<dyn Transport>);
     session.set_manager(manager.clone());
     session
         .connect()
@@ -106,7 +132,7 @@ fn ensure_sim(state: &mut State) -> Result<()> {
     }
     state.sim = Some(SimSession {
         session,
-        device,
+        device: Some(device),
         manager,
     });
     Ok(())
@@ -240,7 +266,12 @@ impl NativeManager {
             .as_ref()
             .and_then(|d| d.capabilities.surfaces.iter().find(|s| s.id == surface_id))
             .map(|s| (s.width, s.height))
-            .unwrap_or((sim.device.profile().width, sim.device.profile().height));
+            .unwrap_or_else(|| {
+                sim.device
+                    .as_ref()
+                    .map(|device| (device.profile().width, device.profile().height))
+                    .unwrap_or((0, 0))
+            });
         let expected = usize::from(w) * usize::from(h) * 2;
         if copy.len() != expected {
             return Err(Error::from_reason(format!(
@@ -258,12 +289,7 @@ impl NativeManager {
                 bytes: copy,
             })
             .map_err(|e| Error::from_reason(e.to_string()))?;
-        sim.device
-            .poll()
-            .map_err(|e| Error::from_reason(e.to_string()))?;
-        sim.session
-            .poll()
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+        pump_link(sim)?;
         Ok(req)
     }
 
@@ -300,12 +326,7 @@ impl NativeManager {
                 bytes: copy,
             })
             .map_err(|e| Error::from_reason(e.to_string()))?;
-        sim.device
-            .poll()
-            .map_err(|e| Error::from_reason(e.to_string()))?;
-        sim.session
-            .poll()
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+        pump_link(sim)?;
         Ok(req)
     }
 
@@ -320,7 +341,14 @@ impl NativeManager {
             return Err(Error::from_reason("manager is disposed"));
         }
         ensure_sim(&mut state)?;
-        Ok(state.sim.as_ref().unwrap().device.current_frame_id() as u32)
+        Ok(state
+            .sim
+            .as_ref()
+            .unwrap()
+            .device
+            .as_ref()
+            .map(|device| device.current_frame_id() as u32)
+            .unwrap_or(0))
     }
 
     /// Drain ManagerEvent queue into JS-friendly DTOs.
@@ -335,12 +363,7 @@ impl NativeManager {
         }
         ensure_sim(&mut state)?;
         let sim = state.sim.as_mut().unwrap();
-        sim.device
-            .poll()
-            .map_err(|e| Error::from_reason(e.to_string()))?;
-        sim.session
-            .poll()
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+        pump_link(sim)?;
         drain_manager_events(&sim.manager)
     }
 
@@ -363,7 +386,11 @@ impl NativeManager {
         }
         ensure_sim(&mut state)?;
         let sim = state.sim.as_mut().unwrap();
-        sim.device
+        let device = sim
+            .device
+            .as_mut()
+            .ok_or_else(|| Error::from_reason("tcp session cannot inject local touch"))?;
+        device
             .emit_input(InputEvent {
                 surface_id,
                 pointer_id,
@@ -375,6 +402,46 @@ impl NativeManager {
         sim.session
             .poll()
             .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Replace the session with a TCP connection to a simulator peer (`host:port`).
+    #[napi(js_name = "connectTcp")]
+    pub fn connect_tcp(&self, address: String) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        if let Some(mut previous) = state.sim.take() {
+            previous.session.disconnect();
+        }
+        let tcp = TcpTransport::connect(address.trim(), Duration::from_millis(400))
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        let manager = Arc::new(Mutex::new(DeviceManager::new()));
+        let mut session = Session::new(Box::new(tcp) as Box<dyn Transport>);
+        session.set_manager(manager.clone());
+        session
+            .connect()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        let mut live = SimSession {
+            session,
+            device: None,
+            manager,
+        };
+        pump_link(&mut live)?;
+        if live.session.state != ConnectionState::Ready {
+            return Err(Error::from_reason("tcp peer did not finish HELLO"));
+        }
+        if let Some(device) = live.session.device.as_ref() {
+            live.manager
+                .lock()
+                .map_err(|_| Error::from_reason("manager lock poisoned"))?
+                .connect_session(&device.capabilities.device_id, address.trim());
+        }
+        state.sim = Some(live);
         Ok(())
     }
 
