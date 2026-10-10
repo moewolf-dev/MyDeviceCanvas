@@ -12,6 +12,7 @@ All notable host / simulator changes for MyDeviceCanvas. Physical board verifica
 - Simulator OTA rollback that keeps the installed firmware on failure
 - Shared protocol vector check in the C++ host test
 - `AllocationLedger` short soak and a Linux systemd unit contract
+- `mdc sim-accept`: handshake, full frame, tile, bounded inspect, and a failed OTA against `mdc-sim-peer` without changing firmware
 
 ## [0.1.1] — Wave 12 host gaps
 

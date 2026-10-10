@@ -11,8 +11,11 @@ use mdc_simulator::{BoardProfile, FakeDevice, SimMetrics};
 use mdc_transport::{MemoryLink, TcpTransport};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 const MAX_SOURCE_DIMENSION: u32 = 4096;
@@ -683,11 +686,333 @@ fn cmd_h06_demo(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[derive(Serialize)]
+struct AcceptReport {
+    ok: bool,
+    peer: String,
+    address: String,
+    device_id: String,
+    handshake: bool,
+    frame_acked: bool,
+    tile_acked: bool,
+    ota_failed: bool,
+    firmware_before: String,
+    firmware_after: String,
+    image_bytes_included: bool,
+    inspect_bytes: usize,
+}
+
+enum PeerLaunch {
+    /// `target/debug/mdc-sim-peer` or `MDC_SIM_PEER`.
+    Binary(PathBuf),
+    /// Same FakeDevice TCP loop, used when the peer binary is not built yet.
+    InProcess,
+}
+
+struct PeerStop {
+    child: Option<Child>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl PeerStop {
+    fn stop(mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for PeerStop {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn locate_sim_peer() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("MDC_SIM_PEER") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    let exe = std::env::current_exe().ok()?;
+    let name = if cfg!(windows) {
+        "mdc-sim-peer.exe"
+    } else {
+        "mdc-sim-peer"
+    };
+    let mut dir = exe.parent().map(Path::to_path_buf)?;
+    for _ in 0..3 {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
+}
+
+/// One-connection FakeDevice server. Matches `tools/mdc-sim-peer` so the CLI
+/// can accept without a second process.
+fn serve_one_peer(listener: TcpListener, board: String) {
+    let profile = BoardProfile::from_board_id(&board);
+    let Ok((stream, _)) = listener.accept() else {
+        return;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(50)));
+    let Ok(transport) = TcpTransport::from_stream(stream) else {
+        return;
+    };
+    let mut device = FakeDevice::from_transport(Box::new(transport), profile);
+    while let Ok(()) = device.poll() {
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn start_peer(
+    board: &str,
+    launch: PeerLaunch,
+) -> Result<(String, String, PeerStop), Box<dyn std::error::Error>> {
+    match launch {
+        PeerLaunch::InProcess => {
+            let listener = TcpListener::bind("127.0.0.1:0")?;
+            let address = listener.local_addr()?.to_string();
+            let board = board.to_string();
+            let thread = thread::spawn(move || serve_one_peer(listener, board));
+            Ok((
+                address,
+                "in-process".into(),
+                PeerStop {
+                    child: None,
+                    thread: Some(thread),
+                },
+            ))
+        }
+        PeerLaunch::Binary(path) => {
+            let probe = TcpListener::bind("127.0.0.1:0")?;
+            let address = probe.local_addr()?.to_string();
+            drop(probe);
+            let child = Command::new(&path)
+                .arg(&address)
+                .arg(board)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| format!("spawn {}: {e}", path.display()))?;
+            Ok((
+                address,
+                "mdc-sim-peer".into(),
+                PeerStop {
+                    child: Some(child),
+                    thread: None,
+                },
+            ))
+        }
+    }
+}
+
+fn connect_tcp(address: &str) -> Result<TcpTransport, Box<dyn std::error::Error>> {
+    let mut last = String::from("not attempted");
+    for _ in 0..40 {
+        match TcpTransport::connect(address, Duration::from_millis(200)) {
+            Ok(transport) => return Ok(transport),
+            Err(error) => {
+                last = error.to_string();
+                thread::sleep(Duration::from_millis(25));
+            }
+        }
+    }
+    Err(format!("tcp connect {address}: {last}").into())
+}
+
+fn pump_until_idle(session: &mut Session<TcpTransport>) -> Result<(), Box<dyn std::error::Error>> {
+    for _ in 0..80 {
+        session.poll()?;
+        if session.state == ConnectionState::Ready && session.pending_request_count() == 0 {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    Err(format!(
+        "timed out waiting for ack (state={:?} pending={})",
+        session.state,
+        session.pending_request_count()
+    )
+    .into())
+}
+
+fn pump_until_protocol_error(
+    session: &mut Session<TcpTransport>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    for _ in 0..80 {
+        match session.poll() {
+            Err(error) => return Ok(error.to_string()),
+            Ok(_) if session.pending_request_count() == 0 => {
+                return Err("ota completed without an error".into());
+            }
+            Ok(_) => thread::sleep(Duration::from_millis(10)),
+        }
+    }
+    Err("timed out waiting for ota error".into())
+}
+
+fn run_sim_accept(
+    board: &str,
+    launch: PeerLaunch,
+) -> Result<AcceptReport, Box<dyn std::error::Error>> {
+    let (address, peer_name, peer) = start_peer(board, launch)?;
+    let result = accept_on(board, &address, &peer_name);
+    // Session is already dropped, so the peer sees the socket close before join.
+    peer.stop();
+    result
+}
+
+fn accept_on(
+    board: &str,
+    address: &str,
+    peer_name: &str,
+) -> Result<AcceptReport, Box<dyn std::error::Error>> {
+    let transport = connect_tcp(address)?;
+    let manager = Arc::new(Mutex::new(DeviceManager::new()));
+    let mut session = Session::new(transport);
+    session.set_manager(manager.clone());
+    session.connect()?;
+    pump_until_idle(&mut session)?;
+    let (device_id, firmware_before, width, height, ota) = {
+        let device = session
+            .device
+            .as_ref()
+            .ok_or("handshake produced no device")?;
+        let surface = device
+            .capabilities
+            .surfaces
+            .first()
+            .ok_or("device has no surface")?;
+        (
+            device.capabilities.device_id.clone(),
+            device.capabilities.firmware.clone(),
+            surface.width,
+            surface.height,
+            device.capabilities.ota,
+        )
+    };
+    if !ota {
+        return Err(
+            format!("sim-accept needs an OTA-capable board; {board} reported ota=false").into(),
+        );
+    }
+    {
+        let mut store = load_pairing_store();
+        if !store.is_paired(&device_id) {
+            store.pair(&device_id, "sim-accept")?;
+            store.save_json(&pairing_path())?;
+        }
+    }
+    gate_network_display(
+        &device_id,
+        &Endpoint::Tcp {
+            address: address.to_string(),
+        },
+    )?;
+    let pixel_len = usize::from(width) * usize::from(height) * 2;
+    let mut bytes = vec![0u8; pixel_len];
+    if bytes.len() >= 2 {
+        bytes[0] = 0x00;
+        bytes[1] = 0xf8;
+    }
+    session.send_frame(Frame {
+        surface_id: "main".into(),
+        width,
+        height,
+        bytes,
+    })?;
+    pump_until_idle(&mut session)?;
+    session.send_tile(mdc_core::Tile {
+        surface_id: "main".into(),
+        base_frame_id: 1,
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1,
+        bytes: vec![0x00, 0xf8],
+    })?;
+    pump_until_idle(&mut session)?;
+    let inspect = {
+        let guard = manager.lock().map_err(|e| e.to_string())?;
+        inspect_json(&guard, None)
+    };
+    if inspect.contains("\"pixels\"") || !inspect.contains("\"image_bytes_included\": false") {
+        return Err("inspect snapshot included pixel buffers".into());
+    }
+    session.send_ota(OtaCommand {
+        action: "begin".into(),
+        version: Some("2.0.0".into()),
+        size: Some(64),
+        sha256: Some("0".repeat(64)),
+    })?;
+    pump_until_idle(&mut session)?;
+    session.send_ota(OtaCommand {
+        action: "chunk".into(),
+        version: None,
+        size: None,
+        sha256: Some("bad".into()),
+    })?;
+    let ota_error = pump_until_protocol_error(&mut session)?;
+    if !ota_error.contains("E_OTA") {
+        return Err(format!("unexpected ota failure: {ota_error}").into());
+    }
+    session.refresh_capabilities()?;
+    pump_until_idle(&mut session)?;
+    let firmware_after = session
+        .device
+        .as_ref()
+        .map(|d| d.capabilities.firmware.clone())
+        .unwrap_or_default();
+    if firmware_after != firmware_before {
+        return Err(format!("firmware changed from {firmware_before} to {firmware_after}").into());
+    }
+    session.disconnect();
+    Ok(AcceptReport {
+        ok: true,
+        peer: peer_name.to_string(),
+        address: address.to_string(),
+        device_id,
+        handshake: true,
+        frame_acked: true,
+        tile_acked: true,
+        ota_failed: true,
+        firmware_before,
+        firmware_after,
+        image_bytes_included: false,
+        inspect_bytes: inspect.len(),
+    })
+}
+
+fn cmd_sim_accept(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
+    let launch = match locate_sim_peer() {
+        Some(path) => PeerLaunch::Binary(path),
+        None => PeerLaunch::InProcess,
+    };
+    let report = run_sim_accept(&opts.board, launch)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
 fn usage() {
     println!(
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
-flash-sim <merged.bin>|h06-demo|pair <id> <token>|unpair <id>|\
+flash-sim <merged.bin>|h06-demo|sim-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo"
     );
 }
@@ -753,6 +1078,7 @@ fn main() {
             o.sim = true;
             cmd_h06_demo(&o)
         }
+        Some("sim-accept") => cmd_sim_accept(&opts),
         Some("pair") => {
             let id = args.get(1).cloned().unwrap_or_default();
             let token = args.get(2).cloned().unwrap_or_default();
@@ -832,6 +1158,20 @@ mod tests {
             owned.push('…');
         }
         owned
+    }
+
+    #[test]
+    fn sim_accept_failed_ota_keeps_firmware() {
+        let report = run_sim_accept("esp32-jc3248w535-sim", PeerLaunch::InProcess).unwrap();
+        assert!(report.ok);
+        assert_eq!(report.peer, "in-process");
+        assert_eq!(report.firmware_before, "1.0.0");
+        assert_eq!(report.firmware_after, "1.0.0");
+        assert!(report.handshake && report.frame_acked && report.tile_acked);
+        assert!(report.ota_failed);
+        assert!(!report.image_bytes_included);
+        assert!(report.inspect_bytes < 4096);
+        assert_eq!(report.device_id, "sim-esp32-jc3248w535");
     }
 
     #[test]

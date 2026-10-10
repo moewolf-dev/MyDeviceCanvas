@@ -783,6 +783,21 @@ impl<T: Transport> Session<T> {
         let payload = encode_control(&command).map_err(|e| CoreError::Protocol(e.to_string()))?;
         self.write_packet(MessageType::Ota, payload)
     }
+    /// 在同一条连接上再发 HELLO，用对端当前 Capabilities 覆盖缓存。
+    /// OTA 失败后用它读回固件版本；会重置 surface 队列，调用前不要留在途帧。
+    pub fn refresh_capabilities(&mut self) -> Result<u32, CoreError> {
+        if self.state != ConnectionState::Ready {
+            return Err(CoreError::NotReady);
+        }
+        let hello = encode_control(&Hello {
+            major: VERSION.major,
+            minor: VERSION.minor,
+            max_message: MAX_FRAME_BYTES as u32,
+            max_chunk: mdc_protocol::DEFAULT_MAX_CHUNK as u32,
+        })
+        .map_err(|e| CoreError::Protocol(e.to_string()))?;
+        self.write_packet(MessageType::Hello, hello)
+    }
     /// v1 不发送 Scene。旧设备继续只用 Frame/Tile，调用得到 Unsupported。
     pub fn send_scene(&mut self, _payload: &[u8]) -> Result<u32, CoreError> {
         let _ = (self.state, _payload);
@@ -886,8 +901,12 @@ impl<T: Transport> Session<T> {
                 Ok(())
             }
             MessageType::Error => {
-                let _err: Result<ErrorPayload, _> = mdc_protocol::decode_control(&packet.payload);
-                Err(CoreError::Protocol("device returned error".into()))
+                self.pending_requests.remove(&packet.request_id);
+                self.pending_frames.remove(&packet.request_id);
+                let detail = mdc_protocol::decode_control::<ErrorPayload>(&packet.payload)
+                    .map(|err| format!("{}: {}", err.code, err.message))
+                    .unwrap_or_else(|_| "device returned error".into());
+                Err(CoreError::Protocol(detail))
             }
             MessageType::Input => {
                 let event: InputEvent = mdc_protocol::decode_control(&packet.payload)
