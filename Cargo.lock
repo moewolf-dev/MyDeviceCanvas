@@ -464,6 +464,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdc-tauri-demo"
+version = "0.1.0"
+dependencies = [
+ "mdc-core",
+ "mdc-simulator",
+ "mdc-transport",
+]
+
+[[package]]
 name = "mdc-transport"
 version = "0.1.0"
 dependencies = [

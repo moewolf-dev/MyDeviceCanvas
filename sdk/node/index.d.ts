@@ -48,6 +48,8 @@ export declare class Device {
 export declare class MyDeviceCanvas {
   constructor(native?: unknown);
   static create(): Promise<MyDeviceCanvas>;
+  nativeLoaded(): boolean;
+  currentFrameId(): Promise<number>;
   devices(): Promise<Device[]>;
   pollEvents(): Promise<NativeEvent[]>;
   on(event: string, listener: (value: unknown) => void): () => void;

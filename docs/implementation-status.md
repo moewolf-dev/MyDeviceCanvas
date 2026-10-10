@@ -19,8 +19,9 @@ Do not mark physical verification from host-only or simulator tests.
 | 9 | Network display gate (TCP/WS) + IDF panel bring-up stages | architecture / sim-verified |
 | 10 | Linux virt C++ TCP peer + CBOR Capabilities/Ack alignment | sim-verified |
 | 11 | Node/C SDK tile + event drain alignment | sim-verified |
+| 12 | Electron demo, Swift wrapper, Tauri commands, Linux geometry, Scene refusal | sim-verified |
 
-Waves **3–11** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`.
+Waves **3–12** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`.
 
 ## Honesty rules
 

@@ -60,6 +60,8 @@ pub struct BoardProfile {
     pub height: u16,
     pub touch: bool,
     pub ota: bool,
+    /// 彩色刷新承诺。墨水屏必须为 false，不能把彩屏 FPS 写成该板能力。
+    pub color_fps: bool,
 }
 impl Default for BoardProfile {
     fn default() -> Self {
@@ -69,6 +71,7 @@ impl Default for BoardProfile {
             height: 320,
             touch: true,
             ota: true,
+            color_fps: true,
         }
     }
 }
@@ -83,6 +86,23 @@ impl BoardProfile {
                 height: 480,
                 touch: false,
                 ota: false,
+                color_fps: true,
+            },
+            "pi4-hdmi" => Self {
+                device_id: "sim-pi4-hdmi".into(),
+                width: 640,
+                height: 480,
+                touch: false,
+                ota: false,
+                color_fps: true,
+            },
+            "waveshare-eink" => Self {
+                device_id: "sim-waveshare-eink".into(),
+                width: 800,
+                height: 480,
+                touch: false,
+                ota: false,
+                color_fps: false,
             },
             other => Self {
                 device_id: format!("sim-{other}"),
@@ -286,11 +306,7 @@ impl FakeDevice {
                 let hello: Hello = decode_control(&packet.payload)
                     .map_err(|e| SimError::Protocol(e.to_string()))?;
                 if hello.major != VERSION.major {
-                    return self.reply_error(
-                        packet.request_id,
-                        "E_VERSION",
-                        "unsupported major",
-                    );
+                    return self.reply_error(packet.request_id, "E_VERSION", "unsupported major");
                 }
                 self.max_message = self
                     .max_message
@@ -304,7 +320,9 @@ impl FakeDevice {
             }
             MessageType::Frame => self.handle_frame(packet),
             MessageType::Tile => self.handle_tile(packet),
-            MessageType::Ping => self.write_packet(MessageType::Pong, packet.request_id, Vec::new()),
+            MessageType::Ping => {
+                self.write_packet(MessageType::Pong, packet.request_id, Vec::new())
+            }
             MessageType::Ota => self.handle_ota(packet),
             MessageType::Input => {
                 // Host→device input is unusual; reject unless touch is enabled.
@@ -355,8 +373,8 @@ impl FakeDevice {
         }
     }
     fn handle_frame(&mut self, packet: Packet) -> Result<(), SimError> {
-        let decoded = decode_frame_payload(&packet.payload)
-            .map_err(|e| SimError::Protocol(e.to_string()))?;
+        let decoded =
+            decode_frame_payload(&packet.payload).map_err(|e| SimError::Protocol(e.to_string()))?;
         match decoded {
             FramePayload::Legacy {
                 surface_id: _,
@@ -401,11 +419,7 @@ impl FakeDevice {
                     return self.reply_error(packet.request_id, "E_CHUNK", "frame_id mismatch");
                 }
                 if let Err(nack) = asm.chunk(offset as usize, &data) {
-                    return self.reply_error(
-                        packet.request_id,
-                        "E_CHUNK",
-                        &format!("{nack:?}"),
-                    );
+                    return self.reply_error(packet.request_id, "E_CHUNK", &format!("{nack:?}"));
                 }
                 Ok(())
             }
@@ -435,8 +449,8 @@ impl FakeDevice {
         }
     }
     fn handle_tile(&mut self, packet: Packet) -> Result<(), SimError> {
-        let tile = decode_tile_payload(&packet.payload)
-            .map_err(|e| SimError::Protocol(e.to_string()))?;
+        let tile =
+            decode_tile_payload(&packet.payload).map_err(|e| SimError::Protocol(e.to_string()))?;
         let core_tile = Tile {
             surface_id: tile.surface_id,
             base_frame_id: tile.base_frame_id,
@@ -493,8 +507,7 @@ impl FakeDevice {
         request_id: u32,
         value: &T,
     ) -> Result<(), SimError> {
-        let payload =
-            encode_control(value).map_err(|e| SimError::Protocol(e.to_string()))?;
+        let payload = encode_control(value).map_err(|e| SimError::Protocol(e.to_string()))?;
         self.write_packet(kind, request_id, payload)
     }
     fn write_packet(
@@ -666,6 +679,12 @@ mod tests {
         assert_eq!(p.height, 480);
         assert!(!p.touch);
         assert!(!p.ota);
+        assert!(p.color_fps);
+        let pi = BoardProfile::from_board_id("pi4-hdmi");
+        assert_eq!((pi.width, pi.height), (640, 480));
+        assert!(pi.color_fps);
+        let eink = BoardProfile::from_board_id("waveshare-eink");
+        assert!(!eink.color_fps, "e-ink must not claim color FPS");
     }
 
     #[test]

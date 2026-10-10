@@ -68,7 +68,7 @@ impl Flasher for SimFlasher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mdc_provision::{Artifact, Installer, InstallState, PortLeases};
+    use mdc_provision::{Artifact, InstallState, Installer, PortLeases};
 
     #[test]
     fn post_write_reset_matches_agentdeck() {

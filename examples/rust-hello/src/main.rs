@@ -26,6 +26,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     device.poll()?;
     session.poll()?;
-    println!("hello ok: device={id} frame_id={}", device.current_frame_id());
+    println!(
+        "hello ok: device={id} frame_id={}",
+        device.current_frame_id()
+    );
     Ok(())
 }

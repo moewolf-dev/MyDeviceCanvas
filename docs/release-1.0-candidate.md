@@ -12,7 +12,7 @@
 - [x] Major-version mismatch rejected (sim-verified)
 - [x] Frame legacy + chunked; Tile base check (sim-verified)
 - [x] Input / OTA capability gates (sim-verified)
-- [ ] Scene remains reserved; old devices Frame/Tile only
+- [x] Scene remains reserved; `send_scene` returns Unsupported; old devices Frame/Tile only
 - [ ] Physical round-trip on at least one board profile
 
 ## Multi-board

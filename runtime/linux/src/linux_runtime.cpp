@@ -10,4 +10,11 @@ bool LinuxRuntime::handle_packet(const Packet& packet) {
   return dispatcher_.handle(packet);
 }
 
+bool LinuxRuntime::update_geometry(std::uint16_t width, std::uint16_t height) {
+  if (!display_.resize(width, height)) return false;
+  dispatcher_.sync_geometry();
+  replies_.clear();
+  return true;
+}
+
 }  // namespace mdc

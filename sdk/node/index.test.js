@@ -57,6 +57,13 @@ test("sendTile copies caller buffer and forwards surfaceId", async () => {
   assert.deepEqual([...received.bytes], [1, 2]);
 });
 
+test("nativeLoaded reflects a bound sendFrame", () => {
+  const bare = new MyDeviceCanvas({});
+  assert.equal(bare.nativeLoaded(), false);
+  const bound = new MyDeviceCanvas({ devices() {}, sendFrame() {} });
+  assert.equal(bound.nativeLoaded(), true);
+});
+
 test("pollEvents re-emits native input events", async () => {
   const seen = [];
   const mdc = new MyDeviceCanvas({

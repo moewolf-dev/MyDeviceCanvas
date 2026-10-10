@@ -1,6 +1,6 @@
 # Swift SDK notes
 
-There is no separate Swift Package yet. Host apps should link the C ABI from `sdk/c`:
+Host apps link the C ABI from `sdk/c`. `Sources/MdcSession.swift` is the wrapper compiled by `tools/check.sh` when `swiftc` is available:
 
 | Artifact | Path |
 |---|---|
@@ -14,7 +14,6 @@ There is no separate Swift Package yet. Host apps should link the C ABI from `sd
 3. Wrap opaque `MdcSession*` in a Swift `final class` with `deinit { mdc_session_destroy(...) }`
 
 ```swift
-// Illustrative — not compiled in this repo
 final class MdcSession {
   private let raw: OpaquePointer
   init() throws {

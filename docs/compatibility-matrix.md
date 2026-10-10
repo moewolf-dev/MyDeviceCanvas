@@ -20,7 +20,12 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Node NativeManager sim | sim-verified (JS facade + native tile/events; `.node` optional) | physical: pending |
 | C ABI `mdc_c` | sim-verified (frame/tile/surface host tests) | physical: pending |
 | Linux runtime framebuffer peer | sim-verified (`mdc_linux_peer` TCP) | physical: pending |
-| Scene capability bit | architecture (reserved) | physical: pending |
+| Scene capability bit | sim-verified (`send_scene` → Unsupported, no Scene packet) | physical: pending |
+| Linux geometry update / no-display probe | sim-verified (`update_geometry`, `mdc_linux_probe`) | physical: pending |
+| pi4-hdmi / waveshare-eink profiles | sim-verified (eink `color_fps: false`) | physical: pending |
+| Electron demo IPC | sim-verified (preload + color-bar logic; native `.node` optional) | physical: pending |
+| Swift `MdcSession` | sim-verified when `swiftc` links `libmdc_c` | physical: pending |
+| Tauri command crate | sim-verified (`mdc-tauri-demo`, no second protocol) | physical: pending |
 
 ## G03 sim exit
 

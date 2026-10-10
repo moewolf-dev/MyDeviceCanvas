@@ -2,6 +2,17 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.1] — Wave 12 host gaps
+
+### Added
+
+- Electron demo connects explicitly, draws RGB565 color bars, and sends Frame/Tile through the public Node SDK
+- Swift `MdcSession` wrapper over the C ABI, including Scene refusal
+- `mdc-tauri-demo` command layer: endpoint switch requires a full frame; inspector stores counts only
+- Linux runtime `update_geometry` and `mdc_linux_probe` (no display session / zero size)
+- Board profiles `pi4-hdmi` and `waveshare-eink` (`color_fps: false` on e-ink)
+- `Session::send_scene` returns Unsupported and does not emit a Scene packet
+
 ## [0.1.0] — Waves 0–7 architecture (sim-verified)
 
 ### Added

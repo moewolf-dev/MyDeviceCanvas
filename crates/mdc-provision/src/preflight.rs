@@ -123,11 +123,7 @@ pub fn preflight_verdict(input: PreflightInput<'_>) -> PreflightVerdict {
 }
 
 fn chip_family_matches(board_mcu: &str, detected: &str) -> bool {
-    let normalize = |s: &str| {
-        s.to_ascii_lowercase()
-            .replace('_', "-")
-            .replace(' ', "")
-    };
+    let normalize = |s: &str| s.to_ascii_lowercase().replace('_', "-").replace(' ', "");
     // Exact family match only. "ESP32" must not satisfy "esp32-s3".
     normalize(board_mcu) == normalize(detected)
 }

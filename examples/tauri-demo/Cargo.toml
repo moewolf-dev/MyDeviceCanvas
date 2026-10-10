@@ -1,0 +1,12 @@
+[package]
+name = "mdc-tauri-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Tauri command layer over mdc-core. Does not reimplement the protocol."
+
+[dependencies]
+mdc-core = { path = "../../crates/mdc-core" }
+mdc-simulator = { path = "../../crates/mdc-simulator" }
+mdc-transport = { path = "../../crates/mdc-transport" }

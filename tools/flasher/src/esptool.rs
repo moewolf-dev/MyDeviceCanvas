@@ -109,7 +109,10 @@ impl EspToolFlasher {
 
     pub fn validate_image_present(&self) -> Result<(), String> {
         if !self.image_path.is_file() {
-            return Err(format!("merged image missing: {}", self.image_path.display()));
+            return Err(format!(
+                "merged image missing: {}",
+                self.image_path.display()
+            ));
         }
         Ok(())
     }
@@ -163,10 +166,8 @@ impl Flasher for EspToolFlasher {
                 },
             )
             .map_err(|e| e.to_string())?;
-            serial
-                .apply_post_write_reset()
-                .map_err(|e| e.to_string())?;
-            return Ok(());
+            serial.apply_post_write_reset().map_err(|e| e.to_string())?;
+            Ok(())
         }
         #[cfg(not(feature = "serial"))]
         {

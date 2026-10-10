@@ -58,6 +58,17 @@ export class MyDeviceCanvas {
       native?.NativeManager ? new native.NativeManager() : {},
     );
   }
+  /** True when a native Manager with frame send is bound. */
+  nativeLoaded() {
+    return (
+      typeof this._native.devices === "function" &&
+      typeof this._native.sendFrame === "function"
+    );
+  }
+  async currentFrameId() {
+    if (this._disposed) throw new Error("manager is disposed");
+    return (await this._native.currentFrameId?.()) ?? 0;
+  }
   async devices() {
     if (this._disposed) throw new Error("manager is disposed");
     return (await (this._native.devices?.() ?? [])).map(

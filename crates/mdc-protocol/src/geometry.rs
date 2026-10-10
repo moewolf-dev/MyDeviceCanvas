@@ -21,7 +21,9 @@ pub fn rgb565_bytes(width: u16, height: u16) -> Result<usize, CodecError> {
 /// FrameOS's 1536 KiB render reserve.
 pub fn canvas_bytes_per_pixel(width: u16, height: u16, psram_total: u64, share: u64) -> u8 {
     let share = share.max(1);
-    let rgbx = u64::from(width).saturating_mul(u64::from(height)).saturating_mul(4);
+    let rgbx = u64::from(width)
+        .saturating_mul(u64::from(height))
+        .saturating_mul(4);
     if psram_total > 0 && rgbx.saturating_mul(share) <= psram_total {
         4
     } else {
@@ -31,7 +33,9 @@ pub fn canvas_bytes_per_pixel(width: u16, height: u16, psram_total: u64, share: 
 
 /// Dual full-screen RGB565 budget (active + staging).
 pub fn dual_rgb565_budget(width: u16, height: u16) -> Result<usize, CodecError> {
-    rgb565_bytes(width, height)?.checked_mul(2).ok_or(CodecError::Length(0))
+    rgb565_bytes(width, height)?
+        .checked_mul(2)
+        .ok_or(CodecError::Length(0))
 }
 
 #[cfg(test)]

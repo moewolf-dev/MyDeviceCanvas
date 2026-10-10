@@ -10,6 +10,10 @@ FrameStore::FrameStore(std::uint16_t width, std::uint16_t height) {
     staging_.assign(pixels * 2, 0);
   }
 }
+bool FrameStore::resize(std::uint16_t width, std::uint16_t height) {
+  *this = FrameStore(width, height);
+  return !active_.empty();
+}
 bool FrameStore::stage(const std::uint8_t* bytes, std::size_t length) {
   if (staging_.empty() || length != staging_.size()) return false;
   std::copy(bytes, bytes + length, staging_.begin());

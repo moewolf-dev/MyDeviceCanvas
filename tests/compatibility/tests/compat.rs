@@ -1,8 +1,6 @@
 //! Compatibility gates: major mismatch and low negotiated limits.
 use mdc_core::{ConnectionState, CoreError, Frame, Session, MAX_FRAME_BYTES};
-use mdc_protocol::{
-    encode_control, Capabilities, MessageType, Packet, Surface, VERSION,
-};
+use mdc_protocol::{encode_control, Capabilities, MessageType, Packet, Surface, VERSION};
 use mdc_simulator::{BoardProfile, FakeDevice};
 use mdc_transport::MemoryLink;
 
@@ -73,7 +71,10 @@ fn fake_device_rejects_hello_with_foreign_major() {
         request_id: 1,
         payload: hello,
     };
-    session.transport_mut().write(&pkt.encode(4096).unwrap()).unwrap();
+    session
+        .transport_mut()
+        .write(&pkt.encode(4096).unwrap())
+        .unwrap();
     // FakeDevice replies with Error for unsupported major in Hello payload.
     device.poll().unwrap();
     // Host session was not in handshaking; just ensure device recorded an error metric.

@@ -1,0 +1,20 @@
+# Second Linux board profile: Raspberry Pi HDMI framebuffer (host sim geometry).
+# Physical Pi measurement is not claimed here.
+id: pi4-hdmi
+status: sim-baseline
+source: project-defined HDMI framebuffer peer
+mcu: bcm2711
+flash_bytes: 1
+psram_bytes: 1
+usb: none
+baud_default: 1
+display: {width: 640, height: 480, format: RGB565, rotation: 0, bus: hdmi, controller: sim}
+touch: false
+ota: false
+color_fps: true
+max_framebuffer_bytes: 1228800
+min_internal_free_bytes: 1
+min_internal_largest_block_bytes: 1
+max_psram_used_bytes: 1
+dma_align_bytes: 1
+reset_strategy: none

@@ -1,7 +1,7 @@
 use mdc_protocol::{
     encode_control, encode_frame_begin, encode_frame_chunk, encode_frame_commit,
-    encode_frame_payload, encode_tile_payload, Ack, Capabilities, ErrorPayload, Hello,
-    InputEvent, MessageType, OtaCommand, Packet, Surface, VERSION,
+    encode_frame_payload, encode_tile_payload, Ack, Capabilities, ErrorPayload, Hello, InputEvent,
+    MessageType, OtaCommand, Packet, Surface, VERSION,
 };
 use mdc_transport::Transport;
 use std::collections::BTreeMap;
@@ -362,12 +362,17 @@ pub enum ManagerEvent {
     Connected(String),
     Disconnected(String),
     /// Active endpoint replaced; old Session ACKs must not affect the new one.
-    EndpointSwitched { device_id: String },
+    EndpointSwitched {
+        device_id: String,
+    },
     Input {
         device_id: String,
         event: InputEvent,
     },
-    Error { device_id: String, message: String },
+    Error {
+        device_id: String,
+        message: String,
+    },
 }
 #[derive(Default)]
 pub struct DeviceManager {
@@ -426,7 +431,9 @@ impl DeviceManager {
         endpoint: impl Into<String>,
     ) -> Option<String> {
         let endpoint = endpoint.into();
-        let previous = self.active_endpoints.insert(device_id.to_string(), endpoint);
+        let previous = self
+            .active_endpoints
+            .insert(device_id.to_string(), endpoint);
         if let Some(device) = self.devices.get_mut(device_id) {
             device.state = ConnectionState::Ready;
         }
@@ -576,8 +583,7 @@ impl<T: Transport> Session<T> {
                     return Err(CoreError::AckTimeout);
                 }
                 if self.config.heartbeat_ms > 0
-                    && virtual_ms.saturating_sub(self.last_heartbeat_ms)
-                        >= self.config.heartbeat_ms
+                    && virtual_ms.saturating_sub(self.last_heartbeat_ms) >= self.config.heartbeat_ms
                 {
                     self.write_packet(MessageType::Ping, Vec::new())?;
                     self.last_heartbeat_ms = virtual_ms;
@@ -771,9 +777,13 @@ impl<T: Transport> Session<T> {
         }
         let device = self.device.as_ref().ok_or(CoreError::NotReady)?;
         device.ota()?;
-        let payload =
-            encode_control(&command).map_err(|e| CoreError::Protocol(e.to_string()))?;
+        let payload = encode_control(&command).map_err(|e| CoreError::Protocol(e.to_string()))?;
         self.write_packet(MessageType::Ota, payload)
+    }
+    /// v1 不发送 Scene。旧设备继续只用 Frame/Tile，调用得到 Unsupported。
+    pub fn send_scene(&mut self, _payload: &[u8]) -> Result<u32, CoreError> {
+        let _ = (self.state, _payload);
+        Err(CoreError::Unsupported)
     }
     fn alloc_request_id(&mut self) -> Result<u32, CoreError> {
         let id = self.next_request_id;
@@ -873,8 +883,7 @@ impl<T: Transport> Session<T> {
                 Ok(())
             }
             MessageType::Error => {
-                let _err: Result<ErrorPayload, _> =
-                    mdc_protocol::decode_control(&packet.payload);
+                let _err: Result<ErrorPayload, _> = mdc_protocol::decode_control(&packet.payload);
                 Err(CoreError::Protocol("device returned error".into()))
             }
             MessageType::Input => {
@@ -888,10 +897,7 @@ impl<T: Transport> Session<T> {
                 if let Some(mgr) = &self.manager {
                     mgr.lock()
                         .map_err(|e| CoreError::Transport(e.to_string()))?
-                        .push_event(ManagerEvent::Input {
-                            device_id,
-                            event,
-                        });
+                        .push_event(ManagerEvent::Input { device_id, event });
                 }
                 Ok(())
             }
@@ -1057,8 +1063,8 @@ mod tests {
             max_fps: 30,
         };
         let mut d = Device::new(caps);
-        assert_eq!(d.update_surface_geometry("main", 2, 2).unwrap(), false);
-        assert_eq!(d.update_surface_geometry("main", 480, 320).unwrap(), true);
+        assert!(!d.update_surface_geometry("main", 2, 2).unwrap());
+        assert!(d.update_surface_geometry("main", 480, 320).unwrap());
         assert_eq!(d.capabilities.surfaces[0].width, 480);
         assert_eq!(d.capabilities.surfaces[0].stride, 960);
         assert_eq!(d.surfaces[0].info.height, 320);
@@ -1133,6 +1139,12 @@ mod tests {
         ota.confirm(false);
         assert_eq!(ota.state, OtaState::Failed);
         assert!(!ota.render_frozen);
+    }
+    #[test]
+    fn scene_api_stays_unsupported_on_v1() {
+        let (link, _) = MemoryLink::pair();
+        let mut session = Session::new(link);
+        assert_eq!(session.send_scene(&[1, 2, 3]), Err(CoreError::Unsupported));
     }
     #[test]
     fn frame_transaction_accepts_out_of_order_and_idempotent_chunks() {
@@ -1435,12 +1447,7 @@ mod tests {
         assert_eq!(frame.kind, MessageType::Frame);
         assert_eq!(session.pending_request_count(), 1);
         assert_eq!(
-            session
-                .device
-                .as_ref()
-                .unwrap()
-                .surfaces[0]
-                .in_flight(),
+            session.device.as_ref().unwrap().surfaces[0].in_flight(),
             Some(1)
         );
         device_link
@@ -1464,11 +1471,7 @@ mod tests {
             .unwrap();
         session.poll().unwrap();
         assert_eq!(session.pending_request_count(), 0);
-        assert!(session
-            .device
-            .as_ref()
-            .unwrap()
-            .surfaces[0]
+        assert!(session.device.as_ref().unwrap().surfaces[0]
             .in_flight()
             .is_none());
         session.disconnect();

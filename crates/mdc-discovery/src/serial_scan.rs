@@ -1,7 +1,9 @@
 //! Serial port candidate discovery (AgentDeck port patterns, reimplemented).
 
 use crate::{Candidate, DiscoveryProvider, Endpoint};
-use mdc_transport::{is_candidate_serial_port, FOREIGN_DENYLIST_COOLDOWN_MS, FOREIGN_MAX_PROBE_FAILURES};
+use mdc_transport::{
+    is_candidate_serial_port, FOREIGN_DENYLIST_COOLDOWN_MS, FOREIGN_MAX_PROBE_FAILURES,
+};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 

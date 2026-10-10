@@ -35,6 +35,9 @@ Board profiles:
 ```sh
 python3 tools/validate_board.py boards/sim/esp32-jc3248w535-sim/board.yaml
 python3 tools/validate_board.py boards/sim/linux-virt/board.yaml
+python3 tools/validate_board.py boards/linux/pi4-hdmi/board.yaml
+python3 tools/validate_board.py boards/linux/waveshare-eink/board.yaml
+node --test examples/electron-demo/demo-logic.test.js
 python3 tools/validate_board.py boards/esp32/test-valid/board.yaml
 python3 tools/validate_board.py boards/esp32/jc3248w535/board.yaml  # expected failure: unverified unknowns
 python3 -m unittest discover -s tools -p 'test_*.py'

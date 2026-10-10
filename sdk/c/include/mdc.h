@@ -44,6 +44,12 @@ int mdc_session_needs_full_frame(const MdcSession* session);
 /** Copy NUL-terminated device id into buf; returns bytes written (excl. NUL) or negative. */
 int mdc_session_device_id(MdcSession* session, char* buf, size_t buflen);
 
+/**
+ * v1 Scene API. Always returns -5 (unsupported). Does not write a Scene packet.
+ * `bytes` may be NULL when `len` is 0.
+ */
+int mdc_session_send_scene(MdcSession* session, const uint8_t* bytes, size_t len);
+
 /** Free a heap buffer returned by future helpers (no-op placeholder for symmetry). */
 void mdc_free(void* ptr);
 

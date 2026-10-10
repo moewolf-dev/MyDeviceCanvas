@@ -58,6 +58,7 @@ class DisplayBackend {
 class SimDisplay : public DisplayBackend {
  public:
   SimDisplay(std::uint16_t width, std::uint16_t height);
+  bool resize(std::uint16_t width, std::uint16_t height);
   std::uint16_t width() const override { return width_; }
   std::uint16_t height() const override { return height_; }
   bool flush_rect(std::uint16_t x, std::uint16_t y, std::uint16_t w, std::uint16_t h,
@@ -75,6 +76,7 @@ class SimDisplay : public DisplayBackend {
 class FrameStore {
  public:
   FrameStore(std::uint16_t width, std::uint16_t height);
+  bool resize(std::uint16_t width, std::uint16_t height);
   bool stage(const std::uint8_t* bytes, std::size_t length);
   bool commit();
   const std::vector<std::uint8_t>& active() const { return active_; }
@@ -90,6 +92,7 @@ class SessionDispatcher {
  public:
   SessionDispatcher(DisplayBackend& display, ReplyFn reply, PeerIdentity identity = {});
   bool handle(const Packet& packet);
+  void sync_geometry();
   bool busy() const { return transport_busy_; }
   void set_transport_busy(bool busy) { transport_busy_ = busy; }
   const PeerIdentity& identity() const { return identity_; }

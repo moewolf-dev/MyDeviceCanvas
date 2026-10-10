@@ -22,6 +22,15 @@ SessionDispatcher::SessionDispatcher(DisplayBackend& display, ReplyFn reply, Pee
       identity_(std::move(identity)),
       store_(display.width(), display.height()) {}
 
+void SessionDispatcher::sync_geometry() {
+  if (!store_.resize(display_.width(), display_.height())) {
+    store_ = FrameStore(display_.width(), display_.height());
+  }
+  chunk_staging_.clear();
+  chunk_expected_ = 0;
+  current_frame_id_ = 0;
+}
+
 bool SessionDispatcher::handle(const Packet& packet) {
   if (transport_busy_ && packet.type != MessageType::Ping) return false;
   switch (packet.type) {

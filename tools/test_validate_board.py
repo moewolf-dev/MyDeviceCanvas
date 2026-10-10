@@ -23,6 +23,20 @@ class BoardValidationTests(unittest.TestCase):
             validate(ROOT / "boards/sim/esp32-jc3248w535-sim/board.yaml"), []
         )
 
+    def test_linux_hdmi_and_eink_profiles(self):
+        self.assertEqual(validate(ROOT / "boards/linux/pi4-hdmi/board.yaml"), [])
+        self.assertEqual(validate(ROOT / "boards/linux/waveshare-eink/board.yaml"), [])
+
+    def test_eink_without_color_fps_false_is_rejected(self):
+        text = (ROOT / "boards/linux/waveshare-eink/board.yaml").read_text(encoding="utf-8")
+        bad = ROOT / "boards/linux/waveshare-eink/board.yaml.tmp-test"
+        bad.write_text(text.replace("color_fps: false", "color_fps: true"), encoding="utf-8")
+        try:
+            errors = validate(bad)
+        finally:
+            bad.unlink(missing_ok=True)
+        self.assertTrue(any("color_fps" in error for error in errors), errors)
+
     def test_pin_collision_detected(self):
         # reuse parser via temporary content would be heavy; ensure sim has no collision
         errors = validate(ROOT / "boards/sim/esp32-jc3248w535-sim/board.yaml")

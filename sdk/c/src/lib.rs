@@ -120,6 +120,8 @@ pub unsafe extern "C" fn mdc_session_send_tile(
     }
 }
 
+/// # Safety
+/// `session` must be null or a pointer from [`mdc_session_create`] that has not been destroyed.
 #[no_mangle]
 pub unsafe extern "C" fn mdc_session_current_frame_id(session: *const MdcSession) -> u64 {
     if session.is_null() {
@@ -145,6 +147,8 @@ pub unsafe extern "C" fn mdc_session_surface_size(
     0
 }
 
+/// # Safety
+/// `session` must be null or a pointer from [`mdc_session_create`] that has not been destroyed.
 #[no_mangle]
 pub unsafe extern "C" fn mdc_session_needs_full_frame(session: *const MdcSession) -> c_int {
     if session.is_null() {
@@ -181,6 +185,33 @@ pub unsafe extern "C" fn mdc_session_device_id(
 }
 
 /// # Safety
+/// `session` must be null or a pointer from [`mdc_session_create`].
+/// `bytes` must be readable for `len` when non-null. v1 never encodes Scene.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_send_scene(
+    session: *mut MdcSession,
+    bytes: *const u8,
+    len: usize,
+) -> c_int {
+    if session.is_null() {
+        return -1;
+    }
+    if bytes.is_null() && len != 0 {
+        return -1;
+    }
+    let payload = if bytes.is_null() {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(bytes, len)
+    };
+    match (*session).session.send_scene(payload) {
+        Err(mdc_core::CoreError::Unsupported) => -5,
+        Ok(_) => 0,
+        Err(_) => -3,
+    }
+}
+
+/// # Safety
 /// Currently a no-op placeholder for ABI symmetry; only NULL is valid until helpers allocate.
 #[no_mangle]
 pub unsafe extern "C" fn mdc_free(ptr: *mut std::ffi::c_void) {
@@ -202,7 +233,10 @@ mod tests {
             assert_eq!((w, h), (480, 320));
             let len = usize::from(w) * usize::from(h) * 2;
             let frame = vec![0x11u8; len];
-            assert_eq!(mdc_session_send_frame(session, frame.as_ptr(), frame.len()), 0);
+            assert_eq!(
+                mdc_session_send_frame(session, frame.as_ptr(), frame.len()),
+                0
+            );
             let fid = mdc_session_current_frame_id(session);
             assert!(fid > 0);
             assert_eq!(mdc_session_needs_full_frame(session), 0);
@@ -214,6 +248,8 @@ mod tests {
             let mut buf = [0i8; 64];
             let n = mdc_session_device_id(session, buf.as_mut_ptr(), buf.len());
             assert!(n > 0);
+            assert_eq!(mdc_session_send_scene(session, std::ptr::null(), 0), -5);
+            mdc_session_destroy(std::ptr::null_mut());
             mdc_session_destroy(session);
         }
     }

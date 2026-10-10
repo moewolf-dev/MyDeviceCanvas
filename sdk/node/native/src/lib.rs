@@ -69,20 +69,11 @@ struct SimSession {
     manager: Arc<Mutex<DeviceManager>>,
 }
 
+#[derive(Default)]
 struct State {
     disposed: bool,
     sim: Option<SimSession>,
     last_frame: Option<Vec<u8>>,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            disposed: false,
-            sim: None,
-            last_frame: None,
-        }
-    }
 }
 
 fn ensure_sim(state: &mut State) -> Result<()> {
@@ -173,6 +164,12 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
 #[napi]
 pub struct NativeManager {
     state: Mutex<State>,
+}
+
+impl Default for NativeManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[napi]

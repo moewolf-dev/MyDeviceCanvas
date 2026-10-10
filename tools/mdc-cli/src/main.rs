@@ -175,11 +175,10 @@ fn inspect_json(manager: &DeviceManager, metrics: Option<&SimMetrics>) -> String
     .unwrap_or_else(|_| "{}".into())
 }
 
+type SimSession = (Session<MemoryLink>, FakeDevice, Arc<Mutex<DeviceManager>>);
+
 /// Handshake FakeDevice over MemoryLink; returns host session, peer, and shared manager.
-fn open_sim(
-    board: &str,
-) -> Result<(Session<MemoryLink>, FakeDevice, Arc<Mutex<DeviceManager>>), Box<dyn std::error::Error>>
-{
+fn open_sim(board: &str) -> Result<SimSession, Box<dyn std::error::Error>> {
     let profile = BoardProfile::from_board_id(board);
     let (host, mut device) = FakeDevice::pair(profile);
     let manager = Arc::new(Mutex::new(DeviceManager::new()));
@@ -237,10 +236,7 @@ fn cmd_simulate(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn with_sim_or_empty<F>(
-    opts: &GlobalOpts,
-    f: F,
-) -> Result<(), Box<dyn std::error::Error>>
+fn with_sim_or_empty<F>(opts: &GlobalOpts, f: F) -> Result<(), Box<dyn std::error::Error>>
 where
     F: FnOnce(&DeviceManager, Option<&SimMetrics>) -> Result<(), Box<dyn std::error::Error>>,
 {
@@ -293,12 +289,12 @@ fn open_serial_session(
             t
         }
         Err(e) => {
-            let permanent = e.to_string().contains("Permission") || e.to_string().contains("Access");
+            let permanent =
+                e.to_string().contains("Permission") || e.to_string().contains("Access");
             let backoff = guard.note_failure(permanent);
-            return Err(format!(
-                "serial open failed ({e}); retry after {backoff}ms (gen={gen})"
-            )
-            .into());
+            return Err(
+                format!("serial open failed ({e}); retry after {backoff}ms (gen={gen})").into(),
+            );
         }
     };
     if guard.is_stale(gen) {
@@ -314,10 +310,7 @@ fn open_serial_session(
     Err("serial peer did not complete handshake".into())
 }
 
-fn cmd_send_image(
-    opts: &GlobalOpts,
-    path: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_send_image(opts: &GlobalOpts, path: &str) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "serial")]
     if let Some(port) = &opts.port {
         let bytes = load_rgb565(Path::new(path), TARGET_WIDTH, TARGET_HEIGHT)?;
@@ -415,10 +408,7 @@ fn cmd_send_image(
     Ok(())
 }
 
-fn cmd_benchmark(
-    opts: &GlobalOpts,
-    frames: u32,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_benchmark(opts: &GlobalOpts, frames: u32) -> Result<(), Box<dyn std::error::Error>> {
     if opts.address.is_some() && !opts.sim {
         eprintln!("benchmark over TCP requires a live peer; use --sim for local FakeDevice");
         std::process::exit(2);
@@ -476,20 +466,14 @@ fn cmd_discover(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cmd_flash_sim(
-    opts: &GlobalOpts,
-    image: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_flash_sim(opts: &GlobalOpts, image: &str) -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(image);
     let bytes = std::fs::read(path)?;
     let hash = format!("{:x}", Sha256::digest(&bytes));
     let board = opts.board.clone();
     let _flags = flags_for_board(&board).ok_or("unknown board for flash flags")?;
     let plan = InstallPlan {
-        port: opts
-            .port
-            .clone()
-            .unwrap_or_else(|| "sim:///flash".into()),
+        port: opts.port.clone().unwrap_or_else(|| "sim:///flash".into()),
         artifact: Artifact {
             board_id: board.clone(),
             mcu: "esp32-s3".into(),
@@ -545,10 +529,7 @@ fn gate_network_display(
     load_pairing_store()
         .authorize_display_control(device_id, endpoint)
         .map_err(|e| -> Box<dyn std::error::Error> {
-            format!(
-                "{e}; run `mdc pair {device_id} <token>` before network display control"
-            )
-            .into()
+            format!("{e}; run `mdc pair {device_id} <token>` before network display control").into()
         })
 }
 
@@ -573,7 +554,11 @@ fn cmd_unpair(device_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cmd_authorize(device_id: &str, kind: &str, value: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_authorize(
+    device_id: &str,
+    kind: &str,
+    value: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let store = load_pairing_store();
     let endpoint = match kind {
         "ws" | "websocket" => Endpoint::WebSocket {
@@ -582,9 +567,7 @@ fn cmd_authorize(device_id: &str, kind: &str, value: &str) -> Result<(), Box<dyn
         "tcp" => Endpoint::Tcp {
             address: value.into(),
         },
-        "serial" | "port" => Endpoint::Serial {
-            port: value.into(),
-        },
+        "serial" | "port" => Endpoint::Serial { port: value.into() },
         "memory" => Endpoint::Memory {
             label: value.into(),
         },
@@ -624,7 +607,10 @@ fn cmd_switch_demo(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> 
         height: 1,
         bytes: vec![0, 0],
     });
-    assert!(tile_err.is_err(), "tile must be blocked until full frame ACK");
+    assert!(
+        tile_err.is_err(),
+        "tile must be blocked until full frame ACK"
+    );
     session.send_frame(Frame {
         surface_id: "main".into(),
         width: w,

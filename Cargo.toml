@@ -14,6 +14,7 @@ members = [
   "sdk/node/native",
   "sdk/c",
   "examples/rust-hello",
+  "examples/tauri-demo",
   "tests/compatibility",
 ]
 resolver = "2"

@@ -1,24 +1,15 @@
-# Tauri Demo (skeleton)
+# Tauri command layer
 
-This example is intentionally minimal: a Tauri app would depend on the **Rust SDK crates** (`mdc-core`, `mdc-transport`, `mdc-simulator`) from the workspace rather than re-implementing the protocol.
+`mdc-tauri-demo` is the Rust API a Tauri shell should call. It depends on `mdc-core` and `mdc-simulator` and does not encode protocol packets itself.
 
-## Suggested layout
-
-```text
-examples/tauri-demo/
-  src-tauri/Cargo.toml   # mdc-core = { path = "../../../crates/mdc-core" }
-  src-tauri/src/lib.rs   # commands wrapping Session + FakeDevice for --sim
-  src/                   # UI shell
+```sh
+cargo test -p mdc-tauri-demo
 ```
 
-## Dependency
+`switch_sim_endpoint` cancels the previous session channel. Tiles fail until a full frame is displayed. `inspector()` returns counters and the last error string, not pixel buffers.
 
-```toml
-[dependencies]
-mdc-core = { path = "../../../crates/mdc-core" }
-mdc-simulator = { path = "../../../crates/mdc-simulator" }
-```
+The WebView package is not vendored here. A Tauri app adds this crate as a dependency and forwards the same methods through commands.
 
-Use `FakeDevice::pair` for desktop sim development; swap transport for TCP/serial when hardware is available. Physical: pending.
+Physical transports stay pending.
 
 License: Apache-2.0

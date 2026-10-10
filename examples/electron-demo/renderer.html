@@ -1,3 +1,34 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>MyDeviceCanvas Inspector</title><style>body{font:16px system-ui;margin:32px;background:#10131a;color:#e8edf5}button{padding:10px 14px;margin-right:8px}pre{background:#1c2330;padding:16px;min-height:180px;white-space:pre-wrap}</style></head>
-<body><h1>MyDeviceCanvas</h1><p>Electron uses the public Node SDK in the main process.</p><button id="refresh">Refresh devices</button><button id="dispose">Dispose</button><pre id="output">No devices loaded.</pre><script type="module">const output=document.querySelector("#output");document.querySelector("#refresh").onclick=async()=>{try{output.textContent=JSON.stringify(await window.mdc.devices(),null,2)}catch(error){output.textContent=error.message}};document.querySelector("#dispose").onclick=async()=>{await window.mdc.dispose();output.textContent="Manager disposed."};</script></body></html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MyDeviceCanvas</title>
+  <style>
+    body { font: 16px system-ui, sans-serif; margin: 24px; background: #10131a; color: #e8edf5; }
+    button, input { padding: 10px 14px; margin: 0 8px 8px 0; }
+    input { width: 220px; }
+    canvas { background: #000; image-rendering: pixelated; border: 1px solid #334; }
+    pre { background: #1c2330; padding: 16px; min-height: 140px; white-space: pre-wrap; }
+    .row { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+  <h1>MyDeviceCanvas</h1>
+  <p>设备 API 在主进程，页面只通过 preload 调用公开 Node SDK。下面的色条是本地预览，发送走 IPC。</p>
+  <div>
+    <button id="connect" type="button">连接模拟器</button>
+    <input id="endpoint" value="sim" aria-label="端点">
+    <button id="connect-endpoint" type="button">连接指定端点</button>
+    <button id="refresh" type="button">刷新设备</button>
+    <button id="bars" type="button">发送色条</button>
+    <button id="tile" type="button">发送 Tile</button>
+    <button id="dispose" type="button">释放</button>
+  </div>
+  <div class="row">
+    <canvas id="preview" width="240" height="120"></canvas>
+    <pre id="output">尚未连接。</pre>
+  </div>
+  <script type="module" src="./renderer.js"></script>
+</body>
+</html>

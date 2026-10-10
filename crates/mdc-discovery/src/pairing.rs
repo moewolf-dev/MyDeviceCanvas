@@ -38,7 +38,11 @@ impl PairingStore {
         Self::default()
     }
 
-    pub fn pair(&mut self, device_id: impl Into<String>, token: impl Into<String>) -> Result<(), PairingError> {
+    pub fn pair(
+        &mut self,
+        device_id: impl Into<String>,
+        token: impl Into<String>,
+    ) -> Result<(), PairingError> {
         let device_id = device_id.into();
         let token = token.into();
         if device_id.is_empty() || token.is_empty() {
@@ -103,7 +107,8 @@ impl PairingStore {
 
     pub fn save_json(&self, path: &Path) -> Result<(), PairingError> {
         let list: Vec<&PairingCredential> = self.by_id.values().collect();
-        let text = serde_json::to_string_pretty(&list).map_err(|e| PairingError::Io(e.to_string()))?;
+        let text =
+            serde_json::to_string_pretty(&list).map_err(|e| PairingError::Io(e.to_string()))?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| PairingError::Io(e.to_string()))?;
         }
@@ -142,10 +147,7 @@ mod tests {
         let serial = Endpoint::Serial {
             port: "/dev/cu.usbmodem1".into(),
         };
-        assert_eq!(
-            store.authorize("dev", &ws),
-            Err(PairingError::NotPaired)
-        );
+        assert_eq!(store.authorize("dev", &ws), Err(PairingError::NotPaired));
         assert!(store.authorize("dev", &serial).is_ok());
         let tcp = Endpoint::Tcp {
             address: "127.0.0.1:9876".into(),
@@ -163,10 +165,7 @@ mod tests {
             Err(PairingError::TokenMismatch)
         );
         assert!(store.revoke("dev"));
-        assert_eq!(
-            store.authorize("dev", &ws),
-            Err(PairingError::NotPaired)
-        );
+        assert_eq!(store.authorize("dev", &ws), Err(PairingError::NotPaired));
     }
 
     #[test]

@@ -7,9 +7,7 @@ use std::time::Duration;
 fn main() {
     let mut args = std::env::args().skip(1);
     let bind = args.next().unwrap_or_else(|| "127.0.0.1:9876".into());
-    let board = args
-        .next()
-        .unwrap_or_else(|| "esp32-jc3248w535-sim".into());
+    let board = args.next().unwrap_or_else(|| "esp32-jc3248w535-sim".into());
     let profile = BoardProfile::from_board_id(&board);
     let listener = TcpListener::bind(&bind).expect("bind");
     println!("mdc-sim-peer listening on {bind} board={board}");

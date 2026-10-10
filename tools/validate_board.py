@@ -104,6 +104,10 @@ def validate(path: Path) -> list[str]:
     if overlap:
         errors.append(f"display/touch pin collision: {sorted(overlap)}")
 
+    fmt = str(values.get("display.format", "")).lower()
+    if fmt in {"eink", "mono", "epaper"} and values.get("color_fps") is not False:
+        errors.append("e-ink/mono profiles must set color_fps: false")
+
     if status in UNVERIFIED_STATUS:
         errors.append(f"status {status}: not physically verified (reference only)")
 

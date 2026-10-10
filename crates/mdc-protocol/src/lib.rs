@@ -600,7 +600,7 @@ mod tests {
 
     #[test]
     fn chunked_frame_begin_chunk_commit_round_trip() {
-        let pixels = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+        let pixels = [1u8, 2, 3, 4, 5, 6, 7, 8];
         let begin = encode_frame_begin("main", 7, 2, 2, 8).unwrap();
         assert_eq!(begin[0], FRAME_PHASE_BEGIN);
         match decode_frame_payload(&begin).unwrap() {
@@ -760,9 +760,6 @@ mod tests {
         assert_eq!(t.h, 1);
 
         let truncated = std::fs::read(dir.join("truncated.bin")).unwrap();
-        assert_eq!(
-            Packet::decode(&truncated, 4096),
-            Err(CodecError::Truncated)
-        );
+        assert_eq!(Packet::decode(&truncated, 4096), Err(CodecError::Truncated));
     }
 }

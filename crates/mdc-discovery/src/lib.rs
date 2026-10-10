@@ -9,12 +9,20 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Endpoint {
-    Serial { port: String },
-    WebSocket { address: String },
+    Serial {
+        port: String,
+    },
+    WebSocket {
+        address: String,
+    },
     /// Raw TCP peer (`host:port`); treated as a network endpoint for pairing.
-    Tcp { address: String },
+    Tcp {
+        address: String,
+    },
     /// In-process / simulator endpoint label (not a network URL).
-    Memory { label: String },
+    Memory {
+        label: String,
+    },
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
@@ -174,10 +182,7 @@ mod tests {
         let mut mdns = MockMdnsProvider::with_defaults();
         let found = mdns.discover();
         assert_eq!(found.len(), 1);
-        assert_eq!(
-            found[0].device_id.as_deref(),
-            Some("sim-esp32-jc3248w535")
-        );
+        assert_eq!(found[0].device_id.as_deref(), Some("sim-esp32-jc3248w535"));
         assert!(found[0]
             .endpoints
             .iter()

@@ -1,0 +1,20 @@
+# E-ink adapter profile. color_fps is false: this board must not claim color-panel FPS.
+# Physical panel timing is not measured.
+id: waveshare-eink
+status: sim-baseline
+source: project-defined e-ink limits
+mcu: bcm2711
+flash_bytes: 1
+psram_bytes: 1
+usb: none
+baud_default: 1
+display: {width: 800, height: 480, format: EINK, rotation: 0, bus: spi, controller: sim}
+touch: false
+ota: false
+color_fps: false
+max_framebuffer_bytes: 1536000
+min_internal_free_bytes: 1
+min_internal_largest_block_bytes: 1
+max_psram_used_bytes: 1
+dma_align_bytes: 1
+reset_strategy: none
