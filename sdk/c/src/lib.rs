@@ -334,6 +334,7 @@ pub unsafe extern "C" fn mdc_session_poll_event(
         return -1;
     }
     let session = &mut *session;
+    let _ = pump(session);
     if session.queued.is_empty() {
         if let Ok(mut manager) = session.manager.lock() {
             session.queued.extend(manager.drain_events());
@@ -500,6 +501,75 @@ mod tests {
         unsafe {
             let mut id = [0i8; 64];
             assert!(mdc_session_device_id(session, id.as_mut_ptr(), id.len()) > 0);
+            mdc_session_destroy(session);
+        }
+        let _ = server.join();
+    }
+
+    #[test]
+    fn tcp_scripted_input_reaches_poll_event() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            let _ = sock.set_read_timeout(Some(Duration::from_millis(50)));
+            let transport = TcpTransport::from_stream(sock).unwrap();
+            let mut device =
+                FakeDevice::from_transport(Box::new(transport), BoardProfile::default());
+            device.emit_input_after_next_frame(InputEvent {
+                surface_id: "main".into(),
+                pointer_id: 1,
+                phase: "down".into(),
+                x: 6,
+                y: 7,
+            });
+            for _ in 0..120 {
+                if device.poll().is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let text = std::ffi::CString::new(addr.to_string()).unwrap();
+        let session = unsafe { mdc_session_connect_tcp(text.as_ptr()) };
+        assert!(!session.is_null());
+        unsafe {
+            let mut width = 0u16;
+            let mut height = 0u16;
+            assert_eq!(
+                mdc_session_surface_size(session, &mut width, &mut height),
+                0
+            );
+            let frame = vec![0u8; usize::from(width) * usize::from(height) * 2];
+            assert_eq!(
+                mdc_session_send_frame(session, frame.as_ptr(), frame.len()),
+                0
+            );
+            let mut saw = false;
+            for _ in 0..40 {
+                let mut kind = 0;
+                let mut device_id = [0i8; 64];
+                let mut phase = [0i8; 16];
+                let mut x = 0u16;
+                let mut y = 0u16;
+                let rc = mdc_session_poll_event(
+                    session,
+                    &mut kind,
+                    device_id.as_mut_ptr(),
+                    device_id.len(),
+                    phase.as_mut_ptr(),
+                    phase.len(),
+                    &mut x,
+                    &mut y,
+                );
+                if rc == 1 && kind == 1 && x == 6 && y == 7 {
+                    saw = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(15));
+            }
+            assert!(saw);
             mdc_session_destroy(session);
         }
         let _ = server.join();

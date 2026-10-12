@@ -24,6 +24,17 @@ public final class MdcSession {
         raw = created
     }
 
+    /// TCP simulator peer (`host:port`). The peer must already be listening.
+    public init(tcp address: String) throws {
+        let created = address.withCString { text in
+            mdc_session_connect_tcp(text)
+        }
+        guard let created else {
+            throw MdcError.createFailed
+        }
+        raw = created
+    }
+
     public func close() {
         guard let raw else { return }
         mdc_session_destroy(raw)

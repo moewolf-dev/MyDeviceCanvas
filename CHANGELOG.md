@@ -14,6 +14,18 @@ All notable host / simulator changes for MyDeviceCanvas. Physical board verifica
 - `AllocationLedger` short soak and a Linux systemd unit contract
 - `mdc sim-accept`: handshake, full frame, tile, bounded inspect, and a failed OTA against `mdc-sim-peer` without changing firmware
 
+## [0.1.3] — Simulator acceptance batch
+
+### Added
+
+- `tools/check.sh` runs `mdc sim-accept` against `mdc-sim-peer` and the ESP-IDF host stub
+- `MDC_PAIRING_STORE` so pairing files do not share one temp path
+- `mdc ota-confirm` installs firmware `2.0.0` on the same connection
+- TCP reconnect blocks Tile until a displayed full frame
+- `mdc-sim-peer --emit-input` delivers one touch after the full frame
+- Node TCP smoke, Swift `MDC_TCP_ADDR` hello, and Electron `planConnection`
+- WebSocket accept path: unpaired display is refused, then a full frame is acknowledged
+
 ## [0.1.1] — Wave 12 host gaps
 
 ### Added

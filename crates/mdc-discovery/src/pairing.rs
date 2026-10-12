@@ -178,4 +178,26 @@ mod tests {
         assert!(loaded.is_paired("a"));
         let _ = std::fs::remove_file(path);
     }
+
+    #[test]
+    fn concurrent_distinct_paths_do_not_clobber() {
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            handles.push(std::thread::spawn(move || {
+                let mut store = PairingStore::new();
+                let id = format!("dev-{i}");
+                store.pair(&id, "tok").unwrap();
+                let path = std::env::temp_dir()
+                    .join(format!("mdc-pair-conc-{}-{i}.json", std::process::id()));
+                store.save_json(&path).unwrap();
+                let loaded = PairingStore::load_json(&path).unwrap();
+                assert!(loaded.is_paired(&id));
+                assert_eq!(loaded.list().len(), 1);
+                let _ = std::fs::remove_file(path);
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
 }

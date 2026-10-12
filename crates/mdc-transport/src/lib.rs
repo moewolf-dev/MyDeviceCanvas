@@ -282,6 +282,21 @@ impl WebSocketTransport {
             tungstenite::client(parsed, stream).map_err(|e| TransportError::Io(e.to_string()))?;
         Ok(Self { socket })
     }
+
+    /// Accept one WebSocket client already taken from a `TcpListener`.
+    pub fn accept(stream: std::net::TcpStream) -> Result<Self, TransportError> {
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .map_err(|e| TransportError::Io(e.to_string()))?;
+        stream
+            .set_write_timeout(Some(std::time::Duration::from_millis(500)))
+            .map_err(|e| TransportError::Io(e.to_string()))?;
+        stream
+            .set_nodelay(true)
+            .map_err(|e| TransportError::Io(e.to_string()))?;
+        let socket = tungstenite::accept(stream).map_err(|e| TransportError::Io(e.to_string()))?;
+        Ok(Self { socket })
+    }
 }
 #[cfg(feature = "websocket")]
 impl Transport for WebSocketTransport {

@@ -49,7 +49,7 @@ c++ -std=c++17 runtime/esp32/tests/vector_test.cpp -o /tmp/mdc_vector_tests
 if [[ -d sdk/node ]]; then
   rm -f sdk/node/mdc-node-native.node
   (cd sdk/node && node --test index.test.js)
-  cargo build -p mdc-node-native
+  cargo build -p mdc-node-native -p mdc-sim-peer
   if [[ -f target/debug/libmdc_node_native.dylib ]]; then
     cp target/debug/libmdc_node_native.dylib sdk/node/mdc-node-native.node
   elif [[ -f target/debug/libmdc_node_native.so ]]; then
@@ -69,6 +69,70 @@ if command -v swiftc >/dev/null 2>&1; then
     sdk/swift/Sources/MdcSession.swift sdk/swift/main.swift \
     -o /tmp/mdc-swift-hello
   /tmp/mdc-swift-hello
+  cargo build -p mdc-sim-peer
+  PEER_PORT="$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)"
+  ./target/debug/mdc-sim-peer "127.0.0.1:${PEER_PORT}" >/tmp/mdc-sim-peer-swift.log 2>&1 &
+  PEER_PID=$!
+  python3 - "$PEER_PORT" <<'PY'
+import socket, sys, time
+port = int(sys.argv[1])
+deadline = time.time() + 2
+while time.time() < deadline:
+    try:
+        sock = socket.create_connection(("127.0.0.1", port), 0.2)
+        sock.close()
+        break
+    except OSError:
+        time.sleep(0.05)
+else:
+    raise SystemExit("sim peer did not listen")
+PY
+  sleep 0.2
+  swiftc -parse-as-library -import-objc-header sdk/c/include/mdc.h \
+    -L target/debug -lmdc_c \
+    -Xlinker -rpath -Xlinker "$ROOT/target/debug" \
+    sdk/swift/Sources/MdcSession.swift sdk/swift/tcp_main.swift \
+    -o /tmp/mdc-swift-tcp
+  MDC_TCP_ADDR="127.0.0.1:${PEER_PORT}" /tmp/mdc-swift-tcp || {
+    kill "$PEER_PID" || true
+    exit 1
+  }
+  kill "$PEER_PID" || true
+fi
+
+cargo build -p mdc -p mdc-sim-peer
+PAIR_STORE="$(mktemp)"
+MDC_PAIRING_STORE="$PAIR_STORE" ./target/debug/mdc sim-accept >/tmp/mdc-sim-accept.json
+python3 - <<'PY'
+import json
+report = json.load(open("/tmp/mdc-sim-accept.json"))
+assert report["ok"] is True
+assert report["peer"] == "mdc-sim-peer", report
+assert report["firmware_after"] == "1.0.0"
+assert report["ota_failed"] is True
+assert report["image_bytes_included"] is False
+print("sim-accept", report["peer"], report["firmware_after"])
+PY
+rm -f "$PAIR_STORE"
+
+if command -v cmake >/dev/null 2>&1; then
+  # Host stub only. A configured IDF_PATH would switch this directory into a device project.
+  env -u IDF_PATH cmake -S runtime/esp32/idf -B /tmp/mdc-idf-stub
+  cmake --build /tmp/mdc-idf-stub
+  ctest --test-dir /tmp/mdc-idf-stub --output-on-failure
+else
+  cc -std=c11 -I runtime/esp32/idf/port \
+    runtime/esp32/idf/main/mdc_app_main.c \
+    runtime/esp32/idf/tests/panel_bringup_test.c \
+    -o /tmp/mdc_panel_bringup_test
+  /tmp/mdc_panel_bringup_test
 fi
 
 echo "check.sh: all host/sim gates passed"

@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain } from "electron";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { MyDeviceCanvas } from "../../sdk/node/index.js";
-import { colorBarsRgb565, formatError, originTile, rejectNonSimEndpoint } from "./demo-logic.js";
+import { colorBarsRgb565, formatError, originTile, planConnection } from "./demo-logic.js";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 let window;
@@ -31,19 +31,18 @@ async function ensureSim() {
 }
 
 ipcMain.handle("mdc:connect", async (_event, requested) => {
-  const rejected = rejectNonSimEndpoint(requested);
-  if (rejected) {
+  const plan = planConnection(requested);
+  if (!plan.ok) {
     endpoint = "";
-    return { ok: false, error: rejected };
+    return { ok: false, error: plan.error };
   }
-  const target = String(requested ?? "sim").trim() || "sim";
   try {
     const active = await ensureSim();
-    if (target.startsWith("tcp:")) {
-      await active.connectTcp(target.slice("tcp:".length));
+    if (plan.mode === "tcp") {
+      await active.connectTcp(plan.address);
     }
     const devices = (await active.devices()).map((device) => device.info);
-    endpoint = target;
+    endpoint = plan.endpoint;
     return { ok: true, endpoint, devices };
   } catch (error) {
     endpoint = "";

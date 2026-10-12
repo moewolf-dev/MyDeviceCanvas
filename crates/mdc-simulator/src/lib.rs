@@ -150,6 +150,9 @@ pub struct FakeDevice {
     ota_active: bool,
     firmware: String,
     pending_version: Option<String>,
+    /// Emitted once after the next displayed full frame. TCP peers use this
+    /// because the host cannot call `emit_input` on another process.
+    input_after_frame: Option<InputEvent>,
 }
 impl FakeDevice {
     pub fn from_transport(link: Box<dyn Transport>, profile: BoardProfile) -> Self {
@@ -176,6 +179,7 @@ impl FakeDevice {
             ota_active: false,
             firmware: "1.0.0".into(),
             pending_version: None,
+            input_after_frame: None,
         }
     }
 
@@ -203,6 +207,26 @@ impl FakeDevice {
     }
     pub fn firmware(&self) -> &str {
         &self.firmware
+    }
+    /// Queue one input event to send after the next displayed full frame.
+    pub fn emit_input_after_next_frame(&mut self, event: InputEvent) {
+        self.input_after_frame = Some(event);
+    }
+    /// TCP peer helper: one `down` event after the next displayed full frame.
+    pub fn emit_down_after_next_frame(&mut self, x: u16, y: u16) {
+        self.emit_input_after_next_frame(InputEvent {
+            surface_id: "main".into(),
+            pointer_id: 1,
+            phase: "down".into(),
+            x,
+            y,
+        });
+    }
+    fn flush_scripted_input(&mut self) -> Result<(), SimError> {
+        if let Some(event) = self.input_after_frame.take() {
+            return self.emit_input(event);
+        }
+        Ok(())
     }
     pub fn pending_version(&self) -> Option<&str> {
         self.pending_version.as_deref()
@@ -424,7 +448,8 @@ impl FakeDevice {
                 self.current_frame_id = frame_id;
                 self.assembler = None;
                 self.metrics.frames_received = self.metrics.frames_received.saturating_add(1);
-                self.ack(packet.request_id, frame_id, true, true)
+                self.ack(packet.request_id, frame_id, true, true)?;
+                self.flush_scripted_input()
             }
             FramePayload::Begin {
                 surface_id,
@@ -470,7 +495,8 @@ impl FakeDevice {
                         self.current_frame_id = frame_id;
                         self.metrics.frames_received =
                             self.metrics.frames_received.saturating_add(1);
-                        self.ack(packet.request_id, frame_id, true, true)
+                        self.ack(packet.request_id, frame_id, true, true)?;
+                        self.flush_scripted_input()
                     }
                     Err(TransactionNack::Incomplete) => {
                         self.reply_error(packet.request_id, "E_INCOMPLETE", "incomplete frame")
@@ -764,6 +790,47 @@ mod tests {
                 event,
                 ..
             } if event.phase == "down"
+        )));
+    }
+
+    #[test]
+    fn scripted_input_follows_displayed_frame() {
+        use mdc_core::{DeviceManager, Frame, ManagerEvent, Session};
+        use std::sync::{Arc, Mutex};
+        let profile = BoardProfile {
+            width: 2,
+            height: 2,
+            touch: true,
+            ..BoardProfile::default()
+        };
+        let (host, mut device) = FakeDevice::pair(profile);
+        device.emit_input_after_next_frame(InputEvent {
+            surface_id: "main".into(),
+            pointer_id: 1,
+            phase: "down".into(),
+            x: 6,
+            y: 7,
+        });
+        let manager = Arc::new(Mutex::new(DeviceManager::new()));
+        let mut session = Session::new(host);
+        session.set_manager(manager.clone());
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![0; 8],
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        let events: Vec<_> = manager.lock().unwrap().drain_events().collect();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ManagerEvent::Input { event, .. } if event.x == 6 && event.y == 7 && event.phase == "down"
         )));
     }
 

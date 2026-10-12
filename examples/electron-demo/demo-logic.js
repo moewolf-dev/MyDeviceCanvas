@@ -40,6 +40,26 @@ export function rejectNonSimEndpoint(endpoint) {
   return `端点 ${target} 未打开。本演示只通过公开 SDK 连接模拟器；串口和网络地址不会被静默打开。`;
 }
 
+/**
+ * Decide how the main process connects. Serial paths are rejected here and
+ * never produce a port to open.
+ */
+export function planConnection(endpoint) {
+  const rejected = rejectNonSimEndpoint(endpoint);
+  if (rejected) {
+    return { ok: false, error: rejected, openedPort: false };
+  }
+  const target = String(endpoint ?? "sim").trim() || "sim";
+  if (target.startsWith("tcp:")) {
+    const address = target.slice("tcp:".length);
+    if (!address) {
+      return { ok: false, error: "tcp 地址为空", openedPort: false };
+    }
+    return { ok: true, mode: "tcp", address, endpoint: target, openedPort: false };
+  }
+  return { ok: true, mode: "sim", endpoint: target, openedPort: false };
+}
+
 export function formatError(error) {
   if (error && typeof error.message === "string" && error.message.length > 0) {
     return error.message;

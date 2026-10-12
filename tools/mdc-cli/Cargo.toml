@@ -11,6 +11,7 @@ path = "src/main.rs"
 [features]
 default = ["serial"]
 serial = ["mdc-transport/serial"]
+websocket = ["mdc-transport/websocket"]
 
 [dependencies]
 mdc-core = { path = "../../crates/mdc-core" }

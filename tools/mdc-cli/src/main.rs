@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -521,7 +522,11 @@ fn cmd_flash_sim(opts: &GlobalOpts, image: &str) -> Result<(), Box<dyn std::erro
 }
 
 fn pairing_path() -> std::path::PathBuf {
-    std::env::temp_dir().join("mdc-pairing-store.json")
+    // MDC_PAIRING_STORE 让每次验收使用自己的文件，避免并行测试覆盖同一份凭证。
+    match std::env::var("MDC_PAIRING_STORE") {
+        Ok(path) if !path.is_empty() => std::path::PathBuf::from(path),
+        _ => std::env::temp_dir().join("mdc-pairing-store.json"),
+    }
 }
 
 fn load_pairing_store() -> PairingStore {
@@ -702,20 +707,36 @@ struct AcceptReport {
     inspect_bytes: usize,
 }
 
+#[derive(Clone, Copy)]
+struct InProcessPeer {
+    sessions: usize,
+    emit_input: bool,
+}
+
 enum PeerLaunch {
     /// `target/debug/mdc-sim-peer` or `MDC_SIM_PEER`.
     Binary(PathBuf),
     /// Same FakeDevice TCP loop, used when the peer binary is not built yet.
-    InProcess,
+    InProcess(InProcessPeer),
+}
+
+#[derive(Clone, Copy)]
+enum OtaGoal {
+    /// Bad chunk rolls back; installed firmware stays put.
+    Rollback,
+    /// begin + good chunk + confirm installs the pending version.
+    Install,
 }
 
 struct PeerStop {
     child: Option<Child>,
     thread: Option<thread::JoinHandle<()>>,
+    stop: Arc<AtomicBool>,
 }
 
 impl PeerStop {
     fn stop(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -728,6 +749,7 @@ impl PeerStop {
 
 impl Drop for PeerStop {
     fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -761,21 +783,49 @@ fn locate_sim_peer() -> Option<PathBuf> {
     None
 }
 
-/// One-connection FakeDevice server. Matches `tools/mdc-sim-peer` so the CLI
-/// can accept without a second process.
-fn serve_one_peer(listener: TcpListener, board: String) {
+/// FakeDevice TCP loop shared with `tools/mdc-sim-peer`.
+/// `sessions` is how many connections to serve before the thread exits.
+fn serve_peer(
+    listener: TcpListener,
+    board: String,
+    sessions: usize,
+    emit_input: bool,
+    stop: Arc<AtomicBool>,
+) {
+    let _ = listener.set_nonblocking(true);
     let profile = BoardProfile::from_board_id(&board);
-    let Ok((stream, _)) = listener.accept() else {
-        return;
-    };
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(50)));
-    let Ok(transport) = TcpTransport::from_stream(stream) else {
-        return;
-    };
-    let mut device = FakeDevice::from_transport(Box::new(transport), profile);
-    while let Ok(()) = device.poll() {
-        thread::sleep(Duration::from_millis(5));
+    let mut accepted = 0usize;
+    while accepted < sessions.max(1) && !stop.load(Ordering::Relaxed) {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                accepted += 1;
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+                let _ = stream.set_write_timeout(Some(Duration::from_millis(50)));
+                let Ok(transport) = TcpTransport::from_stream(stream) else {
+                    continue;
+                };
+                let mut device = FakeDevice::from_transport(Box::new(transport), profile.clone());
+                if emit_input {
+                    device.emit_input_after_next_frame(mdc_protocol::InputEvent {
+                        surface_id: "main".into(),
+                        pointer_id: 1,
+                        phase: "down".into(),
+                        x: 6,
+                        y: 7,
+                    });
+                }
+                while !stop.load(Ordering::Relaxed) {
+                    match device.poll() {
+                        Ok(()) => thread::sleep(Duration::from_millis(5)),
+                        Err(_) => break,
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => break,
+        }
     }
 }
 
@@ -784,17 +834,28 @@ fn start_peer(
     launch: PeerLaunch,
 ) -> Result<(String, String, PeerStop), Box<dyn std::error::Error>> {
     match launch {
-        PeerLaunch::InProcess => {
+        PeerLaunch::InProcess(options) => {
             let listener = TcpListener::bind("127.0.0.1:0")?;
             let address = listener.local_addr()?.to_string();
             let board = board.to_string();
-            let thread = thread::spawn(move || serve_one_peer(listener, board));
+            let stop = Arc::new(AtomicBool::new(false));
+            let stop_flag = stop.clone();
+            let thread = thread::spawn(move || {
+                serve_peer(
+                    listener,
+                    board,
+                    options.sessions,
+                    options.emit_input,
+                    stop_flag,
+                );
+            });
             Ok((
                 address,
                 "in-process".into(),
                 PeerStop {
                     child: None,
                     thread: Some(thread),
+                    stop,
                 },
             ))
         }
@@ -815,6 +876,7 @@ fn start_peer(
                 PeerStop {
                     child: Some(child),
                     thread: None,
+                    stop: Arc::new(AtomicBool::new(false)),
                 },
             ))
         }
@@ -866,12 +928,53 @@ fn pump_until_protocol_error(
     Err("timed out waiting for ota error".into())
 }
 
+fn isolated_pairing_path() -> PathBuf {
+    if let Ok(path) = std::env::var("MDC_PAIRING_STORE") {
+        if !path.is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    std::env::temp_dir().join(format!(
+        "mdc-pairing-{}-{}.json",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+fn ensure_paired_at(
+    path: &Path,
+    device_id: &str,
+    token: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut store = PairingStore::load_json(path).unwrap_or_default();
+    if !store.is_paired(device_id) {
+        store.pair(device_id, token)?;
+        store.save_json(path)?;
+    }
+    Ok(())
+}
+
+fn authorize_at(
+    path: &Path,
+    device_id: &str,
+    endpoint: &Endpoint,
+) -> Result<(), Box<dyn std::error::Error>> {
+    PairingStore::load_json(path)
+        .unwrap_or_default()
+        .authorize_display_control(device_id, endpoint)
+        .map_err(|error| -> Box<dyn std::error::Error> { error.to_string().into() })
+}
+
 fn run_sim_accept(
     board: &str,
     launch: PeerLaunch,
+    goal: OtaGoal,
 ) -> Result<AcceptReport, Box<dyn std::error::Error>> {
     let (address, peer_name, peer) = start_peer(board, launch)?;
-    let result = accept_on(board, &address, &peer_name);
+    let store = isolated_pairing_path();
+    let result = accept_on(board, &address, &peer_name, &store, goal);
+    let _ = std::fs::remove_file(&store);
     // Session is already dropped, so the peer sees the socket close before join.
     peer.stop();
     result
@@ -881,6 +984,8 @@ fn accept_on(
     board: &str,
     address: &str,
     peer_name: &str,
+    store: &Path,
+    goal: OtaGoal,
 ) -> Result<AcceptReport, Box<dyn std::error::Error>> {
     let transport = connect_tcp(address)?;
     let manager = Arc::new(Mutex::new(DeviceManager::new()));
@@ -911,14 +1016,9 @@ fn accept_on(
             format!("sim-accept needs an OTA-capable board; {board} reported ota=false").into(),
         );
     }
-    {
-        let mut store = load_pairing_store();
-        if !store.is_paired(&device_id) {
-            store.pair(&device_id, "sim-accept")?;
-            store.save_json(&pairing_path())?;
-        }
-    }
-    gate_network_display(
+    ensure_paired_at(store, &device_id, "sim-accept")?;
+    authorize_at(
+        store,
         &device_id,
         &Endpoint::Tcp {
             address: address.to_string(),
@@ -961,26 +1061,60 @@ fn accept_on(
         sha256: Some("0".repeat(64)),
     })?;
     pump_until_idle(&mut session)?;
-    session.send_ota(OtaCommand {
-        action: "chunk".into(),
-        version: None,
-        size: None,
-        sha256: Some("bad".into()),
-    })?;
-    let ota_error = pump_until_protocol_error(&mut session)?;
-    if !ota_error.contains("E_OTA") {
-        return Err(format!("unexpected ota failure: {ota_error}").into());
-    }
-    session.refresh_capabilities()?;
-    pump_until_idle(&mut session)?;
-    let firmware_after = session
-        .device
-        .as_ref()
-        .map(|d| d.capabilities.firmware.clone())
-        .unwrap_or_default();
-    if firmware_after != firmware_before {
-        return Err(format!("firmware changed from {firmware_before} to {firmware_after}").into());
-    }
+    let (ota_failed, firmware_after) = match goal {
+        OtaGoal::Rollback => {
+            session.send_ota(OtaCommand {
+                action: "chunk".into(),
+                version: None,
+                size: None,
+                sha256: Some("bad".into()),
+            })?;
+            let ota_error = pump_until_protocol_error(&mut session)?;
+            if !ota_error.contains("E_OTA") {
+                return Err(format!("unexpected ota failure: {ota_error}").into());
+            }
+            session.refresh_capabilities()?;
+            pump_until_idle(&mut session)?;
+            let firmware_after = session
+                .device
+                .as_ref()
+                .map(|d| d.capabilities.firmware.clone())
+                .unwrap_or_default();
+            if firmware_after != firmware_before {
+                return Err(
+                    format!("firmware changed from {firmware_before} to {firmware_after}").into(),
+                );
+            }
+            (true, firmware_after)
+        }
+        OtaGoal::Install => {
+            session.send_ota(OtaCommand {
+                action: "chunk".into(),
+                version: None,
+                size: None,
+                sha256: Some("a".repeat(64)),
+            })?;
+            pump_until_idle(&mut session)?;
+            session.send_ota(OtaCommand {
+                action: "confirm".into(),
+                version: Some("2.0.0".into()),
+                size: None,
+                sha256: None,
+            })?;
+            pump_until_idle(&mut session)?;
+            session.refresh_capabilities()?;
+            pump_until_idle(&mut session)?;
+            let firmware_after = session
+                .device
+                .as_ref()
+                .map(|d| d.capabilities.firmware.clone())
+                .unwrap_or_default();
+            if firmware_after != "2.0.0" {
+                return Err(format!("confirm left firmware at {firmware_after}").into());
+            }
+            (false, firmware_after)
+        }
+    };
     session.disconnect();
     Ok(AcceptReport {
         ok: true,
@@ -990,7 +1124,7 @@ fn accept_on(
         handshake: true,
         frame_acked: true,
         tile_acked: true,
-        ota_failed: true,
+        ota_failed,
         firmware_before,
         firmware_after,
         image_bytes_included: false,
@@ -998,21 +1132,189 @@ fn accept_on(
     })
 }
 
-fn cmd_sim_accept(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
-    let launch = match locate_sim_peer() {
+fn peer_launch_for_cli() -> PeerLaunch {
+    match locate_sim_peer() {
         Some(path) => PeerLaunch::Binary(path),
-        None => PeerLaunch::InProcess,
-    };
-    let report = run_sim_accept(&opts.board, launch)?;
+        None => PeerLaunch::InProcess(InProcessPeer {
+            sessions: 1,
+            emit_input: false,
+        }),
+    }
+}
+
+fn cmd_sim_accept(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
+    let report = run_sim_accept(&opts.board, peer_launch_for_cli(), OtaGoal::Rollback)?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
+}
+
+fn cmd_ota_confirm(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
+    let report = run_sim_accept(&opts.board, peer_launch_for_cli(), OtaGoal::Install)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+#[cfg(test)]
+fn run_tcp_reconnect(board: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let (address, _, peer) = start_peer(
+        board,
+        PeerLaunch::InProcess(InProcessPeer {
+            sessions: 2,
+            emit_input: false,
+        }),
+    )?;
+    let store = isolated_pairing_path();
+    let result = (|| {
+        let transport = connect_tcp(&address)?;
+        let mut session = Session::new(transport);
+        session.connect()?;
+        pump_until_idle(&mut session)?;
+        let device_id = session
+            .device
+            .as_ref()
+            .map(|device| device.capabilities.device_id.clone())
+            .ok_or("handshake produced no device")?;
+        let (width, height) = session
+            .device
+            .as_ref()
+            .and_then(|device| device.capabilities.surfaces.first())
+            .map(|surface| (surface.width, surface.height))
+            .ok_or("device has no surface")?;
+        ensure_paired_at(&store, &device_id, "reconnect")?;
+        let endpoint = Endpoint::Tcp {
+            address: address.clone(),
+        };
+        authorize_at(&store, &device_id, &endpoint)?;
+        let pixels = usize::from(width) * usize::from(height) * 2;
+        session.send_frame(Frame {
+            surface_id: "main".into(),
+            width,
+            height,
+            bytes: vec![0x11; pixels],
+        })?;
+        pump_until_idle(&mut session)?;
+        session.disconnect();
+        let next = connect_tcp(&address)?;
+        session.switch_transport(next)?;
+        pump_until_idle(&mut session)?;
+        if !session.needs_full_frame {
+            return Err("reconnect must require a full frame".into());
+        }
+        let blocked = session.send_tile(mdc_core::Tile {
+            surface_id: "main".into(),
+            base_frame_id: 1,
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+            bytes: vec![0, 0],
+        });
+        if blocked.is_ok() {
+            return Err("tile was accepted before a full frame".into());
+        }
+        session.send_frame(Frame {
+            surface_id: "main".into(),
+            width,
+            height,
+            bytes: vec![0x22; pixels],
+        })?;
+        pump_until_idle(&mut session)?;
+        if session.needs_full_frame {
+            return Err("displayed frame did not clear the full-frame gate".into());
+        }
+        session.send_tile(mdc_core::Tile {
+            surface_id: "main".into(),
+            base_frame_id: 1,
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+            bytes: vec![0x22, 0x22],
+        })?;
+        pump_until_idle(&mut session)?;
+        session.disconnect();
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&store);
+    peer.stop();
+    result
+}
+
+#[cfg(test)]
+fn run_tcp_input(board: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let (address, _, peer) = start_peer(
+        board,
+        PeerLaunch::InProcess(InProcessPeer {
+            sessions: 1,
+            emit_input: true,
+        }),
+    )?;
+    let store = isolated_pairing_path();
+    let result = (|| {
+        let transport = connect_tcp(&address)?;
+        let manager = Arc::new(Mutex::new(DeviceManager::new()));
+        let mut session = Session::new(transport);
+        session.set_manager(manager.clone());
+        session.connect()?;
+        pump_until_idle(&mut session)?;
+        let device_id = session
+            .device
+            .as_ref()
+            .map(|device| device.capabilities.device_id.clone())
+            .ok_or("handshake produced no device")?;
+        let (width, height) = session
+            .device
+            .as_ref()
+            .and_then(|device| device.capabilities.surfaces.first())
+            .map(|surface| (surface.width, surface.height))
+            .ok_or("device has no surface")?;
+        ensure_paired_at(&store, &device_id, "input")?;
+        authorize_at(
+            &store,
+            &device_id,
+            &Endpoint::Tcp {
+                address: address.clone(),
+            },
+        )?;
+        let pixels = usize::from(width) * usize::from(height) * 2;
+        session.send_frame(Frame {
+            surface_id: "main".into(),
+            width,
+            height,
+            bytes: vec![0x33; pixels],
+        })?;
+        pump_until_idle(&mut session)?;
+        for _ in 0..30 {
+            let _ = session.poll();
+            let events: Vec<_> = manager
+                .lock()
+                .map_err(|error| error.to_string())?
+                .drain_events()
+                .collect();
+            if events.iter().any(|event| {
+                matches!(
+                    event,
+                    mdc_core::ManagerEvent::Input { event, .. }
+                        if event.phase == "down" && event.x == 6 && event.y == 7
+                )
+            }) {
+                session.disconnect();
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        Err("tcp peer did not deliver the scripted touch".into())
+    })();
+    let _ = std::fs::remove_file(&store);
+    peer.stop();
+    result
 }
 
 fn usage() {
     println!(
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
-flash-sim <merged.bin>|h06-demo|sim-accept|pair <id> <token>|unpair <id>|\
+flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo"
     );
 }
@@ -1079,6 +1381,7 @@ fn main() {
             cmd_h06_demo(&o)
         }
         Some("sim-accept") => cmd_sim_accept(&opts),
+        Some("ota-confirm") => cmd_ota_confirm(&opts),
         Some("pair") => {
             let id = args.get(1).cloned().unwrap_or_default();
             let token = args.get(2).cloned().unwrap_or_default();
@@ -1162,7 +1465,15 @@ mod tests {
 
     #[test]
     fn sim_accept_failed_ota_keeps_firmware() {
-        let report = run_sim_accept("esp32-jc3248w535-sim", PeerLaunch::InProcess).unwrap();
+        let report = run_sim_accept(
+            "esp32-jc3248w535-sim",
+            PeerLaunch::InProcess(InProcessPeer {
+                sessions: 1,
+                emit_input: false,
+            }),
+            OtaGoal::Rollback,
+        )
+        .unwrap();
         assert!(report.ok);
         assert_eq!(report.peer, "in-process");
         assert_eq!(report.firmware_before, "1.0.0");
@@ -1175,11 +1486,115 @@ mod tests {
     }
 
     #[test]
+    fn ota_confirm_installs_pending_firmware() {
+        let report = run_sim_accept(
+            "esp32-jc3248w535-sim",
+            PeerLaunch::InProcess(InProcessPeer {
+                sessions: 1,
+                emit_input: false,
+            }),
+            OtaGoal::Install,
+        )
+        .unwrap();
+        assert!(report.ok);
+        assert!(!report.ota_failed);
+        assert_eq!(report.firmware_before, "1.0.0");
+        assert_eq!(report.firmware_after, "2.0.0");
+    }
+
+    #[test]
+    fn tcp_reconnect_blocks_tile_until_full_frame() {
+        run_tcp_reconnect("esp32-jc3248w535-sim").unwrap();
+    }
+
+    #[test]
+    fn tcp_scripted_input_reaches_manager() {
+        run_tcp_input("esp32-jc3248w535-sim").unwrap();
+    }
+
+    #[test]
     fn inspect_json_omits_pixel_buffers() {
         let json = inspect_json(&DeviceManager::new(), None);
         assert!(json.contains("\"image_bytes_included\": false"));
         assert!(!json.contains("\"pixels\""));
         assert!(json.len() < 4096);
         assert_eq!(bound_message(&"x".repeat(10_000)).chars().count(), 161);
+    }
+
+    #[cfg(feature = "websocket")]
+    #[test]
+    fn websocket_unpaired_refuses_display_then_frame_acks() {
+        use mdc_transport::WebSocketTransport;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("ws accept");
+            let socket = WebSocketTransport::accept(stream).expect("ws handshake");
+            let mut device = FakeDevice::from_transport(Box::new(socket), BoardProfile::default());
+            while let Ok(()) = device.poll() {
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let url = format!("ws://127.0.0.1:{port}/");
+        let transport =
+            WebSocketTransport::connect(&url, Duration::from_secs(2)).expect("ws connect");
+        let mut session = Session::new(transport);
+        session.connect().unwrap();
+        for _ in 0..40 {
+            if session.poll().is_ok()
+                && session.state == ConnectionState::Ready
+                && session.pending_request_count() == 0
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(15));
+        }
+        assert_eq!(session.state, ConnectionState::Ready);
+        let device_id = session
+            .device
+            .as_ref()
+            .unwrap()
+            .capabilities
+            .device_id
+            .clone();
+        let endpoint = Endpoint::WebSocket {
+            address: url.clone(),
+        };
+        let mut store = PairingStore::new();
+        assert!(store
+            .authorize_display_control(&device_id, &endpoint)
+            .is_err());
+        store.pair(&device_id, "ws-accept").unwrap();
+        assert!(store
+            .authorize_display_control(&device_id, &endpoint)
+            .is_ok());
+        let (width, height) = session
+            .device
+            .as_ref()
+            .unwrap()
+            .capabilities
+            .surfaces
+            .first()
+            .map(|surface| (surface.width, surface.height))
+            .unwrap();
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width,
+                height,
+                bytes: vec![0x44; usize::from(width) * usize::from(height) * 2],
+            })
+            .unwrap();
+        let mut idle = false;
+        for _ in 0..80 {
+            if session.poll().is_ok() && session.pending_request_count() == 0 {
+                idle = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(idle, "websocket full frame was not acknowledged");
+        session.disconnect();
+        let _ = server.join();
     }
 }
