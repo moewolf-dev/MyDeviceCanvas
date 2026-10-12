@@ -122,6 +122,27 @@ print("sim-accept", report["peer"], report["firmware_after"])
 PY
 rm -f "$PAIR_STORE"
 
+LINUX_PORT="$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)"
+./target/debug/mdc-sim-peer "127.0.0.1:${LINUX_PORT}" linux-virt >/tmp/mdc-linux-accept.log 2>&1 &
+LINUX_PID=$!
+LINUX_STORE="$(mktemp)"
+if ! MDC_PAIRING_STORE="$LINUX_STORE" ./target/debug/mdc pair sim-linux-virt token \
+  || ! MDC_PAIRING_STORE="$LINUX_STORE" ./target/debug/mdc --address "127.0.0.1:${LINUX_PORT}" linux-accept; then
+  kill "$LINUX_PID" || true
+  cat /tmp/mdc-linux-accept.log || true
+  rm -f "$LINUX_STORE"
+  exit 1
+fi
+kill "$LINUX_PID" || true
+rm -f "$LINUX_STORE"
+
 if command -v cmake >/dev/null 2>&1; then
   # Host stub only. A configured IDF_PATH would switch this directory into a device project.
   env -u IDF_PATH cmake -S runtime/esp32/idf -B /tmp/mdc-idf-stub

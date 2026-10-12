@@ -8,10 +8,13 @@ fn main() {
     let mut bind = "127.0.0.1:9876".to_string();
     let mut board = "esp32-jc3248w535-sim".to_string();
     let mut emit_input = false;
+    let mut drop_next = false;
     let mut positionals = Vec::new();
     for arg in std::env::args().skip(1) {
         if arg == "--emit-input" {
             emit_input = true;
+        } else if arg == "--drop-next" {
+            drop_next = true;
         } else {
             positionals.push(arg);
         }
@@ -45,6 +48,9 @@ fn main() {
         let mut device = FakeDevice::from_transport(Box::new(transport), profile.clone());
         if emit_input {
             device.emit_down_after_next_frame(6, 7);
+        }
+        if drop_next {
+            device.faults.drop_next();
         }
         println!("peer connected; serving FakeDevice {}", profile.device_id);
         loop {

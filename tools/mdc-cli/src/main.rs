@@ -1,6 +1,6 @@
 //! MyDeviceCanvas CLI — sim-first host tooling (Apache-2.0).
 use image::imageops::FilterType;
-use mdc_core::{ConnectionState, DeviceManager, Frame, Session};
+use mdc_core::{ConnectionState, DeviceManager, Frame, Session, Tile};
 use mdc_discovery::{
     CombinedDiscovery, DiscoveryProvider, Endpoint, MockMdnsProvider, PairingStore,
 };
@@ -1310,11 +1310,121 @@ fn run_tcp_input(board: &str) -> Result<(), Box<dyn std::error::Error>> {
     result
 }
 
+fn one_pixel_tile() -> Tile {
+    Tile {
+        surface_id: "main".into(),
+        base_frame_id: 1,
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1,
+        bytes: vec![0x44, 0x44],
+    }
+}
+
+/// linux-virt：握手必须是 800×480。全帧显示之前的 Tile 被设备拒绝，全帧 ACK 之后同一块 Tile 成功。
+fn linux_accept_memory() -> Result<(), Box<dyn std::error::Error>> {
+    let (mut session, mut device, _) = open_sim("linux-virt")?;
+    let (device_id, width, height) = linux_surface(&session)?;
+    if device_id != "sim-linux-virt" || width != 800 || height != 480 {
+        return Err(format!("linux-virt handshake {device_id} {width}x{height}").into());
+    }
+    session.send_tile(one_pixel_tile())?;
+    device.poll()?;
+    match session.poll() {
+        Err(error) if error.to_string().contains("E_BASE") => {}
+        other => {
+            return Err(format!("tile before a full frame should be E_BASE, got {other:?}").into())
+        }
+    }
+    session.send_frame(Frame {
+        surface_id: "main".into(),
+        width,
+        height,
+        bytes: vec![0x44; usize::from(width) * usize::from(height) * 2],
+    })?;
+    pump_sim(&mut session, &mut device)?;
+    session.send_tile(one_pixel_tile())?;
+    pump_sim(&mut session, &mut device)?;
+    println!("linux-accept ok {width}x{height}");
+    Ok(())
+}
+
+fn linux_surface<T: mdc_transport::Transport>(
+    session: &Session<T>,
+) -> Result<(String, u16, u16), Box<dyn std::error::Error>> {
+    let device = session
+        .device
+        .as_ref()
+        .ok_or("handshake produced no device")?;
+    let surface = device
+        .capabilities
+        .surfaces
+        .first()
+        .ok_or("linux-virt advertised no surface")?;
+    Ok((
+        device.capabilities.device_id.clone(),
+        surface.width,
+        surface.height,
+    ))
+}
+
+fn linux_accept_tcp(address: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let transport = connect_tcp(address)?;
+    let mut session = Session::new(transport);
+    session.connect()?;
+    pump_until_idle(&mut session)?;
+    let (device_id, width, height) = linux_surface(&session)?;
+    if width != 800 || height != 480 {
+        return Err(format!("tcp linux peer {device_id} is {width}x{height}").into());
+    }
+    gate_network_display(
+        &device_id,
+        &Endpoint::Tcp {
+            address: address.into(),
+        },
+    )?;
+    session.send_tile(one_pixel_tile())?;
+    let mut rejected = false;
+    for _ in 0..40 {
+        match session.poll() {
+            Err(error) if error.to_string().contains("E_BASE") => {
+                rejected = true;
+                break;
+            }
+            Err(error) => return Err(error.to_string().into()),
+            Ok(_) => thread::sleep(Duration::from_millis(15)),
+        }
+    }
+    if !rejected {
+        return Err("tile before a full frame was not rejected".into());
+    }
+    session.send_frame(Frame {
+        surface_id: "main".into(),
+        width,
+        height,
+        bytes: vec![0x44; usize::from(width) * usize::from(height) * 2],
+    })?;
+    pump_until_idle(&mut session)?;
+    session.send_tile(one_pixel_tile())?;
+    pump_until_idle(&mut session)?;
+    println!("linux-accept ok {width}x{height} peer={device_id}");
+    Ok(())
+}
+
+fn cmd_linux_accept(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(address) = &opts.address {
+        linux_accept_tcp(address)
+    } else {
+        linux_accept_memory()
+    }
+}
+
 fn usage() {
     println!(
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
-flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|pair <id> <token>|unpair <id>|\
+flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo"
     );
 }
@@ -1382,6 +1492,7 @@ fn main() {
         }
         Some("sim-accept") => cmd_sim_accept(&opts),
         Some("ota-confirm") => cmd_ota_confirm(&opts),
+        Some("linux-accept") => cmd_linux_accept(&opts),
         Some("pair") => {
             let id = args.get(1).cloned().unwrap_or_default();
             let token = args.get(2).cloned().unwrap_or_default();
@@ -1453,6 +1564,11 @@ mod tests {
         assert!(opts.sim);
         assert_eq!(opts.board, "linux-virt");
         assert_eq!(rest, vec!["simulate".to_string()]);
+    }
+
+    #[test]
+    fn linux_accept_memory_requires_full_frame_before_tile() {
+        linux_accept_memory().unwrap();
     }
 
     fn bound_message(message: &str) -> String {

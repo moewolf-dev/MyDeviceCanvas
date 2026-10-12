@@ -26,6 +26,19 @@ All notable host / simulator changes for MyDeviceCanvas. Physical board verifica
 - Node TCP smoke, Swift `MDC_TCP_ADDR` hello, and Electron `planConnection`
 - WebSocket accept path: unpaired display is refused, then a full frame is acknowledged
 
+## [0.1.4] — Simulator behavior batch
+
+### Added
+
+- FakeDevice rejects Frame and Tile with `E_FROZEN` while an OTA begin is active, and accepts them again after abort or rollback
+- `dual-sim` board advertises `main` and `overlay`; an unknown surface is rejected
+- Touch coordinates go through `transform_touch` using the board rotation; out-of-range points are dropped
+- Three missed heartbeats reconnect with 1/2/4 s backoff, and the next Tile waits for a displayed full frame
+- A third full frame replaces only the unsent pending slot
+- WebSocket binary payloads larger than the configured limit are rejected before decode
+- `mdc-sim-peer --drop-next` drops one packet without changing pixels
+- `mdc linux-accept` checks the 800×480 linux-virt gate: Tile fails before the full frame and succeeds after it
+
 ## [0.1.1] — Wave 12 host gaps
 
 ### Added

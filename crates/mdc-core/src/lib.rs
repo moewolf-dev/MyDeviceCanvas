@@ -37,6 +37,8 @@ pub enum CoreError {
     NotReady,
     #[error("ack timeout")]
     AckTimeout,
+    #[error("heartbeat missed")]
+    HeartbeatMissed,
     #[error("connect timeout")]
     ConnectTimeout,
     #[error("network endpoint is not paired")]
@@ -340,11 +342,15 @@ impl SurfaceQueue {
         let id = self.next_id;
         self.next_id += 1;
         if self.in_flight.is_none() {
-            self.in_flight = Some(id)
+            self.in_flight = Some(id);
         } else {
-            self.pending = Some((id, f))
+            // 在途帧保持不动。尚未发完的那一帧被新的全帧替换，队列不会再长出第三帧。
+            self.pending = Some((id, f));
         }
         Ok(id)
+    }
+    pub fn pending_frame_id(&self) -> Option<u64> {
+        self.pending.as_ref().map(|(id, _)| *id)
     }
     pub fn ack(&mut self, id: u64) {
         if self.in_flight == Some(id) {
@@ -484,6 +490,9 @@ pub struct Session<T: Transport> {
     connect_started_ms: u64,
     last_send_ms: u64,
     last_heartbeat_ms: u64,
+    /// Ping sent and not yet answered. Three misses start reconnect.
+    missed_heartbeats: u32,
+    heartbeat_outstanding: bool,
     reconnect_ready_ms: Option<u64>,
     /// After reconnect backoff, host must supply a fresh transport via
     /// [`provide_transport`](Self::provide_transport) before HELLO is resent.
@@ -515,6 +524,8 @@ impl<T: Transport> Session<T> {
             connect_started_ms: 0,
             last_send_ms: 0,
             last_heartbeat_ms: 0,
+            missed_heartbeats: 0,
+            heartbeat_outstanding: false,
             reconnect_ready_ms: None,
             awaiting_transport: false,
             needs_full_frame: false,
@@ -588,7 +599,16 @@ impl<T: Transport> Session<T> {
                 if self.config.heartbeat_ms > 0
                     && virtual_ms.saturating_sub(self.last_heartbeat_ms) >= self.config.heartbeat_ms
                 {
-                    self.write_packet(MessageType::Ping, Vec::new())?;
+                    if self.heartbeat_outstanding {
+                        self.missed_heartbeats = self.missed_heartbeats.saturating_add(1);
+                        if self.missed_heartbeats >= 3 {
+                            let _ = self.mark_transport_failure();
+                            return Err(CoreError::HeartbeatMissed);
+                        }
+                    }
+                    let id = self.alloc_request_id()?;
+                    self.write_packet_with_id(MessageType::Ping, Vec::new(), id, false)?;
+                    self.heartbeat_outstanding = true;
                     self.last_heartbeat_ms = virtual_ms;
                 }
             }
@@ -635,6 +655,8 @@ impl<T: Transport> Session<T> {
         self.pending_frames.clear();
         self.device = None;
         self.needs_full_frame = true;
+        self.missed_heartbeats = 0;
+        self.heartbeat_outstanding = false;
         self.state = ConnectionState::Disconnected;
         self.connect()
     }
@@ -857,6 +879,8 @@ impl<T: Transport> Session<T> {
                 if caps.max_chunk > 0 {
                     self.max_chunk = self.max_chunk.min(caps.max_chunk as usize);
                 }
+                self.missed_heartbeats = 0;
+                self.heartbeat_outstanding = false;
                 if let Some(mgr) = &self.manager {
                     mgr.lock()
                         .map_err(|e| CoreError::Transport(e.to_string()))?
@@ -870,7 +894,11 @@ impl<T: Transport> Session<T> {
                 self.last_heartbeat_ms = self.virtual_ms;
                 Ok(())
             }
-            MessageType::Pong => Ok(()),
+            MessageType::Pong => {
+                self.heartbeat_outstanding = false;
+                self.missed_heartbeats = 0;
+                Ok(())
+            }
             MessageType::Ack => {
                 let ack: Ack = mdc_protocol::decode_control(&packet.payload)
                     .map_err(|e| CoreError::Protocol(e.to_string()))?;
@@ -1037,6 +1065,21 @@ mod tests {
     use super::*;
     use mdc_protocol::{MessageType, Packet};
     use mdc_transport::MemoryLink;
+    fn caps() -> Capabilities {
+        Capabilities {
+            device_id: "hb".into(),
+            firmware: "1".into(),
+            surfaces: vec![s()],
+            frame: true,
+            tile: true,
+            touch: false,
+            ota: false,
+            max_message: 4096,
+            max_chunk: 16384,
+            max_in_flight: 1,
+            max_fps: 30,
+        }
+    }
     fn s() -> Surface {
         Surface {
             id: "main".into(),
@@ -1812,5 +1855,145 @@ mod tests {
         assert!(phases.contains(&mdc_protocol::FRAME_PHASE_BEGIN));
         assert!(phases.contains(&mdc_protocol::FRAME_PHASE_CHUNK));
         assert!(phases.contains(&mdc_protocol::FRAME_PHASE_COMMIT));
+    }
+
+    #[test]
+    fn latest_unsent_frame_replaces_pending_slot() {
+        let mut queue = SurfaceQueue::new(s());
+        let frame = |value: u8| Frame {
+            surface_id: "main".into(),
+            width: 2,
+            height: 2,
+            bytes: vec![value; 8],
+        };
+        assert_eq!(queue.enqueue_frame(frame(1)).unwrap(), 1);
+        assert_eq!(queue.in_flight(), Some(1));
+        assert_eq!(queue.enqueue_frame(frame(2)).unwrap(), 2);
+        assert_eq!(queue.pending_frame_id(), Some(2));
+        assert_eq!(queue.enqueue_frame(frame(3)).unwrap(), 3);
+        assert_eq!(queue.in_flight(), Some(1));
+        assert_eq!(queue.pending_frame_id(), Some(3));
+    }
+
+    #[test]
+    fn three_missed_heartbeats_reconnect_and_block_tiles() {
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::with_config(
+            host,
+            SessionConfig {
+                connect_timeout_ms: 10_000,
+                ack_timeout_ms: 0,
+                heartbeat_ms: 1_000,
+                reconnect: true,
+            },
+        );
+        session.reconnect_policy = ReconnectPolicy {
+            max_attempts: 3,
+            base_delay_ms: 1_000,
+            max_delay_ms: 30_000,
+            jitter_ms: 0,
+        };
+        assert_eq!(session.reconnect_policy.delay_ms(1, 0), Some(1_000));
+        assert_eq!(session.reconnect_policy.delay_ms(2, 0), Some(2_000));
+        assert_eq!(session.reconnect_policy.delay_ms(3, 0), Some(4_000));
+        session.connect().unwrap();
+        let hello = device.read().unwrap().unwrap();
+        let (hello, _) = Packet::decode(&hello, 4096).unwrap();
+        let caps = caps();
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: hello.request_id,
+                    payload: encode_control(&caps).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        session.tick(1_000).unwrap();
+        assert!(device.read().unwrap().is_some());
+        session.tick(2_000).unwrap();
+        assert!(device.read().unwrap().is_some());
+        session.tick(3_000).unwrap();
+        assert!(device.read().unwrap().is_some());
+        assert_eq!(session.tick(4_000), Err(CoreError::HeartbeatMissed));
+        assert_eq!(session.state, ConnectionState::Reconnecting);
+        assert_eq!(session.tick(5_000).unwrap(), ConnectionState::Connecting);
+        let (host2, mut device2) = MemoryLink::pair();
+        session.provide_transport(host2).unwrap();
+        assert!(session.needs_full_frame);
+        let hello = device2.read().unwrap().unwrap();
+        let (hello, _) = Packet::decode(&hello, 4096).unwrap();
+        device2
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: hello.request_id,
+                    payload: encode_control(&caps).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        assert_eq!(
+            session.send_tile(Tile {
+                surface_id: "main".into(),
+                base_frame_id: 1,
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                bytes: vec![0, 0],
+            }),
+            Err(CoreError::NeedFullFrame)
+        );
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![7; 8],
+            })
+            .unwrap();
+        let frame = device2.read().unwrap().unwrap();
+        let (frame, _) = Packet::decode(&frame, 4096).unwrap();
+        device2
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Ack,
+                    flags: 0,
+                    request_id: frame.request_id,
+                    payload: encode_control(&Ack {
+                        received: true,
+                        displayed: true,
+                        frame_id: frame.request_id as u64,
+                        error: None,
+                    })
+                    .unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        session
+            .send_tile(Tile {
+                surface_id: "main".into(),
+                base_frame_id: 1,
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                bytes: vec![0, 0],
+            })
+            .unwrap();
     }
 }

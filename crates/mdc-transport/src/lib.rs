@@ -256,6 +256,7 @@ impl Transport for SerialTransport {
 #[cfg(feature = "websocket")]
 pub struct WebSocketTransport {
     socket: tungstenite::WebSocket<std::net::TcpStream>,
+    max_message: usize,
 }
 #[cfg(feature = "websocket")]
 impl WebSocketTransport {
@@ -280,7 +281,14 @@ impl WebSocketTransport {
             .map_err(|e| TransportError::Io(e.to_string()))?;
         let (socket, _) =
             tungstenite::client(parsed, stream).map_err(|e| TransportError::Io(e.to_string()))?;
-        Ok(Self { socket })
+        Ok(Self {
+            socket,
+            max_message: 1024 * 1024,
+        })
+    }
+
+    pub fn set_max_message(&mut self, max_message: usize) {
+        self.max_message = max_message.max(1);
     }
 
     /// Accept one WebSocket client already taken from a `TcpListener`.
@@ -295,7 +303,10 @@ impl WebSocketTransport {
             .set_nodelay(true)
             .map_err(|e| TransportError::Io(e.to_string()))?;
         let socket = tungstenite::accept(stream).map_err(|e| TransportError::Io(e.to_string()))?;
-        Ok(Self { socket })
+        Ok(Self {
+            socket,
+            max_message: 1024 * 1024,
+        })
     }
 }
 #[cfg(feature = "websocket")]
@@ -307,7 +318,14 @@ impl Transport for WebSocketTransport {
     }
     fn read(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
         match self.socket.read() {
-            Ok(tungstenite::Message::Binary(bytes)) => Ok(Some(bytes)),
+            Ok(tungstenite::Message::Binary(bytes)) => {
+                if bytes.len() > self.max_message {
+                    return Err(TransportError::Io(
+                        "websocket message exceeds negotiated limit".into(),
+                    ));
+                }
+                Ok(Some(bytes))
+            }
             Ok(tungstenite::Message::Ping(bytes)) => {
                 self.socket
                     .send(tungstenite::Message::Pong(bytes))
@@ -392,5 +410,31 @@ mod tests {
         client.close(); // idempotent
         assert_eq!(client.write(&[0]), Err(TransportError::Closed));
         server.join().unwrap();
+    }
+
+    #[cfg(feature = "websocket")]
+    #[test]
+    fn websocket_rejects_binary_over_configured_limit() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut peer = WebSocketTransport::accept(stream).unwrap();
+            peer.write(&[0u8; 32]).unwrap();
+            thread::sleep(Duration::from_millis(300));
+        });
+        let mut client =
+            WebSocketTransport::connect(&format!("ws://127.0.0.1:{port}/"), Duration::from_secs(2))
+                .unwrap();
+        client.set_max_message(8);
+        let err = loop {
+            match client.read() {
+                Ok(None) => continue,
+                Ok(Some(_)) => panic!("oversized websocket payload was returned"),
+                Err(err) => break err.to_string(),
+            }
+        };
+        assert!(err.contains("exceeds"), "{err}");
+        let _ = server.join();
     }
 }

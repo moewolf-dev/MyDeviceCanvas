@@ -20,6 +20,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Node NativeManager sim | sim-verified (JS facade + native tile/events; `.node` optional) | physical: pending |
 | C ABI `mdc_c` | sim-verified (frame/tile/surface host tests) | physical: pending |
 | Linux runtime framebuffer peer | sim-verified (`mdc_linux_peer` TCP) | physical: pending |
+| `mdc linux-accept` 800×480 | sim-verified (tile rejected before the full frame) | physical: pending |
+| OTA render freeze | sim-verified (`E_FROZEN` until abort/rollback) | physical: pending |
+| dual-sim overlay surface | sim-verified | n/a |
+| Touch rotation 0/90/180/270 | sim-verified | physical: pending |
+| Heartbeat miss reconnect | sim-verified (3 misses, then full frame before tile) | n/a |
+| WebSocket message limit | sim-verified | physical: pending |
+| In-flight frame replacement | sim-verified (pending slot only) | n/a |
+| `mdc-sim-peer --drop-next` | sim-verified | n/a |
 | Scene capability bit | sim-verified (`send_scene` → Unsupported, no Scene packet) | physical: pending |
 | Linux geometry update / no-display probe | sim-verified (`update_geometry`, `mdc_linux_probe`) | physical: pending |
 | pi4-hdmi / waveshare-eink profiles | sim-verified (eink `color_fps: false`) | physical: pending |

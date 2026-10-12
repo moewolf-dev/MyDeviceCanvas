@@ -62,6 +62,11 @@ pub struct BoardProfile {
     pub ota: bool,
     /// 彩色刷新承诺。墨水屏必须为 false，不能把彩屏 FPS 写成该板能力。
     pub color_fps: bool,
+    /// 触摸坐标旋转，仅接受 0/90/180/270。
+    pub rotation: u16,
+    /// 第二块 Surface。宽或高为 0 表示没有 overlay。
+    pub overlay_width: u16,
+    pub overlay_height: u16,
 }
 impl Default for BoardProfile {
     fn default() -> Self {
@@ -72,6 +77,9 @@ impl Default for BoardProfile {
             touch: true,
             ota: true,
             color_fps: true,
+            rotation: 0,
+            overlay_width: 0,
+            overlay_height: 0,
         }
     }
 }
@@ -87,6 +95,7 @@ impl BoardProfile {
                 touch: false,
                 ota: false,
                 color_fps: true,
+                ..Self::default()
             },
             "pi4-hdmi" => Self {
                 device_id: "sim-pi4-hdmi".into(),
@@ -95,6 +104,7 @@ impl BoardProfile {
                 touch: false,
                 ota: false,
                 color_fps: true,
+                ..Self::default()
             },
             "waveshare-eink" => Self {
                 device_id: "sim-waveshare-eink".into(),
@@ -103,6 +113,18 @@ impl BoardProfile {
                 touch: false,
                 ota: false,
                 color_fps: false,
+                ..Self::default()
+            },
+            "dual-sim" => Self {
+                device_id: "sim-dual".into(),
+                width: 8,
+                height: 4,
+                touch: false,
+                ota: false,
+                color_fps: true,
+                overlay_width: 4,
+                overlay_height: 2,
+                ..Self::default()
             },
             other => Self {
                 device_id: format!("sim-{other}"),
@@ -137,6 +159,7 @@ pub struct FakeDevice {
     link: Box<dyn Transport>,
     profile: BoardProfile,
     pixels: Vec<u8>,
+    overlay_pixels: Vec<u8>,
     current_frame_id: u64,
     assembler: Option<(String, u16, u16, FrameAssembler)>,
     pub clock: VirtualClock,
@@ -157,11 +180,17 @@ pub struct FakeDevice {
 impl FakeDevice {
     pub fn from_transport(link: Box<dyn Transport>, profile: BoardProfile) -> Self {
         let pixels = vec![0u8; usize::from(profile.width) * usize::from(profile.height) * 2];
+        let overlay_pixels = if profile.overlay_width > 0 && profile.overlay_height > 0 {
+            vec![0u8; usize::from(profile.overlay_width) * usize::from(profile.overlay_height) * 2]
+        } else {
+            Vec::new()
+        };
         let device_id = profile.device_id.clone();
         Self {
             link,
             profile,
             pixels,
+            overlay_pixels,
             current_frame_id: 0,
             assembler: None,
             clock: VirtualClock::default(),
@@ -241,6 +270,45 @@ impl FakeDevice {
         m.device_id = self.profile.device_id.clone();
         m
     }
+    pub fn overlay_pixels(&self) -> &[u8] {
+        &self.overlay_pixels
+    }
+    fn surface_size(&self, surface_id: &str) -> Option<(u16, u16)> {
+        if surface_id == "main" {
+            Some((self.profile.width, self.profile.height))
+        } else if surface_id == "overlay"
+            && self.profile.overlay_width > 0
+            && self.profile.overlay_height > 0
+        {
+            Some((self.profile.overlay_width, self.profile.overlay_height))
+        } else {
+            None
+        }
+    }
+    fn store_surface_pixels(
+        &mut self,
+        surface_id: &str,
+        width: u16,
+        height: u16,
+        bytes: Vec<u8>,
+    ) -> Result<(), SimError> {
+        let Some((expect_w, expect_h)) = self.surface_size(surface_id) else {
+            return Err(SimError::Protocol("unknown surface".into()));
+        };
+        if width != expect_w || height != expect_h {
+            return Err(SimError::Protocol("geometry".into()));
+        }
+        let expected = usize::from(expect_w) * usize::from(expect_h) * 2;
+        if bytes.len() != expected {
+            return Err(SimError::Protocol("geometry".into()));
+        }
+        if surface_id == "overlay" {
+            self.overlay_pixels = bytes;
+        } else {
+            self.pixels = bytes;
+        }
+        Ok(())
+    }
     pub fn assert_pixels_eq(&self, expected: &[u8]) {
         assert_eq!(self.pixels, expected, "pixel buffer mismatch");
     }
@@ -249,22 +317,42 @@ impl FakeDevice {
         if !self.profile.touch {
             return Err(SimError::Protocol("touch capability disabled".into()));
         }
+        let (x, y) = mdc_core::transform_touch(
+            self.profile.width,
+            self.profile.height,
+            self.profile.rotation,
+            event.x,
+            event.y,
+        )
+        .map_err(|_| SimError::Protocol("touch out of bounds".into()))?;
+        let event = InputEvent { x, y, ..event };
         self.metrics.inputs_emitted = self.metrics.inputs_emitted.saturating_add(1);
         self.write_control(MessageType::Input, 0, &event)
     }
     pub fn capabilities(&self) -> Capabilities {
         let stride = u32::from(self.profile.width) * 2;
+        let mut surfaces = vec![Surface {
+            id: "main".into(),
+            width: self.profile.width,
+            height: self.profile.height,
+            pixel_format: "RGB565".into(),
+            stride,
+            rotation: self.profile.rotation,
+        }];
+        if self.profile.overlay_width > 0 && self.profile.overlay_height > 0 {
+            surfaces.push(Surface {
+                id: "overlay".into(),
+                width: self.profile.overlay_width,
+                height: self.profile.overlay_height,
+                pixel_format: "RGB565".into(),
+                stride: u32::from(self.profile.overlay_width) * 2,
+                rotation: 0,
+            });
+        }
         Capabilities {
             device_id: self.profile.device_id.clone(),
             firmware: self.firmware.clone(),
-            surfaces: vec![Surface {
-                id: "main".into(),
-                width: self.profile.width,
-                height: self.profile.height,
-                pixel_format: "RGB565".into(),
-                stride,
-                rotation: 0,
-            }],
+            surfaces,
             frame: true,
             tile: true,
             touch: self.profile.touch,
@@ -431,20 +519,25 @@ impl FakeDevice {
         }
     }
     fn handle_frame(&mut self, packet: Packet) -> Result<(), SimError> {
+        if self.ota_active {
+            return self.reply_error(packet.request_id, "E_FROZEN", "render frozen during ota");
+        }
         let decoded =
             decode_frame_payload(&packet.payload).map_err(|e| SimError::Protocol(e.to_string()))?;
         match decoded {
             FramePayload::Legacy {
-                surface_id: _,
+                surface_id,
                 frame_id,
                 width,
                 height,
                 bytes,
             } => {
-                if width != self.profile.width || height != self.profile.height {
+                if self
+                    .store_surface_pixels(&surface_id, width, height, bytes)
+                    .is_err()
+                {
                     return self.reply_error(packet.request_id, "E_DIM", "geometry mismatch");
                 }
-                self.pixels = bytes;
                 self.current_frame_id = frame_id;
                 self.assembler = None;
                 self.metrics.frames_received = self.metrics.frames_received.saturating_add(1);
@@ -458,7 +551,7 @@ impl FakeDevice {
                 height,
                 total_bytes,
             } => {
-                if width != self.profile.width || height != self.profile.height {
+                if self.surface_size(&surface_id) != Some((width, height)) {
                     return self.reply_error(packet.request_id, "E_DIM", "geometry mismatch");
                 }
                 let asm = FrameAssembler::begin(frame_id, total_bytes as usize, self.max_chunk)
@@ -491,7 +584,13 @@ impl FakeDevice {
                 }
                 match asm.commit() {
                     Ok(bytes) => {
-                        self.pixels = bytes;
+                        if self.store_surface_pixels(&_sid, _w, _h, bytes).is_err() {
+                            return self.reply_error(
+                                packet.request_id,
+                                "E_DIM",
+                                "geometry mismatch",
+                            );
+                        }
                         self.current_frame_id = frame_id;
                         self.metrics.frames_received =
                             self.metrics.frames_received.saturating_add(1);
@@ -509,6 +608,9 @@ impl FakeDevice {
         }
     }
     fn handle_tile(&mut self, packet: Packet) -> Result<(), SimError> {
+        if self.ota_active {
+            return self.reply_error(packet.request_id, "E_FROZEN", "render frozen during ota");
+        }
         let tile =
             decode_tile_payload(&packet.payload).map_err(|e| SimError::Protocol(e.to_string()))?;
         let core_tile = Tile {
@@ -525,13 +627,38 @@ impl FakeDevice {
         {
             return self.reply_error(packet.request_id, "E_BASE", "base frame mismatch");
         }
-        let stride = usize::from(self.profile.width) * 2;
+        let (buffer_width, overlay) = if core_tile.surface_id == "overlay" {
+            if self.overlay_pixels.is_empty() {
+                return self.reply_error(packet.request_id, "E_DIM", "unknown surface");
+            }
+            (self.profile.overlay_width, true)
+        } else if core_tile.surface_id == "main" {
+            (self.profile.width, false)
+        } else {
+            return self.reply_error(packet.request_id, "E_DIM", "unknown surface");
+        };
+        let buffer_height = if overlay {
+            self.profile.overlay_height
+        } else {
+            self.profile.height
+        };
+        if u32::from(core_tile.x) + u32::from(core_tile.width) > u32::from(buffer_width)
+            || u32::from(core_tile.y) + u32::from(core_tile.height) > u32::from(buffer_height)
+        {
+            return self.reply_error(packet.request_id, "E_DIM", "tile outside surface");
+        }
+        let stride = usize::from(buffer_width) * 2;
         let row_bytes = usize::from(core_tile.width) * 2;
+        let pixels = if overlay {
+            &mut self.overlay_pixels
+        } else {
+            &mut self.pixels
+        };
         for row in 0..usize::from(core_tile.height) {
             let dst_y = usize::from(core_tile.y) + row;
             let dst_off = dst_y * stride + usize::from(core_tile.x) * 2;
             let src_off = row * row_bytes;
-            self.pixels[dst_off..dst_off + row_bytes]
+            pixels[dst_off..dst_off + row_bytes]
                 .copy_from_slice(&core_tile.bytes[src_off..src_off + row_bytes]);
         }
         self.metrics.tiles_received = self.metrics.tiles_received.saturating_add(1);
@@ -808,8 +935,8 @@ mod tests {
             surface_id: "main".into(),
             pointer_id: 1,
             phase: "down".into(),
-            x: 6,
-            y: 7,
+            x: 1,
+            y: 1,
         });
         let manager = Arc::new(Mutex::new(DeviceManager::new()));
         let mut session = Session::new(host);
@@ -830,7 +957,7 @@ mod tests {
         let events: Vec<_> = manager.lock().unwrap().drain_events().collect();
         assert!(events.iter().any(|event| matches!(
             event,
-            ManagerEvent::Input { event, .. } if event.x == 6 && event.y == 7 && event.phase == "down"
+            ManagerEvent::Input { event, .. } if event.x == 1 && event.y == 1 && event.phase == "down"
         )));
     }
 
@@ -1000,5 +1127,243 @@ mod tests {
             false,
         );
         assert_eq!(device.firmware(), "2.0.0");
+    }
+
+    #[test]
+    fn ota_begin_freezes_pixels_until_abort() {
+        use mdc_core::{Frame, Session};
+        use mdc_protocol::OtaCommand;
+        let profile = BoardProfile {
+            width: 2,
+            height: 2,
+            ota: true,
+            touch: false,
+            ..BoardProfile::default()
+        };
+        let (host, mut device) = FakeDevice::pair(profile);
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        let painted = vec![0x11u8; 8];
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: painted.clone(),
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.pixels(), painted.as_slice());
+        session
+            .send_ota(OtaCommand {
+                action: "begin".into(),
+                version: Some("2.0.0".into()),
+                size: Some(32),
+                sha256: Some("0".repeat(64)),
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![0x22; 8],
+            })
+            .unwrap();
+        device.poll().unwrap();
+        assert!(session.poll().is_err());
+        assert_eq!(device.pixels(), painted.as_slice());
+        session
+            .send_ota(OtaCommand {
+                action: "abort".into(),
+                version: None,
+                size: None,
+                sha256: None,
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![0x33; 8],
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.pixels(), &[0x33; 8]);
+    }
+
+    #[test]
+    fn dual_surface_accepts_overlay_and_rejects_unknown() {
+        use mdc_core::{Frame, Session};
+        let profile = BoardProfile::from_board_id("dual-sim");
+        let (host, mut device) = FakeDevice::pair(profile);
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        let surfaces = &session.device.as_ref().unwrap().capabilities.surfaces;
+        assert_eq!(surfaces.len(), 2);
+        assert_eq!(surfaces[1].id, "overlay");
+        let main_before = device.pixels().to_vec();
+        session
+            .send_frame(Frame {
+                surface_id: "overlay".into(),
+                width: 4,
+                height: 2,
+                bytes: vec![0xAB; 16],
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.overlay_pixels(), &[0xAB; 16]);
+        assert_eq!(device.pixels(), main_before.as_slice());
+        let missing = session.send_frame(Frame {
+            surface_id: "nope".into(),
+            width: 4,
+            height: 2,
+            bytes: vec![0; 16],
+        });
+        assert!(missing.is_err());
+    }
+
+    #[test]
+    fn rotation_transforms_touch_and_drops_out_of_bounds() {
+        use mdc_core::{DeviceManager, ManagerEvent, Session};
+        use std::sync::{Arc, Mutex};
+        let profile = BoardProfile {
+            width: 4,
+            height: 2,
+            touch: true,
+            rotation: 90,
+            ..BoardProfile::default()
+        };
+        let (host, mut device) = FakeDevice::pair(profile);
+        let manager = Arc::new(Mutex::new(DeviceManager::new()));
+        let mut session = Session::new(host);
+        session.set_manager(manager.clone());
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        device
+            .emit_input(InputEvent {
+                surface_id: "main".into(),
+                pointer_id: 1,
+                phase: "down".into(),
+                x: 0,
+                y: 0,
+            })
+            .unwrap();
+        session.poll().unwrap();
+        let events: Vec<_> = manager.lock().unwrap().drain_events().collect();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ManagerEvent::Input { event, .. } if event.x == 1 && event.y == 0
+        )));
+        assert!(device
+            .emit_input(InputEvent {
+                surface_id: "main".into(),
+                pointer_id: 1,
+                phase: "down".into(),
+                x: 4,
+                y: 0,
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn drop_next_keeps_previous_pixels() {
+        use mdc_core::{Frame, Session};
+        let profile = BoardProfile {
+            width: 2,
+            height: 2,
+            ..BoardProfile::default()
+        };
+        let (host, mut device) = FakeDevice::pair(profile);
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![0x11; 8],
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        device.faults.drop_next();
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![0x22; 8],
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.pixels(), &[0x11; 8]);
+        assert_eq!(session.pending_request_count(), 1);
+    }
+
+    #[test]
+    fn linux_virt_is_800x480_and_rejects_early_tile() {
+        use mdc_core::{Frame, Session, Tile};
+        let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        let surface = &session.device.as_ref().unwrap().capabilities.surfaces[0];
+        assert_eq!((surface.width, surface.height), (800, 480));
+        session
+            .send_tile(Tile {
+                surface_id: "main".into(),
+                base_frame_id: 1,
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                bytes: vec![0, 0],
+            })
+            .unwrap();
+        device.poll().unwrap();
+        assert!(session.poll().is_err());
+        let bytes = vec![0x44u8; 800 * 480 * 2];
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 800,
+                height: 480,
+                bytes,
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .send_tile(Tile {
+                surface_id: "main".into(),
+                base_frame_id: 1,
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                bytes: vec![0x44, 0x44],
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(session.pending_request_count(), 0);
     }
 }
