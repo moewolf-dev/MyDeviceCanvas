@@ -66,6 +66,12 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Electron demo IPC | sim-verified (preload + color-bar logic; native `.node` optional) | physical: pending |
 | Swift `MdcSession` | sim-verified when `swiftc` links `libmdc_c` | physical: pending |
 | Tauri command crate | sim-verified (`mdc-tauri-demo`, no second protocol) | physical: pending |
+| MIRRORFRAME / MIRRORCTRL types | sim-verified (Rust + C++ shared vector, dispatcher gate) | physical: pending |
+| Mirror capability fields | sim-verified (old caps decode disabled; negotiate clamps fps/mode) | physical: pending |
+| Host shadow framebuffer | sim-verified (`mdc-mirror`, bounded, lease-guarded) | n/a |
+| Model compiler / MDC IR | sim-verified (`mdc-model`, glTF → IR → package; sprite baking) | n/a |
+| Board family skeletons (arduino/rockchip/nvidia) | architecture (`physical: pending`) | physical: pending |
+| Transport scope (BLE/USB bulk/PCIe) | architecture (reserved, not implemented) | physical: pending |
 
 ## G03 sim exit
 

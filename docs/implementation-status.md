@@ -22,6 +22,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 12 | Electron demo, Swift wrapper, Tauri commands, Linux geometry, Scene refusal | sim-verified |
 | 13 | OTA freeze, dual surface, rotation, heartbeat reconnect, linux-accept | sim-verified |
 | 14 | Copy budget, signature preflight, flags, OTA resume, stale input | sim-verified |
+| 15 | N01–N07: render topology, reference SDKs, mirror upstream, shadow buffer, model IR, board families, transport scope | architecture / sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 
