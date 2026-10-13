@@ -39,6 +39,17 @@ All notable host / simulator changes for MyDeviceCanvas. Physical board verifica
 - `mdc-sim-peer --drop-next` drops one packet without changing pixels
 - `mdc linux-accept` checks the 800×480 linux-virt gate: Tile fails before the full frame and succeeds after it
 
+## [0.1.6] — Displayed frames, surfaces, and pairing
+
+### Added
+
+- A `received` acknowledgement keeps the held frame until `displayed`
+- C ABI, Swift, and Node can list `dual-sim` main (8×4) and overlay (4×2)
+- An overlay tile updates only the overlay; an out-of-bounds tile returns `E_DIM`
+- The C++ peer returns `E_DIM` before committing a mismatched frame
+- Revoking a pairing rejects the next frame on the same TCP session
+- Disconnect `cancel` is visible from the C ABI and Node, with the same pointer and coordinates
+
 ## [0.1.5] — Held frames, cancel, and peer errors
 
 ### Added

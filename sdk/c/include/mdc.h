@@ -38,6 +38,19 @@ uint64_t mdc_session_current_frame_id(const MdcSession* session);
 /** Write surface "main" width/height; returns 0 or -1. */
 int mdc_session_surface_size(const MdcSession* session, uint16_t* width, uint16_t* height);
 
+/** Number of surfaces advertised by the current device. 0 if not ready. */
+uint32_t mdc_session_surface_count(const MdcSession* session);
+
+/**
+ * Write one surface id and size. index 0 is main on the default board.
+ * Returns 0, -1 on a bad pointer, or -2 when the index is out of range.
+ */
+int mdc_session_surface_at(const MdcSession* session, uint32_t index, char* id, size_t id_len,
+                           uint16_t* width, uint16_t* height);
+
+/** Simulator session for a board id such as "dual-sim". NULL uses the default board. */
+MdcSession* mdc_session_create_board(const char* board_id);
+
 /** Non-zero when tiles are blocked until a full frame ACK (after reconnect/switch). */
 int mdc_session_needs_full_frame(const MdcSession* session);
 
@@ -60,6 +73,11 @@ MdcSession* mdc_session_connect_tcp(const char* addr);
  */
 int mdc_session_poll_event(MdcSession* session, int* kind, char* device_id, size_t device_id_len,
                            char* phase, size_t phase_len, uint16_t* x, uint16_t* y);
+
+/** Same as poll_event, and writes the input pointer id when the event is a touch. */
+int mdc_session_poll_event_with_pointer(MdcSession* session, int* kind, char* device_id,
+                                        size_t device_id_len, char* phase, size_t phase_len,
+                                        uint16_t* pointer_id, uint16_t* x, uint16_t* y);
 
 /** Simulator-only touch injection. Returns 0, or negative when the session is not a FakeDevice. */
 int mdc_session_simulate_input(MdcSession* session, const char* phase, uint16_t x, uint16_t y);

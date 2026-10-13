@@ -82,6 +82,22 @@ export class MyDeviceCanvas {
       (d) => new Device(this._native, d),
     );
   }
+  /** Open a named simulator board, then return its devices. Default stays 480×320. */
+  async openBoard(boardId) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.openBoard !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    await this._native.openBoard(boardId);
+    return this.devices();
+  }
+  async simulateDisconnect() {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.simulateDisconnect !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    await this._native.simulateDisconnect();
+  }
   /** Drain native ManagerEvent DTOs and re-emit as SDK events. */
   async pollEvents() {
     if (this._disposed) throw new Error("manager is disposed");

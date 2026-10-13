@@ -366,12 +366,6 @@ fn cmd_send_image(opts: &GlobalOpts, path: &str) -> Result<(), Box<dyn std::erro
             .as_ref()
             .map(|d| d.capabilities.device_id.clone())
             .unwrap_or_default();
-        gate_network_display(
-            &device_id,
-            &Endpoint::Tcp {
-                address: addr.clone(),
-            },
-        )?;
         let (w, h) = session
             .device
             .as_ref()
@@ -383,12 +377,17 @@ fn cmd_send_image(opts: &GlobalOpts, path: &str) -> Result<(), Box<dyn std::erro
         } else {
             load_rgb565(Path::new(path), w as u32, h as u32)?
         };
-        session.send_frame(Frame {
-            surface_id: "main".into(),
-            width: w,
-            height: h,
-            bytes,
-        })?;
+        send_authorized_tcp_frame(
+            &mut session,
+            &pairing_path(),
+            addr,
+            Frame {
+                surface_id: "main".into(),
+                width: w,
+                height: h,
+                bytes,
+            },
+        )?;
         println!("sent frame to {addr} device_id={device_id}");
         return Ok(());
     }
@@ -531,6 +530,40 @@ fn pairing_path() -> std::path::PathBuf {
 
 fn load_pairing_store() -> PairingStore {
     PairingStore::load_json(&pairing_path()).unwrap_or_default()
+}
+
+/// Reload pairing immediately before a TCP frame so a mid-session revoke is visible.
+fn authorize_tcp_display(
+    store_path: &Path,
+    device_id: &str,
+    address: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    PairingStore::load_json(store_path)
+        .unwrap_or_default()
+        .authorize_display_control(
+            device_id,
+            &Endpoint::Tcp {
+                address: address.to_string(),
+            },
+        )
+        .map_err(|e| -> Box<dyn std::error::Error> {
+            format!("{e}; run `mdc pair {device_id} <token>` before network display control").into()
+        })
+}
+
+fn send_authorized_tcp_frame(
+    session: &mut Session<TcpTransport>,
+    store_path: &Path,
+    address: &str,
+    frame: Frame,
+) -> Result<u32, Box<dyn std::error::Error>> {
+    let device_id = session
+        .device
+        .as_ref()
+        .map(|device| device.capabilities.device_id.clone())
+        .unwrap_or_default();
+    authorize_tcp_display(store_path, &device_id, address)?;
+    Ok(session.send_frame(frame)?)
 }
 
 /// After handshake, refuse Frame/Tile/OTA on network endpoints without pairing (H01).
@@ -1569,6 +1602,227 @@ mod tests {
     #[test]
     fn linux_accept_memory_requires_full_frame_before_tile() {
         linux_accept_memory().unwrap();
+    }
+
+    #[test]
+    fn revoke_blocks_the_next_frame_on_the_same_tcp_session() {
+        let store = std::env::temp_dir().join(format!(
+            "mdc-pairing-revoke-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let mut pairing = PairingStore::default();
+        pairing.pair("sim-dual", "token").unwrap();
+        pairing.save_json(&store).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_server = stop.clone();
+        let pixels = Arc::new(Mutex::new(Vec::new()));
+        let pixels_server = pixels.clone();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+            let transport = TcpTransport::from_stream(stream).unwrap();
+            let mut device = FakeDevice::from_transport(
+                Box::new(transport),
+                BoardProfile::from_board_id("dual-sim"),
+            );
+            while !stop_server.load(Ordering::Relaxed) {
+                let _ = device.poll();
+                *pixels_server.lock().unwrap() = device.pixels().to_vec();
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let transport = connect_tcp(&address).unwrap();
+        let mut session = Session::new(transport);
+        session.connect().unwrap();
+        pump_until_idle(&mut session).unwrap();
+        send_authorized_tcp_frame(
+            &mut session,
+            &store,
+            &address,
+            Frame {
+                surface_id: "main".into(),
+                width: 8,
+                height: 4,
+                bytes: vec![0x21; 64],
+            },
+        )
+        .unwrap();
+        pump_until_idle(&mut session).unwrap();
+        let shown = pixels.lock().unwrap().clone();
+        assert_eq!(shown, vec![0x21; 64]);
+        let mut pairing = PairingStore::load_json(&store).unwrap();
+        assert!(pairing.revoke("sim-dual"));
+        pairing.save_json(&store).unwrap();
+        let denied = send_authorized_tcp_frame(
+            &mut session,
+            &store,
+            &address,
+            Frame {
+                surface_id: "main".into(),
+                width: 8,
+                height: 4,
+                bytes: vec![0x44; 64],
+            },
+        );
+        assert!(denied.is_err());
+        thread::sleep(Duration::from_millis(40));
+        assert_eq!(pixels.lock().unwrap().as_slice(), shown.as_slice());
+        stop.store(true, Ordering::Relaxed);
+        drop(session);
+        let _ = server.join();
+        let _ = std::fs::remove_file(store);
+    }
+
+    #[cfg(all(unix, feature = "serial"))]
+    #[test]
+    fn pty_hello_returns_capabilities_and_unknown_port_waits() {
+        use mdc_protocol::{
+            encode_control, Capabilities, Hello, MessageType, Packet, Surface, VERSION,
+        };
+        use mdc_transport::{
+            is_candidate_serial_port, SerialOpenGuard, SerialTransport, Transport,
+        };
+        use std::io::{Read, Write};
+        use std::os::unix::io::FromRawFd;
+
+        assert!(!is_candidate_serial_port("/dev/cu.Bluetooth-Incoming-Port"));
+        let mut guard = SerialOpenGuard::default();
+        assert_eq!(guard.note_failure(true), 300_000);
+        assert_eq!(guard.backoff_ms(), 300_000);
+
+        #[link(name = "c")]
+        extern "C" {
+            fn openpty(
+                amaster: *mut i32,
+                aslave: *mut i32,
+                name: *mut i8,
+                termp: *mut u8,
+                winp: *mut u8,
+            ) -> i32;
+            fn close(fd: i32) -> i32;
+            fn fcntl(fd: i32, cmd: i32, arg: i32) -> i32;
+        }
+        let mut master_fd = 0i32;
+        let mut slave_fd = 0i32;
+        let mut name = [0i8; 128];
+        let rc = unsafe {
+            openpty(
+                &mut master_fd,
+                &mut slave_fd,
+                name.as_mut_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, 0, "openpty");
+        unsafe {
+            let flags = fcntl(master_fd, 3, 0);
+            fcntl(master_fd, 4, flags | 4);
+        }
+        let path = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }
+            .to_string_lossy()
+            .into_owned();
+        let opened = SerialTransport::open(&path, 115_200, Duration::from_millis(50));
+        let Ok(mut serial) = opened else {
+            eprintln!("pty serial open is unavailable on this host; guard backoff still holds");
+            unsafe {
+                close(master_fd);
+                close(slave_fd);
+            }
+            return;
+        };
+        let hello = Packet {
+            version: VERSION,
+            kind: MessageType::Hello,
+            flags: 0,
+            request_id: 1,
+            payload: encode_control(&Hello {
+                major: 1,
+                minor: 0,
+                max_message: 4096,
+                max_chunk: 1024,
+            })
+            .unwrap(),
+        }
+        .encode(4096)
+        .unwrap();
+        serial.write(&hello).unwrap();
+        let mut master = unsafe { std::fs::File::from_raw_fd(master_fd) };
+        let mut incoming = Vec::new();
+        let mut saw_hello = false;
+        for _ in 0..40 {
+            let mut buf = [0u8; 512];
+            match master.read(&mut buf) {
+                Ok(0) | Err(_) => {}
+                Ok(n) => incoming.extend_from_slice(&buf[..n]),
+            }
+            if let Ok((packet, _)) = Packet::decode(&incoming, 4096) {
+                if packet.kind == MessageType::Hello {
+                    saw_hello = true;
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(saw_hello, "serial hello did not reach the pty master");
+        let caps = Packet {
+            version: VERSION,
+            kind: MessageType::Capabilities,
+            flags: 0,
+            request_id: 1,
+            payload: encode_control(&Capabilities {
+                device_id: "pty".into(),
+                firmware: "1.0.0".into(),
+                surfaces: vec![Surface {
+                    id: "main".into(),
+                    width: 2,
+                    height: 2,
+                    pixel_format: "RGB565".into(),
+                    stride: 4,
+                    rotation: 0,
+                }],
+                frame: true,
+                tile: true,
+                touch: false,
+                ota: false,
+                max_message: 4096,
+                max_chunk: 1024,
+                max_in_flight: 1,
+                max_fps: 30,
+            })
+            .unwrap(),
+        }
+        .encode(4096)
+        .unwrap();
+        master.write_all(&caps).unwrap();
+        let mut reply = Vec::new();
+        let mut saw_caps = false;
+        for _ in 0..40 {
+            match serial.read() {
+                Ok(Some(bytes)) => reply.extend(bytes),
+                Ok(None) => {}
+                Err(error) => panic!("serial read: {error}"),
+            }
+            if let Ok((packet, _)) = Packet::decode(&reply, 4096) {
+                if packet.kind == MessageType::Capabilities {
+                    saw_caps = true;
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(saw_caps, "pty did not return capabilities");
+        drop(serial);
+        drop(master);
+        unsafe {
+            close(slave_fd);
+        }
     }
 
     #[cfg(feature = "websocket")]

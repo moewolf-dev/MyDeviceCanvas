@@ -81,3 +81,27 @@ test("native connectTcp sends an RGB565 frame to mdc-sim-peer", {
     peer.kill();
   }
 });
+
+test("native dual-sim lists overlay and disconnect cancel keeps the pointer", { skip: !native }, async () => {
+  const mdc = await MyDeviceCanvas.create();
+  const devices = await mdc.openBoard("dual-sim");
+  assert.equal(devices[0].info.deviceId, "sim-dual");
+  assert.equal(devices[0].surface("main").info.width, 8);
+  assert.equal(devices[0].surface("main").info.height, 4);
+  assert.equal(devices[0].surface("overlay").info.width, 4);
+  assert.equal(devices[0].surface("overlay").info.height, 2);
+  mdc.dispose();
+
+  const touch = await MyDeviceCanvas.create();
+  const ready = await touch.devices();
+  assert.equal(ready[0].surface("main").info.width, 480);
+  await touch._native.simulateInput("main", 3, "down", 6, 7);
+  await touch.simulateDisconnect();
+  const events = await touch.pollEvents();
+  const cancel = events.find((event) => event.input?.phase === "cancel");
+  assert.ok(cancel);
+  assert.equal(cancel.input.pointerId, 3);
+  assert.equal(cancel.input.x, 6);
+  assert.equal(cancel.input.y, 7);
+  touch.dispose();
+});

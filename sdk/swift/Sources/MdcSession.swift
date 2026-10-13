@@ -35,6 +35,17 @@ public final class MdcSession {
         raw = created
     }
 
+    /// Named simulator board such as `dual-sim`. The default `init()` stays 480×320.
+    public init(boardId: String) throws {
+        let created = boardId.withCString { text in
+            mdc_session_create_board(text)
+        }
+        guard let created else {
+            throw MdcError.createFailed
+        }
+        raw = created
+    }
+
     public func close() {
         guard let raw else { return }
         mdc_session_destroy(raw)
@@ -52,6 +63,23 @@ public final class MdcSession {
         let rc = mdc_session_surface_size(raw, &width, &height)
         guard rc == 0 else { throw MdcError.sendFailed(rc) }
         return (width, height)
+    }
+
+    public func surfaceCount() -> UInt32 {
+        guard let raw else { return 0 }
+        return mdc_session_surface_count(raw)
+    }
+
+    public func surfaceAt(_ index: UInt32) throws -> (String, UInt16, UInt16) {
+        guard let raw else { throw MdcError.disposed }
+        var id = [CChar](repeating: 0, count: 32)
+        var width: UInt16 = 0
+        var height: UInt16 = 0
+        let rc = id.withUnsafeMutableBufferPointer { buffer in
+            mdc_session_surface_at(raw, index, buffer.baseAddress, buffer.count, &width, &height)
+        }
+        guard rc == 0 else { throw MdcError.sendFailed(rc) }
+        return (String(cString: id), width, height)
     }
 
     public func sendFrame(_ bytes: [UInt8]) throws {

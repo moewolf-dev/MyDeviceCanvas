@@ -27,6 +27,27 @@ int main() {
   assert(!runtime.replies().back().payload.empty());
   assert(runtime.replies().back().payload[0] == 0xab);  // CBOR map(11)
 
+  runtime.clear_replies();
+  std::vector<std::uint8_t> bad;
+  bad.push_back(0);
+  bad.push_back(1);
+  bad.push_back('m');
+  for (int i = 0; i < 8; ++i) bad.push_back(static_cast<std::uint8_t>(9 >> (8 * i)));
+  bad.push_back(3);
+  bad.push_back(0);
+  bad.push_back(2);
+  bad.push_back(0);
+  bad.insert(bad.end(), 12, 0x11);
+  mdc::Packet bad_frame;
+  bad_frame.type = mdc::MessageType::Frame;
+  bad_frame.request_id = 8;
+  bad_frame.payload = bad;
+  assert(runtime.handle_packet(bad_frame));
+  assert(runtime.framebuffer()[0] == 0);
+  assert(runtime.replies().back().type == mdc::MessageType::Error);
+  const auto& err = runtime.replies().back().payload;
+  assert(std::string(err.begin(), err.end()).find("E_DIM") != std::string::npos);
+
   std::vector<std::uint8_t> legacy;
   legacy.push_back(0);  // phase
   legacy.push_back(1);

@@ -1,7 +1,7 @@
 //! Node native bindings: MemoryLink FakeDevice session (sim path).
 use mdc_core::{ConnectionState, DeviceManager, Frame, ManagerEvent, Session, Tile};
 use mdc_protocol::InputEvent;
-use mdc_simulator::{BoardProfile, FakeDevice};
+use mdc_simulator::{BoardProfile, FakeDevice, SimError};
 use mdc_transport::{TcpTransport, Transport};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -75,13 +75,20 @@ fn pump_link(sim: &mut SimSession) -> Result<()> {
     let rounds = if sim.device.is_some() { 1 } else { 30 };
     for _ in 0..rounds {
         if let Some(device) = sim.device.as_mut() {
-            device
+            let device_result = device.poll();
+            sim.session
+                .poll()
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            if let Err(error) = device_result {
+                if !matches!(error, SimError::Disconnected) {
+                    return Err(Error::from_reason(error.to_string()));
+                }
+            }
+        } else {
+            sim.session
                 .poll()
                 .map_err(|e| Error::from_reason(e.to_string()))?;
         }
-        sim.session
-            .poll()
-            .map_err(|e| Error::from_reason(e.to_string()))?;
         if sim.device.is_none()
             && sim.session.state == ConnectionState::Ready
             && sim.session.pending_request_count() == 0
@@ -98,6 +105,7 @@ fn pump_link(sim: &mut SimSession) -> Result<()> {
 #[derive(Default)]
 struct State {
     disposed: bool,
+    board_id: Option<String>,
     sim: Option<SimSession>,
     last_frame: Option<Vec<u8>>,
 }
@@ -106,7 +114,7 @@ fn ensure_sim(state: &mut State) -> Result<()> {
     if state.sim.is_some() {
         return Ok(());
     }
-    let profile = BoardProfile::default();
+    let profile = BoardProfile::from_board_id(state.board_id.as_deref().unwrap_or("default"));
     let (host, mut device) = FakeDevice::pair(profile);
     let manager = Arc::new(Mutex::new(DeviceManager::new()));
     let mut session = Session::new(Box::new(host) as Box<dyn Transport>);
@@ -363,8 +371,12 @@ impl NativeManager {
         }
         ensure_sim(&mut state)?;
         let sim = state.sim.as_mut().unwrap();
-        pump_link(sim)?;
-        drain_manager_events(&sim.manager)
+        let pumped = pump_link(sim);
+        let events = drain_manager_events(&sim.manager)?;
+        if events.is_empty() {
+            pumped?;
+        }
+        Ok(events)
     }
 
     /// Sim-only: emit a touch event from FakeDevice toward the host Session.
@@ -403,6 +415,50 @@ impl NativeManager {
             .poll()
             .map_err(|e| Error::from_reason(e.to_string()))?;
         Ok(())
+    }
+
+    /// Open a named simulator board before the first `devices()` call.
+    #[napi(js_name = "openBoard")]
+    pub fn open_board(&self, board_id: String) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        if state.sim.is_some() {
+            return Err(Error::from_reason("simulator is already open"));
+        }
+        state.board_id = Some(board_id);
+        ensure_sim(&mut state)
+    }
+
+    /// Sim-only: drop the link and emit cancel for pointers that are still down.
+    #[napi(js_name = "simulateDisconnect")]
+    pub fn simulate_disconnect(&self) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        let device = sim
+            .device
+            .as_mut()
+            .ok_or_else(|| Error::from_reason("tcp session cannot inject a local disconnect"))?;
+        device.faults.request_disconnect();
+        let device_result = device.poll();
+        sim.session
+            .poll()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        match device_result {
+            Ok(()) | Err(SimError::Disconnected) => Ok(()),
+            Err(error) => Err(Error::from_reason(error.to_string())),
+        }
     }
 
     /// Replace the session with a TCP connection to a simulator peer (`host:port`).

@@ -1317,6 +1317,69 @@ mod tests {
     }
 
     #[test]
+    fn overlay_tile_updates_overlay_and_rejects_out_of_bounds() {
+        use mdc_core::{Frame, Session, Tile};
+        let profile = BoardProfile::from_board_id("dual-sim");
+        let (host, mut device) = FakeDevice::pair(profile);
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        let main_before = device.pixels().to_vec();
+        session
+            .send_frame(Frame {
+                surface_id: "overlay".into(),
+                width: 4,
+                height: 2,
+                bytes: vec![0xAB; 16],
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .send_tile(Tile {
+                surface_id: "overlay".into(),
+                base_frame_id: 1,
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                bytes: vec![0x11, 0x22],
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(&device.overlay_pixels()[..2], &[0x11, 0x22]);
+        assert_eq!(&device.overlay_pixels()[2..], &[0xAB; 14]);
+        assert_eq!(device.pixels(), main_before.as_slice());
+        let overlay_before = device.overlay_pixels().to_vec();
+        let rejected = session.send_tile(Tile {
+            surface_id: "overlay".into(),
+            base_frame_id: 1,
+            x: 4,
+            y: 0,
+            width: 1,
+            height: 1,
+            bytes: vec![0, 0],
+        });
+        assert_eq!(rejected, Err(mdc_core::CoreError::TileBounds));
+        let payload = mdc_protocol::encode_tile_payload("overlay", 1, 4, 0, 1, 1, &[0, 0]).unwrap();
+        device
+            .handle_tile(mdc_protocol::Packet {
+                version: mdc_protocol::VERSION,
+                kind: mdc_protocol::MessageType::Tile,
+                flags: 0,
+                request_id: 99,
+                payload,
+            })
+            .unwrap();
+        let err = session.poll().unwrap_err();
+        assert!(err.to_string().contains("E_DIM"), "{err}");
+        assert_eq!(device.overlay_pixels(), overlay_before.as_slice());
+        assert_eq!(device.pixels(), main_before.as_slice());
+    }
+
+    #[test]
     fn rotation_transforms_touch_and_drops_out_of_bounds() {
         use mdc_core::{DeviceManager, ManagerEvent, Session};
         use std::sync::{Arc, Mutex};

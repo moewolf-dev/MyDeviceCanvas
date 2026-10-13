@@ -18,10 +18,15 @@ pub struct MdcSession {
 }
 
 fn pump(session: &mut MdcSession) -> Result<(), ()> {
-    if let Some(device) = session.device.as_mut() {
-        device.poll().map_err(|_| ())?;
-    }
-    session.session.poll().map_err(|_| ())?;
+    // 设备先写 cancel 再返回断开。会话仍要读走已经进队列的字节。
+    let device_result = if let Some(device) = session.device.as_mut() {
+        device.poll()
+    } else {
+        Ok(())
+    };
+    let session_result = session.session.poll();
+    device_result.map_err(|_| ())?;
+    session_result.map_err(|_| ())?;
     Ok(())
 }
 
@@ -34,7 +39,11 @@ fn remember_endpoint(session: &MdcSession, endpoint: &str) {
 }
 
 fn open_sim() -> Result<MdcSession, ()> {
-    let (host, device) = FakeDevice::pair(BoardProfile::default());
+    open_board("default")
+}
+
+fn open_board(board_id: &str) -> Result<MdcSession, ()> {
+    let (host, device) = FakeDevice::pair(BoardProfile::from_board_id(board_id));
     let manager = Arc::new(Mutex::new(DeviceManager::new()));
     let mut session = Session::new(Box::new(host) as Box<dyn Transport>);
     session.set_manager(manager.clone());
@@ -107,9 +116,76 @@ fn copy_cstr(dst: *mut c_char, cap: usize, text: &str) {
 #[no_mangle]
 pub extern "C" fn mdc_session_create() -> *mut MdcSession {
     match open_sim() {
-        Ok(s) => Box::into_raw(Box::new(s)),
+        Ok(session) => Box::into_raw(Box::new(session)),
         Err(()) => ptr::null_mut(),
     }
+}
+
+fn surfaces_of(session: &MdcSession) -> Vec<(String, u16, u16)> {
+    session
+        .session
+        .device
+        .as_ref()
+        .map(|device| {
+            device
+                .capabilities
+                .surfaces
+                .iter()
+                .map(|surface| (surface.id.clone(), surface.width, surface.height))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// # Safety
+/// `board_id` is a NUL-terminated board name, or null for the default board.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_create_board(board_id: *const c_char) -> *mut MdcSession {
+    let name = if board_id.is_null() {
+        "default".to_string()
+    } else {
+        match CStr::from_ptr(board_id).to_str() {
+            Ok(text) => text.to_string(),
+            Err(_) => return ptr::null_mut(),
+        }
+    };
+    match open_board(&name) {
+        Ok(session) => Box::into_raw(Box::new(session)),
+        Err(()) => ptr::null_mut(),
+    }
+}
+
+/// # Safety
+/// `session` is null or a live session.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_surface_count(session: *const MdcSession) -> u32 {
+    if session.is_null() {
+        return 0;
+    }
+    surfaces_of(&*session).len() as u32
+}
+
+/// # Safety
+/// `id`, `width`, and `height` must be writable when non-null.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_surface_at(
+    session: *const MdcSession,
+    index: u32,
+    id: *mut c_char,
+    id_len: usize,
+    width: *mut u16,
+    height: *mut u16,
+) -> c_int {
+    if session.is_null() || width.is_null() || height.is_null() {
+        return -1;
+    }
+    let Some((surface_id, w, h)) = surfaces_of(&*session).into_iter().nth(index as usize) else {
+        return -2;
+    };
+    copy_cstr(id, id_len, &surface_id);
+    *width = w;
+    *height = h;
+    0
 }
 
 /// # Safety
@@ -344,16 +420,84 @@ pub unsafe extern "C" fn mdc_session_poll_event(
         return 0;
     }
     let event = session.queued.remove(0);
-    let (code, id, phase_text, px, py) = match event {
-        ManagerEvent::Input { device_id, event } => (1, device_id, event.phase, event.x, event.y),
-        ManagerEvent::Error { device_id, message } => (2, device_id, message, 0, 0),
-        ManagerEvent::Connected(id) | ManagerEvent::Added(id) => (3, id, String::new(), 0, 0),
-        ManagerEvent::Disconnected(id) | ManagerEvent::Removed(id) => (4, id, String::new(), 0, 0),
-        ManagerEvent::EndpointSwitched { device_id } => (5, device_id, String::new(), 0, 0),
+    let (code, id, phase_text, _pointer, px, py) = match event {
+        ManagerEvent::Input { device_id, event } => (
+            1,
+            device_id,
+            event.phase,
+            event.pointer_id,
+            event.x,
+            event.y,
+        ),
+        ManagerEvent::Error { device_id, message } => (2, device_id, message, 0, 0, 0),
+        ManagerEvent::Connected(id) | ManagerEvent::Added(id) => (3, id, String::new(), 0, 0, 0),
+        ManagerEvent::Disconnected(id) | ManagerEvent::Removed(id) => {
+            (4, id, String::new(), 0, 0, 0)
+        }
+        ManagerEvent::EndpointSwitched { device_id } => (5, device_id, String::new(), 0, 0, 0),
     };
     *kind = code;
     copy_cstr(device_id, device_id_len, &id);
     copy_cstr(phase, phase_len, &phase_text);
+    if !x.is_null() {
+        *x = px;
+    }
+    if !y.is_null() {
+        *y = py;
+    }
+    1
+}
+
+/// # Safety
+/// Same as [`mdc_session_poll_event`]. `pointer_id` may be null.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_poll_event_with_pointer(
+    session: *mut MdcSession,
+    kind: *mut c_int,
+    device_id: *mut c_char,
+    device_id_len: usize,
+    phase: *mut c_char,
+    phase_len: usize,
+    pointer_id: *mut u16,
+    x: *mut u16,
+    y: *mut u16,
+) -> c_int {
+    if session.is_null() || kind.is_null() {
+        return -1;
+    }
+    let held = &mut *session;
+    let _ = pump(held);
+    if held.queued.is_empty() {
+        if let Ok(mut manager) = held.manager.lock() {
+            held.queued.extend(manager.drain_events());
+        }
+    }
+    if held.queued.is_empty() {
+        return 0;
+    }
+    let event = held.queued.remove(0);
+    let (code, id, phase_text, pointer, px, py) = match event {
+        ManagerEvent::Input { device_id, event } => (
+            1,
+            device_id,
+            event.phase,
+            event.pointer_id,
+            event.x,
+            event.y,
+        ),
+        ManagerEvent::Error { device_id, message } => (2, device_id, message, 0, 0, 0),
+        ManagerEvent::Connected(id) | ManagerEvent::Added(id) => (3, id, String::new(), 0, 0, 0),
+        ManagerEvent::Disconnected(id) | ManagerEvent::Removed(id) => {
+            (4, id, String::new(), 0, 0, 0)
+        }
+        ManagerEvent::EndpointSwitched { device_id } => (5, device_id, String::new(), 0, 0, 0),
+    };
+    *kind = code;
+    copy_cstr(device_id, device_id_len, &id);
+    copy_cstr(phase, phase_len, &phase_text);
+    if !pointer_id.is_null() {
+        *pointer_id = pointer;
+    }
     if !x.is_null() {
         *x = px;
     }
@@ -573,5 +717,106 @@ mod tests {
             mdc_session_destroy(session);
         }
         let _ = server.join();
+    }
+
+    #[test]
+    fn c_abi_lists_dual_surfaces_and_keeps_main_size() {
+        let board = std::ffi::CString::new("dual-sim").unwrap();
+        let session = unsafe { mdc_session_create_board(board.as_ptr()) };
+        assert!(!session.is_null());
+        unsafe {
+            assert_eq!(mdc_session_surface_count(session), 2);
+            let mut id = [0i8; 32];
+            let mut width = 0u16;
+            let mut height = 0u16;
+            assert_eq!(
+                mdc_session_surface_at(
+                    session,
+                    0,
+                    id.as_mut_ptr(),
+                    id.len(),
+                    &mut width,
+                    &mut height
+                ),
+                0
+            );
+            assert_eq!((width, height), (8, 4));
+            assert_eq!(
+                mdc_session_surface_at(
+                    session,
+                    1,
+                    id.as_mut_ptr(),
+                    id.len(),
+                    &mut width,
+                    &mut height
+                ),
+                0
+            );
+            assert_eq!((width, height), (4, 2));
+            let mut main_w = 0u16;
+            let mut main_h = 0u16;
+            assert_eq!(
+                mdc_session_surface_size(session, &mut main_w, &mut main_h),
+                0
+            );
+            assert_eq!((main_w, main_h), (8, 4));
+            let created = mdc_session_create();
+            assert_eq!(mdc_session_surface_count(created), 1);
+            mdc_session_destroy(created);
+            mdc_session_destroy(session);
+        }
+    }
+
+    #[test]
+    fn poll_event_reports_disconnect_cancel() {
+        let session = mdc_session_create();
+        assert!(!session.is_null());
+        let held = unsafe { &mut *session };
+        held.device
+            .as_mut()
+            .unwrap()
+            .emit_input(InputEvent {
+                surface_id: "main".into(),
+                pointer_id: 3,
+                phase: "down".into(),
+                x: 6,
+                y: 7,
+            })
+            .unwrap();
+        held.device.as_mut().unwrap().faults.request_disconnect();
+        unsafe {
+            let mut kind = 0;
+            let mut device_id = [0i8; 64];
+            let mut phase = [0i8; 16];
+            let mut pointer = 0u16;
+            let mut x = 0u16;
+            let mut y = 0u16;
+            let mut saw_cancel = false;
+            for _ in 0..8 {
+                let rc = mdc_session_poll_event_with_pointer(
+                    session,
+                    &mut kind,
+                    device_id.as_mut_ptr(),
+                    device_id.len(),
+                    phase.as_mut_ptr(),
+                    phase.len(),
+                    &mut pointer,
+                    &mut x,
+                    &mut y,
+                );
+                if rc != 1 {
+                    continue;
+                }
+                let text = std::ffi::CStr::from_ptr(phase.as_ptr()).to_string_lossy();
+                if kind == 1 && text == "cancel" {
+                    assert_eq!(pointer, 3);
+                    assert_eq!((x, y), (6, 7));
+                    saw_cancel = true;
+                    break;
+                }
+            }
+            assert!(saw_cancel);
+            mdc_session_destroy(session);
+        }
     }
 }

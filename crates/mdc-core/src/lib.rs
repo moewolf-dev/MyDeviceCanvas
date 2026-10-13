@@ -994,6 +994,11 @@ impl<T: Transport> Session<T> {
                 if self.pending_requests.contains(&packet.request_id)
                     && (ack.received || ack.displayed)
                 {
+                    let waiting_frame = self.pending_frames.contains_key(&packet.request_id);
+                    if waiting_frame && !ack.displayed {
+                        // received 只表示对端收过。待发帧和 needs_full_frame 都要等 displayed。
+                        return Ok(());
+                    }
                     self.pending_requests.remove(&packet.request_id);
                     let was_frame = self.pending_frames.contains_key(&packet.request_id);
                     if let Some((surface_id, frame_id)) =
@@ -1265,8 +1270,17 @@ mod tests {
             jitter_ms: 10,
         };
         assert_eq!(policy.delay_ms(1, 4), Some(1_004));
+        assert_eq!(policy.delay_ms(1, 40), Some(1_010));
         assert_eq!(policy.delay_ms(3, 20), Some(4_010));
         assert_eq!(policy.delay_ms(4, 0), None);
+        let tight = ReconnectPolicy {
+            max_attempts: 3,
+            base_delay_ms: 1_000,
+            max_delay_ms: 1_005,
+            jitter_ms: 10,
+        };
+        assert_eq!(tight.delay_ms(1, 0), Some(1_000));
+        assert_eq!(tight.delay_ms(1, 9), Some(1_005));
         let (link, _) = MemoryLink::pair();
         let mut session = Session::new(link);
         assert_eq!(session.mark_transport_failure(), Some(1_000));
@@ -1968,6 +1982,107 @@ mod tests {
         assert_eq!(launched_id, 3);
         assert_eq!(launched.bytes, vec![3; 8]);
         assert_eq!(queue.in_flight(), Some(3));
+    }
+
+    #[test]
+    fn received_ack_holds_the_next_frame_until_displayed() {
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        let hello = device.read().unwrap().unwrap();
+        let (hello, _) = Packet::decode(&hello, 4096).unwrap();
+        let caps = caps();
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: hello.request_id,
+                    payload: encode_control(&caps).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        session.needs_full_frame = true;
+        let first = session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![0x11; 8],
+            })
+            .unwrap();
+        let _ = device.read().unwrap().unwrap();
+        assert_eq!(
+            session.send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![0x22; 8],
+            }),
+            Ok(0)
+        );
+        assert!(device.read().unwrap().is_none());
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Ack,
+                    flags: 0,
+                    request_id: first,
+                    payload: encode_control(&Ack {
+                        received: true,
+                        displayed: false,
+                        frame_id: first as u64,
+                        error: None,
+                    })
+                    .unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        assert!(device.read().unwrap().is_none());
+        assert!(session.needs_full_frame);
+        assert_eq!(
+            session.send_tile(Tile {
+                surface_id: "main".into(),
+                base_frame_id: 1,
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                bytes: vec![0, 0],
+            }),
+            Err(CoreError::NeedFullFrame)
+        );
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Ack,
+                    flags: 0,
+                    request_id: first,
+                    payload: encode_control(&Ack {
+                        received: true,
+                        displayed: true,
+                        frame_id: first as u64,
+                        error: None,
+                    })
+                    .unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        let launched = device.read().unwrap().unwrap();
+        assert!(launched.windows(2).any(|pair| pair == [0x22, 0x22]));
+        assert!(!session.needs_full_frame);
     }
 
     #[test]

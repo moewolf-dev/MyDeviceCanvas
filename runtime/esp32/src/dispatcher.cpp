@@ -75,12 +75,15 @@ bool SessionDispatcher::handle_frame(const Packet& packet) {
     const std::size_t header = 2 + id_len + 8 + 2 + 2;
     if (packet.payload.size() < header) return false;
     const auto* p = packet.payload.data() + 2 + id_len;
-    current_frame_id_ = u64le(p);
     const auto w = u16le(p + 8);
     const auto h = u16le(p + 10);
     const auto* pixels = p + 12;
     const auto pix_len = packet.payload.size() - header;
-    if (w != display_.width() || h != display_.height()) return false;
+    if (w != display_.width() || h != display_.height()) {
+      send_error(packet.request_id, "E_DIM", "geometry mismatch");
+      return true;
+    }
+    current_frame_id_ = u64le(p);
     if (!store_.stage(pixels, pix_len)) return false;
     if (!store_.commit()) return false;
     if (!display_.flush_rect(0, 0, w, h, store_.active().data(), store_.active().size())) return false;
@@ -95,6 +98,12 @@ bool SessionDispatcher::handle_frame(const Packet& packet) {
     const std::size_t need = 2 + id_len + 8 + 2 + 2 + 4;
     if (packet.payload.size() < need) return false;
     const auto* p = packet.payload.data() + 2 + id_len;
+    const auto w = u16le(p + 8);
+    const auto h = u16le(p + 10);
+    if (w != display_.width() || h != display_.height()) {
+      send_error(packet.request_id, "E_DIM", "geometry mismatch");
+      return true;
+    }
     current_frame_id_ = u64le(p);
     chunk_expected_ = u32le(p + 12);
     chunk_staging_.assign(chunk_expected_, 0);
