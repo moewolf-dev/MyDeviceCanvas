@@ -1,0 +1,29 @@
+# NVIDIA Jetson family (N06 skeleton).
+#
+# N02 landed docs/reference/nvidia-cuda-samples as the 3D path reference. This
+# profile is architecture-only: no Jetson board has been measured, so it stays
+# `physical: pending`. Form B candidate (device render + mirror).
+id: jetson-orin-nano
+status: sim-baseline
+source: docs/reference/nvidia-cuda-samples (reference only; no physical measurement)
+physical: pending
+mcu: tegra234
+flash_bytes: 8388608
+psram_bytes: 0
+usb: usb3
+baud_default: 115200
+display: {width: 960, height: 540, format: RGB565_LE, rotation: 0, bus: drm-hdmi, controller: orin-gpu}
+touch: false
+ota: false
+color_fps: true
+max_framebuffer_bytes: 2073600
+min_internal_free_bytes: 268435456
+min_internal_largest_block_bytes: 134217728
+max_psram_used_bytes: 0
+dma_align_bytes: 64
+reset_strategy: none
+# Form B: device render + mirror, with the 3D path reserved for the model compiler.
+mirror: true
+mirror_fps: 30
+local_display_fps: 60
+mirror_bandwidth_bytes_per_sec: 31104000

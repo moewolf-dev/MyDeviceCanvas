@@ -13,6 +13,9 @@ python3 tools/validate_board.py boards/sim/linux-virt/board.yaml
 python3 tools/validate_board.py boards/linux/pi4-hdmi/board.yaml
 python3 tools/validate_board.py boards/linux/waveshare-eink/board.yaml
 python3 tools/validate_board.py boards/esp32/test-valid/board.yaml
+python3 tools/validate_board.py boards/arduino/uno-r4-ili9341/board.yaml
+python3 tools/validate_board.py boards/rockchip/rk3399-nanopc-t4/board.yaml
+python3 tools/validate_board.py boards/nvidia/jetson-orin-nano/board.yaml
 python3 -m unittest discover -s tools -p 'test_*.py'
 
 c++ -std=c++17 -I runtime/esp32/include \

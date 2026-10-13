@@ -1,0 +1,29 @@
+# Rockchip family (N06 skeleton).
+#
+# N02 landed docs/reference/rockchip-mpp (Rockchip Media Process Platform). This
+# profile is architecture-only: no RK3399 board has been measured, so it stays
+# `physical: pending`. Form B candidates (device render + mirror) live here.
+id: rk3399-nanopc-t4
+status: sim-baseline
+source: docs/reference/rockchip-mpp (reference only; no physical measurement)
+physical: pending
+mcu: rk3399
+flash_bytes: 4194304
+psram_bytes: 0
+usb: usb3-otg
+baud_default: 115200
+display: {width: 800, height: 480, format: RGB565_LE, rotation: 0, bus: drm-hdmi, controller: mali-t860}
+touch: false
+ota: false
+color_fps: true
+max_framebuffer_bytes: 1536000
+min_internal_free_bytes: 67108864
+min_internal_largest_block_bytes: 33554432
+max_psram_used_bytes: 0
+dma_align_bytes: 64
+reset_strategy: none
+# Form B: GPU class board can render locally and mirror frames back.
+mirror: true
+mirror_fps: 15
+local_display_fps: 60
+mirror_bandwidth_bytes_per_sec: 11520000

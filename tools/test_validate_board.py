@@ -27,6 +27,16 @@ class BoardValidationTests(unittest.TestCase):
         self.assertEqual(validate(ROOT / "boards/linux/pi4-hdmi/board.yaml"), [])
         self.assertEqual(validate(ROOT / "boards/linux/waveshare-eink/board.yaml"), [])
 
+    def test_n06_family_skeletons_are_complete_but_pending(self):
+        for rel in (
+            "boards/arduino/uno-r4-ili9341/board.yaml",
+            "boards/rockchip/rk3399-nanopc-t4/board.yaml",
+            "boards/nvidia/jetson-orin-nano/board.yaml",
+        ):
+            path = ROOT / rel
+            self.assertEqual(validate(path), [], rel)
+            self.assertIn("physical: pending", path.read_text(encoding="utf-8"))
+
     def test_eink_without_color_fps_false_is_rejected(self):
         text = (ROOT / "boards/linux/waveshare-eink/board.yaml").read_text(encoding="utf-8")
         bad = ROOT / "boards/linux/waveshare-eink/board.yaml.tmp-test"

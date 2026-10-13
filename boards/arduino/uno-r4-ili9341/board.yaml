@@ -1,0 +1,28 @@
+# Arduino family (N06 skeleton).
+#
+# N02 landed the reference tree in docs/reference/arduino-core-avr. These
+# profiles are architecture-only: no Arduino board has been measured, so every
+# entry stays `physical: pending`. Composition is Capability-driven; adding a
+# board here must not change the protocol.
+id: arduino-uno-r4-ili9341
+status: sim-baseline
+source: docs/reference/arduino-core-avr (reference only; no physical measurement)
+physical: pending
+mcu: ra4m1
+flash_bytes: 262144
+psram_bytes: 0
+usb: native-usb-full-speed
+baud_default: 115200
+baud_flash: 115200
+display: {width: 320, height: 240, format: RGB565_LE, rotation: 0, bus: spi, controller: ili9341}
+touch: false
+ota: false
+color_fps: true
+max_framebuffer_bytes: 307200
+min_internal_free_bytes: 8192
+min_internal_largest_block_bytes: 4096
+max_psram_used_bytes: 0
+dma_align_bytes: 4
+reset_strategy: document-before-use
+# Form A only: too little RAM to render and mirror at once.
+mirror: false
