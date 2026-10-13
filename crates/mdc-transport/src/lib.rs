@@ -82,10 +82,14 @@ impl Transport for MemoryLink {
         Ok(())
     }
     fn read(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        let next = self.incoming.lock().unwrap().pop_front();
+        if next.is_some() {
+            return Ok(next);
+        }
         if *self.closed.lock().unwrap() {
             return Err(TransportError::Closed);
         }
-        Ok(self.incoming.lock().unwrap().pop_front())
+        Ok(None)
     }
     fn close(&mut self) {
         *self.closed.lock().unwrap() = true;

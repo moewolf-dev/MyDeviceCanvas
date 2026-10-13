@@ -352,9 +352,29 @@ impl SurfaceQueue {
     pub fn pending_frame_id(&self) -> Option<u64> {
         self.pending.as_ref().map(|(id, _)| *id)
     }
-    pub fn ack(&mut self, id: u64) {
-        if self.in_flight == Some(id) {
-            self.in_flight = self.pending.take().map(|(pending_id, _)| pending_id)
+    /// 在途帧和待发帧都占用时，新的 Tile 不能再插进来。
+    /// base 指向尚未显示的帧时同样拒绝，避免把没画上的帧当成 Tile 的底图。
+    pub fn rejects_tile(&self, base_frame_id: u64) -> bool {
+        if self.in_flight.is_some() && self.pending.is_some() {
+            return true;
+        }
+        self.in_flight == Some(base_frame_id)
+            || self.pending.as_ref().map(|(id, _)| *id) == Some(base_frame_id)
+    }
+    /// 在途帧被确认后，返回应当写到链路上的待发帧。没有待发帧时槽位清空。
+    pub fn ack(&mut self, id: u64) -> Option<(u64, Frame)> {
+        if self.in_flight != Some(id) {
+            return None;
+        }
+        match self.pending.take() {
+            Some((pending_id, frame)) => {
+                self.in_flight = Some(pending_id);
+                Some((pending_id, frame))
+            }
+            None => {
+                self.in_flight = None;
+                None
+            }
         }
     }
 }
@@ -556,12 +576,18 @@ impl<T: Transport> Session<T> {
         Ok(())
     }
     pub fn poll(&mut self) -> Result<ConnectionState, CoreError> {
-        while let Some(bytes) = self
-            .transport
-            .read()
-            .map_err(|e| CoreError::Transport(e.to_string()))?
-        {
-            self.rx.extend(bytes);
+        // 已经进缓冲区的包先处理。对端先写下 cancel 再关闭时，不能让关闭错误吞掉这些包。
+        loop {
+            match self.transport.read() {
+                Ok(Some(bytes)) => self.rx.extend(bytes),
+                Ok(None) => break,
+                Err(error) => {
+                    if self.rx.is_empty() {
+                        return Err(CoreError::Transport(error.to_string()));
+                    }
+                    break;
+                }
+            }
         }
         loop {
             match Packet::decode(&self.rx, self.max_message) {
@@ -743,15 +769,35 @@ impl<T: Transport> Session<T> {
                 .ok_or(CoreError::Dimensions)?;
             surface.enqueue_frame(frame)?
         };
-        let legacy = encode_frame_payload(&surface_id, frame_id, width, height, &pixels)
+        let send_now = self
+            .device
+            .as_ref()
+            .and_then(|device| device.surfaces.iter().find(|s| s.info.id == surface_id))
+            .map(|surface| surface.in_flight() == Some(frame_id))
+            .unwrap_or(false);
+        if !send_now {
+            // 0 表示这一帧只占着待发槽，还没有请求号。在途帧 ACK 之后才会写到链路上。
+            return Ok(0);
+        }
+        self.write_frame_bytes(&surface_id, frame_id, width, height, &pixels, max_chunk)
+    }
+    fn write_frame_bytes(
+        &mut self,
+        surface_id: &str,
+        frame_id: u64,
+        width: u16,
+        height: u16,
+        pixels: &[u8],
+        max_chunk: usize,
+    ) -> Result<u32, CoreError> {
+        let legacy = encode_frame_payload(surface_id, frame_id, width, height, pixels)
             .map_err(|e| CoreError::Protocol(e.to_string()))?;
-
         let request_id = self.alloc_request_id()?;
         if legacy.len() <= max_chunk {
             self.write_packet_with_id(MessageType::Frame, legacy, request_id, true)?;
         } else {
             let begin =
-                encode_frame_begin(&surface_id, frame_id, width, height, pixels.len() as u32)
+                encode_frame_begin(surface_id, frame_id, width, height, pixels.len() as u32)
                     .map_err(|e| CoreError::Protocol(e.to_string()))?;
             self.write_packet_with_id(MessageType::Frame, begin, request_id, true)?;
             let mut offset = 0u32;
@@ -765,8 +811,42 @@ impl<T: Transport> Session<T> {
             self.write_packet_with_id(MessageType::Frame, commit, request_id, false)?;
         }
         self.pending_frames
-            .insert(request_id, (surface_id, frame_id));
+            .insert(request_id, (surface_id.to_string(), frame_id));
         Ok(request_id)
+    }
+    fn launch_pending_frame(&mut self, surface_id: &str, frame_id: u64) -> Result<(), CoreError> {
+        let follow = {
+            let device = self.device.as_mut().ok_or(CoreError::NotReady)?;
+            let surface = device
+                .surfaces
+                .iter_mut()
+                .find(|surface| surface.info.id == surface_id);
+            match surface {
+                Some(surface) => surface.ack(frame_id),
+                None => None,
+            }
+        };
+        let Some((next_id, frame)) = follow else {
+            return Ok(());
+        };
+        let max_chunk = self.negotiated_max_chunk();
+        self.write_frame_bytes(
+            &frame.surface_id,
+            next_id,
+            frame.width,
+            frame.height,
+            &frame.bytes,
+            max_chunk,
+        )?;
+        Ok(())
+    }
+    fn negotiated_max_chunk(&self) -> usize {
+        let device_max = self
+            .device
+            .as_ref()
+            .map(|device| device.capabilities.max_chunk as usize)
+            .unwrap_or(self.max_chunk);
+        self.max_chunk.min(device_max).max(1)
     }
     pub fn send_tile(&mut self, tile: Tile) -> Result<u32, CoreError> {
         if self.state != ConnectionState::Ready {
@@ -780,6 +860,15 @@ impl<T: Transport> Session<T> {
             return Err(CoreError::Unsupported);
         }
         device.send_tile(&tile)?;
+        if device
+            .surfaces
+            .iter()
+            .find(|surface| surface.info.id == tile.surface_id)
+            .map(|surface| surface.rejects_tile(tile.base_frame_id))
+            .unwrap_or(false)
+        {
+            return Err(CoreError::QueueFull);
+        }
         let payload = encode_tile_payload(
             &tile.surface_id,
             tile.base_frame_id,
@@ -910,16 +999,15 @@ impl<T: Transport> Session<T> {
                     if let Some((surface_id, frame_id)) =
                         self.pending_frames.remove(&packet.request_id)
                     {
-                        if let Some(device) = self.device.as_mut() {
-                            if let Some(surface) =
-                                device.surfaces.iter_mut().find(|s| s.info.id == surface_id)
-                            {
-                                surface.ack(frame_id);
-                            }
-                        }
+                        self.launch_pending_frame(&surface_id, frame_id)?;
                     } else if let Some(device) = self.device.as_mut() {
-                        for surface in &mut device.surfaces {
-                            surface.ack(ack.frame_id);
+                        let ids: Vec<_> = device
+                            .surfaces
+                            .iter()
+                            .map(|surface| surface.info.id.clone())
+                            .collect();
+                        for surface_id in ids {
+                            self.launch_pending_frame(&surface_id, ack.frame_id)?;
                         }
                     }
                     if was_frame && ack.displayed {
@@ -930,7 +1018,10 @@ impl<T: Transport> Session<T> {
             }
             MessageType::Error => {
                 self.pending_requests.remove(&packet.request_id);
-                self.pending_frames.remove(&packet.request_id);
+                if let Some((surface_id, frame_id)) = self.pending_frames.remove(&packet.request_id)
+                {
+                    self.launch_pending_frame(&surface_id, frame_id)?;
+                }
                 let detail = mdc_protocol::decode_control::<ErrorPayload>(&packet.payload)
                     .map(|err| format!("{}: {}", err.code, err.message))
                     .unwrap_or_else(|_| "device returned error".into());
@@ -1873,6 +1964,10 @@ mod tests {
         assert_eq!(queue.enqueue_frame(frame(3)).unwrap(), 3);
         assert_eq!(queue.in_flight(), Some(1));
         assert_eq!(queue.pending_frame_id(), Some(3));
+        let (launched_id, launched) = queue.ack(1).unwrap();
+        assert_eq!(launched_id, 3);
+        assert_eq!(launched.bytes, vec![3; 8]);
+        assert_eq!(queue.in_flight(), Some(3));
     }
 
     #[test]
@@ -1995,5 +2090,87 @@ mod tests {
                 bytes: vec![0, 0],
             })
             .unwrap();
+    }
+
+    #[test]
+    fn thousand_sessions_and_frames_return_the_ledger_to_zero() {
+        let mut ledger = AllocationLedger::default();
+        let frame_bytes = 8usize;
+        for _ in 0..1000 {
+            assert!(ledger.alloc(frame_bytes));
+            let (host, mut link) = MemoryLink::pair();
+            let mut session = Session::new(host);
+            session.connect().unwrap();
+            let hello = link.read().unwrap().unwrap();
+            let (hello, _) = Packet::decode(&hello, 4096).unwrap();
+            link.write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: hello.request_id,
+                    payload: encode_control(&caps()).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+            session.poll().unwrap();
+            session.disconnect();
+            ledger.free(frame_bytes);
+        }
+        let (host, mut link) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        let hello = link.read().unwrap().unwrap();
+        let (hello, _) = Packet::decode(&hello, 4096).unwrap();
+        link.write(
+            &Packet {
+                version: VERSION,
+                kind: MessageType::Capabilities,
+                flags: 0,
+                request_id: hello.request_id,
+                payload: encode_control(&caps()).unwrap(),
+            }
+            .encode(4096)
+            .unwrap(),
+        )
+        .unwrap();
+        session.poll().unwrap();
+        for value in 0..100u8 {
+            assert!(ledger.alloc(frame_bytes));
+            session
+                .send_frame(Frame {
+                    surface_id: "main".into(),
+                    width: 2,
+                    height: 2,
+                    bytes: vec![value; frame_bytes],
+                })
+                .unwrap();
+            let packet = link.read().unwrap().unwrap();
+            let (packet, _) = Packet::decode(&packet, 4096).unwrap();
+            link.write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Ack,
+                    flags: 0,
+                    request_id: packet.request_id,
+                    payload: encode_control(&Ack {
+                        received: true,
+                        displayed: true,
+                        frame_id: packet.request_id as u64,
+                        error: None,
+                    })
+                    .unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+            session.poll().unwrap();
+            ledger.free(frame_bytes);
+        }
+        session.disconnect();
+        assert_eq!(ledger.outstanding, 0);
     }
 }

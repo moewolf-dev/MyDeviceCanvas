@@ -137,7 +137,10 @@ bool SessionDispatcher::handle_tile(const Packet& packet) {
   if (packet.payload.size() < header) return false;
   const auto* p = packet.payload.data() + 1 + id_len;
   const auto base = u64le(p);
-  if (base != current_frame_id_) return false;
+  if (base != current_frame_id_) {
+    send_error(packet.request_id, "E_BASE", "base frame mismatch");
+    return true;
+  }
   const auto x = u16le(p + 8);
   const auto y = u16le(p + 10);
   const auto w = u16le(p + 12);
@@ -157,6 +160,15 @@ void SessionDispatcher::send_ack(std::uint32_t request_id, std::uint64_t frame_i
   ack.request_id = request_id;
   ack.payload = encode_ack_cbor(true, displayed, frame_id);
   reply_(ack);
+}
+
+void SessionDispatcher::send_error(std::uint32_t request_id, const char* code, const char* message) {
+  Packet err;
+  err.type = MessageType::Error;
+  err.flags = 0;
+  err.request_id = request_id;
+  err.payload = encode_error_cbor(code, message);
+  reply_(err);
 }
 
 void SessionDispatcher::send_pong(std::uint32_t request_id) {

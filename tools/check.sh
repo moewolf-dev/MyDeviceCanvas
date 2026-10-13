@@ -63,7 +63,12 @@ if [[ -f examples/electron-demo/demo-logic.test.js ]]; then
 fi
 if command -v swiftc >/dev/null 2>&1; then
   cargo build -p mdc_c
-  swiftc -parse-as-library -import-objc-header sdk/c/include/mdc.h \
+  # Rosetta 里的 swiftc 会选 x86_64 切片，链不上 arm64 的 libmdc_c。
+  SWIFTC=(swiftc)
+  if file target/debug/libmdc_c.dylib | grep -q 'arm64'; then
+    SWIFTC=(arch -arm64 swiftc)
+  fi
+  "${SWIFTC[@]}" -parse-as-library -import-objc-header sdk/c/include/mdc.h \
     -L target/debug -lmdc_c \
     -Xlinker -rpath -Xlinker "$ROOT/target/debug" \
     sdk/swift/Sources/MdcSession.swift sdk/swift/main.swift \
@@ -95,7 +100,7 @@ else:
     raise SystemExit("sim peer did not listen")
 PY
   sleep 0.2
-  swiftc -parse-as-library -import-objc-header sdk/c/include/mdc.h \
+  "${SWIFTC[@]}" -parse-as-library -import-objc-header sdk/c/include/mdc.h \
     -L target/debug -lmdc_c \
     -Xlinker -rpath -Xlinker "$ROOT/target/debug" \
     sdk/swift/Sources/MdcSession.swift sdk/swift/tcp_main.swift \
@@ -142,6 +147,33 @@ if ! MDC_PAIRING_STORE="$LINUX_STORE" ./target/debug/mdc pair sim-linux-virt tok
 fi
 kill "$LINUX_PID" || true
 rm -f "$LINUX_STORE"
+
+CXX_PORT="$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)"
+c++ -std=c++17 -I runtime/linux/include -I runtime/esp32/include \
+  runtime/esp32/src/parser.cpp runtime/esp32/src/frame_store.cpp \
+  runtime/esp32/src/sim_display.cpp runtime/esp32/src/dispatcher.cpp \
+  runtime/esp32/src/cbor_control.cpp \
+  runtime/linux/src/linux_runtime.cpp runtime/linux/main/mdc_linux_peer.cpp \
+  -o /tmp/mdc_linux_peer
+/tmp/mdc_linux_peer "127.0.0.1:${CXX_PORT}" >/tmp/mdc-linux-cxx.log 2>&1 &
+CXX_PID=$!
+CXX_STORE="$(mktemp)"
+if ! MDC_PAIRING_STORE="$CXX_STORE" ./target/debug/mdc pair sim-linux-virt token \
+  || ! MDC_PAIRING_STORE="$CXX_STORE" ./target/debug/mdc --address "127.0.0.1:${CXX_PORT}" linux-accept; then
+  kill "$CXX_PID" || true
+  cat /tmp/mdc-linux-cxx.log || true
+  rm -f "$CXX_STORE"
+  exit 1
+fi
+kill "$CXX_PID" || true
+rm -f "$CXX_STORE"
 
 if command -v cmake >/dev/null 2>&1; then
   # Host stub only. A configured IDF_PATH would switch this directory into a device project.

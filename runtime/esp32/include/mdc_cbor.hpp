@@ -36,4 +36,7 @@ std::vector<std::uint8_t> encode_capabilities_cbor(const PeerIdentity& id,
 /// Encode Ack control payload (MessageType::Ack).
 std::vector<std::uint8_t> encode_ack_cbor(bool received, bool displayed, std::uint64_t frame_id);
 
+/// Encode Error control payload (MessageType::Error).
+std::vector<std::uint8_t> encode_error_cbor(const std::string& code, const std::string& message);
+
 }  // namespace mdc

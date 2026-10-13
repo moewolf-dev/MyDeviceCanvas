@@ -20,7 +20,7 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Node NativeManager sim | sim-verified (JS facade + native tile/events; `.node` optional) | physical: pending |
 | C ABI `mdc_c` | sim-verified (frame/tile/surface host tests) | physical: pending |
 | Linux runtime framebuffer peer | sim-verified (`mdc_linux_peer` TCP) | physical: pending |
-| `mdc linux-accept` 800×480 | sim-verified (tile rejected before the full frame) | physical: pending |
+| `mdc linux-accept` 800×480 | sim-verified (Rust peer and C++ `mdc_linux_peer` `E_BASE`) | physical: pending |
 | OTA render freeze | sim-verified (`E_FROZEN` until abort/rollback) | physical: pending |
 | dual-sim overlay surface | sim-verified | n/a |
 | Touch rotation 0/90/180/270 | sim-verified | physical: pending |

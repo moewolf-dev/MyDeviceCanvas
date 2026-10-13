@@ -7,7 +7,11 @@ use mdc_protocol::{
 };
 use mdc_transport::{MemoryLink, Transport, TransportError};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use thiserror::Error;
+
+/// 虚拟时钟上，begin 之后这么多个 tick 没有 chunk 就回滚。
+const OTA_CHUNK_TIMEOUT_TICKS: u64 = 5_000;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SimError {
@@ -36,6 +40,9 @@ impl VirtualClock {
 #[derive(Debug, Clone, Default)]
 pub struct FaultInjector {
     pub drop_next: bool,
+    /// 先放行这么多个包，再丢掉接下来的一个，并清掉未完成的分块重组。
+    pub drop_skip: u32,
+    pub armed_drop: bool,
     /// Defer processing for this many virtual ticks after enqueue.
     pub delay_ticks: u64,
     pub disconnect: bool,
@@ -43,6 +50,11 @@ pub struct FaultInjector {
 impl FaultInjector {
     pub fn drop_next(&mut self) {
         self.drop_next = true;
+    }
+    /// `accept` 个包正常处理，然后丢掉下一个包。用来丢掉分块帧的 commit。
+    pub fn drop_one_after(&mut self, accept: u32) {
+        self.drop_skip = accept;
+        self.armed_drop = true;
     }
     pub fn delay(&mut self, ticks: u64) {
         self.delay_ticks = ticks;
@@ -171,11 +183,15 @@ pub struct FakeDevice {
     connected: bool,
     pub metrics: SimMetrics,
     ota_active: bool,
+    /// begin 之后若虚拟时钟越过这个 tick 还没有 chunk，就回滚并解除冻结。
+    ota_deadline: Option<u64>,
     firmware: String,
     pending_version: Option<String>,
     /// Emitted once after the next displayed full frame. TCP peers use this
     /// because the host cannot call `emit_input` on another process.
     input_after_frame: Option<InputEvent>,
+    /// 仍按下的 pointer。断线时按最后一次合法坐标补发 cancel。
+    active_pointers: BTreeMap<u16, (String, u16, u16)>,
 }
 impl FakeDevice {
     pub fn from_transport(link: Box<dyn Transport>, profile: BoardProfile) -> Self {
@@ -206,9 +222,11 @@ impl FakeDevice {
                 ..SimMetrics::default()
             },
             ota_active: false,
+            ota_deadline: None,
             firmware: "1.0.0".into(),
             pending_version: None,
             input_after_frame: None,
+            active_pointers: BTreeMap::new(),
         }
     }
 
@@ -326,8 +344,38 @@ impl FakeDevice {
         )
         .map_err(|_| SimError::Protocol("touch out of bounds".into()))?;
         let event = InputEvent { x, y, ..event };
+        match event.phase.as_str() {
+            "up" | "cancel" => {
+                self.active_pointers.remove(&event.pointer_id);
+            }
+            _ => {
+                self.active_pointers.insert(
+                    event.pointer_id,
+                    (event.surface_id.clone(), event.x, event.y),
+                );
+            }
+        }
         self.metrics.inputs_emitted = self.metrics.inputs_emitted.saturating_add(1);
         self.write_control(MessageType::Input, 0, &event)
+    }
+    fn emit_pointer_cancels(&mut self) -> Result<(), SimError> {
+        let pending: Vec<InputEvent> = self
+            .active_pointers
+            .iter()
+            .map(|(pointer_id, (surface_id, x, y))| InputEvent {
+                surface_id: surface_id.clone(),
+                pointer_id: *pointer_id,
+                phase: "cancel".into(),
+                x: *x,
+                y: *y,
+            })
+            .collect();
+        self.active_pointers.clear();
+        for event in pending {
+            self.metrics.inputs_emitted = self.metrics.inputs_emitted.saturating_add(1);
+            self.write_control(MessageType::Input, 0, &event)?;
+        }
+        Ok(())
     }
     pub fn capabilities(&self) -> Capabilities {
         let stride = u32::from(self.profile.width) * 2;
@@ -365,11 +413,18 @@ impl FakeDevice {
     }
     /// Advance virtual clock and process inbound packets.
     pub fn poll(&mut self) -> Result<(), SimError> {
-        if self.faults.disconnect || !self.connected {
+        if self.faults.disconnect {
+            self.faults.disconnect = false;
+            self.emit_pointer_cancels()?;
             self.connected = false;
             self.link.close();
             return Err(SimError::Disconnected);
         }
+        if !self.connected {
+            self.link.close();
+            return Err(SimError::Disconnected);
+        }
+        self.expire_ota();
         while let Some(bytes) = self
             .link
             .read()
@@ -390,13 +445,35 @@ impl FakeDevice {
         self.flush_delayed()?;
         Ok(())
     }
+    fn expire_ota(&mut self) {
+        let Some(deadline) = self.ota_deadline else {
+            return;
+        };
+        if !self.ota_active || self.clock.tick < deadline {
+            return;
+        }
+        self.pending_version = None;
+        self.ota_active = false;
+        self.ota_deadline = None;
+        self.metrics.ota_rollbacks = self.metrics.ota_rollbacks.saturating_add(1);
+    }
     pub fn advance(&mut self, ticks: u64) -> Result<(), SimError> {
         self.clock.advance(ticks);
         self.poll()
     }
     fn enqueue_or_handle(&mut self, packet: Packet) -> Result<(), SimError> {
+        if self.faults.armed_drop {
+            if self.faults.drop_skip > 0 {
+                self.faults.drop_skip -= 1;
+            } else {
+                self.faults.armed_drop = false;
+                self.assembler = None;
+                return self.reply_error(packet.request_id, "E_DROPPED", "packet dropped");
+            }
+        }
         if self.faults.drop_next {
             self.faults.drop_next = false;
+            self.assembler = None;
             return Ok(());
         }
         if self.faults.delay_ticks > 0 {
@@ -475,6 +552,7 @@ impl FakeDevice {
         let rollback = |device: &mut Self| {
             device.pending_version = None;
             device.ota_active = false;
+            device.ota_deadline = None;
             device.metrics.ota_rollbacks = device.metrics.ota_rollbacks.saturating_add(1);
         };
         match cmd.action.as_str() {
@@ -484,6 +562,7 @@ impl FakeDevice {
                 }
                 self.pending_version = Some(cmd.version.unwrap_or_else(|| "pending".into()));
                 self.ota_active = true;
+                self.ota_deadline = Some(self.clock.tick.saturating_add(OTA_CHUNK_TIMEOUT_TICKS));
                 self.ack(packet.request_id, self.current_frame_id, true, false)
             }
             "chunk" => {
@@ -491,6 +570,7 @@ impl FakeDevice {
                     rollback(self);
                     return self.reply_error(packet.request_id, "E_OTA", "bad image");
                 }
+                self.ota_deadline = Some(self.clock.tick.saturating_add(OTA_CHUNK_TIMEOUT_TICKS));
                 self.ack(packet.request_id, self.current_frame_id, true, false)
             }
             "abort" | "timeout" => {
@@ -509,6 +589,7 @@ impl FakeDevice {
                     self.firmware = version;
                 }
                 self.ota_active = false;
+                self.ota_deadline = None;
                 self.ack(packet.request_id, self.current_frame_id, true, true)
             }
             other => self.reply_error(
@@ -1365,5 +1446,223 @@ mod tests {
         device.poll().unwrap();
         session.poll().unwrap();
         assert_eq!(session.pending_request_count(), 0);
+    }
+
+    #[test]
+    fn pending_frame_is_painted_only_after_the_inflight_ack() {
+        use mdc_core::Frame;
+        let profile = BoardProfile {
+            width: 2,
+            height: 2,
+            ..BoardProfile::default()
+        };
+        let (host, mut device) = FakeDevice::pair(profile);
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        let send = |session: &mut Session<MemoryLink>, value: u8| {
+            session
+                .send_frame(Frame {
+                    surface_id: "main".into(),
+                    width: 2,
+                    height: 2,
+                    bytes: vec![value; 8],
+                })
+                .unwrap()
+        };
+        assert_ne!(send(&mut session, 0x11), 0);
+        assert_eq!(send(&mut session, 0x22), 0);
+        assert_eq!(send(&mut session, 0x33), 0);
+        device.poll().unwrap();
+        assert_eq!(device.pixels(), &[0x11; 8]);
+        session.poll().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.pixels(), &[0x33; 8]);
+    }
+
+    #[test]
+    fn saturated_queue_rejects_a_tile() {
+        use mdc_core::{CoreError, Tile};
+        let profile = BoardProfile {
+            width: 2,
+            height: 2,
+            ..BoardProfile::default()
+        };
+        let (host, mut device) = FakeDevice::pair(profile);
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![1; 8],
+            })
+            .unwrap();
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![2; 8],
+            })
+            .unwrap();
+        assert_eq!(
+            session.send_tile(Tile {
+                surface_id: "main".into(),
+                base_frame_id: 1,
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                bytes: vec![0, 0],
+            }),
+            Err(CoreError::QueueFull)
+        );
+    }
+
+    #[test]
+    fn disconnect_cancels_only_the_pointer_still_down() {
+        use mdc_core::{DeviceManager, ManagerEvent};
+        use std::sync::{Arc, Mutex};
+        let profile = BoardProfile {
+            width: 4,
+            height: 2,
+            touch: true,
+            ..BoardProfile::default()
+        };
+        let (host, mut device) = FakeDevice::pair(profile);
+        let manager = Arc::new(Mutex::new(DeviceManager::new()));
+        let mut session = Session::new(host);
+        session.set_manager(manager.clone());
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        let down = |pointer_id, x, y| InputEvent {
+            surface_id: "main".into(),
+            pointer_id,
+            phase: "down".into(),
+            x,
+            y,
+        };
+        device.emit_input(down(1, 0, 0)).unwrap();
+        device.emit_input(down(2, 1, 0)).unwrap();
+        device
+            .emit_input(InputEvent {
+                surface_id: "main".into(),
+                pointer_id: 1,
+                phase: "up".into(),
+                x: 0,
+                y: 0,
+            })
+            .unwrap();
+        session.poll().unwrap();
+        device.faults.request_disconnect();
+        assert_eq!(device.poll(), Err(SimError::Disconnected));
+        session.poll().unwrap();
+        let events: Vec<_> = manager.lock().unwrap().drain_events().collect();
+        let cancels: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ManagerEvent::Input { event, .. } if event.phase == "cancel" => {
+                    Some((event.pointer_id, event.x, event.y))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cancels, vec![(2, 1, 0)]);
+    }
+
+    #[test]
+    fn ota_virtual_timeout_unfreezes_without_changing_firmware() {
+        let profile = BoardProfile {
+            width: 2,
+            height: 2,
+            ota: true,
+            ..BoardProfile::default()
+        };
+        let (host, mut device) = FakeDevice::pair(profile);
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .send_ota(OtaCommand {
+                action: "begin".into(),
+                version: Some("2.0.0".into()),
+                size: Some(32),
+                sha256: Some("0".repeat(64)),
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        device.clock.advance(5_000);
+        device.poll().unwrap();
+        assert_eq!(device.firmware(), "1.0.0");
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![0x55; 8],
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.pixels(), &[0x55; 8]);
+    }
+
+    #[test]
+    fn dropped_commit_keeps_pixels_and_the_next_frame_displays() {
+        let profile = BoardProfile {
+            width: 2,
+            height: 2,
+            ..BoardProfile::default()
+        };
+        let (host, mut device) = FakeDevice::pair(profile);
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.max_chunk = 8;
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![0x11; 8],
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.pixels(), &[0x11; 8]);
+        // begin + chunk 放行，丢掉 commit。
+        device.faults.drop_one_after(2);
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![0x22; 8],
+            })
+            .unwrap();
+        device.poll().unwrap();
+        let _ = session.poll();
+        assert_eq!(device.pixels(), &[0x11; 8]);
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![0x33; 8],
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.pixels(), &[0x33; 8]);
     }
 }

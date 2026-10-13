@@ -110,4 +110,13 @@ std::vector<std::uint8_t> encode_ack_cbor(bool received, bool displayed, std::ui
   return o;
 }
 
+std::vector<std::uint8_t> encode_error_cbor(const std::string& code, const std::string& message) {
+  std::vector<std::uint8_t> o;
+  o.reserve(64);
+  push_u8(o, 0xa2);  // map(2): code, message
+  push_kv_text(o, "code", code);
+  push_kv_text(o, "message", message);
+  return o;
+}
+
 }  // namespace mdc

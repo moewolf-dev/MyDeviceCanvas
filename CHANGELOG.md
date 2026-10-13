@@ -39,6 +39,18 @@ All notable host / simulator changes for MyDeviceCanvas. Physical board verifica
 - `mdc-sim-peer --drop-next` drops one packet without changing pixels
 - `mdc linux-accept` checks the 800×480 linux-virt gate: Tile fails before the full frame and succeeds after it
 
+## [0.1.5] — Held frames, cancel, and peer errors
+
+### Added
+
+- An ACKed in-flight frame releases the next held frame onto the link
+- A full frame queue rejects another Tile with `QueueFull`
+- Disconnect sends `cancel` for pointers that are still down
+- OTA begin rolls back when the virtual clock passes the chunk timeout
+- Dropping a chunked frame's commit keeps the previous pixels and accepts the next full frame
+- `mdc_linux_peer` answers a mismatched tile with `E_BASE`
+- A silent WebSocket peer misses three heartbeats without treating the open frame as displayed
+
 ## [0.1.1] — Wave 12 host gaps
 
 ### Added

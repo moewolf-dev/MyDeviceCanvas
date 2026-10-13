@@ -109,6 +109,7 @@ class SessionDispatcher {
   bool handle_frame(const Packet& packet);
   bool handle_tile(const Packet& packet);
   void send_ack(std::uint32_t request_id, std::uint64_t frame_id, bool displayed);
+  void send_error(std::uint32_t request_id, const char* code, const char* message);
   void send_pong(std::uint32_t request_id);
   void send_capabilities(std::uint32_t request_id);
 };

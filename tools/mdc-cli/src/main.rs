@@ -1571,6 +1571,126 @@ mod tests {
         linux_accept_memory().unwrap();
     }
 
+    #[cfg(feature = "websocket")]
+    #[test]
+    fn websocket_without_pong_does_not_display_the_open_frame() {
+        use mdc_core::{CoreError, SessionConfig, Tile};
+        use mdc_protocol::{encode_control, Capabilities, MessageType, Packet, Surface, VERSION};
+        use mdc_transport::{Transport, WebSocketTransport};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().unwrap();
+                let mut peer = WebSocketTransport::accept(stream).unwrap();
+                let mut answered = false;
+                for _ in 0..400 {
+                    match peer.read() {
+                        Ok(Some(bytes)) => {
+                            if !answered {
+                                if let Ok((packet, _)) = Packet::decode(&bytes, 1024 * 1024) {
+                                    if packet.kind == MessageType::Hello {
+                                        let caps = Capabilities {
+                                            device_id: "ws-silent".into(),
+                                            firmware: "1".into(),
+                                            surfaces: vec![Surface {
+                                                id: "main".into(),
+                                                width: 2,
+                                                height: 2,
+                                                pixel_format: "RGB565".into(),
+                                                stride: 4,
+                                                rotation: 0,
+                                            }],
+                                            frame: true,
+                                            tile: true,
+                                            touch: false,
+                                            ota: false,
+                                            max_message: 4096,
+                                            max_chunk: 16384,
+                                            max_in_flight: 1,
+                                            max_fps: 30,
+                                        };
+                                        let reply = Packet {
+                                            version: VERSION,
+                                            kind: MessageType::Capabilities,
+                                            flags: 0,
+                                            request_id: packet.request_id,
+                                            payload: encode_control(&caps).unwrap(),
+                                        };
+                                        peer.write(&reply.encode(4096).unwrap()).unwrap();
+                                        answered = true;
+                                    }
+                                }
+                            }
+                        }
+                        Ok(None) => thread::sleep(Duration::from_millis(5)),
+                        Err(_) => break,
+                    }
+                }
+            }
+        });
+        let transport =
+            WebSocketTransport::connect(&format!("ws://127.0.0.1:{port}/"), Duration::from_secs(2))
+                .unwrap();
+        let mut session = Session::with_config(
+            transport,
+            SessionConfig {
+                connect_timeout_ms: 10_000,
+                ack_timeout_ms: 0,
+                heartbeat_ms: 1_000,
+                reconnect: true,
+            },
+        );
+        session.connect().unwrap();
+        for _ in 0..40 {
+            if session.poll().unwrap() == ConnectionState::Ready {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(session.state, ConnectionState::Ready);
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![9; 8],
+            })
+            .unwrap();
+        assert_eq!(session.tick(1_000).unwrap(), ConnectionState::Ready);
+        assert_eq!(session.tick(2_000).unwrap(), ConnectionState::Ready);
+        assert_eq!(session.tick(3_000).unwrap(), ConnectionState::Ready);
+        assert_eq!(session.tick(4_000), Err(CoreError::HeartbeatMissed));
+        assert_eq!(session.state, ConnectionState::Reconnecting);
+        assert!(session.pending_request_count() >= 1);
+        assert_eq!(session.tick(5_000).unwrap(), ConnectionState::Connecting);
+        let transport =
+            WebSocketTransport::connect(&format!("ws://127.0.0.1:{port}/"), Duration::from_secs(2))
+                .unwrap();
+        session.provide_transport(transport).unwrap();
+        for _ in 0..40 {
+            if session.poll().unwrap() == ConnectionState::Ready {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(session.needs_full_frame);
+        assert_eq!(
+            session.send_tile(Tile {
+                surface_id: "main".into(),
+                base_frame_id: 1,
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                bytes: vec![0, 0],
+            }),
+            Err(CoreError::NeedFullFrame)
+        );
+        drop(session);
+        let _ = server.join();
+    }
+
     fn bound_message(message: &str) -> String {
         let mut owned: String = message.chars().take(160).collect();
         if message.chars().count() > 160 {
