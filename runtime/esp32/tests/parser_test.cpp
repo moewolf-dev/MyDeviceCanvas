@@ -57,6 +57,31 @@ int main() {
   assert(bad_parser.feed(bad.data(), bad.size(), rejected) == mdc::ParseResult::Invalid);
   assert(rejected.payload.empty());
 
+  std::vector<std::uint8_t> reserved(20, 0);
+  reserved[0] = 'M';
+  reserved[1] = 'D';
+  reserved[2] = 1;
+  reserved[4] = 0x40;
+  reserved[5] = 1;
+  put32(reserved, 12, 0x00ffffffu);
+  mdc::Parser reserved_parser;
+  mdc::Packet reserved_out;
+  assert(reserved_parser.feed(reserved.data(), reserved.size(), reserved_out) ==
+         mdc::ParseResult::Invalid);
+  assert(reserved_out.payload.empty());
+
+  std::vector<std::uint8_t> unknown(20, 0);
+  unknown[0] = 'M';
+  unknown[1] = 'D';
+  unknown[2] = 1;
+  unknown[4] = 99;
+  put32(unknown, 12, 0x00ffffffu);
+  mdc::Parser unknown_parser;
+  mdc::Packet unknown_out;
+  assert(unknown_parser.feed(unknown.data(), unknown.size(), unknown_out) ==
+         mdc::ParseResult::Invalid);
+  assert(unknown_out.payload.empty());
+
   mdc::Packet ping;
   assert(parser.feed(encoded.data(), encoded.size(), ping) == mdc::ParseResult::Packet);
   assert(dispatcher.handle(ping));

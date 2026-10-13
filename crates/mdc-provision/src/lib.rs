@@ -54,6 +54,27 @@ pub enum PreflightError {
     MissingFile,
     #[error("artifact metadata is invalid")]
     InvalidMetadata,
+    #[error("artifact signature does not match the image")]
+    SignatureMismatch,
+}
+
+/// Simulator stand-in for an artifact signature. It is sha256(public_key || image), not a device key.
+pub fn sign_artifact(public_key: &[u8], image: &[u8]) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(public_key);
+    hasher.update(image);
+    hasher.finalize().to_vec()
+}
+
+pub fn verify_signature(
+    public_key: &[u8],
+    image: &[u8],
+    signature: &[u8],
+) -> Result<(), PreflightError> {
+    if public_key.is_empty() || signature != sign_artifact(public_key, image).as_slice() {
+        return Err(PreflightError::SignatureMismatch);
+    }
+    Ok(())
 }
 
 pub fn verify_artifact(
@@ -300,6 +321,21 @@ mod tests {
         );
         assert_eq!(result, Ok(()));
         let _ = std::fs::remove_file(path);
+    }
+    #[test]
+    fn fake_signature_mismatch_rejects_without_opening_a_port() {
+        let image = b"firmware-bytes";
+        let key = b"fake-public-key";
+        let good = sign_artifact(key, image);
+        assert_eq!(verify_signature(key, image, &good), Ok(()));
+        assert_eq!(
+            verify_signature(key, image, b"not-the-signature"),
+            Err(PreflightError::SignatureMismatch)
+        );
+        assert_eq!(
+            verify_signature(b"", image, &good),
+            Err(PreflightError::SignatureMismatch)
+        );
     }
     #[test]
     fn rejects_unknown_flash_and_hash() {

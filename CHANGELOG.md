@@ -39,6 +39,21 @@ All notable host / simulator changes for MyDeviceCanvas. Physical board verifica
 - `mdc-sim-peer --drop-next` drops one packet without changing pixels
 - `mdc linux-accept` checks the 800×480 linux-virt gate: Tile fails before the full frame and succeeds after it
 
+## [0.1.8] — Link generation, short writes, and budgets
+
+### Added
+
+- A displayed ACK from the previous link cannot release the frame in flight on the new link
+- Non-zero reserved bytes and unknown message types are rejected before the declared payload is allocated
+- The C++ peer reports `E_CHUNK`, `E_INCOMPLETE`, and `E_FROZEN` without changing pixels
+- A fake artifact signature must match or provisioning is refused
+- A short write resumes the same frame and does not admit the next frame
+- A successful write without PONG still expires the heartbeat on the virtual clock
+- Host copy budget counts the pixel buffer, the transport copy, and the SDK copy
+- A simulated heap reserve refuses another framebuffer
+- E-ink busy keeps the previous frame and does not advertise color FPS
+- A declared decompression size above the quota is refused before allocation
+
 ## [0.1.7] — Queue bounds, resync, and timing
 
 ### Added

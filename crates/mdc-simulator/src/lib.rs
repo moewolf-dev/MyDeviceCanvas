@@ -192,6 +192,8 @@ pub struct FakeDevice {
     input_after_frame: Option<InputEvent>,
     /// 仍按下的 pointer。断线时按最后一次合法坐标补发 cancel。
     active_pointers: BTreeMap<u16, (String, u16, u16)>,
+    /// Virtual tick when an e-ink refresh finishes. Color panels leave this at 0.
+    busy_until: u64,
 }
 impl FakeDevice {
     pub fn from_transport(link: Box<dyn Transport>, profile: BoardProfile) -> Self {
@@ -227,6 +229,7 @@ impl FakeDevice {
             pending_version: None,
             input_after_frame: None,
             active_pointers: BTreeMap::new(),
+            busy_until: 0,
         }
     }
 
@@ -408,7 +411,7 @@ impl FakeDevice {
             max_message: self.max_message as u32,
             max_chunk: self.max_chunk as u32,
             max_in_flight: 1,
-            max_fps: 30,
+            max_fps: if self.profile.color_fps { 30 } else { 0 },
         }
     }
     /// Advance virtual clock and process inbound packets.
@@ -609,9 +612,18 @@ impl FakeDevice {
             ),
         }
     }
+    fn note_refresh(&mut self) {
+        if self.profile.color_fps {
+            return;
+        }
+        self.busy_until = self.clock.tick.saturating_add(100);
+    }
     fn handle_frame(&mut self, packet: Packet) -> Result<(), SimError> {
         if self.ota_active {
             return self.reply_error(packet.request_id, "E_FROZEN", "render frozen during ota");
+        }
+        if !self.profile.color_fps && self.busy_until > self.clock.tick {
+            return self.reply_error(packet.request_id, "E_BUSY", "panel is refreshing");
         }
         let decoded =
             decode_frame_payload(&packet.payload).map_err(|e| SimError::Protocol(e.to_string()))?;
@@ -631,6 +643,7 @@ impl FakeDevice {
                 }
                 self.current_frame_id = frame_id;
                 self.assembler = None;
+                self.note_refresh();
                 self.metrics.frames_received = self.metrics.frames_received.saturating_add(1);
                 self.ack(packet.request_id, frame_id, true, true)?;
                 self.flush_scripted_input()
@@ -683,6 +696,7 @@ impl FakeDevice {
                             );
                         }
                         self.current_frame_id = frame_id;
+                        self.note_refresh();
                         self.metrics.frames_received =
                             self.metrics.frames_received.saturating_add(1);
                         self.ack(packet.request_id, frame_id, true, true)?;
@@ -965,6 +979,51 @@ mod tests {
         assert!(pi.color_fps);
         let eink = BoardProfile::from_board_id("waveshare-eink");
         assert!(!eink.color_fps, "e-ink must not claim color FPS");
+    }
+
+    #[test]
+    fn eink_busy_keeps_the_previous_frame() {
+        let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("waveshare-eink"));
+        assert_eq!(device.capabilities().max_fps, 0);
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        let first = vec![0x11; 800 * 480 * 2];
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 800,
+                height: 480,
+                bytes: first,
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.pixels()[0], 0x11);
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 800,
+                height: 480,
+                bytes: vec![0x22; 800 * 480 * 2],
+            })
+            .unwrap();
+        device.poll().unwrap();
+        assert_eq!(device.pixels()[0], 0x11);
+        let err = session.poll().unwrap_err();
+        assert!(err.to_string().contains("E_BUSY"), "{err}");
+        device.advance(100).unwrap();
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 800,
+                height: 480,
+                bytes: vec![0x22; 800 * 480 * 2],
+            })
+            .unwrap();
+        device.poll().unwrap();
+        assert_eq!(device.pixels()[0], 0x22);
     }
 
     #[test]

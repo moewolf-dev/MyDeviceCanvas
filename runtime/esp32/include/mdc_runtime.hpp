@@ -106,6 +106,8 @@ class SessionDispatcher {
   std::uint64_t current_frame_id_ = 0;
   std::vector<std::uint8_t> chunk_staging_;
   std::uint32_t chunk_expected_ = 0;
+  std::uint32_t chunk_filled_ = 0;
+  bool render_frozen_ = false;
   bool handle_frame(const Packet& packet);
   bool handle_tile(const Packet& packet);
   void send_ack(std::uint32_t request_id, std::uint64_t frame_id, bool displayed);

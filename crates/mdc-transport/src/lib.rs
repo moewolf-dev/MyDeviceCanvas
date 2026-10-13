@@ -23,6 +23,9 @@ pub enum TransportError {
     Closed,
     #[error("write queue is full")]
     Backpressure,
+    /// The transport accepted only `accepted` bytes of this write.
+    #[error("short write accepted {accepted} bytes")]
+    ShortWrite { accepted: usize },
     #[error("I/O error: {0}")]
     Io(String),
     #[error("invalid endpoint: {0}")]
@@ -93,6 +96,46 @@ impl Transport for MemoryLink {
     }
     fn close(&mut self) {
         *self.closed.lock().unwrap() = true;
+    }
+}
+
+/// Memory link that accepts only part of the next write, then behaves normally.
+/// The unsent tail must be written again; it is not a second copy of the frame.
+pub struct ShortWriteLink {
+    inner: MemoryLink,
+    accept: Option<usize>,
+}
+
+impl ShortWriteLink {
+    pub fn new(inner: MemoryLink) -> Self {
+        Self {
+            inner,
+            accept: None,
+        }
+    }
+
+    pub fn arm(&mut self, bytes: usize) {
+        self.accept = Some(bytes);
+    }
+}
+
+impl Transport for ShortWriteLink {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+        if let Some(limit) = self.accept.take() {
+            if limit < bytes.len() {
+                self.inner.write(&bytes[..limit])?;
+                return Err(TransportError::ShortWrite { accepted: limit });
+            }
+        }
+        self.inner.write(bytes)
+    }
+
+    fn read(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        self.inner.read()
+    }
+
+    fn close(&mut self) {
+        self.inner.close();
     }
 }
 

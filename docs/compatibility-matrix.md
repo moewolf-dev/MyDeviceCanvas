@@ -34,6 +34,16 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Flash lease vs second open | sim-verified (fake port, no device node opened) | physical: pending |
 | Linux display backend | sim-verified (memory framebuffer or no session = 2; no DRM link) | physical: pending |
 | Provision log redaction | sim-verified | n/a |
+| Stale ACK after transport switch | sim-verified (previous request id cannot release the new frame) | n/a |
+| Reserved byte and unknown type | sim-verified (rejected before payload allocation) | n/a |
+| C++ incomplete frame / freeze | sim-verified (`E_CHUNK`, `E_INCOMPLETE`, `E_FROZEN` leave pixels unchanged) | physical: pending |
+| Artifact signature | sim-verified (fake key, no port opened) | physical: pending |
+| Short write resume | sim-verified (one frame, next frame stays queued off the wire) | n/a |
+| Write without PONG | sim-verified (virtual heartbeat, no wall sleep) | n/a |
+| Host copy budget | sim-verified (three copies, 1 MiB limit) | n/a |
+| Simulated heap reserve | sim-verified (`min_internal_free` refuses a second framebuffer) | physical: pending |
+| E-ink refresh busy | sim-verified (`E_BUSY`, `max_fps` 0, previous pixels kept) | physical: pending |
+| Declared expansion guard | sim-verified (quota check before allocation, JPEG stays off) | n/a |
 | OTA render freeze | sim-verified (`E_FROZEN` until abort/rollback) | physical: pending |
 | dual-sim overlay surface | sim-verified | n/a |
 | Touch rotation 0/90/180/270 | sim-verified | physical: pending |

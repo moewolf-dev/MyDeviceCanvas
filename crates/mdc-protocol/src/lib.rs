@@ -69,6 +69,8 @@ pub struct Packet {
 pub enum CodecError {
     #[error("invalid magic")]
     InvalidMagic,
+    #[error("reserved header byte is not zero")]
+    Reserved,
     #[error("truncated packet")]
     Truncated,
     #[error("unsupported major version {0}")]
@@ -120,6 +122,10 @@ impl Packet {
         if version.major != VERSION.major {
             return Err(CodecError::Major(version.major));
         }
+        // Reject before looking at the declared payload length so a huge length is not allocated.
+        if input[5] != 0 {
+            return Err(CodecError::Reserved);
+        }
         let kind = MessageType::try_from(input[4])?;
         let len = u32::from_le_bytes(input[12..16].try_into().unwrap()) as usize;
         if len > max_payload {
@@ -129,8 +135,8 @@ impl Packet {
         if input.len() < total {
             return Err(CodecError::Truncated);
         }
-        let payload = input[HEADER_LEN..total].to_vec();
-        if checksum(&payload) != u32::from_le_bytes(input[16..20].try_into().unwrap()) {
+        let payload = &input[HEADER_LEN..total];
+        if checksum(payload) != u32::from_le_bytes(input[16..20].try_into().unwrap()) {
             return Err(CodecError::Checksum);
         }
         Ok((
@@ -139,7 +145,7 @@ impl Packet {
                 kind,
                 flags: u16::from_le_bytes(input[6..8].try_into().unwrap()),
                 request_id: u32::from_le_bytes(input[8..12].try_into().unwrap()),
-                payload,
+                payload: payload.to_vec(),
             },
             total,
         ))
@@ -625,7 +631,18 @@ mod tests {
         assert_eq!(Packet::decode(&bytes, 10), Err(CodecError::Major(2)));
         let mut bytes = packet.encode(10).unwrap();
         bytes[4] = 99;
-        assert_eq!(Packet::decode(&bytes, 10), Err(CodecError::UnknownType(99)));
+        bytes[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(
+            Packet::decode(&bytes[..HEADER_LEN], usize::MAX),
+            Err(CodecError::UnknownType(99))
+        );
+        let mut reserved = packet.encode(10).unwrap();
+        reserved[5] = 1;
+        reserved[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(
+            Packet::decode(&reserved[..HEADER_LEN], usize::MAX),
+            Err(CodecError::Reserved)
+        );
         assert_eq!(packet.encode(0), Err(CodecError::Length(1)));
     }
     #[test]

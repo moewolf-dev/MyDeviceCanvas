@@ -4,7 +4,7 @@ use mdc_protocol::{
     MessageType, OtaCommand, Packet, Surface, VERSION,
 };
 mod ledger;
-pub use ledger::AllocationLedger;
+pub use ledger::{AllocationLedger, HostCopyBudget, SimHeap};
 
 use mdc_transport::Transport;
 use std::collections::BTreeMap;
@@ -29,6 +29,8 @@ pub enum CoreError {
     QueueFull,
     #[error("control queue is full")]
     ControlQueueFull,
+    #[error("short write; resume the same frame before sending another")]
+    ShortWrite,
     #[error("feature is not supported by device")]
     Unsupported,
     #[error("transport error: {0}")]
@@ -584,6 +586,10 @@ pub struct Session<T: Transport> {
     dropped_frames: u64,
     /// request_id -> (surface_id, frame_id) for in-flight Frame/Tile acks.
     pending_frames: BTreeMap<u32, (String, u64)>,
+    /// ACKs and errors below this id belong to a previous link.
+    request_floor: u32,
+    /// Tail of a packet that a short write did not accept.
+    unsent: Option<Vec<u8>>,
     pub reconnect_policy: ReconnectPolicy,
     reconnect_attempt: u32,
     reconnect_enabled: bool,
@@ -623,6 +629,8 @@ impl<T: Transport> Session<T> {
             displayed_timings: Vec::new(),
             dropped_frames: 0,
             pending_frames: BTreeMap::new(),
+            request_floor: 0,
+            unsent: None,
             reconnect_policy: ReconnectPolicy::default(),
             reconnect_attempt: 0,
             reconnect_enabled: config.reconnect,
@@ -756,6 +764,7 @@ impl<T: Transport> Session<T> {
         self.frame_sent_at.clear();
         self.frame_received_at.clear();
         self.pending_frames.clear();
+        self.unsent = None;
         self.device = None;
         self.max_message = MAX_FRAME_BYTES;
         self.max_chunk = mdc_protocol::DEFAULT_MAX_CHUNK;
@@ -782,6 +791,8 @@ impl<T: Transport> Session<T> {
         self.frame_sent_at.clear();
         self.frame_received_at.clear();
         self.pending_frames.clear();
+        self.unsent = None;
+        self.request_floor = self.next_request_id;
         self.device = None;
         self.needs_full_frame = true;
         self.missed_heartbeats = 0;
@@ -802,6 +813,8 @@ impl<T: Transport> Session<T> {
         self.frame_sent_at.clear();
         self.frame_received_at.clear();
         self.pending_frames.clear();
+        self.unsent = None;
+        self.request_floor = self.next_request_id;
         self.device = None;
         self.awaiting_transport = false;
         self.needs_full_frame = true;
@@ -824,6 +837,7 @@ impl<T: Transport> Session<T> {
         self.frame_sent_at.clear();
         self.frame_received_at.clear();
         self.pending_frames.clear();
+        self.unsent = None;
     }
     pub fn enable_reconnect(&mut self, enabled: bool) {
         self.reconnect_enabled = enabled;
@@ -875,7 +889,16 @@ impl<T: Transport> Session<T> {
     pub fn transport_mut(&mut self) -> &mut T {
         &mut self.transport
     }
+    pub fn resume_write(&mut self) -> Result<(), CoreError> {
+        let Some(rest) = self.unsent.take() else {
+            return Ok(());
+        };
+        self.write_bytes(&rest)
+    }
     pub fn send_frame(&mut self, frame: Frame) -> Result<u32, CoreError> {
+        if self.unsent.is_some() {
+            return Err(CoreError::ShortWrite);
+        }
         if self.state != ConnectionState::Ready {
             return Err(CoreError::NotReady);
         }
@@ -930,27 +953,39 @@ impl<T: Transport> Session<T> {
         let legacy = encode_frame_payload(surface_id, frame_id, width, height, pixels)
             .map_err(|e| CoreError::Protocol(e.to_string()))?;
         let request_id = self.alloc_request_id()?;
-        if legacy.len() <= max_chunk {
-            self.write_packet_with_id(MessageType::Frame, legacy, request_id, true)?;
+        let write_result = if legacy.len() <= max_chunk {
+            self.write_packet_with_id(MessageType::Frame, legacy, request_id, true)
         } else {
             let begin =
                 encode_frame_begin(surface_id, frame_id, width, height, pixels.len() as u32)
                     .map_err(|e| CoreError::Protocol(e.to_string()))?;
-            self.write_packet_with_id(MessageType::Frame, begin, request_id, true)?;
-            let mut offset = 0u32;
-            while (offset as usize) < pixels.len() {
-                let end = ((offset as usize) + max_chunk).min(pixels.len());
-                let chunk = encode_frame_chunk(frame_id, offset, &pixels[offset as usize..end]);
-                self.write_packet_with_id(MessageType::Frame, chunk, request_id, false)?;
-                offset = end as u32;
+            let mut result = self.write_packet_with_id(MessageType::Frame, begin, request_id, true);
+            if result.is_ok() {
+                let mut offset = 0u32;
+                while (offset as usize) < pixels.len() {
+                    let end = ((offset as usize) + max_chunk).min(pixels.len());
+                    let chunk = encode_frame_chunk(frame_id, offset, &pixels[offset as usize..end]);
+                    result =
+                        self.write_packet_with_id(MessageType::Frame, chunk, request_id, false);
+                    if result.is_err() {
+                        break;
+                    }
+                    offset = end as u32;
+                }
             }
-            let commit = encode_frame_commit(frame_id);
-            self.write_packet_with_id(MessageType::Frame, commit, request_id, false)?;
+            if result.is_ok() {
+                let commit = encode_frame_commit(frame_id);
+                result = self.write_packet_with_id(MessageType::Frame, commit, request_id, false);
+            }
+            result
+        };
+        if matches!(write_result, Ok(()) | Err(CoreError::ShortWrite)) {
+            self.pending_frames
+                .insert(request_id, (surface_id.to_string(), frame_id));
+            self.frame_sent_at
+                .insert(request_id, std::time::Instant::now());
         }
-        self.pending_frames
-            .insert(request_id, (surface_id.to_string(), frame_id));
-        self.frame_sent_at
-            .insert(request_id, std::time::Instant::now());
+        write_result?;
         Ok(request_id)
     }
     fn launch_pending_frame(&mut self, surface_id: &str, frame_id: u64) -> Result<(), CoreError> {
@@ -1087,14 +1122,25 @@ impl<T: Transport> Session<T> {
         let bytes = packet
             .encode(self.max_message)
             .map_err(|e| CoreError::Protocol(e.to_string()))?;
-        self.transport
-            .write(&bytes)
-            .map_err(|e| CoreError::Transport(e.to_string()))?;
-        if track {
+        let write_result = self.write_bytes(&bytes);
+        if matches!(write_result, Ok(()) | Err(CoreError::ShortWrite)) && track {
             self.pending_requests.insert(id);
             self.last_send_ms = self.virtual_ms;
         }
-        Ok(())
+        write_result
+    }
+    fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), CoreError> {
+        match self.transport.write(bytes) {
+            Ok(()) => Ok(()),
+            Err(mdc_transport::TransportError::ShortWrite { accepted }) => {
+                let accepted = accepted.min(bytes.len());
+                if accepted < bytes.len() {
+                    self.unsent = Some(bytes[accepted..].to_vec());
+                }
+                Err(CoreError::ShortWrite)
+            }
+            Err(error) => Err(CoreError::Transport(error.to_string())),
+        }
     }
     fn handle_packet(&mut self, packet: Packet) -> Result<(), CoreError> {
         match packet.kind {
@@ -1127,11 +1173,17 @@ impl<T: Transport> Session<T> {
                 Ok(())
             }
             MessageType::Pong => {
+                if packet.request_id < self.request_floor {
+                    return Ok(());
+                }
                 self.heartbeat_outstanding = false;
                 self.missed_heartbeats = 0;
                 Ok(())
             }
             MessageType::Ack => {
+                if packet.request_id < self.request_floor {
+                    return Ok(());
+                }
                 let ack: Ack = mdc_protocol::decode_control(&packet.payload)
                     .map_err(|e| CoreError::Protocol(e.to_string()))?;
                 if self.pending_requests.contains(&packet.request_id)
@@ -1169,6 +1221,9 @@ impl<T: Transport> Session<T> {
                 Ok(())
             }
             MessageType::Error => {
+                if packet.request_id < self.request_floor {
+                    return Ok(());
+                }
                 self.release_request(packet.request_id);
                 if let Some((surface_id, frame_id)) = self.pending_frames.remove(&packet.request_id)
                 {
@@ -1443,6 +1498,145 @@ mod tests {
             transform_touch(480, 320, 0, 480, 0),
             Err(CoreError::TileBounds)
         );
+    }
+
+    fn handshake<T: mdc_transport::Transport>(session: &mut Session<T>, device: &mut MemoryLink) {
+        let hello = Packet::decode(&device.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: hello.request_id,
+                    payload: encode_control(&caps()).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+    }
+
+    fn frame(bytes: &[u8]) -> Frame {
+        Frame {
+            surface_id: "main".into(),
+            width: 2,
+            height: 2,
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    #[test]
+    fn stale_ack_keeps_the_new_frame_in_flight() {
+        let (host_a, mut dev_a) = MemoryLink::pair();
+        let mut session = Session::new(host_a);
+        session.connect().unwrap();
+        handshake(&mut session, &mut dev_a);
+        let old_id = session.send_frame(frame(&[1; 8])).unwrap();
+        let _ = dev_a.read().unwrap();
+        let (host_b, mut dev_b) = MemoryLink::pair();
+        session.switch_transport(host_b).unwrap();
+        handshake(&mut session, &mut dev_b);
+        let new_id = session.send_frame(frame(&[2; 8])).unwrap();
+        assert_ne!(old_id, new_id);
+        assert_eq!(session.send_frame(frame(&[3; 8])).unwrap(), 0);
+        dev_b
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Ack,
+                    flags: 0,
+                    request_id: old_id,
+                    payload: encode_control(&Ack {
+                        received: true,
+                        displayed: true,
+                        frame_id: 1,
+                        error: None,
+                    })
+                    .unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        assert!(session.needs_full_frame);
+        assert_eq!(
+            session.device.as_ref().unwrap().surfaces[0].in_flight(),
+            Some(1)
+        );
+        let mut got = Vec::new();
+        while let Some(chunk) = dev_b.read().unwrap() {
+            got.extend(chunk);
+        }
+        assert!(got.windows(8).any(|window| window == [2; 8]));
+        assert!(!got.windows(8).any(|window| window == [3; 8]));
+    }
+
+    #[test]
+    fn short_write_resumes_one_frame_and_blocks_the_next() {
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(mdc_transport::ShortWriteLink::new(host));
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        session.transport_mut().arm(8);
+        assert_eq!(
+            session.send_frame(frame(&[2; 8])),
+            Err(CoreError::ShortWrite)
+        );
+        let inflight = session.device.as_ref().unwrap().surfaces[0].in_flight();
+        assert!(inflight.is_some());
+        assert!(session.device.as_ref().unwrap().surfaces[0]
+            .pending_frame_id()
+            .is_none());
+        assert_eq!(
+            session.send_frame(frame(&[3; 8])),
+            Err(CoreError::ShortWrite)
+        );
+        assert_eq!(
+            session.device.as_ref().unwrap().surfaces[0].in_flight(),
+            inflight
+        );
+        assert!(session.device.as_ref().unwrap().surfaces[0]
+            .pending_frame_id()
+            .is_none());
+        session.resume_write().unwrap();
+        let mut got = Vec::new();
+        while let Some(chunk) = device.read().unwrap() {
+            got.extend(chunk);
+        }
+        let (packet, consumed) = Packet::decode(&got, 4096).unwrap();
+        assert_eq!(consumed, got.len());
+        assert_eq!(packet.kind, MessageType::Frame);
+        assert!(packet.payload.windows(8).any(|window| window == [2; 8]));
+        assert!(!packet.payload.windows(8).any(|window| window == [3; 8]));
+    }
+
+    #[test]
+    fn write_without_pong_disconnects_on_virtual_clock() {
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::with_config(
+            host,
+            SessionConfig {
+                connect_timeout_ms: 0,
+                ack_timeout_ms: 0,
+                heartbeat_ms: 10,
+                reconnect: true,
+            },
+        );
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        session.send_frame(frame(&[4; 8])).unwrap();
+        let _ = device.read().unwrap();
+        assert_eq!(session.tick(10).unwrap(), ConnectionState::Ready);
+        let (ping, _) = Packet::decode(&device.read().unwrap().unwrap(), 4096).unwrap();
+        assert_eq!(ping.kind, MessageType::Ping);
+        assert_eq!(session.tick(20).unwrap(), ConnectionState::Ready);
+        assert_eq!(session.tick(30).unwrap(), ConnectionState::Ready);
+        assert_eq!(session.tick(40), Err(CoreError::HeartbeatMissed));
     }
     #[test]
     fn ota_freezes_rendering_and_rejects_missing_slot() {

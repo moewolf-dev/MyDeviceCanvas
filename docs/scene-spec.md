@@ -15,4 +15,4 @@ A future **Scene** message family may describe multi-layer / declarative layouts
 | v1 Frame/Tile | Frame | Tile, Input, OTA |
 | Future Scene | Frame | Scene (when advertised) |
 
-Until a minor protocol bump documents the Scene payload, treat any unknown message type as ignorable on the device. The host API `Session::send_scene` and `mdc_session_send_scene` return unsupported and do not write a Scene packet. Old devices stay on Frame and Tile.
+Until a minor protocol bump documents the Scene payload, an unknown message type is rejected before the declared payload is allocated. The host API `Session::send_scene` and `mdc_session_send_scene` return unsupported and do not write a Scene packet. Old devices stay on Frame and Tile.

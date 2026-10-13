@@ -100,6 +100,55 @@ int main() {
   assert(runtime.framebuffer().size() == 16);
   assert(runtime.framebuffer()[0] == 0xAB);
 
+  mdc::LinuxRuntime txn(2, 2);
+  mdc::Packet bare_chunk;
+  bare_chunk.type = mdc::MessageType::Frame;
+  bare_chunk.request_id = 4;
+  bare_chunk.payload.push_back(2);
+  for (int i = 0; i < 8; ++i) bare_chunk.payload.push_back(1);
+  for (int i = 0; i < 4; ++i) bare_chunk.payload.push_back(0);
+  bare_chunk.payload.push_back(0x11);
+  assert(txn.handle_packet(bare_chunk));
+  assert(std::string(txn.replies().back().payload.begin(), txn.replies().back().payload.end())
+             .find("E_CHUNK") != std::string::npos);
+  assert(txn.framebuffer()[0] == 0);
+
+  mdc::Packet begin;
+  begin.type = mdc::MessageType::Frame;
+  begin.request_id = 5;
+  begin.payload.push_back(1);
+  begin.payload.push_back(1);
+  begin.payload.push_back('m');
+  for (int i = 0; i < 8; ++i) begin.payload.push_back(static_cast<std::uint8_t>(3 >> (8 * i)));
+  begin.payload.push_back(2);
+  begin.payload.push_back(0);
+  begin.payload.push_back(2);
+  begin.payload.push_back(0);
+  for (int i = 0; i < 4; ++i) begin.payload.push_back(static_cast<std::uint8_t>(8 >> (8 * i)));
+  assert(txn.handle_packet(begin));
+  mdc::Packet commit;
+  commit.type = mdc::MessageType::Frame;
+  commit.request_id = 6;
+  commit.payload.push_back(3);
+  for (int i = 0; i < 8; ++i) commit.payload.push_back(static_cast<std::uint8_t>(3 >> (8 * i)));
+  txn.clear_replies();
+  assert(txn.handle_packet(commit));
+  assert(std::string(txn.replies().back().payload.begin(), txn.replies().back().payload.end())
+             .find("E_INCOMPLETE") != std::string::npos);
+  assert(txn.framebuffer()[0] == 0);
+
+  mdc::Packet ota;
+  ota.type = mdc::MessageType::Ota;
+  ota.request_id = 7;
+  assert(txn.handle_packet(ota));
+  mdc::Packet frozen = frame;
+  frozen.request_id = 8;
+  txn.clear_replies();
+  assert(txn.handle_packet(frozen));
+  assert(std::string(txn.replies().back().payload.begin(), txn.replies().back().payload.end())
+             .find("E_FROZEN") != std::string::npos);
+  assert(txn.framebuffer()[0] == 0);
+
   std::ifstream unit("runtime/linux/install/mdc-linux.service");
   assert(unit.good());
   std::ostringstream text;

@@ -144,6 +144,14 @@ pub fn fallback_rgb565(
     Err(AssetError::CompressedUnsupported)
 }
 
+/// Refuse a declared expanded size before any buffer for that size is allocated.
+pub fn guard_declared_size(declared: usize, quota: usize) -> Result<(), AssetError> {
+    if declared > quota {
+        return Err(AssetError::TooLarge);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +194,12 @@ mod tests {
             fallback_rgb565(true, &jpeg, &rgb),
             Err(AssetError::CompressedUnsupported)
         );
+        assert_eq!(
+            guard_declared_size(1_000_000, 16),
+            Err(AssetError::TooLarge)
+        );
+        assert_eq!(guard_declared_size(16, 16), Ok(()));
+        assert_eq!(fallback_rgb565(false, &jpeg, &rgb).unwrap(), rgb);
     }
 
     #[test]

@@ -42,6 +42,10 @@ ParseResult Parser::feed(const std::uint8_t* bytes, std::size_t length, Packet& 
       buffer_.clear();
       return ParseResult::Invalid;
     }
+    if (buffer_[5] != 0) {
+      buffer_.clear();
+      return ParseResult::Invalid;
+    }
     const auto type = buffer_[4];
     if (!known_type(type)) {
       buffer_.clear();

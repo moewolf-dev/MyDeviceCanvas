@@ -28,6 +28,7 @@ void SessionDispatcher::sync_geometry() {
   }
   chunk_staging_.clear();
   chunk_expected_ = 0;
+  chunk_filled_ = 0;
   current_frame_id_ = 0;
 }
 
@@ -41,9 +42,20 @@ bool SessionDispatcher::handle(const Packet& packet) {
       send_capabilities(packet.request_id);
       return true;
     case MessageType::Frame:
+      if (render_frozen_) {
+        send_error(packet.request_id, "E_FROZEN", "render frozen during ota");
+        return true;
+      }
       return handle_frame(packet);
     case MessageType::Tile:
+      if (render_frozen_) {
+        send_error(packet.request_id, "E_FROZEN", "render frozen during ota");
+        return true;
+      }
       return handle_tile(packet);
+    case MessageType::Ota:
+      render_frozen_ = true;
+      return true;
     default:
       return false;
   }
@@ -106,10 +118,15 @@ bool SessionDispatcher::handle_frame(const Packet& packet) {
     }
     current_frame_id_ = u64le(p);
     chunk_expected_ = u32le(p + 12);
+    chunk_filled_ = 0;
     chunk_staging_.assign(chunk_expected_, 0);
     return true;
   }
   if (phase == 2) {
+    if (chunk_expected_ == 0) {
+      send_error(packet.request_id, "E_CHUNK", "no begin");
+      return true;
+    }
     if (packet.payload.size() < 1 + 8 + 4) return false;
     const auto* p = packet.payload.data() + 1;
     const auto frame_id = u64le(p);
@@ -119,12 +136,21 @@ bool SessionDispatcher::handle_frame(const Packet& packet) {
     if (frame_id != current_frame_id_) return false;
     if (static_cast<std::size_t>(offset) + data_len > chunk_staging_.size()) return false;
     std::memcpy(chunk_staging_.data() + offset, data, data_len);
+    chunk_filled_ += static_cast<std::uint32_t>(data_len);
     return true;
   }
   if (phase == 3) {
+    if (chunk_expected_ == 0) {
+      send_error(packet.request_id, "E_COMMIT", "no begin");
+      return true;
+    }
     if (packet.payload.size() < 1 + 8) return false;
     const auto frame_id = u64le(packet.payload.data() + 1);
     if (frame_id != current_frame_id_) return false;
+    if (chunk_filled_ != chunk_expected_) {
+      send_error(packet.request_id, "E_INCOMPLETE", "incomplete frame");
+      return true;
+    }
     if (!store_.stage(chunk_staging_.data(), chunk_staging_.size())) return false;
     if (!store_.commit()) return false;
     if (!display_.flush_rect(0, 0, display_.width(), display_.height(), store_.active().data(),
@@ -133,6 +159,8 @@ bool SessionDispatcher::handle_frame(const Packet& packet) {
     if (!display_.present()) return false;
     send_ack(packet.request_id, current_frame_id_, true);
     chunk_staging_.clear();
+    chunk_expected_ = 0;
+    chunk_filled_ = 0;
     return true;
   }
   return false;
