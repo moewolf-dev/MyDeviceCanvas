@@ -1,3 +1,10 @@
+//! Byte channels for MyDeviceCanvas.
+//!
+//! Implemented adapters: Memory, Serial (macOS), WebSocket and TCP. TCP also
+//! carries gigabit Ethernet and Wi-Fi links. Reserved but **not implemented**:
+//! BLE GATT, native USB bulk and PCIe. A reserved adapter is not a feature;
+//! until it lands it must not be advertised as supported. See
+//! `docs/transport-scope.md`.
 mod serial_policy;
 
 pub use serial_policy::{
