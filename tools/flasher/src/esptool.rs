@@ -262,6 +262,8 @@ mod tests {
                 image_size: 6,
                 sha256: "0".repeat(64),
                 source: "test".into(),
+                public_key: Vec::new(),
+                signature: Vec::new(),
             },
             expected_device_id: "device-a".into(),
         };

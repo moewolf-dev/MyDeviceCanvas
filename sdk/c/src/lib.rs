@@ -557,6 +557,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn c_abi_frame_copy_returns_to_zero_after_destroy() {
+        let session = mdc_session_create();
+        assert!(!session.is_null());
+        unsafe {
+            let mut w = 0u16;
+            let mut h = 0u16;
+            assert_eq!(mdc_session_surface_size(session, &mut w, &mut h), 0);
+            let len = usize::from(w) * usize::from(h) * 2;
+            let frame = vec![0x11u8; len];
+            assert_eq!(
+                mdc_session_send_frame(session, frame.as_ptr(), frame.len()),
+                0
+            );
+            assert_eq!((*session).session.copy_outstanding(), 0);
+            assert_eq!((*session).session.copy_peak(), len * 3);
+            (*session).session.disconnect();
+            assert_eq!((*session).session.copy_outstanding(), 0);
+            assert_eq!(
+                mdc_session_send_frame(session, frame.as_ptr(), frame.len()),
+                -3
+            );
+            assert_eq!((*session).session.copy_outstanding(), 0);
+            mdc_session_destroy(session);
+        }
+    }
+
+    #[test]
     fn c_abi_frame_then_tile_round_trip() {
         let session = mdc_session_create();
         assert!(!session.is_null());

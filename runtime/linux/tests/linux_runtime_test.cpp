@@ -140,6 +140,7 @@ int main() {
   mdc::Packet ota;
   ota.type = mdc::MessageType::Ota;
   ota.request_id = 7;
+  ota.payload = {'b', 'e', 'g', 'i', 'n'};
   assert(txn.handle_packet(ota));
   mdc::Packet frozen = frame;
   frozen.request_id = 8;
@@ -148,6 +149,16 @@ int main() {
   assert(std::string(txn.replies().back().payload.begin(), txn.replies().back().payload.end())
              .find("E_FROZEN") != std::string::npos);
   assert(txn.framebuffer()[0] == 0);
+  mdc::Packet abort_ota;
+  abort_ota.type = mdc::MessageType::Ota;
+  abort_ota.request_id = 10;
+  abort_ota.payload = {'a', 'b', 'o', 'r', 't'};
+  assert(txn.handle_packet(abort_ota));
+  mdc::Packet thawed = frame;
+  thawed.request_id = 11;
+  txn.clear_replies();
+  assert(txn.handle_packet(thawed));
+  assert(txn.framebuffer()[0] == 0xCD);
 
   std::ifstream unit("runtime/linux/install/mdc-linux.service");
   assert(unit.good());

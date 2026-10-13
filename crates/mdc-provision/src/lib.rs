@@ -22,6 +22,11 @@ pub struct Artifact {
     pub image_size: u64,
     pub sha256: String,
     pub source: String,
+    /// Empty means the artifact is unsigned. A present key or signature must match.
+    #[serde(default)]
+    pub public_key: Vec<u8>,
+    #[serde(default)]
+    pub signature: Vec<u8>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardFacts {
@@ -118,7 +123,10 @@ pub fn verify_artifact(
     if actual != artifact.sha256.to_ascii_lowercase() {
         return Err(PreflightError::HashMismatch);
     }
-    Ok(())
+    if artifact.public_key.is_empty() && artifact.signature.is_empty() {
+        return Ok(());
+    }
+    verify_signature(&artifact.public_key, &bytes, &artifact.signature)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -288,6 +296,8 @@ mod tests {
             image_size: size,
             sha256: hash,
             source: "test".into(),
+            public_key: Vec::new(),
+            signature: Vec::new(),
         }
     }
     fn temp(bytes: &[u8]) -> std::path::PathBuf {
@@ -338,6 +348,31 @@ mod tests {
         );
     }
     #[test]
+    fn verify_artifact_rejects_a_bad_signature_without_opening_a_port() {
+        let bytes = b"firmware";
+        let path = temp(bytes);
+        let hash = format!("{:x}", Sha256::digest(bytes));
+        let mut signed = artifact(&path, hash, bytes.len() as u64);
+        signed.public_key = b"fake-public-key".to_vec();
+        signed.signature = b"nope".to_vec();
+        let board = BoardFacts {
+            board_id: "board".into(),
+            mcu: "esp32-s3".into(),
+            flash: FlashSize::Known(1024),
+            profile_verified: true,
+        };
+        assert_eq!(
+            verify_artifact(&path, &signed, &board, Version { major: 1, minor: 0 }),
+            Err(PreflightError::SignatureMismatch)
+        );
+        signed.signature = sign_artifact(&signed.public_key, bytes);
+        assert_eq!(
+            verify_artifact(&path, &signed, &board, Version { major: 1, minor: 0 }),
+            Ok(())
+        );
+        let _ = std::fs::remove_file(path);
+    }
+    #[test]
     fn rejects_unknown_flash_and_hash() {
         let bytes = b"firmware";
         let path = temp(bytes);
@@ -383,6 +418,8 @@ mod tests {
                 image_size: 1,
                 sha256: "0".repeat(64),
                 source: "s".into(),
+                public_key: Vec::new(),
+                signature: Vec::new(),
             },
             expected_device_id: "id".into(),
         };
@@ -432,6 +469,8 @@ mod tests {
                 image_size: 1,
                 sha256: "0".repeat(64),
                 source: "s".into(),
+                public_key: Vec::new(),
+                signature: Vec::new(),
             },
             expected_device_id: "expected".into(),
         };

@@ -79,10 +79,14 @@ class FrameStore {
   bool resize(std::uint16_t width, std::uint16_t height);
   bool stage(const std::uint8_t* bytes, std::size_t length);
   bool commit();
+  void set_heap(std::size_t free_bytes, std::size_t min_free);
   const std::vector<std::uint8_t>& active() const { return active_; }
 
  private:
+  bool admit(std::size_t bytes);
   std::vector<std::uint8_t> active_, staging_;
+  std::size_t free_bytes_ = kMaxPayload;
+  std::size_t min_free_ = 0;
 };
 
 using ReplyFn = std::function<void(const Packet&)>;

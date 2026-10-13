@@ -53,9 +53,15 @@ bool SessionDispatcher::handle(const Packet& packet) {
         return true;
       }
       return handle_tile(packet);
-    case MessageType::Ota:
-      render_frozen_ = true;
+    case MessageType::Ota: {
+      const std::string text(packet.payload.begin(), packet.payload.end());
+      if (text.find("abort") != std::string::npos || text.find("timeout") != std::string::npos) {
+        render_frozen_ = false;
+      } else if (text.find("begin") != std::string::npos) {
+        render_frozen_ = true;
+      }
       return true;
+    }
     default:
       return false;
   }

@@ -23,6 +23,8 @@ pub enum CoreError {
     Dimensions,
     #[error("frame is too large")]
     TooLarge,
+    #[error("host copy budget exceeded")]
+    CopyBudget,
     #[error("tile is outside surface")]
     TileBounds,
     #[error("queue is full")]
@@ -366,6 +368,9 @@ impl SurfaceQueue {
     pub fn pending_frame_id(&self) -> Option<u64> {
         self.pending.as_ref().map(|(id, _)| *id)
     }
+    pub fn pending_pixels(&self) -> Option<usize> {
+        self.pending.as_ref().map(|(_, frame)| frame.bytes.len())
+    }
     /// 在途帧和待发帧都占用时，新的 Tile 不能再插进来。
     /// base 指向尚未显示的帧时同样拒绝，避免把没画上的帧当成 Tile 的底图。
     pub fn rejects_tile(&self, base_frame_id: u64) -> bool {
@@ -588,8 +593,14 @@ pub struct Session<T: Transport> {
     pending_frames: BTreeMap<u32, (String, u64)>,
     /// ACKs and errors below this id belong to a previous link.
     request_floor: u32,
+    /// Displayed acknowledgements already applied. A replay must not launch again.
+    finished_acks: std::collections::BTreeSet<u32>,
     /// Tail of a packet that a short write did not accept.
     unsent: Option<Vec<u8>>,
+    copy_limit: usize,
+    copy_budget: HostCopyBudget,
+    /// (surface id, frame id) -> pixel bytes held in the copy budget.
+    held_frames: BTreeMap<(String, u64), usize>,
     pub reconnect_policy: ReconnectPolicy,
     reconnect_attempt: u32,
     reconnect_enabled: bool,
@@ -630,7 +641,11 @@ impl<T: Transport> Session<T> {
             dropped_frames: 0,
             pending_frames: BTreeMap::new(),
             request_floor: 0,
+            finished_acks: std::collections::BTreeSet::new(),
             unsent: None,
+            copy_limit: MAX_FRAME_BYTES * 3,
+            copy_budget: HostCopyBudget::new(MAX_FRAME_BYTES * 3),
+            held_frames: BTreeMap::new(),
             reconnect_policy: ReconnectPolicy::default(),
             reconnect_attempt: 0,
             reconnect_enabled: config.reconnect,
@@ -765,6 +780,9 @@ impl<T: Transport> Session<T> {
         self.frame_received_at.clear();
         self.pending_frames.clear();
         self.unsent = None;
+        self.finished_acks.clear();
+        self.held_frames.clear();
+        self.copy_budget = HostCopyBudget::new(self.copy_limit);
         self.device = None;
         self.max_message = MAX_FRAME_BYTES;
         self.max_chunk = mdc_protocol::DEFAULT_MAX_CHUNK;
@@ -792,6 +810,9 @@ impl<T: Transport> Session<T> {
         self.frame_received_at.clear();
         self.pending_frames.clear();
         self.unsent = None;
+        self.finished_acks.clear();
+        self.held_frames.clear();
+        self.copy_budget = HostCopyBudget::new(self.copy_limit);
         self.request_floor = self.next_request_id;
         self.device = None;
         self.needs_full_frame = true;
@@ -814,6 +835,9 @@ impl<T: Transport> Session<T> {
         self.frame_received_at.clear();
         self.pending_frames.clear();
         self.unsent = None;
+        self.finished_acks.clear();
+        self.held_frames.clear();
+        self.copy_budget = HostCopyBudget::new(self.copy_limit);
         self.request_floor = self.next_request_id;
         self.device = None;
         self.awaiting_transport = false;
@@ -838,6 +862,9 @@ impl<T: Transport> Session<T> {
         self.frame_received_at.clear();
         self.pending_frames.clear();
         self.unsent = None;
+        self.finished_acks.clear();
+        self.held_frames.clear();
+        self.copy_budget = HostCopyBudget::new(self.copy_limit);
     }
     pub fn enable_reconnect(&mut self, enabled: bool) {
         self.reconnect_enabled = enabled;
@@ -864,12 +891,29 @@ impl<T: Transport> Session<T> {
     pub fn dropped_frames(&self) -> u64 {
         self.dropped_frames
     }
+    pub fn copy_outstanding(&self) -> usize {
+        self.copy_budget.outstanding()
+    }
+    pub fn copy_peak(&self) -> usize {
+        self.copy_budget.peak()
+    }
+    /// Test and board profiles can tighten the host copy limit. Outstanding bytes are cleared.
+    pub fn set_copy_limit(&mut self, limit: usize) {
+        self.copy_limit = limit;
+        self.held_frames.clear();
+        self.copy_budget = HostCopyBudget::new(limit);
+    }
     pub fn displayed_timings(&self) -> &[DisplayTiming] {
         &self.displayed_timings
     }
     fn release_request(&mut self, id: u32) {
         self.pending_requests.remove(&id);
         self.pending_control.remove(&id);
+    }
+    fn release_held(&mut self, surface_id: &str, frame_id: u64) {
+        if let Some(pixels) = self.held_frames.remove(&(surface_id.to_string(), frame_id)) {
+            self.copy_budget.release_frame(pixels);
+        }
     }
     fn note_displayed(&mut self, id: u32) {
         let Some(sent) = self.frame_sent_at.remove(&id) else {
@@ -917,17 +961,41 @@ impl<T: Transport> Session<T> {
         let width = frame.width;
         let height = frame.height;
         let pixels = frame.bytes.clone();
-        let (frame_id, replaced) = {
+        let pixel_len = pixels.len();
+        self.copy_budget
+            .hold_frame(pixel_len)
+            .map_err(|_| CoreError::CopyBudget)?;
+        let queued = (|| {
             let device = self.device.as_mut().ok_or(CoreError::NotReady)?;
             let surface = device
                 .surfaces
                 .iter_mut()
                 .find(|s| s.info.id == surface_id)
                 .ok_or(CoreError::Dimensions)?;
+            let old_pending = surface.pending_frame_id().zip(surface.pending_pixels());
             let before = surface.replaced_pending();
             let id = surface.enqueue_frame(frame)?;
-            (id, surface.replaced_pending().saturating_sub(before))
+            Ok::<_, CoreError>((
+                id,
+                surface.replaced_pending().saturating_sub(before),
+                old_pending,
+            ))
+        })();
+        let (frame_id, replaced, old_pending) = match queued {
+            Ok(value) => value,
+            Err(error) => {
+                self.copy_budget.release_frame(pixel_len);
+                return Err(error);
+            }
         };
+        if replaced > 0 {
+            if let Some((old_id, old_len)) = old_pending {
+                self.held_frames.remove(&(surface_id.clone(), old_id));
+                self.copy_budget.release_frame(old_len);
+            }
+        }
+        self.held_frames
+            .insert((surface_id.clone(), frame_id), pixel_len);
         self.dropped_frames = self.dropped_frames.saturating_add(replaced);
         let send_now = self
             .device
@@ -1181,7 +1249,9 @@ impl<T: Transport> Session<T> {
                 Ok(())
             }
             MessageType::Ack => {
-                if packet.request_id < self.request_floor {
+                if packet.request_id < self.request_floor
+                    || self.finished_acks.contains(&packet.request_id)
+                {
                     return Ok(());
                 }
                 let ack: Ack = mdc_protocol::decode_control(&packet.payload)
@@ -1197,12 +1267,14 @@ impl<T: Transport> Session<T> {
                             .or_insert_with(std::time::Instant::now);
                         return Ok(());
                     }
+                    self.finished_acks.insert(packet.request_id);
                     self.note_displayed(packet.request_id);
                     self.release_request(packet.request_id);
                     let was_frame = self.pending_frames.contains_key(&packet.request_id);
                     if let Some((surface_id, frame_id)) =
                         self.pending_frames.remove(&packet.request_id)
                     {
+                        self.release_held(&surface_id, frame_id);
                         self.launch_pending_frame(&surface_id, frame_id)?;
                     } else if let Some(device) = self.device.as_mut() {
                         let ids: Vec<_> = device
@@ -1227,6 +1299,7 @@ impl<T: Transport> Session<T> {
                 self.release_request(packet.request_id);
                 if let Some((surface_id, frame_id)) = self.pending_frames.remove(&packet.request_id)
                 {
+                    self.release_held(&surface_id, frame_id);
                     self.launch_pending_frame(&surface_id, frame_id)?;
                 }
                 let detail = mdc_protocol::decode_control::<ErrorPayload>(&packet.payload)
@@ -1235,6 +1308,12 @@ impl<T: Transport> Session<T> {
                 Err(CoreError::Protocol(detail))
             }
             MessageType::Input => {
+                if self.state != ConnectionState::Ready {
+                    return Ok(());
+                }
+                if packet.request_id != 0 && packet.request_id < self.request_floor {
+                    return Ok(());
+                }
                 let event: InputEvent = mdc_protocol::decode_control(&packet.payload)
                     .map_err(|e| CoreError::Protocol(e.to_string()))?;
                 let device_id = self
@@ -1637,6 +1716,173 @@ mod tests {
         assert_eq!(session.tick(20).unwrap(), ConnectionState::Ready);
         assert_eq!(session.tick(30).unwrap(), ConnectionState::Ready);
         assert_eq!(session.tick(40), Err(CoreError::HeartbeatMissed));
+    }
+
+    #[test]
+    fn copy_budget_counts_both_surfaces_and_releases_on_display() {
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.set_copy_limit(24);
+        session.connect().unwrap();
+        let hello = Packet::decode(&device.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        let mut advertised = caps();
+        advertised.surfaces.push(Surface {
+            id: "overlay".into(),
+            width: 2,
+            height: 2,
+            pixel_format: "RGB565".into(),
+            stride: 4,
+            rotation: 0,
+        });
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: hello.request_id,
+                    payload: encode_control(&advertised).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        let request = session.send_frame(frame(&[1; 8])).unwrap();
+        assert_eq!(session.copy_outstanding(), 24);
+        assert_eq!(
+            session.send_frame(Frame {
+                surface_id: "overlay".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![2; 8],
+            }),
+            Err(CoreError::CopyBudget)
+        );
+        assert_eq!(session.copy_outstanding(), 24);
+        assert!(session.device.as_ref().unwrap().surfaces[1]
+            .in_flight()
+            .is_none());
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Ack,
+                    flags: 0,
+                    request_id: request,
+                    payload: encode_control(&Ack {
+                        received: true,
+                        displayed: true,
+                        frame_id: 1,
+                        error: None,
+                    })
+                    .unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        assert_eq!(session.copy_outstanding(), 0);
+    }
+
+    #[test]
+    fn replayed_displayed_ack_launches_the_pending_frame_once() {
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        let request = session.send_frame(frame(&[1; 8])).unwrap();
+        assert_eq!(session.send_frame(frame(&[2; 8])).unwrap(), 0);
+        let _ = device.read().unwrap();
+        let ack = Packet {
+            version: VERSION,
+            kind: MessageType::Ack,
+            flags: 0,
+            request_id: request,
+            payload: encode_control(&Ack {
+                received: true,
+                displayed: true,
+                frame_id: 1,
+                error: None,
+            })
+            .unwrap(),
+        }
+        .encode(4096)
+        .unwrap();
+        device.write(&ack).unwrap();
+        session.poll().unwrap();
+        let launched = device.read().unwrap().unwrap();
+        assert!(launched.windows(8).any(|window| window == [2; 8]));
+        device.write(&ack).unwrap();
+        session.poll().unwrap();
+        assert!(device.read().unwrap().is_none());
+    }
+
+    #[test]
+    fn input_before_the_new_handshake_is_dropped() {
+        let (host, mut device) = MemoryLink::pair();
+        let manager = Arc::new(Mutex::new(DeviceManager::new()));
+        let mut session = Session::new(host);
+        session.set_manager(manager.clone());
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        let (host_b, mut device_b) = MemoryLink::pair();
+        session.switch_transport(host_b).unwrap();
+        let stale = Packet {
+            version: VERSION,
+            kind: MessageType::Input,
+            flags: 0,
+            request_id: 0,
+            payload: encode_control(&InputEvent {
+                surface_id: "main".into(),
+                pointer_id: 1,
+                phase: "down".into(),
+                x: 0,
+                y: 0,
+            })
+            .unwrap(),
+        }
+        .encode(4096)
+        .unwrap();
+        device_b.write(&stale).unwrap();
+        handshake(&mut session, &mut device_b);
+        let early: Vec<_> = manager.lock().unwrap().drain_events().collect();
+        assert!(!early
+            .iter()
+            .any(|event| matches!(event, ManagerEvent::Input { .. })));
+        device_b
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Input,
+                    flags: 0,
+                    request_id: 0,
+                    payload: encode_control(&InputEvent {
+                        surface_id: "main".into(),
+                        pointer_id: 2,
+                        phase: "up".into(),
+                        x: 1,
+                        y: 1,
+                    })
+                    .unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        let events: Vec<_> = manager.lock().unwrap().drain_events().collect();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ManagerEvent::Input { event, .. } if event.phase == "up" && event.pointer_id == 2
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            ManagerEvent::Input { event, .. } if event.phase == "down"
+        )));
     }
     #[test]
     fn ota_freezes_rendering_and_rejects_missing_slot() {

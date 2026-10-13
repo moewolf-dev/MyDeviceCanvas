@@ -157,6 +157,8 @@ mod tests {
             image_size: size,
             sha256: hash,
             source: "test".into(),
+            public_key: Vec::new(),
+            signature: Vec::new(),
         }
     }
 

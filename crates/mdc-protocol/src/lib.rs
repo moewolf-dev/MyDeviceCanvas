@@ -71,6 +71,8 @@ pub enum CodecError {
     InvalidMagic,
     #[error("reserved header byte is not zero")]
     Reserved,
+    #[error("flags must be zero")]
+    Flags,
     #[error("truncated packet")]
     Truncated,
     #[error("unsupported major version {0}")]
@@ -126,6 +128,10 @@ impl Packet {
         if input[5] != 0 {
             return Err(CodecError::Reserved);
         }
+        let flags = u16::from_le_bytes(input[6..8].try_into().unwrap());
+        if flags != 0 {
+            return Err(CodecError::Flags);
+        }
         let kind = MessageType::try_from(input[4])?;
         let len = u32::from_le_bytes(input[12..16].try_into().unwrap()) as usize;
         if len > max_payload {
@@ -143,7 +149,7 @@ impl Packet {
             Self {
                 version,
                 kind,
-                flags: u16::from_le_bytes(input[6..8].try_into().unwrap()),
+                flags,
                 request_id: u32::from_le_bytes(input[8..12].try_into().unwrap()),
                 payload: payload.to_vec(),
             },
@@ -642,6 +648,13 @@ mod tests {
         assert_eq!(
             Packet::decode(&reserved[..HEADER_LEN], usize::MAX),
             Err(CodecError::Reserved)
+        );
+        let mut flags = packet.encode(10).unwrap();
+        flags[6] = 1;
+        flags[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(
+            Packet::decode(&flags[..HEADER_LEN], usize::MAX),
+            Err(CodecError::Flags)
         );
         assert_eq!(packet.encode(0), Err(CodecError::Length(1)));
     }

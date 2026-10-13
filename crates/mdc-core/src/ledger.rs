@@ -42,6 +42,10 @@ impl HostCopyBudget {
         self.ledger.outstanding
     }
 
+    pub fn peak(&self) -> usize {
+        self.ledger.peak
+    }
+
     /// Hold three copies. A second full frame that would pass the limit is refused
     /// before another buffer is counted.
     pub fn hold_frame(&mut self, pixels: usize) -> Result<(), &'static str> {

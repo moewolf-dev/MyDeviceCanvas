@@ -509,6 +509,8 @@ fn cmd_flash_sim(opts: &GlobalOpts, image: &str) -> Result<(), Box<dyn std::erro
             image_size: bytes.len() as u64,
             sha256: hash,
             source: "cli-flash-sim".into(),
+            public_key: Vec::new(),
+            signature: Vec::new(),
         },
         expected_device_id: format!("sim-{board}"),
     };

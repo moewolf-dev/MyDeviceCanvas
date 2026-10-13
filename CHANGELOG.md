@@ -39,6 +39,20 @@ All notable host / simulator changes for MyDeviceCanvas. Physical board verifica
 - `mdc-sim-peer --drop-next` drops one packet without changing pixels
 - `mdc linux-accept` checks the 800×480 linux-virt gate: Tile fails before the full frame and succeeds after it
 
+## [0.1.9] — Budgets on the send path
+
+### Added
+
+- `send_frame` counts the pixel buffer, transport copy, and SDK copy before enqueue. One legal frame fits; a second full-size frame that would pass 3 MiB is refused. The hold is released on a displayed acknowledgement
+- A second surface that would pass the copy budget is refused
+- `FrameStore` refuses another framebuffer when the simulated reserve would be exhausted
+- Artifact preflight checks a present signature and rejects an empty or mismatched one
+- Non-zero header flags are rejected before the declared payload is allocated
+- The C++ peer freezes rendering on OTA `begin` and resumes after `abort` or `timeout`
+- A replayed displayed acknowledgement does not launch the pending frame again
+- Input that arrives before the new handshake is dropped
+- The C ABI releases the frame-copy budget on disconnect, and a later send does not allocate
+
 ## [0.1.8] — Link generation, short writes, and budgets
 
 ### Added

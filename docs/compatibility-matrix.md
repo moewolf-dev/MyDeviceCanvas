@@ -44,6 +44,15 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Simulated heap reserve | sim-verified (`min_internal_free` refuses a second framebuffer) | physical: pending |
 | E-ink refresh busy | sim-verified (`E_BUSY`, `max_fps` 0, previous pixels kept) | physical: pending |
 | Declared expansion guard | sim-verified (quota check before allocation, JPEG stays off) | n/a |
+| Host copy budget on send | sim-verified (three copies released on displayed ACK) | n/a |
+| Dual-surface copy budget | sim-verified (overlay refused, main frame kept) | n/a |
+| C++ framebuffer reserve | sim-verified (second buffer refused, pixels unchanged) | physical: pending |
+| Artifact signature on preflight | sim-verified (mismatch rejects, no port opened) | physical: pending |
+| Non-zero header flags | sim-verified (rejected before payload allocation) | n/a |
+| C++ OTA freeze and resume | sim-verified (`begin` freezes, `abort` resumes) | physical: pending |
+| Replayed displayed ACK | sim-verified (pending frame launches once) | n/a |
+| Input before the new handshake | sim-verified (dropped; later touch still arrives) | n/a |
+| C ABI frame-copy budget | sim-verified (peak counts three copies; disconnect returns to zero) | n/a |
 | OTA render freeze | sim-verified (`E_FROZEN` until abort/rollback) | physical: pending |
 | dual-sim overlay surface | sim-verified | n/a |
 | Touch rotation 0/90/180/270 | sim-verified | physical: pending |

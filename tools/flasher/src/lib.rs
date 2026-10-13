@@ -88,6 +88,8 @@ mod tests {
                 image_size: 64,
                 sha256: "0".repeat(64),
                 source: "sim".into(),
+                public_key: Vec::new(),
+                signature: Vec::new(),
             },
             expected_device_id: "sim-esp32-jc3248w535".into(),
         };

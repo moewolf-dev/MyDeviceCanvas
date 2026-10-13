@@ -38,6 +38,12 @@ int main() {
   assert(store.commit());
   assert(store.active()[0] == 9);
 
+  mdc::FrameStore tight(2, 2);
+  tight.set_heap(8, 8);
+  std::vector<std::uint8_t> second(8, 0x5A);
+  assert(tight.stage(second.data(), second.size()) == false);
+  assert(tight.active()[0] == 0);
+
   mdc::SimDisplay display(2, 2);
   std::vector<mdc::Packet> replies;
   mdc::SessionDispatcher dispatcher(display, [&](const mdc::Packet& p) { replies.push_back(p); });
@@ -69,6 +75,18 @@ int main() {
   assert(reserved_parser.feed(reserved.data(), reserved.size(), reserved_out) ==
          mdc::ParseResult::Invalid);
   assert(reserved_out.payload.empty());
+
+  std::vector<std::uint8_t> flags(20, 0);
+  flags[0] = 'M';
+  flags[1] = 'D';
+  flags[2] = 1;
+  flags[4] = 0x40;
+  flags[6] = 1;
+  put32(flags, 12, 0x00ffffffu);
+  mdc::Parser flags_parser;
+  mdc::Packet flags_out;
+  assert(flags_parser.feed(flags.data(), flags.size(), flags_out) == mdc::ParseResult::Invalid);
+  assert(flags_out.payload.empty());
 
   std::vector<std::uint8_t> unknown(20, 0);
   unknown[0] = 'M';
