@@ -9,6 +9,8 @@ pub enum AssetError {
     TooLarge,
     #[error("asset would exceed cache quota")]
     QuotaExceeded,
+    #[error("compressed payload is not accepted")]
+    CompressedUnsupported,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +93,57 @@ impl AssetCache {
     }
 }
 
+/// Bytes gathered before they enter the cache. Abort or drop leaves nothing stored.
+pub struct ChunkedUpload {
+    buf: Vec<u8>,
+    limit: usize,
+}
+
+impl ChunkedUpload {
+    pub fn begin(limit: usize) -> Self {
+        Self {
+            buf: Vec::new(),
+            limit,
+        }
+    }
+    pub fn received(&self) -> usize {
+        self.buf.len()
+    }
+    pub fn push_chunk(&mut self, bytes: &[u8]) -> Result<(), AssetError> {
+        let next = self
+            .buf
+            .len()
+            .checked_add(bytes.len())
+            .ok_or(AssetError::TooLarge)?;
+        if next > self.limit {
+            return Err(AssetError::TooLarge);
+        }
+        self.buf.extend_from_slice(bytes);
+        Ok(())
+    }
+    pub fn abort(&mut self) {
+        self.buf.clear();
+    }
+    pub fn finish(self, cache: &mut AssetCache) -> Result<AssetKey, AssetError> {
+        cache.insert(&self.buf)
+    }
+}
+
+/// `jpeg` is a host capability bit. When it is false, compressed bytes are refused and the RGB565 buffer is used.
+pub fn fallback_rgb565(
+    jpeg: bool,
+    compressed: &[u8],
+    rgb565: &[u8],
+) -> Result<Vec<u8>, AssetError> {
+    if compressed.is_empty() {
+        return Ok(rgb565.to_vec());
+    }
+    if !jpeg {
+        return Ok(rgb565.to_vec());
+    }
+    Err(AssetError::CompressedUnsupported)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,6 +166,26 @@ mod tests {
         assert!(cache.get(&c).is_some() || cache.len() <= 2);
         assert!(cache.total_bytes() <= 16);
         let _ = (a, b);
+    }
+
+    #[test]
+    fn abort_drops_partial_chunks_and_jpeg_falls_back_to_rgb565() {
+        let mut upload = ChunkedUpload::begin(8);
+        upload.push_chunk(&[1, 2, 3, 4]).unwrap();
+        assert_eq!(upload.received(), 4);
+        upload.abort();
+        assert_eq!(upload.received(), 0);
+        let cache = AssetCache::new(8, 16);
+        upload.push_chunk(&[9, 9]).unwrap();
+        drop(upload);
+        assert_eq!(cache.total_bytes(), 0);
+        let rgb = [0x11, 0x22];
+        let jpeg = [0xff, 0xd8, 0xff];
+        assert_eq!(fallback_rgb565(false, &jpeg, &rgb).unwrap(), rgb);
+        assert_eq!(
+            fallback_rgb565(true, &jpeg, &rgb),
+            Err(AssetError::CompressedUnsupported)
+        );
     }
 
     #[test]

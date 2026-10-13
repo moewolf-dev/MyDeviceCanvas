@@ -33,6 +33,26 @@ pub struct PairingStore {
     by_id: BTreeMap<String, PairingCredential>,
 }
 
+fn secret_field(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("password")
+        || lower.contains("passwd")
+        || lower.contains("token")
+        || lower.contains("psk")
+}
+
+/// Format install or pairing fields. Passwords and tokens are replaced before they can reach a log.
+pub fn format_provision_log(fields: &[(&str, &str)]) -> String {
+    fields
+        .iter()
+        .map(|(name, value)| {
+            let shown = if secret_field(name) { "***" } else { value };
+            format!("{name}={shown}")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 impl PairingStore {
     pub fn new() -> Self {
         Self::default()
@@ -177,6 +197,22 @@ mod tests {
         let loaded = PairingStore::load_json(&path).unwrap();
         assert!(loaded.is_paired("a"));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn provision_log_hides_password_and_token() {
+        let line = format_provision_log(&[
+            ("device_id", "sim-dual"),
+            ("wifi_password", "s3cret-wifi"),
+            ("token", "pair-token-9"),
+            ("port", "/dev/cu.fake"),
+        ]);
+        assert!(line.contains("device_id=sim-dual"));
+        assert!(line.contains("port=/dev/cu.fake"));
+        assert!(line.contains("wifi_password=***"));
+        assert!(line.contains("token=***"));
+        assert!(!line.contains("s3cret-wifi"));
+        assert!(!line.contains("pair-token-9"));
     }
 
     #[test]

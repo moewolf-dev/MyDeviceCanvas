@@ -6,10 +6,17 @@
 
 namespace mdc {
 
+/// In-process framebuffer, or an explicit no-session backend. This build does not link DRM.
+enum class DisplaySessionKind { MemoryFramebuffer, NoSession };
+
 /// Linux host peer: owns SimDisplay framebuffer and SessionDispatcher.
 class LinuxRuntime {
  public:
   LinuxRuntime(std::uint16_t width, std::uint16_t height, PeerIdentity identity = {});
+  void use_no_session();
+  DisplaySessionKind kind() const { return kind_; }
+  /// Memory framebuffer returns 0. No display session returns 2.
+  int probe() const;
   DisplayBackend& display() { return display_; }
   const DisplayBackend& display() const { return display_; }
   bool handle_packet(const Packet& packet);
@@ -26,6 +33,7 @@ class LinuxRuntime {
   SimDisplay display_;
   SessionDispatcher dispatcher_;
   std::vector<Packet> replies_;
+  DisplaySessionKind kind_ = DisplaySessionKind::MemoryFramebuffer;
 };
 
 /// 无显示会话返回 2，宽或高为 0 返回 3，可打开返回 0。

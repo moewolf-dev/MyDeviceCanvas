@@ -39,6 +39,19 @@ All notable host / simulator changes for MyDeviceCanvas. Physical board verifica
 - `mdc-sim-peer --drop-next` drops one packet without changing pixels
 - `mdc linux-accept` checks the 800×480 linux-virt gate: Tile fails before the full frame and succeeds after it
 
+## [0.1.7] — Queue bounds, resync, and timing
+
+### Added
+
+- The byte stream skips serial-log noise and still rejects a bad checksum
+- Move events coalesce; a full input queue keeps down/up/cancel and cancels that pointer
+- Unacked control messages stop at 32. Frame and Tile stay on the surface queue
+- `mdc benchmark` reports displayed-ACK transport, render, and end-to-end time plus dropped frames
+- Chunked asset uploads abort back to zero bytes, and `jpeg: false` falls back to RGB565
+- A flash lease blocks a second open of the same port until release or timeout
+- Linux peers select a memory framebuffer or a no-session backend
+- Install and pairing logs replace passwords and tokens
+
 ## [0.1.6] — Displayed frames, surfaces, and pairing
 
 ### Added

@@ -71,6 +71,13 @@ int main() {
   assert(mdc::mdc_linux_probe(1, 4, 2) == 0);
   assert(runtime.update_geometry(0, 2) == false);
   assert(runtime.update_geometry(4, 2));
+  assert(runtime.kind() == mdc::DisplaySessionKind::MemoryFramebuffer);
+  assert(runtime.probe() == 0);
+  mdc::LinuxRuntime headless(1, 1);
+  headless.use_no_session();
+  assert(headless.kind() == mdc::DisplaySessionKind::NoSession);
+  assert(headless.probe() == 2);
+  assert(headless.update_geometry(8, 8) == false);
   assert(runtime.width() == 4);
   assert(runtime.height() == 2);
   assert(runtime.framebuffer().size() == 16);

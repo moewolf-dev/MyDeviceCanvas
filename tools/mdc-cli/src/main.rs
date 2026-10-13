@@ -2,7 +2,8 @@
 use image::imageops::FilterType;
 use mdc_core::{ConnectionState, DeviceManager, Frame, Session, Tile};
 use mdc_discovery::{
-    CombinedDiscovery, DiscoveryProvider, Endpoint, MockMdnsProvider, PairingStore,
+    format_provision_log, CombinedDiscovery, DiscoveryProvider, Endpoint, MockMdnsProvider,
+    PairingStore,
 };
 use mdc_flasher::{flags_for_board, EspToolFlasher, SimFlasher};
 use mdc_protocol::{InputEvent, OtaCommand, VERSION};
@@ -284,6 +285,10 @@ fn open_serial_session(
     if !is_candidate_serial_port(port) {
         return Err(format!("port {port} does not look like an ESP32 USB-serial candidate").into());
     }
+    let leases = PortLeases::default();
+    leases
+        .session_may_open(port, 0)
+        .map_err(|error| error.to_string())?;
     let mut guard = SerialOpenGuard::default();
     let gen = guard.generation;
     let config = SerialConfig {
@@ -444,10 +449,24 @@ fn cmd_benchmark(opts: &GlobalOpts, frames: u32) -> Result<(), Box<dyn std::erro
         }
     }
     let metrics = device.metrics_snapshot();
+    let timings = session.displayed_timings();
+    let count = timings.len().max(1) as u128;
+    let transport_us = timings
+        .iter()
+        .map(|sample| sample.transport_us)
+        .sum::<u128>()
+        / count;
+    let render_us = timings.iter().map(|sample| sample.render_us).sum::<u128>() / count;
+    let e2e_us = timings.iter().map(|sample| sample.e2e_us).sum::<u128>() / count;
+    // 这些数来自 displayed ACK 的单调时钟。Wi-Fi 30 FPS 不是承诺。
     println!(
-        "benchmark frames_sent={sent} frames_acked≈{acked} device_frames={} acks={}",
-        metrics.frames_received, metrics.acks_sent
+        "benchmark frames_sent={sent} frames_displayed={} dropped_frames={} transport_us={transport_us} render_us={render_us} e2e_us={e2e_us} device_frames={} acks={}",
+        timings.len(),
+        session.dropped_frames(),
+        metrics.frames_received,
+        metrics.acks_sent
     );
+    let _ = acked;
     Ok(())
 }
 
@@ -583,7 +602,15 @@ fn cmd_pair(device_id: &str, token: &str) -> Result<(), Box<dyn std::error::Erro
     let mut store = load_pairing_store();
     store.pair(device_id, token)?;
     store.save_json(&path)?;
-    println!("paired device_id={device_id} store={}", path.display());
+    let store_text = path.display().to_string();
+    println!(
+        "{}",
+        format_provision_log(&[
+            ("device_id", device_id),
+            ("token", token),
+            ("store", store_text.as_str()),
+        ])
+    );
     Ok(())
 }
 

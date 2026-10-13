@@ -42,6 +42,21 @@ int main() {
   std::vector<mdc::Packet> replies;
   mdc::SessionDispatcher dispatcher(display, [&](const mdc::Packet& p) { replies.push_back(p); });
   auto encoded = mdc::encode_packet(mdc::MessageType::Ping, 3, {});
+  std::vector<std::uint8_t> noisy = {'b', 'o', 'o', 't', ' ', 'l', 'o', 'g', '\n'};
+  noisy.insert(noisy.end(), encoded.begin(), encoded.end());
+  mdc::Parser noisy_parser;
+  mdc::Packet recovered;
+  assert(noisy_parser.feed(noisy.data(), noisy.size(), recovered) == mdc::ParseResult::Packet);
+  assert(recovered.type == mdc::MessageType::Ping);
+  assert(recovered.request_id == 3);
+
+  auto bad = encoded;
+  if (!bad.empty()) bad.back() ^= 0xff;
+  mdc::Parser bad_parser;
+  mdc::Packet rejected;
+  assert(bad_parser.feed(bad.data(), bad.size(), rejected) == mdc::ParseResult::Invalid);
+  assert(rejected.payload.empty());
+
   mdc::Packet ping;
   assert(parser.feed(encoded.data(), encoded.size(), ping) == mdc::ParseResult::Packet);
   assert(dispatcher.handle(ping));

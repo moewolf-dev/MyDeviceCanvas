@@ -146,6 +146,62 @@ impl Packet {
     }
 }
 
+/// One step of a byte stream that may contain serial-log noise before `MD`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum StreamStep {
+    /// A full packet. The `usize` includes any skipped noise in front of the header.
+    Packet(Packet, usize),
+    /// Wait for more bytes. `discard` is a noise prefix that is not part of a header.
+    NeedMore { discard: usize },
+    /// The candidate packet is rejected. `discard` covers that packet, not a reinterpretation of its payload.
+    Rejected { error: CodecError, discard: usize },
+}
+
+/// Skip log noise until the next `MD` header.
+/// A checksum or type failure rejects that candidate and does not treat its payload as a new packet.
+pub fn decode_stream(input: &[u8], max_payload: usize) -> StreamStep {
+    if input.is_empty() {
+        return StreamStep::NeedMore { discard: 0 };
+    }
+    let Some(start) = input.windows(2).position(|pair| pair == MAGIC) else {
+        if input.len() < HEADER_LEN {
+            return StreamStep::NeedMore { discard: 0 };
+        }
+        let keep = usize::from(input.last() == Some(&b'M'));
+        return StreamStep::NeedMore {
+            discard: input.len() - keep,
+        };
+    };
+    match Packet::decode(&input[start..], max_payload) {
+        Ok((packet, len)) => StreamStep::Packet(packet, start + len),
+        Err(CodecError::Truncated) => StreamStep::NeedMore { discard: start },
+        Err(error) => {
+            let span = framed_len(&input[start..], max_payload).unwrap_or(1);
+            StreamStep::Rejected {
+                error,
+                discard: start + span,
+            }
+        }
+    }
+}
+
+/// Length of a candidate frame when the header is present.
+/// An over-long length returns 1 so the caller drops only the false `M`, not the following bytes as payload.
+fn framed_len(input: &[u8], max_payload: usize) -> Option<usize> {
+    if input.len() < HEADER_LEN || input[..2] != MAGIC {
+        return None;
+    }
+    let len = u32::from_le_bytes(input[12..16].try_into().ok()?) as usize;
+    if len > max_payload {
+        return Some(1);
+    }
+    let total = HEADER_LEN.checked_add(len)?;
+    if input.len() < total {
+        return None;
+    }
+    Some(total)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Capabilities {
     pub device_id: String,
@@ -524,6 +580,29 @@ mod tests {
         let mut b = p.encode(10).unwrap();
         *b.last_mut().unwrap() = 2;
         assert_eq!(Packet::decode(&b, 10), Err(CodecError::Checksum));
+        let mut noisy = b"boot log\n".to_vec();
+        noisy.extend_from_slice(&b);
+        match decode_stream(&noisy, 10) {
+            StreamStep::Rejected {
+                error: CodecError::Checksum,
+                discard,
+            } => {
+                assert_eq!(discard, noisy.len());
+                assert!(Packet::decode(&noisy[discard.saturating_sub(1)..], 10).is_err());
+            }
+            other => panic!("checksum must reject the packet, got {other:?}"),
+        }
+        let good = p.encode(10).unwrap();
+        let mut prefixed = b"boot log\n".to_vec();
+        prefixed.extend_from_slice(&good);
+        match decode_stream(&prefixed, 10) {
+            StreamStep::Packet(packet, consumed) => {
+                assert_eq!(packet.kind, MessageType::Ping);
+                assert_eq!(consumed, prefixed.len());
+                assert_ne!(packet.payload, b"boot log\n");
+            }
+            other => panic!("noise should resync to the ping, got {other:?}"),
+        }
     }
     #[test]
     fn frame_payload_rejects_wrong_geometry() {

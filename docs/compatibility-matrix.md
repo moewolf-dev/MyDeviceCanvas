@@ -21,6 +21,19 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | C ABI `mdc_c` | sim-verified (frame/tile/surface host tests) | physical: pending |
 | Linux runtime framebuffer peer | sim-verified (`mdc_linux_peer` TCP) | physical: pending |
 | `mdc linux-accept` 800×480 | sim-verified (Rust peer and C++ `mdc_linux_peer` `E_BASE`) | physical: pending |
+| Displayed ACK releases the next frame | sim-verified (`received` keeps the held frame) | n/a |
+| Geometry mismatch `E_DIM` | sim-verified (C++ peer rejects before commit) | physical: pending |
+| Mid-session pairing revoke | sim-verified (next TCP frame rejected, pixels stay) | n/a |
+| PTY serial HELLO | sim-verified (no USB device; non-candidate port waits 300s) | physical: pending |
+| Serial log resync | sim-verified (noise then `MD`, bad checksum rejected) | n/a |
+| Input queue overflow | sim-verified (moves coalesce; down/up/cancel kept and cancelled) | n/a |
+| Control queue cap 32 | sim-verified (frames stay on the surface queue) | n/a |
+| Benchmark displayed timing | sim-verified (monotonic transport/render/e2e; 30 FPS is not a promise) | physical: pending |
+| Touch corners and two pointers | sim-verified | physical: pending |
+| Chunked asset upload | sim-verified (abort clears bytes; `jpeg: false` falls back to RGB565) | n/a |
+| Flash lease vs second open | sim-verified (fake port, no device node opened) | physical: pending |
+| Linux display backend | sim-verified (memory framebuffer or no session = 2; no DRM link) | physical: pending |
+| Provision log redaction | sim-verified | n/a |
 | OTA render freeze | sim-verified (`E_FROZEN` until abort/rollback) | physical: pending |
 | dual-sim overlay surface | sim-verified | n/a |
 | Touch rotation 0/90/180/270 | sim-verified | physical: pending |

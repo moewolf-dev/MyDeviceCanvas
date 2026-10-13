@@ -433,13 +433,23 @@ impl FakeDevice {
             self.rx.extend(bytes);
         }
         loop {
-            match Packet::decode(&self.rx, self.max_message) {
-                Ok((packet, consumed)) => {
+            match mdc_protocol::decode_stream(&self.rx, self.max_message) {
+                mdc_protocol::StreamStep::Packet(packet, consumed) => {
                     self.rx.drain(..consumed);
                     self.enqueue_or_handle(packet)?;
                 }
-                Err(mdc_protocol::CodecError::Truncated) => break,
-                Err(e) => return Err(SimError::Protocol(e.to_string())),
+                mdc_protocol::StreamStep::NeedMore { discard } => {
+                    if discard > 0 {
+                        self.rx.drain(..discard.min(self.rx.len()));
+                    }
+                    break;
+                }
+                mdc_protocol::StreamStep::Rejected { error, discard } => {
+                    if discard > 0 {
+                        self.rx.drain(..discard.min(self.rx.len()));
+                    }
+                    return Err(SimError::Protocol(error.to_string()));
+                }
             }
         }
         self.flush_delayed()?;
@@ -1377,6 +1387,101 @@ mod tests {
         assert!(err.to_string().contains("E_DIM"), "{err}");
         assert_eq!(device.overlay_pixels(), overlay_before.as_slice());
         assert_eq!(device.pixels(), main_before.as_slice());
+    }
+
+    #[test]
+    fn corners_and_two_pointers_cancel_only_the_ones_still_down() {
+        use mdc_core::{DeviceManager, ManagerEvent, Session};
+        use std::sync::{Arc, Mutex};
+        let profile = BoardProfile {
+            width: 4,
+            height: 2,
+            touch: true,
+            rotation: 90,
+            ..BoardProfile::default()
+        };
+        let (host, mut device) = FakeDevice::pair(profile);
+        let manager = Arc::new(Mutex::new(DeviceManager::new()));
+        let mut session = Session::new(host);
+        session.set_manager(manager.clone());
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        let corners = [(0u16, 0u16), (3, 0), (0, 1), (3, 1)];
+        for (x, y) in corners {
+            let (tx, ty) = mdc_core::transform_touch(4, 2, 90, x, y).unwrap();
+            device
+                .emit_input(InputEvent {
+                    surface_id: "main".into(),
+                    pointer_id: 1,
+                    phase: "down".into(),
+                    x,
+                    y,
+                })
+                .unwrap();
+            session.poll().unwrap();
+            let events: Vec<_> = manager.lock().unwrap().drain_events().collect();
+            assert!(
+                events.iter().any(|event| matches!(
+                    event,
+                    ManagerEvent::Input { event, .. } if event.x == tx && event.y == ty
+                )),
+                "corner ({x},{y}) -> ({tx},{ty})"
+            );
+            device
+                .emit_input(InputEvent {
+                    surface_id: "main".into(),
+                    pointer_id: 1,
+                    phase: "up".into(),
+                    x,
+                    y,
+                })
+                .unwrap();
+            session.poll().unwrap();
+            let _ = manager.lock().unwrap().drain_events().count();
+        }
+        assert!(mdc_core::transform_touch(4, 2, 90, 4, 0).is_err());
+        device
+            .emit_input(InputEvent {
+                surface_id: "main".into(),
+                pointer_id: 1,
+                phase: "down".into(),
+                x: 0,
+                y: 0,
+            })
+            .unwrap();
+        device
+            .emit_input(InputEvent {
+                surface_id: "main".into(),
+                pointer_id: 2,
+                phase: "down".into(),
+                x: 1,
+                y: 0,
+            })
+            .unwrap();
+        device
+            .emit_input(InputEvent {
+                surface_id: "main".into(),
+                pointer_id: 2,
+                phase: "up".into(),
+                x: 1,
+                y: 0,
+            })
+            .unwrap();
+        device.faults.request_disconnect();
+        assert!(device.poll().is_err());
+        session.poll().unwrap();
+        let events: Vec<_> = manager.lock().unwrap().drain_events().collect();
+        let cancels: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ManagerEvent::Input { event, .. } if event.phase == "cancel" => {
+                    Some(event.pointer_id)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cancels, vec![1]);
     }
 
     #[test]

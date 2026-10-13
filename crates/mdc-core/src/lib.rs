@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
+pub const MAX_MANAGER_EVENTS: usize = 128;
+pub const MAX_CONTROL_IN_FLIGHT: usize = 32;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoreError {
@@ -25,6 +27,8 @@ pub enum CoreError {
     TileBounds,
     #[error("queue is full")]
     QueueFull,
+    #[error("control queue is full")]
+    ControlQueueFull,
     #[error("feature is not supported by device")]
     Unsupported,
     #[error("transport error: {0}")]
@@ -309,6 +313,7 @@ pub struct SurfaceQueue {
     pending: Option<(u64, Frame)>,
     in_flight: Option<u64>,
     next_id: u64,
+    replaced_pending: u64,
 }
 impl SurfaceQueue {
     pub fn new(info: Surface) -> Self {
@@ -317,7 +322,11 @@ impl SurfaceQueue {
             pending: None,
             in_flight: None,
             next_id: 1,
+            replaced_pending: 0,
         }
+    }
+    pub fn replaced_pending(&self) -> u64 {
+        self.replaced_pending
     }
     pub fn in_flight(&self) -> Option<u64> {
         self.in_flight
@@ -345,6 +354,9 @@ impl SurfaceQueue {
             self.in_flight = Some(id);
         } else {
             // 在途帧保持不动。尚未发完的那一帧被新的全帧替换，队列不会再长出第三帧。
+            if self.pending.is_some() {
+                self.replaced_pending = self.replaced_pending.saturating_add(1);
+            }
             self.pending = Some((id, f));
         }
         Ok(id)
@@ -484,11 +496,75 @@ impl DeviceManager {
         }
     }
     fn push_event(&mut self, event: ManagerEvent) {
-        if self.events.len() >= 128 {
+        if self.events.len() >= MAX_MANAGER_EVENTS {
             self.events.pop_front();
         }
         self.events.push_back(event);
     }
+
+    /// Coalesce consecutive moves. A full queue keeps down/up/cancel, reports an error, and cancels that pointer.
+    pub fn push_input(&mut self, device_id: String, event: InputEvent) {
+        if event.phase == "move" {
+            if let Some(ManagerEvent::Input {
+                device_id: queued_id,
+                event: queued,
+            }) = self.events.back_mut()
+            {
+                if queued_id == &device_id
+                    && queued.pointer_id == event.pointer_id
+                    && queued.phase == "move"
+                {
+                    queued.x = event.x;
+                    queued.y = event.y;
+                    return;
+                }
+            }
+        }
+        let critical = matches!(event.phase.as_str(), "down" | "up" | "cancel");
+        if self.events.len() >= MAX_MANAGER_EVENTS && critical {
+            let slots = if event.phase == "cancel" { 2 } else { 3 };
+            self.evict_until(MAX_MANAGER_EVENTS - slots);
+            self.events.push_back(ManagerEvent::Error {
+                device_id: device_id.clone(),
+                message: "input queue overflow".into(),
+            });
+            if event.phase != "cancel" {
+                self.events.push_back(ManagerEvent::Input {
+                    device_id: device_id.clone(),
+                    event: InputEvent {
+                        phase: "cancel".into(),
+                        ..event.clone()
+                    },
+                });
+            }
+            self.events
+                .push_back(ManagerEvent::Input { device_id, event });
+            return;
+        }
+        if self.events.len() >= MAX_MANAGER_EVENTS {
+            self.evict_until(MAX_MANAGER_EVENTS - 1);
+        }
+        self.events
+            .push_back(ManagerEvent::Input { device_id, event });
+    }
+
+    fn evict_until(&mut self, limit: usize) {
+        while self.events.len() > limit {
+            if let Some(index) = self.events.iter().position(
+                |event| matches!(event, ManagerEvent::Input { event, .. } if event.phase == "move"),
+            ) {
+                self.events.remove(index);
+            } else {
+                self.events.pop_front();
+            }
+        }
+    }
+}
+
+pub struct DisplayTiming {
+    pub transport_us: u128,
+    pub render_us: u128,
+    pub e2e_us: u128,
 }
 
 pub struct Session<T: Transport> {
@@ -500,6 +576,12 @@ pub struct Session<T: Transport> {
     max_message: usize,
     max_chunk: usize,
     pending_requests: std::collections::BTreeSet<u32>,
+    /// Control messages only. Frame and Tile stay on the surface queue.
+    pending_control: std::collections::BTreeSet<u32>,
+    frame_sent_at: BTreeMap<u32, std::time::Instant>,
+    frame_received_at: BTreeMap<u32, std::time::Instant>,
+    displayed_timings: Vec<DisplayTiming>,
+    dropped_frames: u64,
     /// request_id -> (surface_id, frame_id) for in-flight Frame/Tile acks.
     pending_frames: BTreeMap<u32, (String, u64)>,
     pub reconnect_policy: ReconnectPolicy,
@@ -535,6 +617,11 @@ impl<T: Transport> Session<T> {
             max_message: MAX_FRAME_BYTES,
             max_chunk: mdc_protocol::DEFAULT_MAX_CHUNK,
             pending_requests: std::collections::BTreeSet::new(),
+            pending_control: std::collections::BTreeSet::new(),
+            frame_sent_at: BTreeMap::new(),
+            frame_received_at: BTreeMap::new(),
+            displayed_timings: Vec::new(),
+            dropped_frames: 0,
             pending_frames: BTreeMap::new(),
             reconnect_policy: ReconnectPolicy::default(),
             reconnect_attempt: 0,
@@ -590,13 +677,23 @@ impl<T: Transport> Session<T> {
             }
         }
         loop {
-            match Packet::decode(&self.rx, self.max_message) {
-                Ok((packet, consumed)) => {
+            match mdc_protocol::decode_stream(&self.rx, self.max_message) {
+                mdc_protocol::StreamStep::Packet(packet, consumed) => {
                     self.rx.drain(..consumed);
                     self.handle_packet(packet)?;
                 }
-                Err(mdc_protocol::CodecError::Truncated) => break,
-                Err(e) => return Err(CoreError::Protocol(e.to_string())),
+                mdc_protocol::StreamStep::NeedMore { discard } => {
+                    if discard > 0 {
+                        self.rx.drain(..discard.min(self.rx.len()));
+                    }
+                    break;
+                }
+                mdc_protocol::StreamStep::Rejected { error, discard } => {
+                    if discard > 0 {
+                        self.rx.drain(..discard.min(self.rx.len()));
+                    }
+                    return Err(CoreError::Protocol(error.to_string()));
+                }
             }
         }
         Ok(self.state)
@@ -655,6 +752,9 @@ impl<T: Transport> Session<T> {
         self.transport.close();
         self.rx.clear();
         self.pending_requests.clear();
+        self.pending_control.clear();
+        self.frame_sent_at.clear();
+        self.frame_received_at.clear();
         self.pending_frames.clear();
         self.device = None;
         self.max_message = MAX_FRAME_BYTES;
@@ -678,6 +778,9 @@ impl<T: Transport> Session<T> {
         self.awaiting_transport = false;
         self.rx.clear();
         self.pending_requests.clear();
+        self.pending_control.clear();
+        self.frame_sent_at.clear();
+        self.frame_received_at.clear();
         self.pending_frames.clear();
         self.device = None;
         self.needs_full_frame = true;
@@ -695,6 +798,9 @@ impl<T: Transport> Session<T> {
         self.transport.close();
         self.rx.clear();
         self.pending_requests.clear();
+        self.pending_control.clear();
+        self.frame_sent_at.clear();
+        self.frame_received_at.clear();
         self.pending_frames.clear();
         self.device = None;
         self.awaiting_transport = false;
@@ -714,6 +820,9 @@ impl<T: Transport> Session<T> {
         self.device = None;
         self.rx.clear();
         self.pending_requests.clear();
+        self.pending_control.clear();
+        self.frame_sent_at.clear();
+        self.frame_received_at.clear();
         self.pending_frames.clear();
     }
     pub fn enable_reconnect(&mut self, enabled: bool) {
@@ -738,6 +847,31 @@ impl<T: Transport> Session<T> {
     pub fn pending_request_count(&self) -> usize {
         self.pending_requests.len()
     }
+    pub fn dropped_frames(&self) -> u64 {
+        self.dropped_frames
+    }
+    pub fn displayed_timings(&self) -> &[DisplayTiming] {
+        &self.displayed_timings
+    }
+    fn release_request(&mut self, id: u32) {
+        self.pending_requests.remove(&id);
+        self.pending_control.remove(&id);
+    }
+    fn note_displayed(&mut self, id: u32) {
+        let Some(sent) = self.frame_sent_at.remove(&id) else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        let received = self.frame_received_at.remove(&id).unwrap_or(now);
+        let transport = received.saturating_duration_since(sent);
+        let e2e = now.saturating_duration_since(sent);
+        let render = e2e.saturating_sub(transport);
+        self.displayed_timings.push(DisplayTiming {
+            transport_us: transport.as_micros(),
+            render_us: render.as_micros(),
+            e2e_us: e2e.as_micros(),
+        });
+    }
     pub fn transport_mut(&mut self) -> &mut T {
         &mut self.transport
     }
@@ -760,15 +894,18 @@ impl<T: Transport> Session<T> {
         let width = frame.width;
         let height = frame.height;
         let pixels = frame.bytes.clone();
-        let frame_id = {
+        let (frame_id, replaced) = {
             let device = self.device.as_mut().ok_or(CoreError::NotReady)?;
             let surface = device
                 .surfaces
                 .iter_mut()
                 .find(|s| s.info.id == surface_id)
                 .ok_or(CoreError::Dimensions)?;
-            surface.enqueue_frame(frame)?
+            let before = surface.replaced_pending();
+            let id = surface.enqueue_frame(frame)?;
+            (id, surface.replaced_pending().saturating_sub(before))
         };
+        self.dropped_frames = self.dropped_frames.saturating_add(replaced);
         let send_now = self
             .device
             .as_ref()
@@ -812,6 +949,8 @@ impl<T: Transport> Session<T> {
         }
         self.pending_frames
             .insert(request_id, (surface_id.to_string(), frame_id));
+        self.frame_sent_at
+            .insert(request_id, std::time::Instant::now());
         Ok(request_id)
     }
     fn launch_pending_frame(&mut self, surface_id: &str, frame_id: u64) -> Result<(), CoreError> {
@@ -923,8 +1062,12 @@ impl<T: Transport> Session<T> {
         Ok(id)
     }
     fn write_packet(&mut self, kind: MessageType, payload: Vec<u8>) -> Result<u32, CoreError> {
+        if self.pending_control.len() >= MAX_CONTROL_IN_FLIGHT {
+            return Err(CoreError::ControlQueueFull);
+        }
         let id = self.alloc_request_id()?;
         self.write_packet_with_id(kind, payload, id, true)?;
+        self.pending_control.insert(id);
         Ok(id)
     }
     fn write_packet_with_id(
@@ -956,7 +1099,7 @@ impl<T: Transport> Session<T> {
     fn handle_packet(&mut self, packet: Packet) -> Result<(), CoreError> {
         match packet.kind {
             MessageType::Capabilities => {
-                self.pending_requests.remove(&packet.request_id);
+                self.release_request(packet.request_id);
                 let caps: Capabilities = mdc_protocol::decode_control(&packet.payload)
                     .map_err(|e| CoreError::Protocol(e.to_string()))?;
                 if caps.max_message == 0 || caps.max_message as usize > MAX_FRAME_BYTES {
@@ -997,9 +1140,13 @@ impl<T: Transport> Session<T> {
                     let waiting_frame = self.pending_frames.contains_key(&packet.request_id);
                     if waiting_frame && !ack.displayed {
                         // received 只表示对端收过。待发帧和 needs_full_frame 都要等 displayed。
+                        self.frame_received_at
+                            .entry(packet.request_id)
+                            .or_insert_with(std::time::Instant::now);
                         return Ok(());
                     }
-                    self.pending_requests.remove(&packet.request_id);
+                    self.note_displayed(packet.request_id);
+                    self.release_request(packet.request_id);
                     let was_frame = self.pending_frames.contains_key(&packet.request_id);
                     if let Some((surface_id, frame_id)) =
                         self.pending_frames.remove(&packet.request_id)
@@ -1022,7 +1169,7 @@ impl<T: Transport> Session<T> {
                 Ok(())
             }
             MessageType::Error => {
-                self.pending_requests.remove(&packet.request_id);
+                self.release_request(packet.request_id);
                 if let Some((surface_id, frame_id)) = self.pending_frames.remove(&packet.request_id)
                 {
                     self.launch_pending_frame(&surface_id, frame_id)?;
@@ -1043,7 +1190,7 @@ impl<T: Transport> Session<T> {
                 if let Some(mgr) = &self.manager {
                     mgr.lock()
                         .map_err(|e| CoreError::Transport(e.to_string()))?
-                        .push_event(ManagerEvent::Input { device_id, event });
+                        .push_input(device_id, event);
                 }
                 Ok(())
             }
@@ -1389,6 +1536,100 @@ mod tests {
         assert_eq!(manager.drain_events().count(), 2);
         assert!(manager.remove("device"));
         assert!(manager.device("device").is_none());
+    }
+
+    #[test]
+    fn moves_coalesce_and_a_full_queue_keeps_down() {
+        let mut manager = DeviceManager::new();
+        let point = |phase: &str, pointer: u16, x: u16| InputEvent {
+            surface_id: "main".into(),
+            pointer_id: pointer,
+            phase: phase.into(),
+            x,
+            y: 1,
+        };
+        manager.push_input("dev".into(), point("move", 1, 1));
+        manager.push_input("dev".into(), point("move", 1, 4));
+        let coalesced: Vec<_> = manager.drain_events().collect();
+        assert_eq!(coalesced.len(), 1);
+        match &coalesced[0] {
+            ManagerEvent::Input { event, .. } => {
+                assert_eq!(event.phase, "move");
+                assert_eq!(event.x, 4);
+            }
+            other => panic!("expected move, got {other:?}"),
+        }
+        for index in 0..MAX_MANAGER_EVENTS {
+            manager.push_event(ManagerEvent::Connected(format!("fill-{index}")));
+        }
+        manager.push_input("dev".into(), point("down", 7, 2));
+        let events: Vec<_> = manager.drain_events().collect();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ManagerEvent::Error { message, .. } if message.contains("overflow")
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ManagerEvent::Input { event, .. } if event.phase == "down" && event.pointer_id == 7 && event.x == 2
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ManagerEvent::Input { event, .. } if event.phase == "cancel" && event.pointer_id == 7
+        )));
+    }
+
+    #[test]
+    fn control_queue_stops_at_32_without_counting_frames() {
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        let hello = device.read().unwrap().unwrap();
+        let (hello, _) = Packet::decode(&hello, 4096).unwrap();
+        let caps = Capabilities {
+            ota: true,
+            ..caps()
+        };
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: hello.request_id,
+                    payload: encode_control(&caps).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        for _ in 0..MAX_CONTROL_IN_FLIGHT {
+            session
+                .send_ota(OtaCommand {
+                    action: "abort".into(),
+                    version: None,
+                    size: None,
+                    sha256: None,
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            session.send_ota(OtaCommand {
+                action: "abort".into(),
+                version: None,
+                size: None,
+                sha256: None,
+            }),
+            Err(CoreError::ControlQueueFull)
+        );
+        assert!(session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![1; 8],
+            })
+            .is_ok());
     }
     #[test]
     fn manager_rejects_missing_identity() {

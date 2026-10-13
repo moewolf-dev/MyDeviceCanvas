@@ -135,22 +135,52 @@ pub trait Flasher {
 }
 #[derive(Clone, Default)]
 pub struct PortLeases {
-    ports: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    ports: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Option<u64>>>>,
 }
 impl PortLeases {
     pub fn acquire(&self, port: &str) -> Result<PortLease, InstallError> {
+        self.insert(port, None)
+    }
+    /// Hold a port until `expires_ms`. A later `session_may_open` at or after that time may proceed.
+    pub fn hold_until(&self, port: &str, expires_ms: u64) -> Result<PortLease, InstallError> {
+        self.insert(port, Some(expires_ms))
+    }
+    fn insert(&self, port: &str, expires_ms: Option<u64>) -> Result<PortLease, InstallError> {
         let mut ports = self
             .ports
             .lock()
             .map_err(|_| InstallError::Flasher("port lease lock poisoned".into()))?;
-        if !ports.insert(port.into()) {
+        if ports.contains_key(port) {
             return Err(InstallError::PortBusy);
         }
+        ports.insert(port.into(), expires_ms);
         drop(ports);
         Ok(PortLease {
             leases: self.clone(),
             port: port.into(),
         })
+    }
+    pub fn expire_before(&self, now_ms: u64) {
+        let Ok(mut ports) = self.ports.lock() else {
+            return;
+        };
+        ports.retain(|_, expires| match expires {
+            Some(at) => *at > now_ms,
+            None => true,
+        });
+    }
+    /// Check a flash lease before opening a serial port. This does not open a device node.
+    pub fn session_may_open(&self, port: &str, now_ms: u64) -> Result<(), InstallError> {
+        self.expire_before(now_ms);
+        let ports = self
+            .ports
+            .lock()
+            .map_err(|_| InstallError::Flasher("port lease lock poisoned".into()))?;
+        if ports.contains_key(port) {
+            Err(InstallError::PortBusy)
+        } else {
+            Ok(())
+        }
     }
 }
 pub struct PortLease {
@@ -336,6 +366,22 @@ mod tests {
         assert_eq!(installer.state, InstallState::Succeeded);
         assert!(flasher.flashed);
         assert!(leases.acquire("/dev/test").is_ok());
+    }
+
+    #[test]
+    fn flash_lease_blocks_a_second_open_until_release_or_timeout() {
+        let leases = PortLeases::default();
+        let held = leases.hold_until("/dev/cu.fake-mdc", 1_000).unwrap();
+        assert_eq!(
+            leases.session_may_open("/dev/cu.fake-mdc", 500),
+            Err(InstallError::PortBusy)
+        );
+        drop(held);
+        assert!(leases.session_may_open("/dev/cu.fake-mdc", 500).is_ok());
+        let held = leases.hold_until("/dev/cu.fake-mdc", 1_000).unwrap();
+        leases.expire_before(1_000);
+        assert!(leases.session_may_open("/dev/cu.fake-mdc", 1_000).is_ok());
+        drop(held);
     }
     #[test]
     fn mismatched_readback_fails() {
