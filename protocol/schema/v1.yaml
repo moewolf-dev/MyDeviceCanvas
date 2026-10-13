@@ -30,8 +30,12 @@ message_types:
   CAPABILITIES: {code: 2, payload: cbor, struct: Capabilities}
   FRAME: {code: 16, payload: binary, struct: FramePayload}
   TILE: {code: 17, payload: binary, struct: TilePayload}
+  # Device -> host mirror image (Form B). Same phase layout as FRAME.
+  MIRROR_FRAME: {code: 18, payload: binary, struct: FramePayload, direction: device_to_host}
   INPUT: {code: 32, payload: cbor, struct: InputEvent}
   OTA: {code: 48, payload: cbor, struct: OtaCommand}
+  # Host -> device mirror control (Form B).
+  MIRROR_CTRL: {code: 49, payload: cbor, struct: MirrorCommand, direction: host_to_device}
   PING: {code: 64, payload: empty}
   PONG: {code: 65, payload: empty}
   ACK: {code: 80, payload: cbor, struct: Ack}
@@ -67,6 +71,24 @@ structs:
     max_chunk: u32
     max_in_flight: u8
     max_fps: u16
+    # N03 Form B. Optional on the wire; absent = mirror disabled.
+    mirror: MirrorCapability
+    local_display_fps: u16
+    mirror_fps: u16
+    mirror_bandwidth: u64
+  MirrorCapability:
+    mode: [string]          # subset of full-frame | dirty-region; empty = unsupported
+    max_fps: u16
+    max_width: u16
+    max_height: u16
+    pixel_formats: [string]
+    recommended_transport: optional_string
+  MirrorCommand:
+    action: string          # start | stop
+    surface_id: string
+    mode: string            # full-frame | dirty-region
+    max_fps: u16
+    format: string          # RGB565
   Surface:
     id: string
     width: u16
@@ -102,4 +124,5 @@ vectors:
     - frame_chunk.json
     - frame_commit.json
     - tile.json
+    - mirror_frame.json
     - truncated.bin

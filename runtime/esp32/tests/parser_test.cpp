@@ -128,5 +128,36 @@ int main() {
   // Dual-transport lock
   dispatcher.set_transport_busy(true);
   assert(!dispatcher.handle(frame_pkt));
+  dispatcher.set_transport_busy(false);
+
+  // N03 Form B: MirrorCtrl start is capability-gated.
+  const std::vector<std::uint8_t> start_payload = {0xa1, 0x66, 'a', 'c', 't', 'i', 'o', 'n',
+                                                   0x65, 's', 't', 'a', 'r', 't'};
+  mdc::Packet ctrl;
+  ctrl.type = mdc::MessageType::MirrorCtrl;
+  ctrl.flags = 0;
+  ctrl.request_id = 21;
+  ctrl.payload = start_payload;
+  // A device that does not advertise mirror rejects the control.
+  assert(dispatcher.handle(ctrl));
+  assert(!dispatcher.mirror_active());
+  assert(replies.back().type == mdc::MessageType::Error);
+
+  mdc::PeerIdentity mirror_id;
+  mirror_id.device_id = "linux-virt";
+  mirror_id.mirror = true;
+  mirror_id.mirror_fps = 10;
+  mdc::SessionDispatcher mirror_dispatcher(
+      display, [&](const mdc::Packet& p) { replies.push_back(p); }, mirror_id);
+  assert(mirror_dispatcher.handle(ctrl));
+  assert(mirror_dispatcher.mirror_active());
+  assert(replies.back().type == mdc::MessageType::Ack);
+
+  const std::vector<std::uint8_t> stop_payload = {0xa1, 0x66, 'a', 'c', 't', 'i', 'o', 'n',
+                                                  0x64, 's', 't', 'o', 'p'};
+  ctrl.payload = stop_payload;
+  assert(mirror_dispatcher.handle(ctrl));
+  assert(!mirror_dispatcher.mirror_active());
+  assert(replies.back().type == mdc::MessageType::Ack);
   return 0;
 }

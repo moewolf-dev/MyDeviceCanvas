@@ -1,0 +1,7 @@
+{
+  "name": "mirror_frame",
+  "description": "Device->host mirror full frame (MessageType::MirrorFrame 0x12, phase=0 legacy layout), surface main, frame_id=21, 2x2 RGB565",
+  "message_type": 18,
+  "phase": 0,
+  "hex": "00046d61696e1500000000000000020002001122334455667788"
+}

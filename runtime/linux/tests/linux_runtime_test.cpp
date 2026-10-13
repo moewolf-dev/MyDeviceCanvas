@@ -25,7 +25,7 @@ int main() {
   assert(runtime.handle_packet(hello));
   assert(runtime.replies().back().type == mdc::MessageType::Capabilities);
   assert(!runtime.replies().back().payload.empty());
-  assert(runtime.replies().back().payload[0] == 0xab);  // CBOR map(11)
+  assert(runtime.replies().back().payload[0] == 0xaf);  // CBOR map(15), N03 mirror fields
 
   runtime.clear_replies();
   std::vector<std::uint8_t> bad;

@@ -28,10 +28,17 @@ pub const VERSION: Version = Version { major: 1, minor: 0 };
 pub enum MessageType {
     Hello = 1,
     Capabilities = 2,
+    /// Host -> device image (Form A). Binary payload, phase byte like Frame.
     Frame = 0x10,
     Tile = 0x11,
+    /// Device -> host image (Form B mirror). Binary payload, phase byte like Frame.
+    /// Kept separate from Frame so a receiver can never confuse a pushed frame
+    /// with a mirrored frame.
+    MirrorFrame = 0x12,
     Input = 0x20,
     Ota = 0x30,
+    /// Host -> device mirror start/stop control (CBOR MirrorCommand, Form B).
+    MirrorCtrl = 0x31,
     Ping = 0x40,
     Pong = 0x41,
     Ack = 0x50,
@@ -45,8 +52,10 @@ impl TryFrom<u8> for MessageType {
             2 => Ok(Self::Capabilities),
             0x10 => Ok(Self::Frame),
             0x11 => Ok(Self::Tile),
+            0x12 => Ok(Self::MirrorFrame),
             0x20 => Ok(Self::Input),
             0x30 => Ok(Self::Ota),
+            0x31 => Ok(Self::MirrorCtrl),
             0x40 => Ok(Self::Ping),
             0x41 => Ok(Self::Pong),
             0x50 => Ok(Self::Ack),
@@ -214,6 +223,99 @@ fn framed_len(input: &[u8], max_payload: usize) -> Option<usize> {
     Some(total)
 }
 
+/// Form B mirror capability. `mode` is empty when the device cannot mirror.
+/// All fields default so older devices that never advertised mirror decode as
+/// disabled (`supports()` is false) instead of failing the control payload.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct MirrorCapability {
+    /// Subset of ["full-frame", "dirty-region"]. Empty means unsupported.
+    pub mode: Vec<String>,
+    pub max_fps: u16,
+    pub max_width: u16,
+    pub max_height: u16,
+    pub pixel_formats: Vec<String>,
+    #[serde(default)]
+    pub recommended_transport: Option<String>,
+}
+impl MirrorCapability {
+    pub fn disabled() -> Self {
+        Self::default()
+    }
+    /// A single-mode full-frame capability: the safe default for 3D/Live2D.
+    pub fn full_frame(max_width: u16, max_height: u16, max_fps: u16) -> Self {
+        Self {
+            mode: vec!["full-frame".into()],
+            max_fps,
+            max_width,
+            max_height,
+            pixel_formats: vec!["RGB565".into()],
+            recommended_transport: None,
+        }
+    }
+    pub fn supports(&self) -> bool {
+        !self.mode.is_empty() && self.max_fps > 0 && self.max_width > 0 && self.max_height > 0
+    }
+    pub fn supports_mode(&self, mode: &str) -> bool {
+        self.supports() && self.mode.iter().any(|m| m == mode)
+    }
+    pub fn has_format(&self, format: &str) -> bool {
+        self.pixel_formats.iter().any(|f| f == format)
+    }
+}
+
+/// Host -> device mirror control (CBOR for MessageType::MirrorCtrl).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MirrorCommand {
+    /// start | stop
+    pub action: String,
+    pub surface_id: String,
+    /// full-frame | dirty-region
+    pub mode: String,
+    pub max_fps: u16,
+    pub format: String,
+}
+
+/// Resolve a device-advertised mirror capability against a host request.
+/// Returns `None` when the device cannot mirror at all. Downgrades
+/// `dirty-region` to `full-frame` when only full-frame is advertised, and
+/// clamps fps/format to the intersection of both sides.
+pub fn negotiate_mirror(
+    caps: &Capabilities,
+    surface_id: &str,
+    requested_mode: &str,
+    requested_fps: u16,
+    requested_format: &str,
+) -> Option<MirrorCommand> {
+    let mirror = &caps.mirror;
+    if !mirror.supports() {
+        return None;
+    }
+    let mode = if mirror.supports_mode(requested_mode) {
+        requested_mode
+    } else if mirror.supports_mode("full-frame") {
+        "full-frame"
+    } else {
+        return None;
+    };
+    let format = if mirror.has_format(requested_format) {
+        requested_format
+    } else if mirror.has_format("RGB565") {
+        "RGB565"
+    } else {
+        return None;
+    };
+    let fps = requested_fps
+        .min(mirror.max_fps)
+        .min(caps.mirror_fps.max(1));
+    Some(MirrorCommand {
+        action: "start".into(),
+        surface_id: surface_id.to_string(),
+        mode: mode.to_string(),
+        max_fps: fps.max(1),
+        format: format.to_string(),
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Capabilities {
     pub device_id: String,
@@ -227,6 +329,15 @@ pub struct Capabilities {
     pub max_chunk: u32,
     pub max_in_flight: u8,
     pub max_fps: u16,
+    /// Form B (N03). Defaults keep pre-mirror devices decodable.
+    #[serde(default)]
+    pub mirror: MirrorCapability,
+    #[serde(default)]
+    pub local_display_fps: u16,
+    #[serde(default)]
+    pub mirror_fps: u16,
+    #[serde(default)]
+    pub mirror_bandwidth: u64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Surface {
@@ -868,7 +979,170 @@ mod tests {
         assert_eq!(t.w, 1);
         assert_eq!(t.h, 1);
 
+        let mirror = std::fs::read_to_string(dir.join("mirror_frame.json")).unwrap();
+        let hex = mirror
+            .split("\"hex\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .nth(1)
+            .unwrap();
+        let bytes = parse_hex(hex);
+        match decode_frame_payload(&bytes).unwrap() {
+            FramePayload::Legacy {
+                surface_id,
+                frame_id,
+                width,
+                height,
+                bytes: pixels,
+            } => {
+                assert_eq!(surface_id, "main");
+                assert_eq!(frame_id, 21);
+                assert_eq!((width, height), (2, 2));
+                assert_eq!(pixels.len(), 8);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
         let truncated = std::fs::read(dir.join("truncated.bin")).unwrap();
         assert_eq!(Packet::decode(&truncated, 4096), Err(CodecError::Truncated));
+    }
+
+    #[test]
+    fn mirror_frame_payload_round_trip_reuses_frame_phases() {
+        let pixels = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        let packet = Packet {
+            version: VERSION,
+            kind: MessageType::MirrorFrame,
+            flags: 0,
+            request_id: 9,
+            payload: encode_frame_payload("main", 11, 2, 2, &pixels).unwrap(),
+        };
+        let bytes = packet.encode(pixels.len() + 64).unwrap();
+        let (decoded, _) = Packet::decode(&bytes, pixels.len() + 64).unwrap();
+        assert_eq!(decoded.kind, MessageType::MirrorFrame);
+        match decode_frame_payload(&decoded.payload).unwrap() {
+            FramePayload::Legacy {
+                surface_id,
+                frame_id,
+                width,
+                height,
+                bytes,
+            } => {
+                assert_eq!(surface_id, "main");
+                assert_eq!(frame_id, 11);
+                assert_eq!((width, height), (2, 2));
+                assert_eq!(bytes, pixels);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // MirrorFrame is distinct from Frame on the wire.
+        assert_ne!(MessageType::MirrorFrame as u8, MessageType::Frame as u8);
+        assert_eq!(MessageType::try_from(0x12), Ok(MessageType::MirrorFrame));
+        assert_eq!(MessageType::try_from(0x31), Ok(MessageType::MirrorCtrl));
+    }
+
+    #[test]
+    fn mirror_command_round_trips_over_cbor() {
+        let command = MirrorCommand {
+            action: "start".into(),
+            surface_id: "main".into(),
+            mode: "full-frame".into(),
+            max_fps: 15,
+            format: "RGB565".into(),
+        };
+        let decoded: MirrorCommand = decode_control(&encode_control(&command).unwrap()).unwrap();
+        assert_eq!(decoded, command);
+    }
+
+    #[test]
+    fn old_capabilities_without_mirror_fields_still_decode() {
+        // Simulate a pre-N03 device: a CBOR map without the new keys.
+        #[derive(Serialize)]
+        struct OldCaps {
+            device_id: String,
+            firmware: String,
+            surfaces: Vec<Surface>,
+            frame: bool,
+            tile: bool,
+            touch: bool,
+            ota: bool,
+            max_message: u32,
+            max_chunk: u32,
+            max_in_flight: u8,
+            max_fps: u16,
+        }
+        let old = OldCaps {
+            device_id: "old".into(),
+            firmware: "0.0.1".into(),
+            surfaces: vec![Surface {
+                id: "main".into(),
+                width: 2,
+                height: 2,
+                pixel_format: "RGB565".into(),
+                stride: 4,
+                rotation: 0,
+            }],
+            frame: true,
+            tile: false,
+            touch: false,
+            ota: false,
+            max_message: 4096,
+            max_chunk: 1024,
+            max_in_flight: 1,
+            max_fps: 1,
+        };
+        let bytes = encode_control(&old).unwrap();
+        let caps: Capabilities = decode_control(&bytes).unwrap();
+        assert_eq!(caps.device_id, "old");
+        assert!(!caps.mirror.supports());
+        assert_eq!(caps.mirror_fps, 0);
+        assert_eq!(caps.local_display_fps, 0);
+    }
+
+    #[test]
+    fn negotiate_mirror_intersects_mode_fps_and_format() {
+        let mut caps = Capabilities {
+            device_id: "gpu".into(),
+            firmware: "1.0.0".into(),
+            surfaces: vec![Surface {
+                id: "main".into(),
+                width: 480,
+                height: 480,
+                pixel_format: "RGB565".into(),
+                stride: 960,
+                rotation: 0,
+            }],
+            frame: true,
+            tile: false,
+            touch: false,
+            ota: false,
+            max_message: 4096,
+            max_chunk: 16384,
+            max_in_flight: 1,
+            max_fps: 30,
+            mirror: MirrorCapability::disabled(),
+            local_display_fps: 60,
+            mirror_fps: 10,
+            mirror_bandwidth: 5_000_000,
+        };
+        // No mirror advertised -> rejected.
+        assert!(negotiate_mirror(&caps, "main", "full-frame", 30, "RGB565").is_none());
+        // full-frame only: dirty-region downgrades, fps is clamped to 10.
+        caps.mirror = MirrorCapability::full_frame(480, 480, 30);
+        let cmd = negotiate_mirror(&caps, "main", "dirty-region", 30, "RGB565").unwrap();
+        assert_eq!(cmd.mode, "full-frame");
+        assert_eq!(cmd.max_fps, 10);
+        assert_eq!(caps.local_display_fps, 60);
+        assert_ne!(caps.local_display_fps, caps.mirror_fps);
+        // Unknown format falls back to RGB565; unknown mode with no full-frame fails.
+        assert_eq!(
+            negotiate_mirror(&caps, "main", "full-frame", 5, "BGRA8")
+                .unwrap()
+                .format,
+            "RGB565"
+        );
+        caps.mirror.mode = vec!["dirty-region".into()];
+        assert!(negotiate_mirror(&caps, "main", "full-frame", 5, "RGB565").is_none());
     }
 }

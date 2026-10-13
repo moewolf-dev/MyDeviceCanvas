@@ -18,6 +18,11 @@ struct PeerIdentity {
   std::uint32_t max_chunk = 16384;
   std::uint8_t max_in_flight = 1;
   std::uint16_t max_fps = 30;
+  // Form B (N03): device-rendered mirror back to the host.
+  bool mirror = false;
+  std::uint16_t local_display_fps = 0;
+  std::uint16_t mirror_fps = 0;
+  std::uint64_t mirror_bandwidth = 0;
 };
 
 struct SurfaceDesc {

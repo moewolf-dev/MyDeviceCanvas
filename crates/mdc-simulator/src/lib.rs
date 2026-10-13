@@ -2,8 +2,8 @@
 use mdc_core::{validate_tile_base, FrameAssembler, Tile, TransactionNack, MAX_FRAME_BYTES};
 use mdc_protocol::{
     decode_control, decode_frame_payload, decode_tile_payload, encode_control, Ack, Capabilities,
-    ErrorPayload, FramePayload, Hello, InputEvent, MessageType, OtaCommand, Packet, Surface,
-    VERSION,
+    ErrorPayload, FramePayload, Hello, InputEvent, MessageType, MirrorCommand, OtaCommand, Packet,
+    Surface, VERSION,
 };
 use mdc_transport::{MemoryLink, Transport, TransportError};
 use serde::{Deserialize, Serialize};
@@ -79,6 +79,10 @@ pub struct BoardProfile {
     /// 第二块 Surface。宽或高为 0 表示没有 overlay。
     pub overlay_width: u16,
     pub overlay_height: u16,
+    /// Form B: device renders locally and mirrors frames back to the host.
+    pub mirror: bool,
+    pub mirror_fps: u16,
+    pub local_display_fps: u16,
 }
 impl Default for BoardProfile {
     fn default() -> Self {
@@ -92,6 +96,10 @@ impl Default for BoardProfile {
             rotation: 0,
             overlay_width: 0,
             overlay_height: 0,
+            // ESP32-S3 class: Form A only; no GPU to render + mirror at once.
+            mirror: false,
+            mirror_fps: 0,
+            local_display_fps: 30,
         }
     }
 }
@@ -107,6 +115,9 @@ impl BoardProfile {
                 touch: false,
                 ota: false,
                 color_fps: true,
+                // Form B: a Linux board with a GPU renders and mirrors.
+                mirror: true,
+                mirror_fps: 10,
                 ..Self::default()
             },
             "pi4-hdmi" => Self {
@@ -116,6 +127,8 @@ impl BoardProfile {
                 touch: false,
                 ota: false,
                 color_fps: true,
+                mirror: true,
+                mirror_fps: 15,
                 ..Self::default()
             },
             "waveshare-eink" => Self {
@@ -157,6 +170,8 @@ pub struct SimMetrics {
     pub ota_rollbacks: u64,
     pub acks_sent: u64,
     pub errors_sent: u64,
+    pub mirror_frames: u64,
+    pub mirror_commands: u64,
     pub current_frame_id: u64,
     pub pixel_bytes: usize,
 }
@@ -194,6 +209,8 @@ pub struct FakeDevice {
     active_pointers: BTreeMap<u16, (String, u16, u16)>,
     /// Virtual tick when an e-ink refresh finishes. Color panels leave this at 0.
     busy_until: u64,
+    /// Form B: set by a host MirrorCtrl start; emit_mirror_frame is the device side.
+    mirror_active: bool,
 }
 impl FakeDevice {
     pub fn from_transport(link: Box<dyn Transport>, profile: BoardProfile) -> Self {
@@ -230,6 +247,7 @@ impl FakeDevice {
             input_after_frame: None,
             active_pointers: BTreeMap::new(),
             busy_until: 0,
+            mirror_active: false,
         }
     }
 
@@ -412,6 +430,34 @@ impl FakeDevice {
             max_chunk: self.max_chunk as u32,
             max_in_flight: 1,
             max_fps: if self.profile.color_fps { 30 } else { 0 },
+            mirror: if self.profile.mirror {
+                mdc_protocol::MirrorCapability::full_frame(
+                    self.profile.width,
+                    self.profile.height,
+                    self.profile.mirror_fps,
+                )
+            } else {
+                mdc_protocol::MirrorCapability::disabled()
+            },
+            local_display_fps: if self.profile.color_fps {
+                self.profile.local_display_fps
+            } else {
+                0
+            },
+            mirror_fps: if self.profile.mirror {
+                self.profile.mirror_fps
+            } else {
+                0
+            },
+            mirror_bandwidth: if self.profile.mirror {
+                // Advertise 1 byte/px/row budget at the mirror fps; advisory only.
+                u64::from(self.profile.width)
+                    .saturating_mul(u64::from(self.profile.height))
+                    .saturating_mul(2)
+                    .saturating_mul(u64::from(self.profile.mirror_fps))
+            } else {
+                0
+            },
         }
     }
     /// Advance virtual clock and process inbound packets.
@@ -537,6 +583,7 @@ impl FakeDevice {
                 self.write_packet(MessageType::Pong, packet.request_id, Vec::new())
             }
             MessageType::Ota => self.handle_ota(packet),
+            MessageType::MirrorCtrl => self.handle_mirror_ctrl(packet),
             MessageType::Input => {
                 // Host→device input is unusual; reject unless touch is enabled.
                 if !self.profile.touch {
@@ -611,6 +658,54 @@ impl FakeDevice {
                 &format!("unknown action {other}"),
             ),
         }
+    }
+    /// Form B: host asked to start/stop mirroring. Capability-gated.
+    fn handle_mirror_ctrl(&mut self, packet: Packet) -> Result<(), SimError> {
+        if !self.profile.mirror {
+            return self.reply_error(
+                packet.request_id,
+                "E_UNSUPPORTED",
+                "mirror capability disabled",
+            );
+        }
+        let cmd: MirrorCommand =
+            decode_control(&packet.payload).map_err(|e| SimError::Protocol(e.to_string()))?;
+        self.metrics.mirror_commands = self.metrics.mirror_commands.saturating_add(1);
+        match cmd.action.as_str() {
+            "start" => {
+                self.mirror_active = true;
+                self.ack(packet.request_id, self.current_frame_id, true, false)
+            }
+            "stop" => {
+                self.mirror_active = false;
+                self.ack(packet.request_id, self.current_frame_id, true, false)
+            }
+            other => self.reply_error(
+                packet.request_id,
+                "E_MIRROR",
+                &format!("unknown action {other}"),
+            ),
+        }
+    }
+    /// Form B: true once a host MirrorCtrl start has been accepted.
+    pub fn mirror_active(&self) -> bool {
+        self.mirror_active
+    }
+    /// Form B: device pushes the current rendered `main` pixels back to the host.
+    pub fn emit_mirror_frame(&mut self) -> Result<(), SimError> {
+        if !self.profile.mirror {
+            return Err(SimError::Protocol("mirror capability disabled".into()));
+        }
+        let payload = mdc_protocol::encode_frame_payload(
+            "main",
+            self.current_frame_id,
+            self.profile.width,
+            self.profile.height,
+            &self.pixels,
+        )
+        .map_err(|e| SimError::Protocol(e.to_string()))?;
+        self.metrics.mirror_frames = self.metrics.mirror_frames.saturating_add(1);
+        self.write_packet(MessageType::MirrorFrame, 0, payload)
     }
     fn note_refresh(&mut self) {
         if self.profile.color_fps {
@@ -979,6 +1074,86 @@ mod tests {
         assert!(pi.color_fps);
         let eink = BoardProfile::from_board_id("waveshare-eink");
         assert!(!eink.color_fps, "e-ink must not claim color FPS");
+    }
+
+    #[test]
+    fn mirror_capability_follows_profile_and_gates_control() {
+        // ESP32-S3 class: Form A only, no mirror capability.
+        let (_, esp) = FakeDevice::pair(BoardProfile::default());
+        assert!(!esp.capabilities().mirror.supports());
+        assert_eq!(esp.capabilities().mirror_fps, 0);
+
+        // A GPU board advertises mirror; local display and mirror FPS differ.
+        let profile = BoardProfile {
+            width: 4,
+            height: 2,
+            mirror: true,
+            mirror_fps: 5,
+            local_display_fps: 30,
+            ..BoardProfile::default()
+        };
+        let (host, mut device) = FakeDevice::pair(profile);
+        let caps = device.capabilities();
+        assert!(caps.mirror.supports());
+        assert_eq!(caps.local_display_fps, 30);
+        assert_eq!(caps.mirror_fps, 5);
+        assert_ne!(caps.local_display_fps, caps.mirror_fps);
+        assert!(caps.mirror_bandwidth > 0);
+
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(session.supports_mirror());
+        session.start_mirror("main", "full-frame", 30).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.mirror_active());
+
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 4,
+                height: 2,
+                bytes: vec![7; 16],
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        // Device mirrors its rendered frame back to the host.
+        device.emit_mirror_frame().unwrap();
+        session.poll().unwrap();
+        let mirrored = session.take_mirror_frame().unwrap();
+        assert_eq!(mirrored.frame_id, 1);
+        assert_eq!((mirrored.width, mirrored.height), (4, 2));
+        assert_eq!(mirrored.bytes, vec![7; 16]);
+
+        session.stop_mirror("main").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(!device.mirror_active());
+    }
+
+    #[test]
+    fn device_without_mirror_rejects_mirror_control() {
+        let (host, mut esp) = FakeDevice::pair(BoardProfile::default());
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        esp.poll().unwrap();
+        session.poll().unwrap();
+        assert!(!session.supports_mirror());
+        assert_eq!(
+            session.start_mirror("main", "full-frame", 30),
+            Err(mdc_core::CoreError::Unsupported)
+        );
+        assert_eq!(
+            session.stop_mirror("main"),
+            Err(mdc_core::CoreError::Unsupported)
+        );
+        assert!(esp.emit_mirror_frame().is_err());
+        assert!(!esp.mirror_active());
+        // Nothing but the handshake reply ever reached the device.
+        assert_eq!(esp.metrics.mirror_commands, 0);
     }
 
     #[test]

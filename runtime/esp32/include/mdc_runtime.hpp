@@ -16,8 +16,10 @@ enum class MessageType : std::uint8_t {
   Capabilities = 2,
   Frame = 0x10,
   Tile = 0x11,
+  MirrorFrame = 0x12,
   Input = 0x20,
   Ota = 0x30,
+  MirrorCtrl = 0x31,
   Ping = 0x40,
   Pong = 0x41,
   Ack = 0x50,
@@ -100,6 +102,8 @@ class SessionDispatcher {
   bool busy() const { return transport_busy_; }
   void set_transport_busy(bool busy) { transport_busy_ = busy; }
   const PeerIdentity& identity() const { return identity_; }
+  /// Form B: whether the host has started mirroring on this session.
+  bool mirror_active() const { return mirror_active_; }
 
  private:
   DisplayBackend& display_;
@@ -112,8 +116,11 @@ class SessionDispatcher {
   std::uint32_t chunk_expected_ = 0;
   std::uint32_t chunk_filled_ = 0;
   bool render_frozen_ = false;
+  /// Form B: true after a host MirrorCtrl start; cleared by stop.
+  bool mirror_active_ = false;
   bool handle_frame(const Packet& packet);
   bool handle_tile(const Packet& packet);
+  bool handle_mirror_ctrl(const Packet& packet);
   void send_ack(std::uint32_t request_id, std::uint64_t frame_id, bool displayed);
   void send_error(std::uint32_t request_id, const char* code, const char* message);
   void send_pong(std::uint32_t request_id);

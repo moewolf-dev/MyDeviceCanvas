@@ -54,5 +54,13 @@ int main(int argc, char** argv) {
   assert(std::string(reinterpret_cast<const char*>(tile.data() + 1), 4) == "main");
   assert(tile[tile.size() - 2] == 0xaa);
   assert(tile.back() == 0xbb);
+
+  // N03 Form B: device -> host mirror frame reuses the Frame phase layout.
+  const auto mirror = parse_hex(json_hex(read_file(dir + "/mirror_frame.json")));
+  assert(mirror[0] == 0);
+  assert(mirror[1] == 4);
+  assert(std::string(reinterpret_cast<const char*>(mirror.data() + 2), 4) == "main");
+  assert(u16le(mirror.data() + 2 + 4 + 8) == 2);
+  assert(u16le(mirror.data() + 2 + 4 + 8 + 2) == 2);
   return 0;
 }

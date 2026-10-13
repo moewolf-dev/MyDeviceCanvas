@@ -62,6 +62,8 @@ bool SessionDispatcher::handle(const Packet& packet) {
       }
       return true;
     }
+    case MessageType::MirrorCtrl:
+      return handle_mirror_ctrl(packet);
     default:
       return false;
   }
@@ -192,6 +194,25 @@ bool SessionDispatcher::handle_tile(const Packet& packet) {
   const auto pix_len = packet.payload.size() - header;
   if (!display_.flush_rect(x, y, w, h, pixels, pix_len)) return false;
   if (!display_.present()) return false;
+  send_ack(packet.request_id, current_frame_id_, true);
+  return true;
+}
+
+/// Form B: host asked to start/stop mirroring. Capability-gated.
+bool SessionDispatcher::handle_mirror_ctrl(const Packet& packet) {
+  if (!identity_.mirror) {
+    send_error(packet.request_id, "E_UNSUPPORTED", "mirror capability disabled");
+    return true;
+  }
+  const std::string text(packet.payload.begin(), packet.payload.end());
+  if (text.find("stop") != std::string::npos) {
+    mirror_active_ = false;
+  } else if (text.find("start") != std::string::npos) {
+    mirror_active_ = true;
+  } else {
+    send_error(packet.request_id, "E_MIRROR", "unknown action");
+    return true;
+  }
   send_ack(packet.request_id, current_frame_id_, true);
   return true;
 }

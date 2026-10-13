@@ -48,6 +48,19 @@ void push_bool(std::vector<std::uint8_t>& o, bool v) { push_u8(o, v ? 0xf5 : 0xf
 
 void push_null(std::vector<std::uint8_t>& o) { push_u8(o, 0xf6); }
 
+void push_array_header(std::vector<std::uint8_t>& o, std::size_t n) {
+  if (n < 24) {
+    push_u8(o, static_cast<std::uint8_t>(0x80 + n));
+  } else if (n <= 0xff) {
+    push_u8(o, 0x98);
+    push_u8(o, static_cast<std::uint8_t>(n));
+  } else {
+    push_u8(o, 0x99);
+    push_u8(o, static_cast<std::uint8_t>(n >> 8));
+    push_u8(o, static_cast<std::uint8_t>(n));
+  }
+}
+
 void push_kv_text(std::vector<std::uint8_t>& o, const char* key, const std::string& val) {
   push_text(o, key);
   push_text(o, val);
@@ -63,14 +76,19 @@ void push_kv_bool(std::vector<std::uint8_t>& o, const char* key, bool val) {
   push_bool(o, val);
 }
 
+void push_kv_null(std::vector<std::uint8_t>& o, const char* key) {
+  push_text(o, key);
+  push_null(o);
+}
+
 }  // namespace
 
 std::vector<std::uint8_t> encode_capabilities_cbor(const PeerIdentity& id,
                                                    const SurfaceDesc& surface) {
   std::vector<std::uint8_t> o;
-  o.reserve(256);
-  // map(11) — field order matches serde struct field declaration order
-  push_u8(o, 0xab);
+  o.reserve(320);
+  // map(15) — field order matches serde struct field declaration order
+  push_u8(o, 0xaf);
   push_kv_text(o, "device_id", id.device_id);
   push_kv_text(o, "firmware", id.firmware);
 
@@ -95,6 +113,24 @@ std::vector<std::uint8_t> encode_capabilities_cbor(const PeerIdentity& id,
   push_kv_uint(o, "max_chunk", id.max_chunk);
   push_kv_uint(o, "max_in_flight", id.max_in_flight);
   push_kv_uint(o, "max_fps", id.max_fps);
+
+  // mirror: map(6) MirrorCapability (N03 Form B).
+  push_text(o, "mirror");
+  push_u8(o, 0xa6);
+  push_text(o, "mode");
+  push_array_header(o, id.mirror ? 1u : 0u);
+  if (id.mirror) push_text(o, "full-frame");
+  push_kv_uint(o, "max_fps", id.mirror ? id.mirror_fps : 0);
+  push_kv_uint(o, "max_width", id.mirror ? surface.width : 0);
+  push_kv_uint(o, "max_height", id.mirror ? surface.height : 0);
+  push_text(o, "pixel_formats");
+  push_array_header(o, id.mirror ? 1u : 0u);
+  if (id.mirror) push_text(o, "RGB565");
+  push_kv_null(o, "recommended_transport");
+
+  push_kv_uint(o, "local_display_fps", id.local_display_fps);
+  push_kv_uint(o, "mirror_fps", id.mirror ? id.mirror_fps : 0);
+  push_kv_uint(o, "mirror_bandwidth", id.mirror_bandwidth);
   return o;
 }
 

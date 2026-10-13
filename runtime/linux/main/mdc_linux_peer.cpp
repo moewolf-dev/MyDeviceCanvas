@@ -109,6 +109,12 @@ int main(int argc, char** argv) {
   identity.firmware = "0.1.0-linux";
   identity.touch = false;
   identity.ota = false;
+  // Form B: the Linux peer renders locally and can mirror back to the host.
+  // mirror_fps is deliberately lower than local_display_fps.
+  identity.mirror = true;
+  identity.local_display_fps = 60;
+  identity.mirror_fps = 10;
+  identity.mirror_bandwidth = static_cast<std::uint64_t>(width) * height * 2u * 10u;
 
   int server = ::socket(AF_INET, SOCK_STREAM, 0);
   if (server < 0) {

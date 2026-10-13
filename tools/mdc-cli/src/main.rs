@@ -1824,6 +1824,10 @@ mod tests {
                 max_chunk: 1024,
                 max_in_flight: 1,
                 max_fps: 30,
+                mirror: mdc_protocol::MirrorCapability::disabled(),
+                local_display_fps: 0,
+                mirror_fps: 0,
+                mirror_bandwidth: 0,
             })
             .unwrap(),
         }
@@ -1892,6 +1896,10 @@ mod tests {
                                             max_chunk: 16384,
                                             max_in_flight: 1,
                                             max_fps: 30,
+                                            mirror: mdc_protocol::MirrorCapability::disabled(),
+                                            local_display_fps: 0,
+                                            mirror_fps: 0,
+                                            mirror_bandwidth: 0,
                                         };
                                         let reply = Packet {
                                             version: VERSION,

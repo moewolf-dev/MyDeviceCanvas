@@ -1,7 +1,8 @@
 use mdc_protocol::{
-    encode_control, encode_frame_begin, encode_frame_chunk, encode_frame_commit,
-    encode_frame_payload, encode_tile_payload, Ack, Capabilities, ErrorPayload, Hello, InputEvent,
-    MessageType, OtaCommand, Packet, Surface, VERSION,
+    decode_frame_payload, encode_control, encode_frame_begin, encode_frame_chunk,
+    encode_frame_commit, encode_frame_payload, encode_tile_payload, negotiate_mirror, Ack,
+    Capabilities, ErrorPayload, FramePayload, Hello, InputEvent, MessageType, MirrorCommand,
+    OtaCommand, Packet, Surface, VERSION,
 };
 mod ledger;
 pub use ledger::{AllocationLedger, HostCopyBudget, SimHeap};
@@ -222,6 +223,15 @@ pub struct Tile {
     pub base_frame_id: u64,
     pub x: u16,
     pub y: u16,
+    pub width: u16,
+    pub height: u16,
+    pub bytes: Vec<u8>,
+}
+/// One complete device -> host mirrored frame (Form B / N03).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MirrorFrame {
+    pub surface_id: String,
+    pub frame_id: u64,
     pub width: u16,
     pub height: u16,
     pub bytes: Vec<u8>,
@@ -619,6 +629,12 @@ pub struct Session<T: Transport> {
     /// After reconnect / endpoint switch, tiles are blocked until a full frame is ACKed.
     pub needs_full_frame: bool,
     manager: Option<Arc<Mutex<DeviceManager>>>,
+    /// Latest complete mirror frame. Bounded to one; a newer frame replaces it.
+    mirror_inbox: Option<MirrorFrame>,
+    /// In-progress chunked mirror frame: (surface, w, h, assembler).
+    mirror_assembler: Option<(String, u16, u16, FrameAssembler)>,
+    mirror_frames: u64,
+    mirror_dropped: u64,
 }
 impl<T: Transport> Session<T> {
     pub fn new(transport: T) -> Self {
@@ -660,6 +676,10 @@ impl<T: Transport> Session<T> {
             awaiting_transport: false,
             needs_full_frame: false,
             manager: None,
+            mirror_inbox: None,
+            mirror_assembler: None,
+            mirror_frames: 0,
+            mirror_dropped: 0,
         }
     }
     pub fn set_manager(&mut self, manager: Arc<Mutex<DeviceManager>>) {
@@ -1156,6 +1176,184 @@ impl<T: Transport> Session<T> {
         let _ = (self.state, _payload);
         Err(CoreError::Unsupported)
     }
+    /// Form B: true when the negotiated device advertises a usable mirror mode.
+    pub fn supports_mirror(&self) -> bool {
+        self.device
+            .as_ref()
+            .map(|device| device.capabilities.mirror.supports())
+            .unwrap_or(false)
+    }
+    /// Form B: ask the device to start streaming mirrored frames.
+    /// Rejected with `Unsupported` when the device did not advertise mirror.
+    pub fn start_mirror(
+        &mut self,
+        surface_id: &str,
+        mode: &str,
+        max_fps: u16,
+    ) -> Result<u32, CoreError> {
+        if self.state != ConnectionState::Ready {
+            return Err(CoreError::NotReady);
+        }
+        let command = {
+            let device = self.device.as_ref().ok_or(CoreError::NotReady)?;
+            negotiate_mirror(&device.capabilities, surface_id, mode, max_fps, "RGB565")
+                .ok_or(CoreError::Unsupported)?
+        };
+        let payload = encode_control(&command).map_err(|e| CoreError::Protocol(e.to_string()))?;
+        self.write_packet(MessageType::MirrorCtrl, payload)
+    }
+    /// Form B: ask the device to stop streaming mirrored frames.
+    pub fn stop_mirror(&mut self, surface_id: &str) -> Result<u32, CoreError> {
+        if self.state != ConnectionState::Ready {
+            return Err(CoreError::NotReady);
+        }
+        let device = self.device.as_ref().ok_or(CoreError::NotReady)?;
+        if !device.capabilities.mirror.supports() {
+            return Err(CoreError::Unsupported);
+        }
+        let command = MirrorCommand {
+            action: "stop".into(),
+            surface_id: surface_id.to_string(),
+            mode: "full-frame".into(),
+            max_fps: 0,
+            format: "RGB565".into(),
+        };
+        let payload = encode_control(&command).map_err(|e| CoreError::Protocol(e.to_string()))?;
+        self.write_packet(MessageType::MirrorCtrl, payload)
+    }
+    /// Take the latest complete mirrored frame, if any. The inbox holds at most
+    /// one frame; a newer frame replaces an unread one (latest-frame-wins).
+    pub fn take_mirror_frame(&mut self) -> Option<MirrorFrame> {
+        self.mirror_inbox.take()
+    }
+    pub fn mirror_frames_received(&self) -> u64 {
+        self.mirror_frames
+    }
+    pub fn mirror_frames_dropped(&self) -> u64 {
+        self.mirror_dropped
+    }
+    fn handle_mirror_frame(&mut self, packet: Packet) -> Result<(), CoreError> {
+        if self.state != ConnectionState::Ready {
+            return Ok(());
+        }
+        let decoded = match decode_frame_payload(&packet.payload) {
+            Ok(value) => value,
+            Err(_) => {
+                self.mirror_dropped = self.mirror_dropped.saturating_add(1);
+                return Ok(());
+            }
+        };
+        match decoded {
+            FramePayload::Legacy {
+                surface_id,
+                frame_id,
+                width,
+                height,
+                bytes,
+            } => {
+                self.store_mirror_frame(surface_id, frame_id, width, height, bytes)?;
+            }
+            FramePayload::Begin {
+                surface_id,
+                frame_id,
+                width,
+                height,
+                total_bytes,
+            } => {
+                let max_chunk = self.negotiated_max_chunk();
+                match FrameAssembler::begin(frame_id, total_bytes as usize, max_chunk) {
+                    Ok(assembler) => {
+                        self.mirror_assembler = Some((surface_id, width, height, assembler));
+                    }
+                    Err(_) => {
+                        self.mirror_dropped = self.mirror_dropped.saturating_add(1);
+                        self.mirror_assembler = None;
+                    }
+                }
+            }
+            FramePayload::Chunk {
+                frame_id,
+                offset,
+                data,
+            } => {
+                let ok = match self.mirror_assembler.as_mut() {
+                    Some((_, _, _, assembler)) if assembler.frame_id == frame_id => {
+                        assembler.chunk(offset as usize, &data).is_ok()
+                    }
+                    _ => false,
+                };
+                if !ok {
+                    self.mirror_dropped = self.mirror_dropped.saturating_add(1);
+                }
+            }
+            FramePayload::Commit { frame_id } => {
+                let finished = match self.mirror_assembler.take() {
+                    Some((surface_id, width, height, assembler))
+                        if assembler.frame_id == frame_id =>
+                    {
+                        assembler
+                            .commit()
+                            .ok()
+                            .map(|bytes| (surface_id, width, height, bytes))
+                    }
+                    _ => None,
+                };
+                match finished {
+                    Some((surface_id, width, height, bytes)) => {
+                        self.store_mirror_frame(surface_id, frame_id, width, height, bytes)?;
+                    }
+                    None => {
+                        self.mirror_dropped = self.mirror_dropped.saturating_add(1);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    fn store_mirror_frame(
+        &mut self,
+        surface_id: String,
+        frame_id: u64,
+        width: u16,
+        height: u16,
+        bytes: Vec<u8>,
+    ) -> Result<(), CoreError> {
+        let expected = match mdc_protocol::rgb565_bytes(width, height) {
+            Ok(value) => value,
+            Err(_) => {
+                self.mirror_dropped = self.mirror_dropped.saturating_add(1);
+                return Ok(());
+            }
+        };
+        let known_surface = self
+            .device
+            .as_ref()
+            .map(|device| {
+                device
+                    .capabilities
+                    .surfaces
+                    .iter()
+                    .any(|s| s.id == surface_id && s.width == width && s.height == height)
+            })
+            .unwrap_or(false);
+        if bytes.len() != expected || expected > MAX_FRAME_BYTES || !known_surface {
+            self.mirror_dropped = self.mirror_dropped.saturating_add(1);
+            return Ok(());
+        }
+        if self.mirror_inbox.is_some() {
+            // Latest-frame-wins: an unread older frame is dropped, not queued.
+            self.mirror_dropped = self.mirror_dropped.saturating_add(1);
+        }
+        self.mirror_frames = self.mirror_frames.saturating_add(1);
+        self.mirror_inbox = Some(MirrorFrame {
+            surface_id,
+            frame_id,
+            width,
+            height,
+            bytes,
+        });
+        Ok(())
+    }
     fn alloc_request_id(&mut self) -> Result<u32, CoreError> {
         let id = self.next_request_id;
         self.next_request_id = self
@@ -1333,6 +1531,8 @@ impl<T: Transport> Session<T> {
                 // host-initiated OTA uses send_ota + Ack/Error.
                 Ok(())
             }
+            MessageType::MirrorFrame => self.handle_mirror_frame(packet),
+            MessageType::MirrorCtrl => Ok(()),
             _ => Ok(()),
         }
     }
@@ -1455,6 +1655,10 @@ mod tests {
             max_chunk: 16384,
             max_in_flight: 1,
             max_fps: 30,
+            mirror: mdc_protocol::MirrorCapability::disabled(),
+            local_display_fps: 0,
+            mirror_fps: 0,
+            mirror_bandwidth: 0,
         }
     }
     fn s() -> Surface {
@@ -1503,6 +1707,10 @@ mod tests {
             max_chunk: 16384,
             max_in_flight: 1,
             max_fps: 30,
+            mirror: mdc_protocol::MirrorCapability::disabled(),
+            local_display_fps: 0,
+            mirror_fps: 0,
+            mirror_bandwidth: 0,
         };
         let mut d = Device::new(caps);
         assert!(!d.update_surface_geometry("main", 2, 2).unwrap());
@@ -1525,6 +1733,10 @@ mod tests {
             max_chunk: 16384,
             max_in_flight: 1,
             max_fps: 30,
+            mirror: mdc_protocol::MirrorCapability::disabled(),
+            local_display_fps: 0,
+            mirror_fps: 0,
+            mirror_bandwidth: 0,
         };
         let d = Device::new(c);
         assert_eq!(
@@ -1959,6 +2171,10 @@ mod tests {
             max_chunk: 16384,
             max_in_flight: 1,
             max_fps: 30,
+            mirror: mdc_protocol::MirrorCapability::disabled(),
+            local_display_fps: 0,
+            mirror_fps: 0,
+            mirror_bandwidth: 0,
         };
         let mut manager = DeviceManager::new();
         manager.upsert(caps.clone()).unwrap();
@@ -2086,6 +2302,10 @@ mod tests {
             max_chunk: 16384,
             max_in_flight: 1,
             max_fps: 30,
+            mirror: mdc_protocol::MirrorCapability::disabled(),
+            local_display_fps: 0,
+            mirror_fps: 0,
+            mirror_bandwidth: 0,
         };
         assert_eq!(
             manager.upsert(caps.clone()),
@@ -2139,6 +2359,10 @@ mod tests {
                         max_chunk: 16384,
                         max_in_flight: 1,
                         max_fps: 30,
+                        mirror: mdc_protocol::MirrorCapability::disabled(),
+                        local_display_fps: 0,
+                        mirror_fps: 0,
+                        mirror_bandwidth: 0,
                     })
                     .unwrap(),
                 }
@@ -2173,6 +2397,10 @@ mod tests {
                         max_chunk: 16384,
                         max_in_flight: 1,
                         max_fps: 30,
+                        mirror: mdc_protocol::MirrorCapability::disabled(),
+                        local_display_fps: 0,
+                        mirror_fps: 0,
+                        mirror_bandwidth: 0,
                     })
                     .unwrap(),
                 }
@@ -2266,6 +2494,10 @@ mod tests {
             max_chunk: 16384,
             max_in_flight: 1,
             max_fps: 30,
+            mirror: mdc_protocol::MirrorCapability::disabled(),
+            local_display_fps: 0,
+            mirror_fps: 0,
+            mirror_bandwidth: 0,
         };
         let reply = Packet {
             version: VERSION,
@@ -2356,6 +2588,10 @@ mod tests {
             max_chunk: 16384,
             max_in_flight: 1,
             max_fps: 30,
+            mirror: mdc_protocol::MirrorCapability::disabled(),
+            local_display_fps: 0,
+            mirror_fps: 0,
+            mirror_bandwidth: 0,
         };
         device_link
             .write(
@@ -2435,6 +2671,10 @@ mod tests {
                         max_chunk: 16384,
                         max_in_flight: 1,
                         max_fps: 30,
+                        mirror: mdc_protocol::MirrorCapability::disabled(),
+                        local_display_fps: 0,
+                        mirror_fps: 0,
+                        mirror_bandwidth: 0,
                     })
                     .unwrap(),
                 }
@@ -2480,6 +2720,10 @@ mod tests {
                         max_chunk: 16384,
                         max_in_flight: 1,
                         max_fps: 30,
+                        mirror: mdc_protocol::MirrorCapability::disabled(),
+                        local_display_fps: 0,
+                        mirror_fps: 0,
+                        mirror_bandwidth: 0,
                     })
                     .unwrap(),
                 }
@@ -2510,6 +2754,10 @@ mod tests {
             max_chunk: 16384,
             max_in_flight: 1,
             max_fps: 30,
+            mirror: mdc_protocol::MirrorCapability::disabled(),
+            local_display_fps: 0,
+            mirror_fps: 0,
+            mirror_bandwidth: 0,
         };
         device_link
             .write(
@@ -2563,6 +2811,10 @@ mod tests {
                 max_chunk: 16384,
                 max_in_flight: 1,
                 max_fps: 30,
+                mirror: mdc_protocol::MirrorCapability::disabled(),
+                local_display_fps: 0,
+                mirror_fps: 0,
+                mirror_bandwidth: 0,
             };
             device_link
                 .write(
@@ -2609,6 +2861,10 @@ mod tests {
             max_chunk: 8,
             max_in_flight: 1,
             max_fps: 30,
+            mirror: mdc_protocol::MirrorCapability::disabled(),
+            local_display_fps: 0,
+            mirror_fps: 0,
+            mirror_bandwidth: 0,
         };
         device_link
             .write(
@@ -2968,5 +3224,128 @@ mod tests {
         }
         session.disconnect();
         assert_eq!(ledger.outstanding, 0);
+    }
+
+    fn mirror_caps() -> Capabilities {
+        let mut c = caps();
+        c.mirror = mdc_protocol::MirrorCapability::full_frame(2, 2, 15);
+        c.local_display_fps = 30;
+        c.mirror_fps = 15;
+        c.mirror_bandwidth = 2 * 2 * 2 * 15;
+        c
+    }
+
+    fn write_caps(device: &mut MemoryLink, request_id: u32, caps: &Capabilities) {
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id,
+                    payload: encode_control(caps).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+    }
+
+    fn mirror_packet(kind: MessageType, payload: Vec<u8>) -> Vec<u8> {
+        Packet {
+            version: VERSION,
+            kind,
+            flags: 0,
+            request_id: 0,
+            payload,
+        }
+        .encode(4096)
+        .unwrap()
+    }
+
+    #[test]
+    fn mirror_start_is_rejected_without_capability() {
+        let (host, mut dev) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        handshake(&mut session, &mut dev);
+        assert!(!session.supports_mirror());
+        assert_eq!(
+            session.start_mirror("main", "full-frame", 15),
+            Err(CoreError::Unsupported)
+        );
+        assert_eq!(session.stop_mirror("main"), Err(CoreError::Unsupported));
+        assert!(dev.read().unwrap().is_none());
+    }
+
+    #[test]
+    fn mirror_frames_are_bounded_to_latest() {
+        let (host, mut dev) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        let hello = Packet::decode(&dev.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        write_caps(&mut dev, hello.request_id, &mirror_caps());
+        session.poll().unwrap();
+        assert!(session.supports_mirror());
+        session.start_mirror("main", "dirty-region", 30).unwrap();
+        // negotiated down to full-frame at the device ceiling.
+        let ctrl = Packet::decode(&dev.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        assert_eq!(ctrl.kind, MessageType::MirrorCtrl);
+        let cmd: mdc_protocol::MirrorCommand = mdc_protocol::decode_control(&ctrl.payload).unwrap();
+        assert_eq!(cmd.mode, "full-frame");
+        assert_eq!(cmd.max_fps, 15);
+
+        for (frame_id, value) in [(17u64, 0x11u8), (34u64, 0x22u8)] {
+            let payload = encode_frame_payload("main", frame_id, 2, 2, &[value; 8]).unwrap();
+            dev.write(&mirror_packet(MessageType::MirrorFrame, payload))
+                .unwrap();
+            session.poll().unwrap();
+        }
+        let frame = session.take_mirror_frame().unwrap();
+        assert_eq!(frame.frame_id, 34);
+        assert_eq!(frame.bytes, vec![0x22; 8]);
+        assert_eq!(session.mirror_frames_received(), 2);
+        assert_eq!(session.mirror_frames_dropped(), 1);
+        assert!(session.take_mirror_frame().is_none());
+    }
+
+    #[test]
+    fn mirror_chunked_frame_assembles_and_rejects_bad_geometry() {
+        let (host, mut dev) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        let hello = Packet::decode(&dev.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        write_caps(&mut dev, hello.request_id, &mirror_caps());
+        session.poll().unwrap();
+
+        let begin = encode_frame_begin("main", 5, 2, 2, 8).unwrap();
+        dev.write(&mirror_packet(MessageType::MirrorFrame, begin))
+            .unwrap();
+        session.poll().unwrap();
+        let chunk = encode_frame_chunk(5, 0, &[9; 8]);
+        dev.write(&mirror_packet(MessageType::MirrorFrame, chunk))
+            .unwrap();
+        session.poll().unwrap();
+        let commit = encode_frame_commit(5);
+        dev.write(&mirror_packet(MessageType::MirrorFrame, commit))
+            .unwrap();
+        session.poll().unwrap();
+        let frame = session.take_mirror_frame().unwrap();
+        assert_eq!(frame.frame_id, 5);
+        assert_eq!(frame.bytes, vec![9; 8]);
+
+        // Geometry no surface advertises is dropped, not stored.
+        let bad = encode_frame_payload("main", 6, 4, 2, &[1; 16]).unwrap();
+        dev.write(&mirror_packet(MessageType::MirrorFrame, bad))
+            .unwrap();
+        session.poll().unwrap();
+        assert!(session.take_mirror_frame().is_none());
+        assert_eq!(session.mirror_frames_received(), 1);
     }
 }

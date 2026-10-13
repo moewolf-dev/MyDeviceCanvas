@@ -32,6 +32,10 @@ fn major_version_mismatch_is_rejected_at_decode() {
             max_chunk: 256,
             max_in_flight: 1,
             max_fps: 10,
+            mirror: mdc_protocol::MirrorCapability::disabled(),
+            local_display_fps: 0,
+            mirror_fps: 0,
+            mirror_bandwidth: 0,
         })
         .unwrap(),
     }
