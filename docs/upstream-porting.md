@@ -35,4 +35,26 @@ This project consulted local snapshots under the parent workspace `docs/` tree.
 - AgentDeck LVGL UI, creature/aquarium, Wi-Fi product protocol, voice/photo frames
 - FrameOS Nim drivers, pixie GC patterns, QuickJS heap model, AGPL source text
 
+## N02 upstream SDK references (2026-10-13)
+
+Read-only snapshots now live under `docs/reference/` (git-ignored). The tracked
+`docs/reference/references.lock` records URL, branch/tag, commit hash and
+license; `docs/reference/README.md` maps each tree to its purpose.
+
+| Source → purpose | This project | Evidence |
+|---|---|---|
+| esp-idf v5.3.2 `esp_lcd` / QSPI panel | ESP32-S3 board bring-up, OTA partitions | `references.lock`, `docs/hardware-baseline.md` |
+| esp-bsp board examples | mainstream ESP32-S3 LCD board profiles | `boards/esp32/` |
+| raspberrypi/userland display/DRM | Linux HDMI framebuffer peer | `runtime/linux`, `boards/linux/pi4-hdmi` |
+| ArduinoCore-avr | Arduino family skeleton | `boards/arduino/` |
+| rockchip-mpp | RK3399 display/GPU profile + Form B | `boards/rockchip/`, `docs/render-topology-decision.md` |
+| cuda-samples | Jetson 3D path (Form B backend) | `boards/nvidia/`, `crates/mdc-model` |
+| mdns / websocket-ws | discovery + WS limits | `mdc-discovery`, `mdc-transport` |
+| libusb / nimble | reserved USB bulk / BLE GATT | `docs/transport-scope.md` |
+
+No source is copied into the build. A snapshot on disk does not imply a board
+or transport is implemented; implementation status is tracked separately. When a
+parameter changes, update the lock, the board profile and a boundary test
+together.
+
 When a parameter changes, update this table, the board profile, and a boundary test together.

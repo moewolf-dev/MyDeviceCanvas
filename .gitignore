@@ -9,3 +9,9 @@ __pycache__/
 runtime/esp32/build/
 runtime/esp32/generated/
 runtime/linux/build/
+
+# N02 read-only upstream reference snapshots (third-party; not our code).
+docs/reference/*/
+!docs/reference/README.md
+!docs/reference/references.lock
+!docs/reference/fetch-references.sh

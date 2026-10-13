@@ -1,0 +1,11 @@
+name	url	ref	commit	license
+esp-idf	https://github.com/espressif/esp-idf.git	v5.3.2	9d7f2d69f50d1288526d4f1027108e314e8c879f	Apache-2.0
+esp-bsp	https://github.com/espressif/esp-bsp.git	master	f259a6abd5808019b1903a422092a4234ca95a51	Apache-2.0
+raspberrypi-userland	https://github.com/raspberrypi/userland.git	master	a54a0dbb2b8dcf9bafdddfc9a9374fb51d97e976	BSD-3-Clause
+arduino-core-avr	https://github.com/arduino/ArduinoCore-avr.git	master	11b9130371e8447920edb65a75706a6c951e51fc	LGPL-2.1
+rockchip-mpp	https://github.com/rockchip-linux/mpp.git	develop	14729dd578e570e5f00fd1dd2113f5429012d64b	Apache-2.0 OR MIT
+nvidia-cuda-samples	https://github.com/NVIDIA/cuda-samples.git	master	5443602d89ed99aede2e4b7bf329daddeadb320e	BSD-3-Clause
+mdns	https://github.com/mjansson/mdns.git	main	a569c4759bd47e0f2a7bfc4d4c19620445782806	Unlicense
+websocket-ws	https://github.com/websockets/ws.git	master	85319a7297318e4c16dd1b0a3c4d8a69b1b55f17	MIT
+libusb	https://github.com/libusb/libusb.git	master	0fc1ca754d3a36c1287a7535b90d3d0cf1f000c8	LGPL-2.1
+nimble	https://github.com/apache/mynewt-nimble.git	master	70966de48ca2dcd4239e05cf28ded7df322cb349	Apache-2.0

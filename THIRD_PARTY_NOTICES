@@ -2,4 +2,19 @@ MyDeviceCanvas does not copy source code from AgentDeck or FrameOS. Their reposi
 
 AgentDeck: MIT License, as documented by its upstream repository. FrameOS: AGPL-3.0, as documented by its upstream repository. No FrameOS code is included here.
 
+N02 read-only upstream snapshots live under `docs/reference/` and are git-ignored; only `references.lock` (URL/branch/commit/license) is tracked. None of their source is compiled or copied into the build.
+
+| Snapshot | License | Purpose |
+|---|---|---|
+| espressif/esp-idf @ v5.3.2 | Apache-2.0 | ESP32-S3 LCD/QSPI panel bring-up, OTA partitions |
+| espressif/esp-bsp | Apache-2.0 | mainstream ESP32-S3 LCD board examples |
+| raspberrypi/userland | BSD-3-Clause | Raspberry Pi display/DRM reference |
+| arduino/ArduinoCore-avr | LGPL-2.1 | Arduino MCU family reference |
+| rockchip-linux/mpp | Apache-2.0 OR MIT | RK3399 display/GPU (Media Process Platform) |
+| NVIDIA/cuda-samples | BSD-3-Clause | Jetson 3D rendering path reference |
+| mjansson/mdns | Unlicense | mDNS discovery reference |
+| websockets/ws | MIT | WebSocket behavior reference |
+| libusb/libusb | LGPL-2.1 | reserved native USB bulk transport reference |
+| apache/mynewt-nimble | Apache-2.0 | reserved BLE GATT transport reference |
+
 Project license: Apache-2.0.
