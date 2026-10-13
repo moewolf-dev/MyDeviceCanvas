@@ -405,6 +405,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdc-mirror"
+version = "0.1.0"
+dependencies = [
+ "mdc-protocol",
+ "mdc-transport",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "mdc-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "mdc-node-native"
 version = "0.1.0"
 dependencies = [
