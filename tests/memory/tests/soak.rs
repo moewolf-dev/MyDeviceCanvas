@@ -248,3 +248,35 @@ fn atlas_animation_soak_is_bounded() {
     }
     assert_eq!(device.atlas_frames(), 8);
 }
+
+#[test]
+fn scene_render_soak_is_bounded() {
+    use mdc_core::Session;
+    use mdc_protocol::SceneNode;
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    session
+        .set_scene(SceneNode {
+            name: "bg".into(),
+            kind: "rect".into(),
+            rect: Some([0, 0, 16, 16]),
+            children: Vec::new(),
+            value: Some("#00FF00".into()),
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    let len = device.framebuffer().len();
+    for _ in 0..5000 {
+        assert!(device.render_scene());
+        assert_eq!(device.framebuffer().len(), len, "framebuffer size is fixed");
+        assert_eq!(device.pixel_rgb565(5, 5), Some(0x07E0));
+    }
+}
