@@ -10,6 +10,7 @@
 use mdc_protocol::{decode_frame_payload, FramePayload, MessageType, HEADER_LEN};
 use mdc_transport::Transport;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -607,6 +608,70 @@ impl MirrorSink for PpmSink {
     }
 }
 
+/// Reference OBS "image source" sink: writes each frame to a file with an
+/// atomic temp+rename so a watcher never reads a half-written file. `ring == 0`
+/// keeps one file; `ring == n` rotates `name_0000..name_(n-1)`.
+pub struct PpmDirectorySink {
+    dir: PathBuf,
+    stem: String,
+    ring: usize,
+    frames: u64,
+    last_len: usize,
+    last_error: Option<String>,
+}
+
+impl PpmDirectorySink {
+    pub fn new(dir: impl Into<PathBuf>, name: &str, ring: usize) -> Self {
+        let dir = dir.into();
+        let _ = std::fs::create_dir_all(&dir);
+        let stem = name.trim_end_matches(".ppm").to_string();
+        Self {
+            dir,
+            stem,
+            ring,
+            frames: 0,
+            last_len: 0,
+            last_error: None,
+        }
+    }
+    pub fn frames_written(&self) -> u64 {
+        self.frames
+    }
+    pub fn last_bytes(&self) -> usize {
+        self.last_len
+    }
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+    fn target_name(&self) -> String {
+        if self.ring == 0 {
+            format!("{}.ppm", self.stem)
+        } else {
+            format!("{}_{:04}.ppm", self.stem, self.frames % self.ring as u64)
+        }
+    }
+}
+
+impl MirrorSink for PpmDirectorySink {
+    fn on_frame(&mut self, frame: ShadowFrame<'_>) {
+        let bytes = encode_ppm(frame.width, frame.height, frame.pixels);
+        let target = self.dir.join(self.target_name());
+        let tmp = self.dir.join(format!("{}.tmp", self.stem));
+        let result = std::fs::write(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, &target));
+        match result {
+            Ok(()) => {
+                self.frames = self.frames.saturating_add(1);
+                self.last_len = bytes.len();
+                self.last_error = None;
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&tmp);
+                self.last_error = Some(error.to_string());
+            }
+        }
+    }
+}
+
 /// A complete published frame owned by a slow consumer (OBS).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueuedFrame {
@@ -1054,6 +1119,44 @@ mod tests {
         assert_eq!((first, second), (2, 2));
         assert_eq!(guard.pop().unwrap().frame_id, 1);
         assert_eq!(guard.len(), 1);
+    }
+
+    #[test]
+    fn ppm_directory_sink_writes_atomically_and_rotates() {
+        let dir = std::env::temp_dir().join(format!(
+            "mdc-ppm-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let pixels = vec![0, 0, 255, 255, 0, 255, 0, 255]; // 2x1 BGRA
+        fn frame<'a>(id: u64, pixels: &'a [u8]) -> ShadowFrame<'a> {
+            ShadowFrame {
+                width: 2,
+                height: 1,
+                generation: id,
+                frame_id: id,
+                pixels,
+            }
+        }
+        let mut sink = PpmDirectorySink::new(&dir, "frame.ppm", 0);
+        sink.on_frame(frame(1, &pixels));
+        assert_eq!(sink.frames_written(), 1);
+        assert!(sink.last_error().is_none());
+        let written = std::fs::read(dir.join("frame.ppm")).unwrap();
+        assert_eq!(&written[..11], b"P6\n2 1\n255\n");
+        assert!(!dir.join("frame.tmp").exists(), "temp file is renamed");
+
+        let mut ring = PpmDirectorySink::new(&dir, "ring.ppm", 2);
+        for id in 1..=3 {
+            ring.on_frame(frame(id, &pixels));
+        }
+        assert_eq!(ring.frames_written(), 3);
+        assert!(dir.join("ring_0000.ppm").exists());
+        assert!(dir.join("ring_0001.ppm").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
