@@ -16,6 +16,7 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | InputEvent → ManagerEvent::Input | sim-verified | physical: pending |
 | OTA command capability gate | sim-verified | physical: pending |
 | Discovery (Static + Mock mDNS) | sim-verified | physical: pending |
+| Real mDNS / DNS-SD parse | sim-verified (`mdns`, PTR/SRV/A + compression; loopback responder) | physical: pending |
 | Provision / SimFlasher | sim-verified | physical: pending |
 | Node NativeManager sim | sim-verified (JS facade + native tile/events; `.node` optional) | physical: pending |
 | C ABI `mdc_c` | sim-verified (frame/tile/surface host tests) | physical: pending |

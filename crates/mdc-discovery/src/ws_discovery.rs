@@ -1,6 +1,6 @@
-//! WebSocket / mDNS-style network candidate discovery (testable mocks).
-//! Real mDNS browsing is not required for sim-verified acceptance; HELLO still
-//! confirms identity for every candidate.
+//! WebSocket-style network candidate discovery (testable mocks). Real mDNS /
+//! DNS-SD browsing lives in [`crate::mdns`] (N16); these seeded providers remain
+//! for the lab/`--sim discover` path. HELLO still confirms identity.
 
 use crate::{Candidate, CandidateSet, DiscoveryProvider, Endpoint, SerialDiscovery};
 use std::collections::BTreeSet;
