@@ -2,6 +2,18 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.10] — Model compiler deepening
+
+### Added
+
+- `GltfImporter` accepts the binary `.glb` container (JSON + BIN chunks) as well as `.gltf` JSON
+- Accessor/bufferView/buffer bounds are validated; an overrun is rejected before use
+- Buffers resolve from the GLB BIN chunk or a base64 `data:` URI; the decoded total is capped by `max_input_bytes`
+- Embedded image dimensions are read from the PNG IHDR / JPEG SOF header instead of trusting the declared size
+- `Live2DImporter` reads a Cubism `model3.json` manifest into MDC IR (textures, motion groups, expressions, moc reference); the `.moc3` is not decoded
+- `TargetBackend` trait with the MCU `esp32-plane` backend and a second `linux-mesh` backend; `compile_auto` selects by renderer capability only
+- MDC IR `Model` gains an optional `sprites` field for author-supplied atlases (e.g. Live2D)
+
 ## [0.1.2] — Simulator batch without physical gates
 
 ### Added
