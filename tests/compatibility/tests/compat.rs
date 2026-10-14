@@ -361,3 +361,72 @@ fn scene_over_the_depth_limit_is_refused() {
         Err(mdc_core::CoreError::TooLarge)
     ));
 }
+
+// ---- N76: animation fixtures ----
+
+#[test]
+fn animation_requires_a_baked_atlas_and_a_known_clip() {
+    use mdc_core::{ConnectionState, Session};
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::default());
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+    // No atlas installed yet: the device refuses the animation setting.
+    session.set_config("animation", "idle").unwrap();
+    device.poll().unwrap();
+    let _ = session.poll(); // the refused reply surfaces as a protocol error
+    assert_eq!(session.active_animation(), None);
+
+    // Install an atlas with one "idle" clip.
+    let atlas = mdc_model::AtlasBlob {
+        sprite_width: 2,
+        sprite_height: 2,
+        frames: 2,
+        columns: 2,
+        rows: 1,
+        rgb565: vec![0u8; 16],
+        clips: vec![mdc_model::AtlasClip {
+            name: "idle".into(),
+            start: 0,
+            frames: 2,
+            fps: 30,
+            looping: true,
+            fade_in_ms: 0,
+            fade_out_ms: 0,
+        }],
+    };
+    let package = mdc_model::DevicePackage {
+        target: "esp32-plane".into(),
+        mode: mdc_model::PackageMode::BakedSprites,
+        nodes: Vec::new(),
+        meshes: Vec::new(),
+        textures: Vec::new(),
+        materials: Vec::new(),
+        skeletons: Vec::new(),
+        animations: Vec::new(),
+        sprites: Vec::new(),
+        layers: Vec::new(),
+        estimated_bytes: 16,
+        atlas: Some(atlas),
+    };
+    let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+    session
+        .install_package(&sealed.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    // An unknown clip is refused and leaves nothing active.
+    session.set_config("animation", "walk").unwrap();
+    device.poll().unwrap();
+    let _ = session.poll();
+    assert_eq!(session.active_animation(), None);
+
+    session.set_config("animation", "idle").unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert_eq!(session.active_animation(), Some("idle"));
+}
