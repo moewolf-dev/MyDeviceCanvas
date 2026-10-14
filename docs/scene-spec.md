@@ -23,11 +23,27 @@ SceneCommand:
 SceneNode:
   name:     string
   kind:     "rect" | "text" | "sprite" | "image"
-  children: [SceneNode]       # optional, ordered back-to-front
-  value:    string?           # kind-specific (text payload, sprite ref)
+  rect:     [x, y, w, h]?     # geometry for kinds that rasterize (N79)
+  children: [SceneNode]?      # optional, ordered back-to-front
+  value:    string?           # rect: "#RRGGBB" colour; text: the string
 ```
 
-Canonical bytes: `protocol/vectors/scene_command.json`.
+Canonical bytes: `protocol/vectors/scene_command.json` (no geometry) and
+`scene_rect.json` (a rect with geometry + colour).
+
+## Rendering (N80+)
+
+A device that accepts a scene rasterizes it locally:
+
+- Nodes are visited depth-first; a parent is drawn before its children, so
+  children appear on top (z order = document order).
+- `rect` nodes fill their `rect` with the colour from `value` (`#RRGGBB` /
+  `RRGGBB`; missing/malformed → opaque white). Geometry is clipped to the
+  framebuffer; an out-of-bounds rect draws its in-bounds part and never panics.
+- Other kinds (`text`/`sprite`/`image`) are recorded but not rasterized in this
+  wave; the device does not invent pixels for them.
+- When the device mirrors, the rasterized scene is emitted as a `MIRRORFRAME`.
+  Setting a scene clears any running animation clip (last-wins).
 
 ## Rules
 

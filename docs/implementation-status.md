@@ -31,6 +31,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 21 | N49–N58: pixel baking (`mdc-bake` + `mdc bake`), Scene contract + set/clear, Electron config panel, `inspect --watch`, bake soak | sim-verified |
 | 22 | N59–N68: baked sprite package delivery, Scene C/Swift, inspector config/scene, baked/scene fixtures + soak, docs | sim-verified |
 | 23 | N69–N78: atlas clips, device animation runtime, device-rendered mirror, Node/Electron animation, fixtures + soak, docs | sim-verified |
+| 24 | N79–N88: scene geometry + device rasterizer, scene mirror, `scene-render`, Node/Electron scene preview, fixtures + soak, docs | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 

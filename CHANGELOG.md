@@ -2,6 +2,19 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.18] — Scene rendering batch (N79–N88)
+
+### Added
+
+- `SceneNode.rect` geometry + `color_rgb565` (`scene_rect.json` vector) (N79)
+- Device scene rasterizer: rect fill, z order, clipping (N80)
+- Device-rendered scene emitted as a `MIRRORFRAME` (N81)
+- `mdc scene-render --out f.ppm` exports the device framebuffer (N82)
+- Setting a scene stops the running animation; core `show_scene` (N83)
+- Scene geometry compatibility fixtures (N84) and soak (N85)
+- Electron/Node scene preview with geometry (N86)
+- `docs/scene-spec.md` rendering rules (N87)
+
 ## [0.1.17] — Device animation batch (N69–N78)
 
 ### Added
