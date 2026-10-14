@@ -129,3 +129,17 @@ export function normalizeClip(value) {
   const text = String(value ?? "").trim();
   return text.length === 0 ? "off" : text;
 }
+
+/** N86: build a scene rect node with validated geometry and colour. */
+export function sceneRect(x, y, w, h, color) {
+  for (const [name, value] of Object.entries({ x, y, w, h })) {
+    if (!Number.isInteger(value) || value < 0) {
+      throw new RangeError(`${name} must be a non-negative integer`);
+    }
+  }
+  const text = String(color ?? "");
+  if (!/^#?[0-9a-fA-F]{6}$/.test(text)) {
+    throw new RangeError("color must be RRGGBB");
+  }
+  return { name: "rect", kind: "rect", rect: [x, y, w, h], value: text };
+}

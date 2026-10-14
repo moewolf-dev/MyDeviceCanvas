@@ -205,6 +205,16 @@ ipcMain.handle("mdc:animation", async (_event, clip) => {
   }
 });
 
+ipcMain.handle("mdc:scene", async (_event, node) => {
+  try {
+    const active = await ensureSim();
+    await active.setScene(node);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: formatError(error) };
+  }
+});
+
 ipcMain.handle("mdc:dispose", () => {
   manager?.dispose();
   manager = undefined;

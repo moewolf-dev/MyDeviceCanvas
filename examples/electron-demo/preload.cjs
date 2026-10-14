@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("mdc", {
   getConfig: (key) => ipcRenderer.invoke("mdc:config-get", key),
   setConfig: (key, value) => ipcRenderer.invoke("mdc:config-set", key, value),
   setAnimation: (clip) => ipcRenderer.invoke("mdc:animation", clip),
+  setScene: (node) => ipcRenderer.invoke("mdc:scene", node),
   onMirrorMeta: (listener) => {
     const wrapped = (_event, info) => listener(info);
     ipcRenderer.on("mdc:mirror-meta", wrapped);

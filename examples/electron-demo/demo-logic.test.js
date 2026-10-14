@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { colorBarsRgb565, decodeMirrorFrame, formatError, mirrorPanelStatus, normalizeBrightness, normalizeClip, originTile, planConnection, rejectNonSimEndpoint } from "./demo-logic.js";
+import { colorBarsRgb565, decodeMirrorFrame, formatError, mirrorPanelStatus, normalizeBrightness, normalizeClip, originTile, sceneRect, planConnection, rejectNonSimEndpoint } from "./demo-logic.js";
 
 test("color bars are RGB565 little-endian and start with red", () => {
   const frame = colorBarsRgb565(8, 1);
@@ -73,4 +73,12 @@ test("normalizeClip maps empty input to off", () => {
   assert.equal(normalizeClip("idle"), "idle");
   assert.equal(normalizeClip("  "), "off");
   assert.equal(normalizeClip(null), "off");
+});
+
+test("sceneRect validates geometry and colour", () => {
+  assert.deepEqual(sceneRect(1, 2, 3, 4, "#00FF00"), {
+    name: "rect", kind: "rect", rect: [1, 2, 3, 4], value: "#00FF00",
+  });
+  assert.throws(() => sceneRect(0, 0, -1, 4, "#FFFFFF"), /non-negative/);
+  assert.throws(() => sceneRect(0, 0, 1, 1, "blue"), /RRGGBB/);
 });

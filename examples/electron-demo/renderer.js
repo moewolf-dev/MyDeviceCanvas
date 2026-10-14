@@ -1,4 +1,4 @@
-import { colorBarsRgb565, normalizeBrightness, rgb565ToRgba } from "./demo-logic.js";
+import { colorBarsRgb565, normalizeBrightness, rgb565ToRgba, sceneRect } from "./demo-logic.js";
 
 const output = document.querySelector("#output");
 const canvas = document.querySelector("#preview");
@@ -157,4 +157,17 @@ document.querySelector("#stop-clip").onclick = async () => {
     return;
   }
   show(await bridge().setAnimation(""));
+};
+
+document.querySelector("#show-rect").onclick = async () => {
+  if (!bridge() || typeof bridge().setScene !== "function") {
+    show("没有 preload，无法显示场景。");
+    return;
+  }
+  try {
+    show(await bridge().setScene(sceneRect(20, 20, 200, 100, "#3366FF")));
+    await pollMirror();
+  } catch (error) {
+    show(error.message);
+  }
 };
