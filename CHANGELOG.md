@@ -2,6 +2,15 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.19] — Pixel raster batch (N89–N98)
+
+### Added
+
+- glTF POSITION samples become `Mesh.preview_xy` (N89)
+- `raster_triangle_fan` and `mix_rgb565` in `mdc-bake` (N90, N91)
+- Scene `text` bitmap and `image` hex blit on the simulator (N92, N93)
+- CLI `mdc raster-demo` (N94)
+
 ## [0.1.18] — Scene rendering batch (N79–N88)
 
 ### Added

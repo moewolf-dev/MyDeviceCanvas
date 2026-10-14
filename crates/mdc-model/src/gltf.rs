@@ -153,6 +153,7 @@ impl GltfImporter {
             let mut vertices = 0u64;
             let mut indices = 0u32;
             let mut material = None;
+            let mut preview_xy = Vec::new();
             if let Some(primitives) = mesh.get("primitives").and_then(Value::as_array) {
                 for primitive in primitives {
                     if let Some(position) = primitive
@@ -161,6 +162,15 @@ impl GltfImporter {
                         .and_then(Value::as_u64)
                     {
                         vertices = vertices.saturating_add(accessor_count(position)?);
+                        if preview_xy.is_empty() {
+                            if let Some(accessor) = accessors.get(position as usize) {
+                                let bytes = accessor
+                                    .get("bufferView")
+                                    .and_then(Value::as_u64)
+                                    .and_then(&view_bytes);
+                                preview_xy = decode_preview_xy(accessor, bytes);
+                            }
+                        }
                     }
                     if let Some(index) = primitive.get("indices").and_then(Value::as_u64) {
                         indices = indices
@@ -176,6 +186,7 @@ impl GltfImporter {
                 vertices: vertices.min(u64::from(u32::MAX)) as u32,
                 indices,
                 material,
+                preview_xy,
             });
         }
         if meshes.iter().map(|m| u64::from(m.vertices)).sum::<u64>() > limits.max_vertices {
@@ -383,6 +394,30 @@ fn read_buffer_views(doc: &Value, buffers: &[Buffer]) -> Result<Vec<BufferView>,
         out.push(parsed);
     }
     Ok(out)
+}
+
+/// Read up to 64 VEC3 float positions and map XY from roughly [-1, 1] into pixels.
+fn decode_preview_xy(accessor: &Value, bytes: Option<&[u8]>) -> Vec<(i16, i16)> {
+    if accessor.get("componentType").and_then(Value::as_u64) != Some(5126) {
+        return Vec::new();
+    }
+    if accessor.get("type").and_then(Value::as_str) != Some("VEC3") {
+        return Vec::new();
+    }
+    let Some(bytes) = bytes else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    while offset + 12 <= bytes.len() && out.len() < 64 {
+        let x = f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap_or([0; 4]));
+        let y = f32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap_or([0; 4]));
+        let px = ((x + 1.0) * 16.0).round().clamp(0.0, 31.0) as i16;
+        let py = ((1.0 - y) * 16.0).round().clamp(0.0, 31.0) as i16;
+        out.push((px, py));
+        offset += 12;
+    }
+    out
 }
 
 fn view_has_valid_data(view: &BufferView, buffers: &[Buffer]) -> bool {
@@ -721,6 +756,29 @@ mod tests {
         out.extend_from_slice(&GLB_CHUNK_BIN.to_le_bytes());
         out.extend_from_slice(&bin_chunk);
         out
+    }
+
+    #[test]
+    fn embedded_positions_become_preview_pixels() {
+        let mut bin = Vec::new();
+        for (x, y) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0)] {
+            bin.extend_from_slice(&x.to_le_bytes());
+            bin.extend_from_slice(&y.to_le_bytes());
+            bin.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": bin.len()}],
+            "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": bin.len()}],
+            "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "nodes": [{"mesh": 0}]
+        });
+        let model = GltfImporter
+            .import(&glb(&serde_json::to_vec(&doc).unwrap(), &bin), &ImportLimits::default())
+            .unwrap();
+        assert_eq!(model.meshes[0].preview_xy.len(), 3);
+        assert_eq!(model.meshes[0].preview_xy[0], (0, 31));
     }
 
     #[test]

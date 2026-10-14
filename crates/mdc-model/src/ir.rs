@@ -51,6 +51,10 @@ pub struct Mesh {
     pub vertices: u32,
     pub indices: u32,
     pub material: Option<usize>,
+    /// First mesh primitive's POSITION samples, projected to pixel space.
+    /// Empty when the accessor bytes are not embedded. Capped at 64 points.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preview_xy: Vec<(i16, i16)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

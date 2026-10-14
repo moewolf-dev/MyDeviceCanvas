@@ -115,6 +115,99 @@ pub fn rgb565_of(r: u8, g: u8, b: u8) -> u16 {
     (u16::from(r >> 3) << 11) | (u16::from(g >> 2) << 5) | u16::from(b >> 3)
 }
 
+/// Raster a triangle fan into a tightly packed RGB565 framebuffer.
+/// `points[0]` is the fan origin. At most 64 points; surface at most 1024².
+pub fn raster_triangle_fan(
+    points: &[(i16, i16)],
+    width: u32,
+    height: u32,
+    color: u16,
+) -> Result<Vec<u8>, BakeError> {
+    if width == 0 || height == 0 || width > 1024 || height > 1024 {
+        return Err(BakeError::Budget(width, height));
+    }
+    if points.len() > 64 {
+        return Err(BakeError::FrameCount(64, points.len()));
+    }
+    let mut pixels = vec![0u8; (width as usize) * (height as usize) * 2];
+    if points.len() >= 3 {
+        let origin = points[0];
+        for window in points[1..].windows(2) {
+            fill_triangle(&mut pixels, width, height, origin, window[0], window[1], color);
+        }
+    }
+    Ok(pixels)
+}
+
+fn fill_triangle(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    a: (i16, i16),
+    b: (i16, i16),
+    c: (i16, i16),
+    color: u16,
+) {
+    let low = (color & 0xff) as u8;
+    let high = (color >> 8) as u8;
+    let min_x = a.0.min(b.0).min(c.0).max(0) as u32;
+    let max_x = a.0.max(b.0).max(c.0).max(0) as u32;
+    let min_y = a.1.min(b.1).min(c.1).max(0) as u32;
+    let max_y = a.1.max(b.1).max(c.1).max(0) as u32;
+    let max_x = max_x.min(width.saturating_sub(1));
+    let max_y = max_y.min(height.saturating_sub(1));
+    let area = edge(a, b, c);
+    if area == 0 {
+        return;
+    }
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let p = (x as i16, y as i16);
+            let w0 = edge(b, c, p);
+            let w1 = edge(c, a, p);
+            let w2 = edge(a, b, p);
+            let inside = if area > 0 {
+                w0 >= 0 && w1 >= 0 && w2 >= 0
+            } else {
+                w0 <= 0 && w1 <= 0 && w2 <= 0
+            };
+            if !inside {
+                continue;
+            }
+            let index = ((y * width + x) * 2) as usize;
+            if index + 1 < pixels.len() {
+                pixels[index] = low;
+                pixels[index + 1] = high;
+            }
+        }
+    }
+}
+
+fn edge(a: (i16, i16), b: (i16, i16), p: (i16, i16)) -> i32 {
+    (i32::from(p.0) - i32::from(a.0)) * (i32::from(b.1) - i32::from(a.1))
+        - (i32::from(p.1) - i32::from(a.1)) * (i32::from(b.0) - i32::from(a.0))
+}
+
+/// Mix `src` into `dst` by `quarters` / 4 (0 keeps dst, 4 replaces with src).
+pub fn mix_rgb565(dst: &mut [u8], src: &[u8], quarters: u8) {
+    let q = u32::from(quarters.min(4));
+    let keep = 4 - q;
+    let pixels = dst.len().min(src.len()) / 2;
+    for i in 0..pixels {
+        let d = u16::from_le_bytes([dst[i * 2], dst[i * 2 + 1]]);
+        let s = u16::from_le_bytes([src[i * 2], src[i * 2 + 1]]);
+        let channel = |shift: u32, mask: u16| {
+            let dv = u32::from((d >> shift) & mask);
+            let sv = u32::from((s >> shift) & mask);
+            (((dv * keep + sv * q) / 4) as u16) << shift
+        };
+        let mixed = channel(11, 0x1f) | channel(5, 0x3f) | channel(0, 0x1f);
+        let bytes = mixed.to_le_bytes();
+        dst[i * 2] = bytes[0];
+        dst[i * 2 + 1] = bytes[1];
+    }
+}
+
 /// An atlas of baked frames laid out on an `mdc_model::AtlasPlan` grid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BakedAtlas {
@@ -496,6 +589,22 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn triangle_fan_covers_the_origin_pixel() {
+        let pixels = raster_triangle_fan(&[(1, 1), (6, 1), (1, 6)], 8, 8, 0xF800).unwrap();
+        assert_eq!(&pixels[2 * (1 * 8 + 1)..][..2], &[0x00, 0xF8]);
+        assert_eq!(&pixels[0..2], &[0, 0]);
+    }
+
+    #[test]
+    fn mix_quarters_blends_red_toward_green() {
+        let mut dst = vec![0x00u8, 0xF8];
+        mix_rgb565(&mut dst, &[0xE0, 0x07], 2);
+        let mixed = u16::from_le_bytes([dst[0], dst[1]]);
+        assert!(mixed != 0xF800);
+        assert!(mixed != 0x07E0);
+    }
+
     fn bake_sprites_requires_a_source() {
         assert!(matches!(
             bake_sprites(

@@ -11,6 +11,82 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
+/// 5×7 glyphs used by scene `text` nodes. Columns are low 7 bits, top bit is row 0.
+fn glyph_columns(ch: u8) -> Option<[u8; 5]> {
+    match ch.to_ascii_uppercase() {
+        b' ' => Some([0, 0, 0, 0, 0]),
+        b'H' => Some([0x7f, 0x08, 0x08, 0x08, 0x7f]),
+        b'I' => Some([0x00, 0x41, 0x7f, 0x41, 0x00]),
+        b'A' => Some([0x7e, 0x09, 0x09, 0x09, 0x7e]),
+        _ => None,
+    }
+}
+
+fn draw_text(pixels: &mut [u8], width: u32, height: u32, x: u16, y: u16, text: &str, color: u16) {
+    let low = (color & 0xff) as u8;
+    let high = (color >> 8) as u8;
+    for (index, ch) in text.bytes().enumerate() {
+        let Some(columns) = glyph_columns(ch) else {
+            continue;
+        };
+        let origin_x = u32::from(x) + index as u32 * 6;
+        for (col, bits) in columns.iter().enumerate() {
+            for row in 0..7u32 {
+                if bits & (1 << row) == 0 {
+                    continue;
+                }
+                let px = origin_x + col as u32;
+                let py = u32::from(y) + row;
+                if px >= width || py >= height {
+                    continue;
+                }
+                let at = ((py * width + px) * 2) as usize;
+                if at + 1 < pixels.len() {
+                    pixels[at] = low;
+                    pixels[at + 1] = high;
+                }
+            }
+        }
+    }
+}
+
+fn blit_hex_rgb565(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+    hex: &str,
+) -> bool {
+    let expected = usize::from(w) * usize::from(h) * 4;
+    if hex.len() != expected || w == 0 || h == 0 {
+        return false;
+    }
+    let mut drew = false;
+    for row in 0..u32::from(h) {
+        for col in 0..u32::from(w) {
+            let px = u32::from(x) + col;
+            let py = u32::from(y) + row;
+            if px >= width || py >= height {
+                continue;
+            }
+            let start = ((row * u32::from(w) + col) * 4) as usize;
+            let Ok(value) = u16::from_str_radix(&hex[start..start + 4], 16) else {
+                return false;
+            };
+            let at = ((py * width + px) * 2) as usize;
+            if at + 1 < pixels.len() {
+                pixels[at] = (value & 0xff) as u8;
+                pixels[at + 1] = (value >> 8) as u8;
+                drew = true;
+            }
+        }
+    }
+    drew
+}
+
 /// N80: depth-first scene rasterizer; `rect` nodes fill from their colour.
 fn fill_scene(
     node: &mdc_protocol::SceneNode,
@@ -40,6 +116,17 @@ fn fill_scene(
                 }
             }
             *drew = true;
+        }
+    } else if node.kind == "text" {
+        if let (Some([x, y, _, _]), Some(text)) = (node.rect, node.value.as_deref()) {
+            draw_text(pixels, width, height, x, y, text, node.color_rgb565());
+            *drew = true;
+        }
+    } else if node.kind == "image" {
+        if let (Some([x, y, w, h]), Some(hex)) = (node.rect, node.value.as_deref()) {
+            if blit_hex_rgb565(pixels, width, height, x, y, w, h, hex) {
+                *drew = true;
+            }
         }
     }
     for child in &node.children {
@@ -1655,6 +1742,48 @@ mod tests {
             Some(0x001F),
             "clipped blue corner"
         );
+    }
+
+    #[test]
+    fn scene_draws_text_and_image_pixels() {
+        use mdc_protocol::SceneNode;
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 16,
+            height: 8,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        let scene = SceneNode {
+            name: "root".into(),
+            kind: "group".into(),
+            rect: None,
+            value: None,
+            children: vec![
+                SceneNode {
+                    name: "label".into(),
+                    kind: "text".into(),
+                    rect: Some([0, 0, 0, 0]),
+                    value: Some("H".into()),
+                    children: Vec::new(),
+                },
+                SceneNode {
+                    name: "swatch".into(),
+                    kind: "image".into(),
+                    rect: Some([12, 0, 1, 1]),
+                    value: Some("07e0".into()),
+                    children: Vec::new(),
+                },
+            ],
+        };
+        session.set_scene(scene).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        assert_ne!(device.pixel_rgb565(0, 0), Some(0));
+        assert_eq!(device.pixel_rgb565(12, 0), Some(0x07e0));
     }
 
     #[test]

@@ -25,7 +25,7 @@ SceneNode:
   kind:     "rect" | "text" | "sprite" | "image"
   rect:     [x, y, w, h]?     # geometry for kinds that rasterize (N79)
   children: [SceneNode]?      # optional, ordered back-to-front
-  value:    string?           # rect: "#RRGGBB" colour; text: the string
+  value:    string?           # rect: "#RRGGBB"; text: glyphs; image: packed RGB565 hex
 ```
 
 Canonical bytes: `protocol/vectors/scene_command.json` (no geometry) and
@@ -40,8 +40,11 @@ A device that accepts a scene rasterizes it locally:
 - `rect` nodes fill their `rect` with the colour from `value` (`#RRGGBB` /
   `RRGGBB`; missing/malformed → opaque white). Geometry is clipped to the
   framebuffer; an out-of-bounds rect draws its in-bounds part and never panics.
-- Other kinds (`text`/`sprite`/`image`) are recorded but not rasterized in this
-  wave; the device does not invent pixels for them.
+- `text` draws a 5×7 bitmap for `A`, `H`, `I` and space, starting at `rect.x/y`.
+  The string lives in `value` (it is not a colour). Unknown letters are skipped.
+- `image` blits tightly packed RGB565 when `value` is `w*h` hex words (4 digits
+  each, little-endian on the framebuffer). A short or malformed string draws nothing.
+- `sprite` is still recorded without a pixel blit in this wave.
 - When the device mirrors, the rasterized scene is emitted as a `MIRRORFRAME`.
   Setting a scene clears any running animation clip (last-wins).
 
