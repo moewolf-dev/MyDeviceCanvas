@@ -237,6 +237,13 @@ pub struct MirrorFrame {
     pub height: u16,
     pub bytes: Vec<u8>,
 }
+/// N24: bounded mirror counters for a host / inspector.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MirrorStats {
+    pub frames_received: u64,
+    pub frames_dropped: u64,
+    pub last_frame_id: u64,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransactionAck {
     Received,
@@ -428,6 +435,18 @@ pub enum ManagerEvent {
         device_id: String,
         event: InputEvent,
     },
+    /// Form B (N24): a complete mirrored frame was stored. Metadata only — the
+    /// pixels stay in the session inbox (`take_mirror_frame`) so the event queue
+    /// stays small.
+    Mirror {
+        device_id: String,
+        surface_id: String,
+        frame_id: u64,
+        width: u16,
+        height: u16,
+        frames_received: u64,
+        frames_dropped: u64,
+    },
     Error {
         device_id: String,
         message: String,
@@ -566,6 +585,30 @@ impl DeviceManager {
             .push_back(ManagerEvent::Input { device_id, event });
     }
 
+    /// N24: record that the session stored a mirrored frame. The bounded event
+    /// queue drops the oldest event when full (mirror metadata is not critical).
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_mirror(
+        &mut self,
+        device_id: String,
+        surface_id: String,
+        frame_id: u64,
+        width: u16,
+        height: u16,
+        frames_received: u64,
+        frames_dropped: u64,
+    ) {
+        self.push_event(ManagerEvent::Mirror {
+            device_id,
+            surface_id,
+            frame_id,
+            width,
+            height,
+            frames_received,
+            frames_dropped,
+        });
+    }
+
     fn evict_until(&mut self, limit: usize) {
         while self.events.len() > limit {
             if let Some(index) = self.events.iter().position(
@@ -636,6 +679,7 @@ pub struct Session<T: Transport> {
     mirror_assembler: Option<(String, u16, u16, FrameAssembler)>,
     mirror_frames: u64,
     mirror_dropped: u64,
+    mirror_last_frame_id: u64,
     packages_sent: u64,
 }
 impl<T: Transport> Session<T> {
@@ -682,6 +726,7 @@ impl<T: Transport> Session<T> {
             mirror_assembler: None,
             mirror_frames: 0,
             mirror_dropped: 0,
+            mirror_last_frame_id: 0,
             packages_sent: 0,
         }
     }
@@ -1265,6 +1310,14 @@ impl<T: Transport> Session<T> {
     pub fn take_mirror_frame(&mut self) -> Option<MirrorFrame> {
         self.mirror_inbox.take()
     }
+    /// N24: mirror counters for a host/inspector without draining the inbox.
+    pub fn mirror_stats(&self) -> MirrorStats {
+        MirrorStats {
+            frames_received: self.mirror_frames,
+            frames_dropped: self.mirror_dropped,
+            last_frame_id: self.mirror_last_frame_id,
+        }
+    }
     pub fn mirror_frames_received(&self) -> u64 {
         self.mirror_frames
     }
@@ -1384,6 +1437,8 @@ impl<T: Transport> Session<T> {
             self.mirror_dropped = self.mirror_dropped.saturating_add(1);
         }
         self.mirror_frames = self.mirror_frames.saturating_add(1);
+        self.mirror_last_frame_id = frame_id;
+        let notify_surface = surface_id.clone();
         self.mirror_inbox = Some(MirrorFrame {
             surface_id,
             frame_id,
@@ -1391,6 +1446,24 @@ impl<T: Transport> Session<T> {
             height,
             bytes,
         });
+        if let Some(manager) = &self.manager {
+            let device_id = self
+                .device
+                .as_ref()
+                .map(|device| device.capabilities.device_id.clone())
+                .unwrap_or_default();
+            if let Ok(mut manager) = manager.lock() {
+                manager.push_mirror(
+                    device_id,
+                    notify_surface,
+                    frame_id,
+                    width,
+                    height,
+                    self.mirror_frames,
+                    self.mirror_dropped,
+                );
+            }
+        }
         Ok(())
     }
     fn alloc_request_id(&mut self) -> Result<u32, CoreError> {
@@ -3435,6 +3508,44 @@ mod tests {
         assert_eq!(session.mirror_frames_received(), 2);
         assert_eq!(session.mirror_frames_dropped(), 1);
         assert!(session.take_mirror_frame().is_none());
+    }
+
+    #[test]
+    fn mirror_frames_emit_a_metadata_event_and_stats() {
+        let (host, mut dev) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        let manager = Arc::new(Mutex::new(DeviceManager::new()));
+        session.set_manager(manager.clone());
+        session.connect().unwrap();
+        let hello = Packet::decode(&dev.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        write_caps(&mut dev, hello.request_id, &mirror_caps());
+        session.poll().unwrap();
+
+        let payload = encode_frame_payload("main", 7, 2, 2, &[0x33; 8]).unwrap();
+        dev.write(&mirror_packet(MessageType::MirrorFrame, payload))
+            .unwrap();
+        session.poll().unwrap();
+
+        let events: Vec<_> = manager.lock().unwrap().drain_events().collect();
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                ManagerEvent::Mirror {
+                    frame_id: 7,
+                    width: 2,
+                    height: 2,
+                    frames_received: 1,
+                    ..
+                }
+            )),
+            "{events:?}"
+        );
+        let stats = session.mirror_stats();
+        assert_eq!(stats.frames_received, 1);
+        assert_eq!(stats.frames_dropped, 0);
+        assert_eq!(stats.last_frame_id, 7);
     }
 
     #[test]

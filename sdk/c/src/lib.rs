@@ -435,6 +435,11 @@ pub unsafe extern "C" fn mdc_session_poll_event(
             (4, id, String::new(), 0, 0, 0)
         }
         ManagerEvent::EndpointSwitched { device_id } => (5, device_id, String::new(), 0, 0, 0),
+        ManagerEvent::Mirror {
+            device_id,
+            frame_id,
+            ..
+        } => (6, device_id, frame_id.to_string(), 0, 0, 0),
     };
     *kind = code;
     copy_cstr(device_id, device_id_len, &id);
@@ -491,6 +496,11 @@ pub unsafe extern "C" fn mdc_session_poll_event_with_pointer(
             (4, id, String::new(), 0, 0, 0)
         }
         ManagerEvent::EndpointSwitched { device_id } => (5, device_id, String::new(), 0, 0, 0),
+        ManagerEvent::Mirror {
+            device_id,
+            frame_id,
+            ..
+        } => (6, device_id, frame_id.to_string(), 0, 0, 0),
     };
     *kind = code;
     copy_cstr(device_id, device_id_len, &id);

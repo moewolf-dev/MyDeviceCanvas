@@ -190,6 +190,18 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                 input: None,
                 message: Some(message),
             },
+            ManagerEvent::Mirror {
+                device_id,
+                frame_id,
+                width,
+                height,
+                ..
+            } => NativeEvent {
+                kind: "mirror".into(),
+                device_id: Some(device_id),
+                input: None,
+                message: Some(format!("{frame_id}:{width}x{height}")),
+            },
         });
     }
     Ok(out)
