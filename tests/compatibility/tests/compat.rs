@@ -273,3 +273,90 @@ fn config_rejects_unknown_key_oversize_and_device_invalid_value() {
     session.poll().unwrap();
     assert_eq!(session.config("brightness"), Some("200"));
 }
+
+// ---- N65: baked package + scene fixtures ----
+
+fn baked_package(frames: u32, pixels: usize) -> mdc_model::MdcPackage {
+    let atlas = mdc_model::AtlasBlob {
+        sprite_width: 2,
+        sprite_height: 2,
+        frames,
+        columns: frames.max(1),
+        rows: 1,
+        rgb565: vec![0u8; pixels],
+    };
+    let package = mdc_model::DevicePackage {
+        target: "esp32-plane".into(),
+        mode: mdc_model::PackageMode::BakedSprites,
+        nodes: Vec::new(),
+        meshes: Vec::new(),
+        textures: Vec::new(),
+        materials: Vec::new(),
+        skeletons: Vec::new(),
+        animations: Vec::new(),
+        sprites: Vec::new(),
+        layers: Vec::new(),
+        estimated_bytes: pixels as u64,
+        atlas: Some(atlas),
+    };
+    mdc_model::MdcPackage::seal(package).unwrap()
+}
+
+#[test]
+fn baked_package_with_a_wrong_pixel_size_is_rejected() {
+    // 2 frames of 2x2 RGB565 need 16 bytes, not 4.
+    let package = baked_package(2, 4);
+    assert!(matches!(
+        package.accepted_by(&mdc_model::RendererCapability::sprite_only()),
+        Err(mdc_model::ModelError::Unsupported(_))
+    ));
+    let good = baked_package(2, 16);
+    assert!(good
+        .accepted_by(&mdc_model::RendererCapability::sprite_only())
+        .is_ok());
+}
+
+#[test]
+fn baked_package_needs_sprite_support() {
+    let package = baked_package(2, 16);
+    let no_sprite = mdc_model::RendererCapability {
+        sprite: false,
+        ..mdc_model::RendererCapability::sprite_only()
+    };
+    assert!(matches!(
+        package.accepted_by(&no_sprite),
+        Err(mdc_model::ModelError::Unsupported(_))
+    ));
+}
+
+#[test]
+fn scene_over_the_depth_limit_is_refused() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_protocol::SceneNode;
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::default());
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+    // Default board advertises max_depth = 4; build a chain of 6.
+    let mut node = SceneNode {
+        name: "leaf".into(),
+        kind: "rect".into(),
+        children: Vec::new(),
+        value: None,
+    };
+    for i in 0..5 {
+        node = SceneNode {
+            name: format!("n{i}"),
+            kind: "rect".into(),
+            children: vec![node],
+            value: None,
+        };
+    }
+    assert!(matches!(
+        session.set_scene(node),
+        Err(mdc_core::CoreError::TooLarge)
+    ));
+}
