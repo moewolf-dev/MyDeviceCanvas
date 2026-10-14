@@ -395,6 +395,98 @@ fn cmd_install_package(opts: &GlobalOpts, path: &str) -> Result<(), Box<dyn std:
     }
     Ok(())
 }
+/// N52: bake source images into a device sprite atlas (pixels + manifest).
+fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut images: Vec<String> = Vec::new();
+    let mut frames: u32 = 4;
+    let mut sprite: u32 = 64;
+    let mut max_texture: u32 = 2048;
+    let mut out_dir = String::from(".");
+    let mut iter = args.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--frames" => frames = iter.next().and_then(|v| v.parse().ok()).unwrap_or(frames),
+            "--sprite" => sprite = iter.next().and_then(|v| v.parse().ok()).unwrap_or(sprite),
+            "--max-texture" => {
+                max_texture = iter
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(max_texture)
+            }
+            "--out" => out_dir = iter.next().cloned().unwrap_or(out_dir),
+            other => images.push(other.to_string()),
+        }
+    }
+    if images.is_empty() {
+        return Err("bake requires at least one source image".into());
+    }
+    let mut sources = Vec::with_capacity(images.len());
+    for path in &images {
+        let bytes = std::fs::read(path)?;
+        let name = Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("source")
+            .to_string();
+        sources.push(mdc_bake::SpriteSource { name, image: bytes });
+    }
+    // A synthetic motion whose frame_count is exactly `frames`.
+    let fps = 30.0;
+    let duration = if frames > 1 {
+        f64::from(frames - 1) / fps
+    } else {
+        0.0
+    };
+    let motions = vec![mdc_model::MotionInfo {
+        name: "bake".into(),
+        channels: 1,
+        duration_sec: duration,
+        fps,
+        fade_in_sec: 0.0,
+        fade_out_sec: 0.0,
+        looping: true,
+    }];
+    let package = mdc_bake::bake_sprites(
+        &sources,
+        &motions,
+        (sprite, sprite),
+        max_texture,
+        &mdc_bake::BakeLimits::default(),
+    )?;
+    std::fs::create_dir_all(&out_dir)?;
+    let atlas_path = Path::new(&out_dir).join("atlas.ppm");
+    std::fs::write(&atlas_path, rgb565_to_ppm(&package.atlas))?;
+    let manifest_path = Path::new(&out_dir).join("atlas.json");
+    std::fs::write(&manifest_path, package.manifest.to_json()?)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "sources": images.len(),
+            "frames": package.atlas.frames,
+            "atlas": format!("{}x{}", package.atlas.width, package.atlas.height),
+            "atlas_path": atlas_path.display().to_string(),
+            "manifest_path": manifest_path.display().to_string(),
+        }))?
+    );
+    Ok(())
+}
+
+/// Encode a baked RGB565 atlas as a binary PPM (P6).
+fn rgb565_to_ppm(atlas: &mdc_bake::BakedAtlas) -> Vec<u8> {
+    let mut out = Vec::with_capacity(atlas.rgb565.len() / 2 * 3 + 32);
+    out.extend_from_slice(format!("P6\n{} {}\n255\n", atlas.width, atlas.height).as_bytes());
+    for chunk in atlas.rgb565.chunks_exact(2) {
+        let value = u16::from_le_bytes([chunk[0], chunk[1]]);
+        let r = ((value >> 11) & 0x1f) as u8;
+        let g = ((value >> 5) & 0x3f) as u8;
+        let b = (value & 0x1f) as u8;
+        out.push((r << 3) | (r >> 2));
+        out.push((g << 2) | (g >> 4));
+        out.push((b << 3) | (b >> 2));
+    }
+    out
+}
+
 /// N42: read or write a device configuration value on a simulator board.
 fn cmd_config(
     opts: &GlobalOpts,
@@ -1721,7 +1813,7 @@ fn usage() {
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--serve ADDR]|\
 package <model.gltf> [out.mdcpkg]|install-package <file.mdcpkg>|\
-config get <key>|config set <key> <value>"
+config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] --out DIR"
     );
 }
 
@@ -1821,6 +1913,7 @@ fn main() {
             o.sim = true;
             cmd_config(&o, &action, &key, args.get(3).map(String::as_str))
         }
+        Some("bake") => cmd_bake(&args[1..]),
         Some("ota-confirm") => cmd_ota_confirm(&opts),
         Some("linux-accept") => cmd_linux_accept(&opts),
         Some("pair") => {
@@ -2478,5 +2571,39 @@ mod tests {
         cmd_config(&opts, "get", "brightness", None).unwrap();
         // A secret is redacted; the call still succeeds.
         cmd_config(&opts, "get", "wifi_password", None).unwrap();
+    }
+
+    #[test]
+    fn bake_command_writes_atlas_and_manifest() {
+        use image::{Rgb, RgbImage};
+        let dir = std::env::temp_dir().join(format!("mdc-cli-bake-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut sources = Vec::new();
+        for (index, color) in [[255u8, 0, 0], [0, 255, 0]].iter().enumerate() {
+            let image = RgbImage::from_pixel(8, 8, Rgb(*color));
+            let path = dir.join(format!("src{index}.png"));
+            image.save(&path).unwrap();
+            sources.push(path.to_string_lossy().into_owned());
+        }
+        let out = dir.join("out");
+        let mut args = sources;
+        args.extend([
+            "--frames".to_string(),
+            "4".to_string(),
+            "--sprite".to_string(),
+            "4".to_string(),
+            "--out".to_string(),
+            out.to_string_lossy().into_owned(),
+        ]);
+        cmd_bake(&args).unwrap();
+        let ppm = std::fs::read(out.join("atlas.ppm")).unwrap();
+        assert!(
+            ppm.starts_with(b"P6\n8 8\n255\n"),
+            "4 frames of 4x4 -> 8x8 atlas"
+        );
+        let manifest = std::fs::read_to_string(out.join("atlas.json")).unwrap();
+        assert!(manifest.contains("\"frames\": 4"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

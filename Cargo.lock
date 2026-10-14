@@ -338,6 +338,7 @@ name = "mdc"
 version = "0.1.0"
 dependencies = [
  "image",
+ "mdc-bake",
  "mdc-core",
  "mdc-discovery",
  "mdc-flasher",

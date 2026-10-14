@@ -21,6 +21,7 @@ mdc-simulator = { path = "../../crates/mdc-simulator" }
 mdc-discovery = { path = "../../crates/mdc-discovery" }
 mdc-mirror = { path = "../../crates/mdc-mirror" }
 mdc-model = { path = "../../crates/mdc-model" }
+mdc-bake = { path = "../../crates/mdc-bake" }
 mdc-flasher = { path = "../flasher" }
 mdc-provision = { path = "../../crates/mdc-provision" }
 image = { version = "=0.24.9", default-features = false, features = ["png", "jpeg"] }
