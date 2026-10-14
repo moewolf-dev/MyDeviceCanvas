@@ -2,8 +2,9 @@
 use mdc_core::{validate_tile_base, FrameAssembler, Tile, TransactionNack, MAX_FRAME_BYTES};
 use mdc_protocol::{
     decode_control, decode_frame_payload, decode_package_payload, decode_tile_payload,
-    encode_control, Ack, Capabilities, ErrorPayload, FramePayload, Hello, InputEvent, MessageType,
-    MirrorCommand, OtaCommand, PackagePayload, Packet, Surface, VERSION,
+    encode_control, Ack, Capabilities, ConfigCommand, ConfigReply, ErrorPayload, FramePayload,
+    Hello, InputEvent, MessageType, MirrorCommand, OtaCommand, PackagePayload, Packet, Surface,
+    VERSION,
 };
 use mdc_transport::{MemoryLink, Transport, TransportError};
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,50 @@ use thiserror::Error;
 
 /// 虚拟时钟上，begin 之后这么多个 tick 没有 chunk 就回滚。
 const OTA_CHUNK_TIMEOUT_TICKS: u64 = 5_000;
+
+/// N41: baseline managed configuration.
+fn default_config() -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    map.insert("brightness".into(), "128".into());
+    map.insert("rotation".into(), "0".into());
+    map.insert("wifi_ssid".into(), "mdc-sim".into());
+    map.insert("wifi_password".into(), "mdc-sim-secret".into());
+    map
+}
+
+/// N41: secret values are never echoed back in a reply.
+fn is_secret_key(key: &str) -> bool {
+    key.contains("password") || key.contains("token")
+}
+
+/// N41: reject obviously invalid values before storing them.
+fn validate_config(key: &str, value: &str) -> Result<(), &'static str> {
+    if value.len() > 256 {
+        return Err("E_VALUE");
+    }
+    match key {
+        "brightness" => value.parse::<u8>().map(|_| ()).map_err(|_| "E_VALUE"),
+        "rotation" => match value {
+            "0" | "90" | "180" | "270" => Ok(()),
+            _ => Err("E_VALUE"),
+        },
+        "wifi_ssid" => {
+            if value.len() <= 32 {
+                Ok(())
+            } else {
+                Err("E_VALUE")
+            }
+        }
+        "wifi_password" => {
+            if !value.is_empty() && value.len() <= 63 {
+                Ok(())
+            } else {
+                Err("E_VALUE")
+            }
+        }
+        _ => Ok(()),
+    }
+}
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SimError {
@@ -91,6 +136,8 @@ pub struct BoardProfile {
     pub renderer_skeleton: bool,
     pub renderer_max_texture: u32,
     pub renderer_max_vertices: u32,
+    /// N41: configuration keys this board accepts.
+    pub config_keys: Vec<String>,
 }
 impl Default for BoardProfile {
     fn default() -> Self {
@@ -115,6 +162,13 @@ impl Default for BoardProfile {
             renderer_skeleton: false,
             renderer_max_texture: 512,
             renderer_max_vertices: 0,
+            // N41: a baseline board accepts a few managed settings.
+            config_keys: vec![
+                "brightness".into(),
+                "rotation".into(),
+                "wifi_ssid".into(),
+                "wifi_password".into(),
+            ],
         }
     }
 }
@@ -198,6 +252,7 @@ pub struct SimMetrics {
     pub mirror_frames: u64,
     pub mirror_commands: u64,
     pub packages_received: u64,
+    pub config_commands: u64,
     pub current_frame_id: u64,
     pub pixel_bytes: usize,
 }
@@ -241,6 +296,8 @@ pub struct FakeDevice {
     package_assembler: Option<mdc_model::PackageAssembler>,
     /// N23: true once a rendered-ready package was accepted.
     package_ready: bool,
+    /// N41: managed configuration values.
+    config: BTreeMap<String, String>,
 }
 impl FakeDevice {
     pub fn from_transport(link: Box<dyn Transport>, profile: BoardProfile) -> Self {
@@ -280,6 +337,7 @@ impl FakeDevice {
             mirror_active: false,
             package_assembler: None,
             package_ready: false,
+            config: default_config(),
         }
     }
 
@@ -500,8 +558,10 @@ impl FakeDevice {
                 max_texture: self.profile.renderer_max_texture,
                 max_vertices: self.profile.renderer_max_vertices,
             }),
-            // N41 will populate keys from the board profile.
-            config: mdc_protocol::ConfigCapability::default(),
+            // N41: supported configuration keys from the board profile.
+            config: mdc_protocol::ConfigCapability {
+                keys: self.profile.config_keys.clone(),
+            },
         }
     }
     /// Advance virtual clock and process inbound packets.
@@ -629,6 +689,7 @@ impl FakeDevice {
             MessageType::Ota => self.handle_ota(packet),
             MessageType::MirrorCtrl => self.handle_mirror_ctrl(packet),
             MessageType::Package => self.handle_package(packet),
+            MessageType::Config => self.handle_config(packet),
             MessageType::Input => {
                 // Host→device input is unusual; reject unless touch is enabled.
                 if !self.profile.touch {
@@ -775,6 +836,63 @@ impl FakeDevice {
     /// N23: true once a runtime package has been accepted and is render-ready.
     pub fn package_ready(&self) -> bool {
         self.package_ready
+    }
+    /// N41: read a managed configuration value (test / inspector helper).
+    pub fn config_value(&self, key: &str) -> Option<&str> {
+        self.config.get(key).map(String::as_str)
+    }
+    /// N41: apply a configuration get/set command and reply with ConfigReply.
+    fn handle_config(&mut self, packet: Packet) -> Result<(), SimError> {
+        let command: ConfigCommand =
+            decode_control(&packet.payload).map_err(|e| SimError::Protocol(e.to_string()))?;
+        self.metrics.config_commands = self.metrics.config_commands.saturating_add(1);
+        if !self.profile.config_keys.iter().any(|k| k == &command.key) {
+            return self.reply_config(&command.key, false, None, Some("E_UNSUPPORTED"));
+        }
+        match command.action.as_str() {
+            "get" => {
+                let value = self
+                    .config
+                    .get(&command.key)
+                    .cloned()
+                    .unwrap_or_else(|| "".to_string());
+                let shown = if is_secret_key(&command.key) {
+                    "***".to_string()
+                } else {
+                    value
+                };
+                self.reply_config(&command.key, true, Some(shown), None)
+            }
+            "set" => {
+                let value = command.value.clone().unwrap_or_default();
+                if let Err(error) = validate_config(&command.key, &value) {
+                    return self.reply_config(&command.key, false, None, Some(error));
+                }
+                self.config.insert(command.key.clone(), value.clone());
+                let shown = if is_secret_key(&command.key) {
+                    "***".to_string()
+                } else {
+                    value
+                };
+                self.reply_config(&command.key, true, Some(shown), None)
+            }
+            _ => self.reply_config(&command.key, false, None, Some("E_ACTION")),
+        }
+    }
+    fn reply_config(
+        &mut self,
+        key: &str,
+        ok: bool,
+        value: Option<String>,
+        error: Option<&str>,
+    ) -> Result<(), SimError> {
+        let reply = ConfigReply {
+            key: key.to_string(),
+            ok,
+            value,
+            error: error.map(str::to_string),
+        };
+        self.write_control(MessageType::Config, 0, &reply)
     }
     /// Form B: true once a host MirrorCtrl start has been accepted.
     pub fn mirror_active(&self) -> bool {
@@ -1022,6 +1140,35 @@ mod tests {
     use mdc_core::{ConnectionState, Frame, Session, Tile};
     use mdc_protocol::OtaCommand;
     use mdc_transport::MemoryLink;
+
+    #[test]
+    fn config_set_get_validate_and_redact() {
+        let (host, mut device) = FakeDevice::pair(BoardProfile::default());
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+        session.set_config("brightness", "200").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(session.config("brightness"), Some("200"));
+        assert_eq!(device.config_value("brightness"), Some("200"));
+
+        // An invalid value is rejected by the device and keeps the old value.
+        session.set_config("brightness", "999").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(session.config("brightness"), Some("200"));
+
+        // A secret is never echoed back.
+        session.get_config("wifi_password").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(session.config("wifi_password"), Some("***"));
+        assert_eq!(device.config_value("wifi_password"), Some("mdc-sim-secret"));
+        assert!(device.metrics.config_commands >= 3);
+    }
 
     #[test]
     fn renderer_capability_follows_the_board_profile() {

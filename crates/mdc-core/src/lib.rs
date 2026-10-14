@@ -1371,8 +1371,6 @@ impl<T: Transport> Session<T> {
             if let Some(value) = reply.value {
                 self.config_cache.insert(reply.key, value);
             }
-        } else {
-            self.config_cache.remove(&reply.key);
         }
         Ok(())
     }
