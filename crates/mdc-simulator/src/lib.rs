@@ -1124,9 +1124,11 @@ impl FakeDevice {
         if !self.profile.mirror {
             return Err(SimError::Protocol("mirror capability disabled".into()));
         }
-        // N72: when an atlas clip is running, the device renders it locally first.
+        // N72/N81: when a clip runs, render it; otherwise render the scene.
         if self.anim_clip.is_some() {
             let _ = self.render_atlas_frame();
+        } else if self.scene.is_some() {
+            let _ = self.render_scene();
         }
         let payload = mdc_protocol::encode_frame_payload(
             "main",
@@ -1647,6 +1649,36 @@ mod tests {
             Some(0x001F),
             "clipped blue corner"
         );
+    }
+
+    #[test]
+    fn device_renders_the_scene_into_the_mirror() {
+        use mdc_protocol::SceneNode;
+        let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+        session
+            .set_scene(SceneNode {
+                name: "bg".into(),
+                kind: "rect".into(),
+                rect: Some([0, 0, 4, 4]),
+                children: Vec::new(),
+                value: Some("#0000FF".into()),
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+
+        session.start_mirror("main", "full-frame", 15).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        device.emit_mirror_frame().unwrap();
+        session.poll().unwrap();
+        let frame = session.take_mirror_frame().unwrap();
+        assert_eq!(&frame.bytes[0..2], &[0x1F, 0x00], "blue scene pixel");
     }
 
     #[test]
