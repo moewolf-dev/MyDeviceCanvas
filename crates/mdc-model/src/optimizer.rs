@@ -83,6 +83,7 @@ mod tests {
                 indices: 0,
                 material: None,
                 preview_xy: Vec::new(),
+                preview_indices: Vec::new(),
             }],
             textures: vec![Texture {
                 name: "skin".into(),

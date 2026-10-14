@@ -11,17 +11,55 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
-/// 5×7 glyphs used by scene `text` nodes. Columns are low 7 bits, top bit is row 0.
+/// 5×7 glyphs for digits then A–Z. Columns are the low 7 bits; bit 0 is the top row.
 fn glyph_columns(ch: u8) -> Option<[u8; 5]> {
-    match ch.to_ascii_uppercase() {
-        b' ' => Some([0, 0, 0, 0, 0]),
-        b'H' => Some([0x7f, 0x08, 0x08, 0x08, 0x7f]),
-        b'I' => Some([0x00, 0x41, 0x7f, 0x41, 0x00]),
-        b'A' => Some([0x7e, 0x09, 0x09, 0x09, 0x7e]),
-        b'0' => Some([0x3e, 0x51, 0x49, 0x45, 0x3e]),
-        b'1' => Some([0x00, 0x42, 0x7f, 0x40, 0x00]),
-        _ => None,
+    if ch == b' ' {
+        return Some([0, 0, 0, 0, 0]);
     }
+    let index = match ch.to_ascii_uppercase() {
+        b'0'..=b'9' => (ch - b'0') as usize,
+        b'A'..=b'Z' => 10 + (ch - b'A') as usize,
+        _ => return None,
+    };
+    const FONT: [[u8; 5]; 36] = [
+        [0x3e, 0x51, 0x49, 0x45, 0x3e],
+        [0x00, 0x42, 0x7f, 0x40, 0x00],
+        [0x42, 0x61, 0x51, 0x49, 0x46],
+        [0x21, 0x41, 0x45, 0x4b, 0x31],
+        [0x18, 0x14, 0x12, 0x7f, 0x10],
+        [0x27, 0x45, 0x45, 0x45, 0x39],
+        [0x3c, 0x4a, 0x49, 0x49, 0x30],
+        [0x01, 0x71, 0x09, 0x05, 0x03],
+        [0x36, 0x49, 0x49, 0x49, 0x36],
+        [0x06, 0x49, 0x49, 0x29, 0x1e],
+        [0x7e, 0x09, 0x09, 0x09, 0x7e],
+        [0x7f, 0x49, 0x49, 0x49, 0x36],
+        [0x3e, 0x41, 0x41, 0x41, 0x22],
+        [0x7f, 0x41, 0x41, 0x22, 0x1c],
+        [0x7f, 0x49, 0x49, 0x49, 0x41],
+        [0x7f, 0x09, 0x09, 0x09, 0x01],
+        [0x3e, 0x41, 0x49, 0x49, 0x7a],
+        [0x7f, 0x08, 0x08, 0x08, 0x7f],
+        [0x00, 0x41, 0x7f, 0x41, 0x00],
+        [0x20, 0x40, 0x41, 0x3f, 0x01],
+        [0x7f, 0x08, 0x14, 0x22, 0x41],
+        [0x7f, 0x40, 0x40, 0x40, 0x40],
+        [0x7f, 0x02, 0x0c, 0x02, 0x7f],
+        [0x7f, 0x04, 0x08, 0x10, 0x7f],
+        [0x3e, 0x41, 0x41, 0x41, 0x3e],
+        [0x7f, 0x09, 0x09, 0x09, 0x06],
+        [0x3e, 0x41, 0x51, 0x21, 0x5e],
+        [0x7f, 0x09, 0x19, 0x29, 0x46],
+        [0x46, 0x49, 0x49, 0x49, 0x31],
+        [0x01, 0x01, 0x7f, 0x01, 0x01],
+        [0x3f, 0x40, 0x40, 0x40, 0x3f],
+        [0x1f, 0x20, 0x40, 0x20, 0x1f],
+        [0x3f, 0x40, 0x38, 0x40, 0x3f],
+        [0x63, 0x14, 0x08, 0x14, 0x63],
+        [0x07, 0x08, 0x70, 0x08, 0x07],
+        [0x61, 0x51, 0x49, 0x45, 0x43],
+    ];
+    FONT.get(index).copied()
 }
 
 fn draw_text(pixels: &mut [u8], width: u32, height: u32, x: u16, y: u16, text: &str, color: u16) {
@@ -565,6 +603,7 @@ pub struct FakeDevice {
     anim_start_tick: u64,
     /// First accepted mesh preview, in framebuffer pixels.
     preview_xy: Vec<(i16, i16)>,
+    preview_indices: Vec<u16>,
 }
 impl FakeDevice {
     pub fn from_transport(link: Box<dyn Transport>, profile: BoardProfile) -> Self {
@@ -614,6 +653,7 @@ impl FakeDevice {
             anim_clip: None,
             anim_start_tick: 0,
             preview_xy: Vec::new(),
+            preview_indices: Vec::new(),
         }
     }
 
@@ -1117,6 +1157,12 @@ impl FakeDevice {
                     .first()
                     .map(|mesh| mesh.preview_xy.clone())
                     .unwrap_or_default();
+                self.preview_indices = package
+                    .package
+                    .meshes
+                    .first()
+                    .map(|mesh| mesh.preview_indices.clone())
+                    .unwrap_or_default();
                 self.anim_clip = None;
                 self.metrics.packages_received = self.metrics.packages_received.saturating_add(1);
                 self.ack(packet.request_id, self.current_frame_id, true, false)
@@ -1193,7 +1239,23 @@ impl FakeDevice {
         let width = u32::from(self.profile.width);
         let height = u32::from(self.profile.height);
         let points = self.preview_xy.clone();
-        fill_fan(&mut self.pixels, width, height, &points, 0xF800);
+        let indices = self.preview_indices.clone();
+        if indices.len() >= 3 {
+            for tri in indices.chunks_exact(3) {
+                let Some(a) = points.get(tri[0] as usize).copied() else {
+                    continue;
+                };
+                let Some(b) = points.get(tri[1] as usize).copied() else {
+                    continue;
+                };
+                let Some(c) = points.get(tri[2] as usize).copied() else {
+                    continue;
+                };
+                fill_triangle(&mut self.pixels, width, height, a, b, c, 0xF800);
+            }
+        } else {
+            fill_fan(&mut self.pixels, width, height, &points, 0xF800);
+        }
         true
     }
     /// N80: RGB565 pixel at (x, y) of the local framebuffer.
@@ -1241,6 +1303,15 @@ impl FakeDevice {
             if clip.fade_in_ms > 0 && elapsed < u64::from(clip.fade_in_ms) {
                 let quarters = ((elapsed.saturating_mul(4) / u64::from(clip.fade_in_ms)) as u8).min(3);
                 fade_toward_black(&mut self.pixels, quarters);
+            }
+            if !clip.looping && clip.fade_out_ms > 0 && clip.fps > 0 && clip.frames > 0 {
+                let duration = u64::from(clip.frames).saturating_mul(1000) / u64::from(clip.fps);
+                let fade = u64::from(clip.fade_out_ms);
+                if elapsed + fade >= duration && elapsed < duration {
+                    let left = duration.saturating_sub(elapsed);
+                    let quarters = ((left.saturating_mul(4) / fade) as u8).min(3);
+                    fade_toward_black(&mut self.pixels, quarters);
+                }
             }
         }
         true
@@ -2032,6 +2103,7 @@ mod tests {
                 indices: 0,
                 material: None,
                 preview_xy: vec![(1, 1), (6, 1), (1, 6)],
+                preview_indices: Vec::new(),
             }],
             textures: Vec::new(),
             materials: Vec::new(),
@@ -2048,6 +2120,49 @@ mod tests {
         session.poll().unwrap();
         assert!(device.render_preview());
         assert_ne!(device.pixel_rgb565(1, 1), Some(0));
+    }
+
+    #[test]
+    fn indexed_preview_does_not_draw_the_unindexed_corner() {
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 8,
+            height: 8,
+            renderer_mesh2d: true,
+            renderer_max_vertices: 16,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        let package = mdc_model::DevicePackage {
+            target: "linux-mesh".into(),
+            mode: mdc_model::PackageMode::Mesh,
+            nodes: Vec::new(),
+            meshes: vec![mdc_model::Mesh {
+                name: "tri".into(),
+                vertices: 4,
+                indices: 3,
+                material: None,
+                preview_xy: vec![(0, 0), (4, 0), (0, 4), (7, 7)],
+                preview_indices: vec![0, 1, 2],
+            }],
+            textures: Vec::new(),
+            materials: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 48,
+            atlas: None,
+        };
+        let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+        session.install_package(&sealed.to_bytes().unwrap()).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_preview());
+        assert_ne!(device.pixel_rgb565(1, 1), Some(0));
+        assert_eq!(device.pixel_rgb565(7, 7), Some(0));
     }
 
     #[test]
@@ -2156,6 +2271,61 @@ mod tests {
         device.clock.advance(100);
         assert!(device.render_atlas_frame());
         assert_eq!(device.pixel_rgb565(0, 0), Some(0xF800));
+    }
+
+    #[test]
+    fn atlas_fade_out_darkens_the_last_moment() {
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 1,
+            height: 1,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        let package = mdc_model::DevicePackage {
+            target: "esp32-plane".into(),
+            mode: mdc_model::PackageMode::BakedSprites,
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            textures: Vec::new(),
+            materials: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 2,
+            atlas: Some(mdc_model::AtlasBlob {
+                sprite_width: 1,
+                sprite_height: 1,
+                frames: 1,
+                columns: 1,
+                rows: 1,
+                rgb565: vec![0x00, 0xF8],
+                clips: vec![mdc_model::AtlasClip {
+                    name: "once".into(),
+                    start: 0,
+                    frames: 1,
+                    fps: 1,
+                    looping: false,
+                    fade_in_ms: 0,
+                    fade_out_ms: 400,
+                }],
+            }),
+        };
+        let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+        session.install_package(&sealed.to_bytes().unwrap()).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session.set_config("animation", "once").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_atlas_frame());
+        assert_eq!(device.pixel_rgb565(0, 0), Some(0xF800));
+        device.clock.advance(800);
+        assert!(device.render_atlas_frame());
+        assert_ne!(device.pixel_rgb565(0, 0), Some(0xF800));
     }
 
     #[test]

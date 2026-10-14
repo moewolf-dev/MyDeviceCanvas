@@ -55,6 +55,9 @@ pub struct Mesh {
     /// Empty when the accessor bytes are not embedded. Capped at 64 points.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preview_xy: Vec<(i16, i16)>,
+    /// Triangle list into `preview_xy`. Empty means draw a fan.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preview_indices: Vec<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

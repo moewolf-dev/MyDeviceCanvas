@@ -154,6 +154,7 @@ impl GltfImporter {
             let mut indices = 0u32;
             let mut material = None;
             let mut preview_xy = Vec::new();
+            let mut preview_indices = Vec::new();
             if let Some(primitives) = mesh.get("primitives").and_then(Value::as_array) {
                 for primitive in primitives {
                     if let Some(position) = primitive
@@ -175,6 +176,15 @@ impl GltfImporter {
                     if let Some(index) = primitive.get("indices").and_then(Value::as_u64) {
                         indices = indices
                             .saturating_add(accessor_count(index)?.min(u64::from(u32::MAX)) as u32);
+                        if preview_indices.is_empty() {
+                            if let Some(accessor) = accessors.get(index as usize) {
+                                let bytes = accessor
+                                    .get("bufferView")
+                                    .and_then(Value::as_u64)
+                                    .and_then(&view_bytes);
+                                preview_indices = decode_preview_indices(accessor, bytes);
+                            }
+                        }
                     }
                     if let Some(mat) = primitive.get("material").and_then(Value::as_u64) {
                         material = Some(mat as usize);
@@ -187,6 +197,7 @@ impl GltfImporter {
                 indices,
                 material,
                 preview_xy,
+                preview_indices,
             });
         }
         if meshes.iter().map(|m| u64::from(m.vertices)).sum::<u64>() > limits.max_vertices {
@@ -397,6 +408,36 @@ fn read_buffer_views(doc: &Value, buffers: &[Buffer]) -> Result<Vec<BufferView>,
 }
 
 /// Read up to 64 VEC3 float positions and map XY from roughly [-1, 1] into pixels.
+fn decode_preview_indices(accessor: &Value, bytes: Option<&[u8]>) -> Vec<u16> {
+    let Some(bytes) = bytes else {
+        return Vec::new();
+    };
+    let component = accessor.get("componentType").and_then(Value::as_u64);
+    let mut out = Vec::new();
+    match component {
+        Some(5123) => {
+            let mut offset = 0;
+            while offset + 2 <= bytes.len() && out.len() < 192 {
+                out.push(u16::from_le_bytes([bytes[offset], bytes[offset + 1]]));
+                offset += 2;
+            }
+        }
+        Some(5125) => {
+            let mut offset = 0;
+            while offset + 4 <= bytes.len() && out.len() < 192 {
+                let value = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap_or([0; 4]));
+                if value > u32::from(u16::MAX) {
+                    break;
+                }
+                out.push(value as u16);
+                offset += 4;
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
 fn decode_preview_xy(accessor: &Value, bytes: Option<&[u8]>) -> Vec<(i16, i16)> {
     if accessor.get("componentType").and_then(Value::as_u64) != Some(5126) {
         return Vec::new();

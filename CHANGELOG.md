@@ -2,6 +2,14 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.21] — Indexed preview and fade-out
+
+### Added
+
+- glTF index accessors become `preview_indices`; the simulator draws those triangles
+- Non-looping clips honor `fade_out_ms`
+- Scene text uses a 5×7 face for digits and A–Z
+
 ## [0.1.20] — Preview, sprite blit, fade-in (N99–N108)
 
 ### Added
