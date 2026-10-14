@@ -83,6 +83,8 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Config host (core/sim/CLI/Node) | sim-verified (capability gate, validation, secret redaction) | physical: pending |
 | Pixel baking (`mdc-bake`) | sim-verified (decode/resize guard, atlas pack, `mdc bake`) | n/a |
 | Scene capability + SCENE | sim-verified (`Capabilities.scene`, node set/clear, vector) | physical: pending |
+| Baked sprite package | sim-verified (`bake_to_package` + device grid recorded, capability gate) | physical: pending |
+| Scene C ABI + Swift | sim-verified (`mdc_set_scene`/`clearScene`) | physical: pending |
 | Model compiler / MDC IR | sim-verified (`mdc-model`, glTF/GLB + Live2D → IR → package) | n/a |
 | Renderer capability on the wire | sim-verified (`Capabilities.renderer{}`, optional; Rust+C++ shared bytes) | physical: pending |
 | Runtime package transfer | sim-verified (`PACKAGE` 0x32 begin/chunk/commit; `install_package`→FakeDevice ready) | physical: pending |

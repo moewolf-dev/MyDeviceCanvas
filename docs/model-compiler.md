@@ -96,7 +96,9 @@ reads a PNG/JPEG header first (a bomb is refused before decode), resizes to the
 device target and emits RGB565 LE rows. `pack(plan, frames)` lays baked frames on
 an `AtlasPlan` grid; `bake_sprites` samples frames from source images, bakes each
 and packs one atlas plus a JSON `BakedManifest`. `mdc bake <image>... --out DIR`
-writes `atlas.ppm` (P6) and `atlas.json`.
+writes `atlas.ppm` (P6) and `atlas.json`. `bake_to_package` seals the atlas into
+a `BakedSprites` device package for the `PACKAGE` upload path (see
+[baked-sprites.md](baked-sprites.md)).
 
 ## Optimizer
 

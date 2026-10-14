@@ -2,6 +2,20 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.16] — Baked sprite delivery batch (N59–N68)
+
+### Added
+
+- `PackageMode::BakedSprites` + `AtlasBlob` in the device package (N59)
+- `bake_to_package` sealing a baked atlas into a runtime package (N60)
+- Device accepts a baked package and records the atlas grid (N61)
+- `mdc bake --package` writes a `.mdcpkg` (N62)
+- Scene set/clear in the C ABI and Swift (N63)
+- `mdc inspect` config keys + scene limits; `--watch` scene/atlas counts (N64)
+- Baked-package and scene compatibility fixtures (N65)
+- Baked-package soak (N66)
+- `docs/baked-sprites.md` (N67)
+
 ## [0.1.15] — Pixel baking + Scene batch (N49–N58)
 
 ### Added
