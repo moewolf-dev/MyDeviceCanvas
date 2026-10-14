@@ -18,6 +18,7 @@ members = [
   "examples/rust-hello",
   "examples/tauri-demo",
   "tests/compatibility",
+  "tests/memory",
 ]
 resolver = "2"
 

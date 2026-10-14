@@ -1,0 +1,17 @@
+[package]
+name = "mdc-memory-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "mdc_memory_tests"
+path = "src/lib.rs"
+
+[dev-dependencies]
+mdc-core = { path = "../../crates/mdc-core" }
+mdc-protocol = { path = "../../crates/mdc-protocol" }
+mdc-model = { path = "../../crates/mdc-model" }
+mdc-mirror = { path = "../../crates/mdc-mirror" }
+mdc-simulator = { path = "../../crates/mdc-simulator" }

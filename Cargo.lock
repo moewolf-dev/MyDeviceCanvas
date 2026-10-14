@@ -408,6 +408,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdc-memory-tests"
+version = "0.1.0"
+dependencies = [
+ "mdc-core",
+ "mdc-mirror",
+ "mdc-model",
+ "mdc-protocol",
+ "mdc-simulator",
+]
+
+[[package]]
 name = "mdc-mirror"
 version = "0.1.0"
 dependencies = [
