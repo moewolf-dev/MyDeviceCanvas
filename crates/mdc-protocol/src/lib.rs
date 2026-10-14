@@ -41,6 +41,8 @@ pub enum MessageType {
     MirrorCtrl = 0x31,
     /// Host -> device runtime package transfer (phase byte like Frame, Form B).
     Package = 0x32,
+    /// Host -> device configuration get/set (CBOR ConfigCommand, N39).
+    Config = 0x33,
     Ping = 0x40,
     Pong = 0x41,
     Ack = 0x50,
@@ -59,6 +61,7 @@ impl TryFrom<u8> for MessageType {
             0x30 => Ok(Self::Ota),
             0x31 => Ok(Self::MirrorCtrl),
             0x32 => Ok(Self::Package),
+            0x33 => Ok(Self::Config),
             0x40 => Ok(Self::Ping),
             0x41 => Ok(Self::Pong),
             0x50 => Ok(Self::Ack),
@@ -381,6 +384,51 @@ pub struct Capabilities {
     /// N17: omitted entirely when absent, so older peers see an unchanged map.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub renderer: Option<RendererCapability>,
+    /// N39: supported configuration keys. Omitted when empty so pre-config peers
+    /// see an unchanged map.
+    #[serde(default, skip_serializing_if = "ConfigCapability::is_empty")]
+    pub config: ConfigCapability,
+}
+
+/// Configuration keys a device accepts via `CONFIG` (N39). Empty means the
+/// device does not implement the configuration host.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ConfigCapability {
+    pub keys: Vec<String>,
+}
+impl ConfigCapability {
+    pub fn new(keys: &[&str]) -> Self {
+        Self {
+            keys: keys.iter().map(|k| (*k).to_string()).collect(),
+        }
+    }
+    pub fn supports(&self, key: &str) -> bool {
+        self.keys.iter().any(|k| k == key)
+    }
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+}
+
+/// Host -> device configuration command (CBOR for MessageType::Config).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConfigCommand {
+    /// get | set
+    pub action: String,
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+/// Device -> host configuration reply (CBOR for MessageType::Config / Ack path).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConfigReply {
+    pub key: String,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Surface {
@@ -1290,6 +1338,7 @@ mod tests {
             mirror_fps: 10,
             mirror_bandwidth: 5_000_000,
             renderer: None,
+            config: ConfigCapability::default(),
         };
         // No mirror advertised -> rejected.
         assert!(negotiate_mirror(&caps, "main", "full-frame", 30, "RGB565").is_none());
@@ -1337,6 +1386,7 @@ mod tests {
             mirror_fps: 0,
             mirror_bandwidth: 0,
             renderer: None,
+            config: ConfigCapability::default(),
         };
         // Absent renderer: the key is not serialized.
         let bytes = encode_control(&caps).unwrap();
@@ -1349,5 +1399,78 @@ mod tests {
         // The C++ encoder reproduces these exact bytes (cbor_control_test.cpp).
         let back: Capabilities = decode_control(&bytes).unwrap();
         assert_eq!(back.renderer, caps.renderer);
+    }
+
+    #[test]
+    fn config_capability_and_command_round_trip() {
+        // An empty config capability is omitted entirely (map count unchanged).
+        let mut caps = Capabilities {
+            device_id: "cfg".into(),
+            firmware: "1".into(),
+            surfaces: vec![Surface {
+                id: "main".into(),
+                width: 2,
+                height: 2,
+                pixel_format: "RGB565".into(),
+                stride: 4,
+                rotation: 0,
+            }],
+            frame: true,
+            tile: true,
+            touch: false,
+            ota: false,
+            max_message: 4096,
+            max_chunk: 1024,
+            max_in_flight: 1,
+            max_fps: 30,
+            mirror: MirrorCapability::disabled(),
+            local_display_fps: 0,
+            mirror_fps: 0,
+            mirror_bandwidth: 0,
+            renderer: None,
+            config: ConfigCapability::default(),
+        };
+        let bytes = encode_control(&caps).unwrap();
+        assert!(!bytes.windows(6).any(|w| w == b"config"));
+
+        caps.config = ConfigCapability::new(&["brightness", "rotation"]);
+        let bytes = encode_control(&caps).unwrap();
+        let back: Capabilities = decode_control(&bytes).unwrap();
+        assert_eq!(back.config, caps.config);
+        assert!(back.config.supports("brightness"));
+        assert!(!back.config.supports("wifi_password"));
+
+        let command = ConfigCommand {
+            action: "set".into(),
+            key: "brightness".into(),
+            value: Some("128".into()),
+        };
+        let bytes = encode_control(&command).unwrap();
+        let back: ConfigCommand = decode_control(&bytes).unwrap();
+        assert_eq!(back, command);
+        // Canonical bytes are recorded as a protocol vector.
+        let vector = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../protocol/vectors/config_command.json"),
+        )
+        .unwrap();
+        let hex = vector
+            .split("\"hex\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .nth(1)
+            .unwrap();
+        assert_eq!(bytes, parse_hex(hex));
+
+        let reply = ConfigReply {
+            key: "brightness".into(),
+            ok: true,
+            value: Some("128".into()),
+            error: None,
+        };
+        let bytes = encode_control(&reply).unwrap();
+        let back: ConfigReply = decode_control(&bytes).unwrap();
+        assert_eq!(back, reply);
     }
 }

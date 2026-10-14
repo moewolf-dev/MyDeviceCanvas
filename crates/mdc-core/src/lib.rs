@@ -1772,6 +1772,7 @@ mod tests {
             mirror_fps: 0,
             mirror_bandwidth: 0,
             renderer: None,
+            config: mdc_protocol::ConfigCapability::default(),
         }
     }
     fn s() -> Surface {
@@ -1825,6 +1826,7 @@ mod tests {
             mirror_fps: 0,
             mirror_bandwidth: 0,
             renderer: None,
+            config: mdc_protocol::ConfigCapability::default(),
         };
         let mut d = Device::new(caps);
         assert!(!d.update_surface_geometry("main", 2, 2).unwrap());
@@ -1852,6 +1854,7 @@ mod tests {
             mirror_fps: 0,
             mirror_bandwidth: 0,
             renderer: None,
+            config: mdc_protocol::ConfigCapability::default(),
         };
         let d = Device::new(c);
         assert_eq!(
@@ -2362,6 +2365,7 @@ mod tests {
             mirror_fps: 0,
             mirror_bandwidth: 0,
             renderer: None,
+            config: mdc_protocol::ConfigCapability::default(),
         };
         let mut manager = DeviceManager::new();
         manager.upsert(caps.clone()).unwrap();
@@ -2494,6 +2498,7 @@ mod tests {
             mirror_fps: 0,
             mirror_bandwidth: 0,
             renderer: None,
+            config: mdc_protocol::ConfigCapability::default(),
         };
         assert_eq!(
             manager.upsert(caps.clone()),
@@ -2552,6 +2557,7 @@ mod tests {
                         mirror_fps: 0,
                         mirror_bandwidth: 0,
                         renderer: None,
+                        config: mdc_protocol::ConfigCapability::default(),
                     })
                     .unwrap(),
                 }
@@ -2591,6 +2597,7 @@ mod tests {
                         mirror_fps: 0,
                         mirror_bandwidth: 0,
                         renderer: None,
+                        config: mdc_protocol::ConfigCapability::default(),
                     })
                     .unwrap(),
                 }
@@ -2689,6 +2696,7 @@ mod tests {
             mirror_fps: 0,
             mirror_bandwidth: 0,
             renderer: None,
+            config: mdc_protocol::ConfigCapability::default(),
         };
         let reply = Packet {
             version: VERSION,
@@ -2784,6 +2792,7 @@ mod tests {
             mirror_fps: 0,
             mirror_bandwidth: 0,
             renderer: None,
+            config: mdc_protocol::ConfigCapability::default(),
         };
         device_link
             .write(
@@ -2868,6 +2877,7 @@ mod tests {
                         mirror_fps: 0,
                         mirror_bandwidth: 0,
                         renderer: None,
+                        config: mdc_protocol::ConfigCapability::default(),
                     })
                     .unwrap(),
                 }
@@ -2918,6 +2928,7 @@ mod tests {
                         mirror_fps: 0,
                         mirror_bandwidth: 0,
                         renderer: None,
+                        config: mdc_protocol::ConfigCapability::default(),
                     })
                     .unwrap(),
                 }
@@ -2953,6 +2964,7 @@ mod tests {
             mirror_fps: 0,
             mirror_bandwidth: 0,
             renderer: None,
+            config: mdc_protocol::ConfigCapability::default(),
         };
         device_link
             .write(
@@ -3011,6 +3023,7 @@ mod tests {
                 mirror_fps: 0,
                 mirror_bandwidth: 0,
                 renderer: None,
+                config: mdc_protocol::ConfigCapability::default(),
             };
             device_link
                 .write(
@@ -3062,6 +3075,7 @@ mod tests {
             mirror_fps: 0,
             mirror_bandwidth: 0,
             renderer: None,
+            config: mdc_protocol::ConfigCapability::default(),
         };
         device_link
             .write(

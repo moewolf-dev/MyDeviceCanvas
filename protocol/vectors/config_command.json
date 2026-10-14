@@ -1,0 +1,6 @@
+{
+  "name": "config_command",
+  "description": "Host->device CONFIG set (MessageType::Config 0x33, CBOR ConfigCommand action=set key=brightness value=128)",
+  "message_type": 51,
+  "hex": "a366616374696f6e63736574636b65796a6272696768746e6573736576616c756563313238"
+}

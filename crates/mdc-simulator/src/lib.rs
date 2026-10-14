@@ -500,6 +500,8 @@ impl FakeDevice {
                 max_texture: self.profile.renderer_max_texture,
                 max_vertices: self.profile.renderer_max_vertices,
             }),
+            // N41 will populate keys from the board profile.
+            config: mdc_protocol::ConfigCapability::default(),
         }
     }
     /// Advance virtual clock and process inbound packets.
