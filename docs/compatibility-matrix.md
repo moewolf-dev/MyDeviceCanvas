@@ -75,6 +75,7 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Dirty-region mirror | sim-verified (capability-gated; patches the base frame, misaligned/earlier drops) | n/a |
 | Model compiler / MDC IR | sim-verified (`mdc-model`, glTF/GLB + Live2D → IR → package) | n/a |
 | Renderer capability on the wire | sim-verified (`Capabilities.renderer{}`, optional; Rust+C++ shared bytes) | physical: pending |
+| Runtime package transfer | sim-verified (`PACKAGE` 0x32 begin/chunk/commit; `install_package`→FakeDevice ready) | physical: pending |
 | glTF/GLB bounds + image probe | sim-verified (accessor bufferView overrun rejected; PNG/JPEG size from header) | n/a |
 | Target backends (esp32-plane / linux-mesh) | sim-verified (mesh↔sprite by capability; no board-id branch) | n/a |
 | Board family skeletons (arduino/rockchip/nvidia) | architecture (`physical: pending`) | physical: pending |

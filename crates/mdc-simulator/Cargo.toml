@@ -9,5 +9,6 @@ description = "Fake device peer over MemoryLink for Host Core integration tests"
 mdc-protocol = { path = "../mdc-protocol" }
 mdc-transport = { path = "../mdc-transport" }
 mdc-core = { path = "../mdc-core" }
+mdc-model = { path = "../mdc-model" }
 thiserror.workspace = true
 serde.workspace = true

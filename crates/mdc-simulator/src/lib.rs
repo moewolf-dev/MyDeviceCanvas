@@ -1,9 +1,9 @@
 //! Fake device peer for Host Core / protocol integration tests.
 use mdc_core::{validate_tile_base, FrameAssembler, Tile, TransactionNack, MAX_FRAME_BYTES};
 use mdc_protocol::{
-    decode_control, decode_frame_payload, decode_tile_payload, encode_control, Ack, Capabilities,
-    ErrorPayload, FramePayload, Hello, InputEvent, MessageType, MirrorCommand, OtaCommand, Packet,
-    Surface, VERSION,
+    decode_control, decode_frame_payload, decode_package_payload, decode_tile_payload,
+    encode_control, Ack, Capabilities, ErrorPayload, FramePayload, Hello, InputEvent, MessageType,
+    MirrorCommand, OtaCommand, PackagePayload, Packet, Surface, VERSION,
 };
 use mdc_transport::{MemoryLink, Transport, TransportError};
 use serde::{Deserialize, Serialize};
@@ -172,6 +172,7 @@ pub struct SimMetrics {
     pub errors_sent: u64,
     pub mirror_frames: u64,
     pub mirror_commands: u64,
+    pub packages_received: u64,
     pub current_frame_id: u64,
     pub pixel_bytes: usize,
 }
@@ -211,6 +212,10 @@ pub struct FakeDevice {
     busy_until: u64,
     /// Form B: set by a host MirrorCtrl start; emit_mirror_frame is the device side.
     mirror_active: bool,
+    /// N23: runtime package being assembled from PACKAGE chunks.
+    package_assembler: Option<mdc_model::PackageAssembler>,
+    /// N23: true once a rendered-ready package was accepted.
+    package_ready: bool,
 }
 impl FakeDevice {
     pub fn from_transport(link: Box<dyn Transport>, profile: BoardProfile) -> Self {
@@ -248,6 +253,8 @@ impl FakeDevice {
             active_pointers: BTreeMap::new(),
             busy_until: 0,
             mirror_active: false,
+            package_assembler: None,
+            package_ready: false,
         }
     }
 
@@ -594,6 +601,7 @@ impl FakeDevice {
             }
             MessageType::Ota => self.handle_ota(packet),
             MessageType::MirrorCtrl => self.handle_mirror_ctrl(packet),
+            MessageType::Package => self.handle_package(packet),
             MessageType::Input => {
                 // Host→device input is unusual; reject unless touch is enabled.
                 if !self.profile.touch {
@@ -696,6 +704,50 @@ impl FakeDevice {
                 &format!("unknown action {other}"),
             ),
         }
+    }
+    /// N23: assemble a host-uploaded runtime package; on commit verify its
+    /// integrity and that this device's renderer can run it.
+    fn handle_package(&mut self, packet: Packet) -> Result<(), SimError> {
+        let payload = decode_package_payload(&packet.payload)
+            .map_err(|e| SimError::Protocol(e.to_string()))?;
+        match payload {
+            PackagePayload::Begin { .. } => {
+                self.package_assembler = Some(mdc_model::PackageAssembler::begin());
+                Ok(())
+            }
+            PackagePayload::Chunk { data, .. } => {
+                let Some(assembler) = self.package_assembler.as_mut() else {
+                    return self.reply_error(packet.request_id, "E_PACKAGE", "chunk before begin");
+                };
+                if let Err(error) = assembler.push_chunk(&data) {
+                    return self.reply_error(packet.request_id, "E_PACKAGE", &error.to_string());
+                }
+                Ok(())
+            }
+            PackagePayload::Commit => {
+                let Some(assembler) = self.package_assembler.take() else {
+                    return self.reply_error(packet.request_id, "E_PACKAGE", "commit before begin");
+                };
+                let package = match assembler.finish() {
+                    Ok(package) => package,
+                    Err(error) => {
+                        return self.reply_error(packet.request_id, "E_PACKAGE", &error.to_string())
+                    }
+                };
+                let caps = self.capabilities();
+                let renderer = mdc_model::RendererCapability::from_wire(caps.renderer.as_ref());
+                if let Err(error) = package.accepted_by(&renderer) {
+                    return self.reply_error(packet.request_id, "E_PACKAGE", &error.to_string());
+                }
+                self.package_ready = true;
+                self.metrics.packages_received = self.metrics.packages_received.saturating_add(1);
+                self.ack(packet.request_id, self.current_frame_id, true, false)
+            }
+        }
+    }
+    /// N23: true once a runtime package has been accepted and is render-ready.
+    pub fn package_ready(&self) -> bool {
+        self.package_ready
     }
     /// Form B: true once a host MirrorCtrl start has been accepted.
     pub fn mirror_active(&self) -> bool {
@@ -943,6 +995,36 @@ mod tests {
     use mdc_core::{ConnectionState, Frame, Session, Tile};
     use mdc_protocol::OtaCommand;
     use mdc_transport::MemoryLink;
+
+    #[test]
+    fn accepts_a_runtime_package_and_reports_ready() {
+        let profile = BoardProfile {
+            width: 2,
+            height: 2,
+            ..BoardProfile::default()
+        };
+        let (host, mut device) = FakeDevice::pair(profile);
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+        let gltf = br#"{"asset":{"version":"2.0"},"nodes":[{"name":"root","mesh":0}],
+            "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+            "accessors":[{"count":4,"type":"VEC3"}]}"#;
+        let model = mdc_model::GltfImporter
+            .import(gltf, &mdc_model::ImportLimits::default())
+            .unwrap();
+        let package =
+            mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::sprite_only())
+                .unwrap();
+        session
+            .install_package(&package.to_bytes().unwrap())
+            .unwrap();
+        device.poll().unwrap();
+        assert!(device.package_ready());
+        assert_eq!(device.metrics.packages_received, 1);
+    }
 
     #[test]
     fn hello_capabilities_and_legacy_frame() {

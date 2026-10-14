@@ -372,6 +372,7 @@ dependencies = [
 name = "mdc-core"
 version = "0.1.0"
 dependencies = [
+ "mdc-model",
  "mdc-protocol",
  "mdc-transport",
  "thiserror",
@@ -477,6 +478,7 @@ name = "mdc-simulator"
 version = "0.1.0"
 dependencies = [
  "mdc-core",
+ "mdc-model",
  "mdc-protocol",
  "mdc-transport",
  "serde",

@@ -583,6 +583,17 @@ pub fn encode_package_commit() -> Vec<u8> {
     vec![PACKAGE_PHASE_COMMIT]
 }
 
+/// FNV-1a 64-bit over a whole package transfer: the checksum the begin carries
+/// so the device can verify the assembled stream before parsing the container.
+pub fn package_checksum(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PackagePayload {
     Begin { total_bytes: u32, checksum: u64 },

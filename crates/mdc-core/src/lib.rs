@@ -1,6 +1,7 @@
 use mdc_protocol::{
     decode_frame_payload, encode_control, encode_frame_begin, encode_frame_chunk,
-    encode_frame_commit, encode_frame_payload, encode_tile_payload, negotiate_mirror, Ack,
+    encode_frame_commit, encode_frame_payload, encode_package_begin, encode_package_chunk,
+    encode_package_commit, encode_tile_payload, negotiate_mirror, package_checksum, Ack,
     Capabilities, ErrorPayload, FramePayload, Hello, InputEvent, MessageType, MirrorCommand,
     OtaCommand, Packet, Surface, VERSION,
 };
@@ -635,6 +636,7 @@ pub struct Session<T: Transport> {
     mirror_assembler: Option<(String, u16, u16, FrameAssembler)>,
     mirror_frames: u64,
     mirror_dropped: u64,
+    packages_sent: u64,
 }
 impl<T: Transport> Session<T> {
     pub fn new(transport: T) -> Self {
@@ -680,6 +682,7 @@ impl<T: Transport> Session<T> {
             mirror_assembler: None,
             mirror_frames: 0,
             mirror_dropped: 0,
+            packages_sent: 0,
         }
     }
     pub fn set_manager(&mut self, manager: Arc<Mutex<DeviceManager>>) {
@@ -1220,6 +1223,42 @@ impl<T: Transport> Session<T> {
         };
         let payload = encode_control(&command).map_err(|e| CoreError::Protocol(e.to_string()))?;
         self.write_packet(MessageType::MirrorCtrl, payload)
+    }
+    /// Form B: upload a compiled runtime package to the device (N23). The bytes
+    /// are chunked into PACKAGE begin/chunk/commit messages. Rejected with
+    /// `Unsupported` when the device advertised no renderer capability.
+    pub fn install_package(&mut self, bytes: &[u8]) -> Result<u32, CoreError> {
+        if self.state != ConnectionState::Ready {
+            return Err(CoreError::NotReady);
+        }
+        let renderer_ready = self
+            .device
+            .as_ref()
+            .map(|device| device.capabilities.renderer.is_some())
+            .unwrap_or(false);
+        if !renderer_ready {
+            return Err(CoreError::Unsupported);
+        }
+        if bytes.is_empty() {
+            return Err(CoreError::Protocol("empty package".into()));
+        }
+        let total = u32::try_from(bytes.len()).map_err(|_| CoreError::TooLarge)?;
+        let checksum = package_checksum(bytes);
+        let request_id =
+            self.write_packet(MessageType::Package, encode_package_begin(total, checksum))?;
+        let mut offset: u32 = 0;
+        for chunk in bytes.chunks(mdc_protocol::DEFAULT_MAX_CHUNK) {
+            self.write_packet(MessageType::Package, encode_package_chunk(offset, chunk))?;
+            offset = offset
+                .checked_add(chunk.len() as u32)
+                .ok_or(CoreError::TooLarge)?;
+        }
+        self.write_packet(MessageType::Package, encode_package_commit())?;
+        self.packages_sent = self.packages_sent.saturating_add(1);
+        Ok(request_id)
+    }
+    pub fn packages_sent(&self) -> u64 {
+        self.packages_sent
     }
     /// Take the latest complete mirrored frame, if any. The inbox holds at most
     /// one frame; a newer frame replaces an unread one (latest-frame-wins).
@@ -1812,6 +1851,77 @@ mod tests {
             )
             .unwrap();
         session.poll().unwrap();
+    }
+
+    #[test]
+    fn install_package_requires_a_renderer_capability() {
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        assert!(matches!(
+            session.install_package(&[1, 2, 3]),
+            Err(CoreError::Unsupported)
+        ));
+        assert_eq!(session.packages_sent(), 0);
+    }
+
+    #[test]
+    fn install_package_chunks_over_the_link_and_reassembles() {
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        let hello = Packet::decode(&device.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        let mut capability = caps();
+        capability.renderer = Some(mdc_protocol::RendererCapability::sprite_only(512));
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: hello.request_id,
+                    payload: encode_control(&capability).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        assert_eq!(session.state, ConnectionState::Ready);
+
+        let gltf = br#"{"asset":{"version":"2.0"},"nodes":[{"name":"root","mesh":0}],
+            "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+            "accessors":[{"count":4,"type":"VEC3"}]}"#;
+        let model = mdc_model::GltfImporter
+            .import(gltf, &mdc_model::ImportLimits::default())
+            .unwrap();
+        let package =
+            mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::sprite_only())
+                .unwrap();
+        let bytes = package.to_bytes().unwrap();
+
+        session.install_package(&bytes).unwrap();
+        assert_eq!(session.packages_sent(), 1);
+
+        // The device side reassembles the container from the PACKAGE stream.
+        let mut assembler = mdc_model::PackageAssembler::begin();
+        while let Some(raw) = device.read().unwrap() {
+            let packet = Packet::decode(&raw, 1 << 20).unwrap().0;
+            if packet.kind != MessageType::Package {
+                continue;
+            }
+            match mdc_protocol::decode_package_payload(&packet.payload).unwrap() {
+                mdc_protocol::PackagePayload::Begin { .. } => {}
+                mdc_protocol::PackagePayload::Chunk { data, .. } => {
+                    assembler.push_chunk(&data).unwrap()
+                }
+                mdc_protocol::PackagePayload::Commit => break,
+            }
+        }
+        assert_eq!(assembler.finish().unwrap(), package);
     }
 
     fn frame(bytes: &[u8]) -> Frame {
