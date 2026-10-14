@@ -133,7 +133,9 @@ Failure/fallback:
   computing dirty regions costs more than sending the frame on those pipelines.
 - `dirty-region` is an optional optimization for pixel characters, clocks, and
   mostly-static UI. A `dirty-region` device still accepts `full-frame`; a
-  `full-frame` device cannot accept `dirty-region`.
+  `full-frame` device cannot accept `dirty-region`. `MirrorReceiver` implements
+  the host side: a dirty commit patches the last complete base frame (pixel-
+  aligned ranges only) and a dirty update before any base frame is dropped.
 - Mixed surfaces are allowed: a device may mirror `main` and present `overlay`
   locally. `MIRROR_CTRL` is per `surface_id`.
 

@@ -275,13 +275,29 @@ impl MirrorAssembler {
         self.ranges = merged;
         Ok(())
     }
-    fn commit(self) -> Result<Vec<u8>, MirrorError> {
+    fn commit(self) -> Result<Commit, MirrorError> {
+        if self.ranges.is_empty() {
+            return Err(MirrorError::Geometry);
+        }
         if self.ranges.len() == 1 && self.ranges[0] == (0, self.expected) {
-            Ok(self.staging)
+            Ok(Commit::Full(self.staging))
         } else {
-            Err(MirrorError::Geometry)
+            Ok(Commit::Dirty {
+                staging: self.staging,
+                ranges: self.ranges,
+            })
         }
     }
+}
+
+/// Result of a committed mirror transaction: a whole frame, or the changed byte
+/// ranges of a dirty-region update.
+enum Commit {
+    Full(Vec<u8>),
+    Dirty {
+        staging: Vec<u8>,
+        ranges: Vec<(usize, usize)>,
+    },
 }
 
 /// Counters a host / inspector can report.
@@ -299,6 +315,9 @@ pub struct MirrorReceiver<S: MirrorSink> {
     fb: ShadowFramebuffer,
     sink: S,
     surface_id: String,
+    mode: String,
+    /// Last complete RGB565 frame; dirty-region updates patch it in place.
+    base: Vec<u8>,
     rx: Vec<u8>,
     assembler: Option<MirrorAssembler>,
     max_message: usize,
@@ -307,8 +326,9 @@ pub struct MirrorReceiver<S: MirrorSink> {
 }
 
 impl<S: MirrorSink> MirrorReceiver<S> {
-    /// Build a receiver for one surface. `mode` must be `full-frame`; the
-    /// dirty-region optimization is not implemented yet and is rejected.
+    /// Build a receiver for one surface. `full-frame` accepts only whole frames;
+    /// `dirty-region` additionally accepts partial updates patched onto the last
+    /// complete frame (a dirty-region device still accepts full frames).
     pub fn new(
         surface_id: &str,
         width: u16,
@@ -316,13 +336,15 @@ impl<S: MirrorSink> MirrorReceiver<S> {
         mode: &str,
         sink: S,
     ) -> Result<Self, MirrorError> {
-        if mode != "full-frame" {
+        if mode != "full-frame" && mode != "dirty-region" {
             return Err(MirrorError::Mode(mode.to_string()));
         }
         Ok(Self {
             fb: ShadowFramebuffer::new(width, height)?,
             sink,
             surface_id: surface_id.to_string(),
+            mode: mode.to_string(),
+            base: Vec::new(),
             rx: Vec::new(),
             assembler: None,
             max_message: MAX_MIRROR_FRAME_BYTES,
@@ -411,7 +433,7 @@ impl<S: MirrorSink> MirrorReceiver<S> {
                 width,
                 height,
                 bytes,
-            } => self.deliver(surface_id, frame_id, width, height, &bytes),
+            } => self.deliver_full(surface_id, frame_id, width, height, &bytes),
             FramePayload::Begin {
                 frame_id,
                 total_bytes,
@@ -440,15 +462,16 @@ impl<S: MirrorSink> MirrorReceiver<S> {
             }
             FramePayload::Commit { frame_id } => {
                 let finished = match self.assembler.take() {
-                    Some(assembler) if assembler.frame_id == frame_id => {
-                        assembler.commit().ok().map(|bytes| (frame_id, bytes))
-                    }
+                    Some(assembler) if assembler.frame_id == frame_id => assembler.commit().ok(),
                     _ => None,
                 };
                 match finished {
-                    Some((frame_id, bytes)) => {
+                    Some(Commit::Full(bytes)) => {
                         let (w, h) = (self.fb.width(), self.fb.height());
-                        self.deliver(self.surface_id.clone(), frame_id, w, h, &bytes);
+                        self.deliver_full(self.surface_id.clone(), frame_id, w, h, &bytes);
+                    }
+                    Some(Commit::Dirty { staging, ranges }) => {
+                        self.deliver_dirty(frame_id, &staging, &ranges);
                     }
                     None => {
                         self.stats.frames_dropped = self.stats.frames_dropped.saturating_add(1);
@@ -458,7 +481,7 @@ impl<S: MirrorSink> MirrorReceiver<S> {
         }
     }
 
-    fn deliver(
+    fn deliver_full(
         &mut self,
         surface_id: String,
         frame_id: u64,
@@ -476,8 +499,41 @@ impl<S: MirrorSink> MirrorReceiver<S> {
             self.stats.frames_dropped = self.stats.frames_dropped.saturating_add(1);
             return;
         }
+        self.base.clear();
+        self.base.extend_from_slice(bytes);
         self.stats.frames_received = self.stats.frames_received.saturating_add(1);
-        match self.fb.present(bytes) {
+        self.publish(frame_id);
+    }
+
+    /// Patch a dirty-region update onto the last complete frame. A device that
+    /// only advertised `full-frame` cannot use this path; a misaligned range or
+    /// an update before any base frame is dropped.
+    fn deliver_dirty(&mut self, frame_id: u64, staging: &[u8], ranges: &[(usize, usize)]) {
+        let expected = usize::from(self.fb.width()) * usize::from(self.fb.height()) * 2;
+        if self.mode != "dirty-region"
+            || self.base.len() != expected
+            || expected > MAX_MIRROR_FRAME_BYTES
+            || ranges.is_empty()
+        {
+            self.stats.frames_dropped = self.stats.frames_dropped.saturating_add(1);
+            return;
+        }
+        for &(start, end) in ranges {
+            // Dirty ranges must align to whole RGB565 pixels.
+            if start % 2 != 0 || (end - start) % 2 != 0 || end > expected {
+                self.stats.frames_dropped = self.stats.frames_dropped.saturating_add(1);
+                return;
+            }
+        }
+        for &(start, end) in ranges {
+            self.base[start..end].copy_from_slice(&staging[start..end]);
+        }
+        self.stats.frames_received = self.stats.frames_received.saturating_add(1);
+        self.publish(frame_id);
+    }
+
+    fn publish(&mut self, frame_id: u64) {
+        match self.fb.present(&self.base) {
             Ok(_) => {
                 self.stats.frames_published = self.stats.frames_published.saturating_add(1);
                 self.stats.last_frame_id = frame_id;
@@ -806,11 +862,101 @@ mod tests {
     }
 
     #[test]
-    fn dirty_region_mode_is_rejected() {
+    fn unknown_mode_is_rejected() {
         assert_eq!(
-            MirrorReceiver::new("main", 2, 1, "dirty-region", MockObsSink::default()).err(),
-            Some(MirrorError::Mode("dirty-region".into()))
+            MirrorReceiver::new("main", 2, 1, "tiled", MockObsSink::default()).err(),
+            Some(MirrorError::Mode("tiled".into()))
         );
+    }
+
+    fn begin_chunk_commit(
+        receiver: &mut MirrorReceiver<MockObsSink>,
+        id: u64,
+        offset: usize,
+        data: &[u8],
+    ) {
+        receiver
+            .feed(&mirror_packet(
+                encode_frame_begin("main", id, 2, 1, 4).unwrap(),
+            ))
+            .unwrap();
+        receiver
+            .feed(&mirror_packet(encode_frame_chunk(id, offset as u32, data)))
+            .unwrap();
+        receiver
+            .feed(&mirror_packet(encode_frame_commit(id)))
+            .unwrap();
+    }
+
+    #[test]
+    fn dirty_region_patches_only_the_changed_pixels() {
+        let mut receiver =
+            MirrorReceiver::new("main", 2, 1, "dirty-region", MockObsSink::default()).unwrap();
+        // Base frame: red, green (RGB565 LE).
+        receiver
+            .feed(&mirror_packet(
+                encode_frame_payload("main", 1, 2, 1, &[0x00, 0xF8, 0xE0, 0x07]).unwrap(),
+            ))
+            .unwrap();
+        // Dirty update: patch the second pixel to blue.
+        begin_chunk_commit(&mut receiver, 2, 2, &[0x1F, 0x00]);
+
+        let stats = receiver.stats();
+        assert_eq!(stats.frames_published, 2);
+        assert_eq!(stats.frames_received, 2);
+        assert_eq!(stats.frames_dropped, 0);
+        // BGRA of the patched frame: red then blue (B at 4, G at 5).
+        let last = &receiver.sink().last;
+        assert_eq!(
+            &last[0..4],
+            &[0x00, 0x00, 0xFF, 0xFF],
+            "first pixel stays red"
+        );
+        assert_eq!(
+            &last[4..8],
+            &[0xFF, 0x00, 0x00, 0xFF],
+            "second pixel is blue"
+        );
+    }
+
+    #[test]
+    fn full_frame_mode_drops_a_dirty_commit() {
+        let mut receiver =
+            MirrorReceiver::new("main", 2, 1, "full-frame", MockObsSink::default()).unwrap();
+        receiver
+            .feed(&mirror_packet(
+                encode_frame_payload("main", 1, 2, 1, &[0x00, 0xF8, 0xE0, 0x07]).unwrap(),
+            ))
+            .unwrap();
+        begin_chunk_commit(&mut receiver, 2, 2, &[0x1F, 0x00]);
+        let stats = receiver.stats();
+        assert_eq!(stats.frames_published, 1, "the dirty update is refused");
+        assert_eq!(stats.frames_dropped, 1);
+        assert_eq!(
+            &receiver.sink().last[4..8],
+            &[0x00, 0xFF, 0x00, 0xFF],
+            "pixels are unchanged"
+        );
+    }
+
+    #[test]
+    fn dirty_before_base_and_misaligned_ranges_are_dropped() {
+        let mut receiver =
+            MirrorReceiver::new("main", 2, 1, "dirty-region", MockObsSink::default()).unwrap();
+        // No base frame yet → dropped.
+        begin_chunk_commit(&mut receiver, 1, 2, &[0x1F, 0x00]);
+        assert_eq!(receiver.stats().frames_published, 0);
+        // Establish a base.
+        receiver
+            .feed(&mirror_packet(
+                encode_frame_payload("main", 2, 2, 1, &[0x00, 0xF8, 0xE0, 0x07]).unwrap(),
+            ))
+            .unwrap();
+        // A one-byte range splits a pixel → dropped.
+        begin_chunk_commit(&mut receiver, 3, 1, &[0x1F]);
+        let stats = receiver.stats();
+        assert_eq!(stats.frames_published, 1);
+        assert_eq!(stats.frames_dropped, 2);
     }
 
     #[test]
