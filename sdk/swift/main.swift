@@ -33,6 +33,25 @@ struct MdcSwiftHello {
             fputs("async stream missed input\n", stderr)
             exit(1)
         }
+
+        // Form B mirror over the async stream (simulator board with a GPU).
+        let gpu = try! MdcSession(boardId: "linux-virt")
+        let mirrorTask = Task {
+            for await frame in gpu.mirrorFrames() {
+                if frame.width == 800 && frame.height == 480 && !frame.pixels.isEmpty {
+                    return true
+                }
+            }
+            return false
+        }
+        let sawMirror = await mirrorTask.value
+        mirrorTask.cancel()
+        if !sawMirror {
+            fputs("async stream missed mirror frame\n", stderr)
+            exit(1)
+        }
+        gpu.close()
+
         session.close()
         session.close()
         print("swift ok \(width)x\(height)")

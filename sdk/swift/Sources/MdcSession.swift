@@ -13,6 +13,15 @@ public struct MdcUiEvent {
     public let y: UInt16
 }
 
+/// A Form B mirrored frame (RGB565) copied out of the C ABI.
+public struct MdcMirrorFrame {
+    public let surfaceId: String
+    public let frameId: UInt64
+    public let width: UInt16
+    public let height: UInt16
+    public let pixels: [UInt8]
+}
+
 /// Opaque session. Swift only calls the C ABI and releases the handle in `close` / `deinit`.
 public final class MdcSession {
     private var raw: OpaquePointer?
@@ -128,6 +137,67 @@ public final class MdcSession {
             while !Task.isCancelled {
                 if let event = session.pollEvent() {
                     return event
+                }
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            }
+            return nil
+        })
+    }
+
+    /// Form B: ask the device to start mirroring. Returns the C ABI result.
+    public func startMirror(surfaceId: String = "main", maxFps: UInt16 = 15) -> Int32 {
+        guard let raw else { return -1 }
+        return surfaceId.withCString { mdc_start_mirror(raw, $0, maxFps) }
+    }
+
+    public func stopMirror(surfaceId: String = "main") -> Int32 {
+        guard let raw else { return -1 }
+        return surfaceId.withCString { mdc_stop_mirror(raw, $0) }
+    }
+
+    /// Simulator-only: emit one mirrored frame from the FakeDevice.
+    public func emitMirrorFrame() -> Int32 {
+        guard let raw else { return -1 }
+        return mdc_emit_mirror_frame(raw)
+    }
+
+    /// Take the newest complete mirror frame, or nil when none is available.
+    public func takeMirrorFrame(surfaceId: String = "main") -> MdcMirrorFrame? {
+        guard let raw else { return nil }
+        guard let (width, height) = try? surfaceSize() else { return nil }
+        var outWidth = width
+        var outHeight = height
+        var frameId: UInt64 = 0
+        var pixels = [UInt8](repeating: 0, count: Int(width) * Int(height) * 2)
+        let copied = pixels.withUnsafeMutableBufferPointer { buffer in
+            mdc_take_mirror_frame(raw, &outWidth, &outHeight, &frameId, buffer.baseAddress, buffer.count)
+        }
+        guard copied > 0 else { return nil }
+        if copied < pixels.count {
+            pixels.removeLast(pixels.count - Int(copied))
+        }
+        return MdcMirrorFrame(
+            surfaceId: surfaceId, frameId: frameId,
+            width: outWidth, height: outHeight, pixels: pixels)
+    }
+
+    public func mirrorStats() -> (received: UInt64, dropped: UInt64) {
+        guard let raw else { return (0, 0) }
+        var received: UInt64 = 0
+        var dropped: UInt64 = 0
+        _ = mdc_mirror_stats(raw, &received, &dropped)
+        return (received, dropped)
+    }
+
+    /// AsyncStream of Form B mirrored frames. A simulator session emits locally.
+    public func mirrorFrames(surfaceId: String = "main", maxFps: UInt16 = 15) -> AsyncStream<MdcMirrorFrame> {
+        let session = self
+        _ = startMirror(surfaceId: surfaceId, maxFps: maxFps)
+        return AsyncStream(unfolding: {
+            while !Task.isCancelled {
+                _ = session.emitMirrorFrame()
+                if let frame = session.takeMirrorFrame(surfaceId: surfaceId) {
+                    return frame
                 }
                 try? await Task.sleep(nanoseconds: 5_000_000)
             }
