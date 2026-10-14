@@ -142,3 +142,19 @@ document.querySelector("#get-brightness").onclick = async () => {
   if (result.ok) brightness.value = result.value;
   show(result);
 };
+
+const clip = document.querySelector("#clip");
+document.querySelector("#play-clip").onclick = async () => {
+  if (!bridge()) {
+    show("没有 preload，无法播放动作。");
+    return;
+  }
+  show(await bridge().setAnimation(clip.value));
+};
+document.querySelector("#stop-clip").onclick = async () => {
+  if (!bridge()) {
+    show("没有 preload，无法停止动作。");
+    return;
+  }
+  show(await bridge().setAnimation(""));
+};

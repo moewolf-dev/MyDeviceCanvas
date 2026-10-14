@@ -8,6 +8,7 @@ import {
   formatError,
   mirrorPanelStatus,
   normalizeBrightness,
+  normalizeClip,
   originTile,
   planConnection,
 } from "./demo-logic.js";
@@ -185,6 +186,20 @@ ipcMain.handle("mdc:config-set", async (_event, key, value) => {
     const accepted = key === "brightness" ? normalizeBrightness(value) : String(value);
     const active = await ensureSim();
     return { ok: true, value: await active.setConfig(key, accepted) };
+  } catch (error) {
+    return { ok: false, error: formatError(error) };
+  }
+});
+
+ipcMain.handle("mdc:animation", async (_event, clip) => {
+  try {
+    const active = await ensureSim();
+    const name = normalizeClip(clip);
+    if (name === "off") {
+      await active.stopAnimation();
+      return { ok: true, clip: "off" };
+    }
+    return { ok: true, clip: await active.setAnimation(name) };
   } catch (error) {
     return { ok: false, error: formatError(error) };
   }

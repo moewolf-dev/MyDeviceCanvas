@@ -123,3 +123,9 @@ export function normalizeBrightness(value) {
   }
   return String(n);
 }
+
+/** N75: normalize a clip-name input; empty becomes the stop sentinel. */
+export function normalizeClip(value) {
+  const text = String(value ?? "").trim();
+  return text.length === 0 ? "off" : text;
+}

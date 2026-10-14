@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { colorBarsRgb565, decodeMirrorFrame, formatError, mirrorPanelStatus, normalizeBrightness, originTile, planConnection, rejectNonSimEndpoint } from "./demo-logic.js";
+import { colorBarsRgb565, decodeMirrorFrame, formatError, mirrorPanelStatus, normalizeBrightness, normalizeClip, originTile, planConnection, rejectNonSimEndpoint } from "./demo-logic.js";
 
 test("color bars are RGB565 little-endian and start with red", () => {
   const frame = colorBarsRgb565(8, 1);
@@ -67,4 +67,10 @@ test("normalizeBrightness accepts 0..255 and rejects the rest", () => {
   assert.equal(normalizeBrightness(0), "0");
   assert.throws(() => normalizeBrightness(256), /0\.\.255/);
   assert.throws(() => normalizeBrightness("x"), /0\.\.255/);
+});
+
+test("normalizeClip maps empty input to off", () => {
+  assert.equal(normalizeClip("idle"), "idle");
+  assert.equal(normalizeClip("  "), "off");
+  assert.equal(normalizeClip(null), "off");
 });
