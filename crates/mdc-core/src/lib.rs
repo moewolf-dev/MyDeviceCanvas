@@ -2,8 +2,8 @@ use mdc_protocol::{
     decode_frame_payload, encode_control, encode_frame_begin, encode_frame_chunk,
     encode_frame_commit, encode_frame_payload, encode_package_begin, encode_package_chunk,
     encode_package_commit, encode_tile_payload, negotiate_mirror, package_checksum, Ack,
-    Capabilities, ErrorPayload, FramePayload, Hello, InputEvent, MessageType, MirrorCommand,
-    OtaCommand, Packet, Surface, VERSION,
+    Capabilities, ConfigCommand, ConfigReply, ErrorPayload, FramePayload, Hello, InputEvent,
+    MessageType, MirrorCommand, OtaCommand, Packet, Surface, VERSION,
 };
 mod ledger;
 pub use ledger::{AllocationLedger, HostCopyBudget, SimHeap};
@@ -16,6 +16,8 @@ use thiserror::Error;
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const MAX_MANAGER_EVENTS: usize = 128;
 pub const MAX_CONTROL_IN_FLIGHT: usize = 32;
+/// N40: longest configuration value the host will send (bytes).
+pub const MAX_CONFIG_VALUE_BYTES: usize = 256;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoreError {
@@ -681,6 +683,8 @@ pub struct Session<T: Transport> {
     mirror_dropped: u64,
     mirror_last_frame_id: u64,
     packages_sent: u64,
+    /// N40: configuration values learned from device replies.
+    config_cache: BTreeMap<String, String>,
 }
 impl<T: Transport> Session<T> {
     pub fn new(transport: T) -> Self {
@@ -728,6 +732,7 @@ impl<T: Transport> Session<T> {
             mirror_dropped: 0,
             mirror_last_frame_id: 0,
             packages_sent: 0,
+            config_cache: BTreeMap::new(),
         }
     }
     pub fn set_manager(&mut self, manager: Arc<Mutex<DeviceManager>>) {
@@ -1305,6 +1310,72 @@ impl<T: Transport> Session<T> {
     pub fn packages_sent(&self) -> u64 {
         self.packages_sent
     }
+
+    /// N40: set a configuration value. Refused when the device did not advertise
+    /// the key or the value is too large.
+    pub fn set_config(&mut self, key: &str, value: &str) -> Result<u32, CoreError> {
+        self.config_gate(key)?;
+        if value.len() > MAX_CONFIG_VALUE_BYTES {
+            return Err(CoreError::TooLarge);
+        }
+        let command = ConfigCommand {
+            action: "set".into(),
+            key: key.to_string(),
+            value: Some(value.to_string()),
+        };
+        let payload = encode_control(&command).map_err(|e| CoreError::Protocol(e.to_string()))?;
+        self.write_packet(MessageType::Config, payload)
+    }
+
+    /// N40: request a configuration value; the reply lands in `config`.
+    pub fn get_config(&mut self, key: &str) -> Result<u32, CoreError> {
+        self.config_gate(key)?;
+        let command = ConfigCommand {
+            action: "get".into(),
+            key: key.to_string(),
+            value: None,
+        };
+        let payload = encode_control(&command).map_err(|e| CoreError::Protocol(e.to_string()))?;
+        self.write_packet(MessageType::Config, payload)
+    }
+
+    /// N40: a configuration value learned from the device, if any.
+    pub fn config(&self, key: &str) -> Option<&str> {
+        self.config_cache.get(key).map(String::as_str)
+    }
+
+    pub fn config_values(&self) -> &BTreeMap<String, String> {
+        &self.config_cache
+    }
+
+    fn config_gate(&self, key: &str) -> Result<(), CoreError> {
+        if self.state != ConnectionState::Ready {
+            return Err(CoreError::NotReady);
+        }
+        let device = self.device.as_ref().ok_or(CoreError::NotReady)?;
+        if !device.capabilities.config.supports(key) {
+            return Err(CoreError::Unsupported);
+        }
+        Ok(())
+    }
+
+    fn handle_config(&mut self, packet: &Packet) -> Result<(), CoreError> {
+        if self.state != ConnectionState::Ready {
+            return Ok(());
+        }
+        let reply: ConfigReply = match mdc_protocol::decode_control(&packet.payload) {
+            Ok(reply) => reply,
+            Err(_) => return Ok(()),
+        };
+        if reply.ok {
+            if let Some(value) = reply.value {
+                self.config_cache.insert(reply.key, value);
+            }
+        } else {
+            self.config_cache.remove(&reply.key);
+        }
+        Ok(())
+    }
     /// Take the latest complete mirrored frame, if any. The inbox holds at most
     /// one frame; a newer frame replaces an unread one (latest-frame-wins).
     pub fn take_mirror_frame(&mut self) -> Option<MirrorFrame> {
@@ -1644,6 +1715,7 @@ impl<T: Transport> Session<T> {
                 Ok(())
             }
             MessageType::MirrorFrame => self.handle_mirror_frame(packet),
+            MessageType::Config => self.handle_config(&packet),
             MessageType::MirrorCtrl => Ok(()),
             _ => Ok(()),
         }
@@ -1998,6 +2070,64 @@ mod tests {
             }
         }
         assert_eq!(assembler.finish().unwrap(), package);
+    }
+
+    #[test]
+    fn config_ops_are_capability_gated_and_cached() {
+        let (host, mut dev) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        let hello = Packet::decode(&dev.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        let mut capability = caps();
+        capability.config = mdc_protocol::ConfigCapability::new(&["brightness"]);
+        write_caps(&mut dev, hello.request_id, &capability);
+        session.poll().unwrap();
+        assert_eq!(session.state, ConnectionState::Ready);
+
+        // An unadvertised key is refused without sending anything.
+        assert!(matches!(
+            session.set_config("wifi_password", "hunter2"),
+            Err(CoreError::Unsupported)
+        ));
+
+        session.set_config("brightness", "128").unwrap();
+        let packet = Packet::decode(&dev.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        assert_eq!(packet.kind, MessageType::Config);
+        let command: ConfigCommand = mdc_protocol::decode_control(&packet.payload).unwrap();
+        assert_eq!(command.action, "set");
+        assert_eq!(command.key, "brightness");
+        assert_eq!(command.value.as_deref(), Some("128"));
+
+        let big = "x".repeat(MAX_CONFIG_VALUE_BYTES + 1);
+        assert!(matches!(
+            session.set_config("brightness", &big),
+            Err(CoreError::TooLarge)
+        ));
+
+        let reply = ConfigReply {
+            key: "brightness".into(),
+            ok: true,
+            value: Some("200".into()),
+            error: None,
+        };
+        dev.write(
+            &Packet {
+                version: VERSION,
+                kind: MessageType::Config,
+                flags: 0,
+                request_id: 0,
+                payload: encode_control(&reply).unwrap(),
+            }
+            .encode(4096)
+            .unwrap(),
+        )
+        .unwrap();
+        session.poll().unwrap();
+        assert_eq!(session.config("brightness"), Some("200"));
     }
 
     fn frame(bytes: &[u8]) -> Frame {
