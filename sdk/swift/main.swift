@@ -34,6 +34,16 @@ struct MdcSwiftHello {
             exit(1)
         }
 
+        // N63: structured scene set/clear.
+        if session.setScene(json: #"{"name":"root","kind":"rect"}"#) != 0 {
+            fputs("scene set failed\n", stderr)
+            exit(1)
+        }
+        if session.clearScene() != 0 {
+            fputs("scene clear failed\n", stderr)
+            exit(1)
+        }
+
         // Form B mirror over the async stream (simulator board with a GPU).
         let gpu = try! MdcSession(boardId: "linux-virt")
         let mirrorTask = Task {

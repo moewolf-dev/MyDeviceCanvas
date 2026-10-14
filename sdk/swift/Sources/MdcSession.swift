@@ -105,6 +105,17 @@ public final class MdcSession {
         return mdc_session_send_scene(raw, nil, 0)
     }
 
+    /// N63: set a structured vector scene (JSON SceneNode). 0 on success.
+    public func setScene(json: String) -> Int32 {
+        guard let raw else { return -1 }
+        return json.withCString { mdc_set_scene(raw, $0) }
+    }
+
+    public func clearScene() -> Int32 {
+        guard let raw else { return -1 }
+        return mdc_clear_scene(raw)
+    }
+
     public func simulateInput(phase: String, x: UInt16, y: UInt16) -> Int32 {
         guard let raw else { return -1 }
         return phase.withCString { text in

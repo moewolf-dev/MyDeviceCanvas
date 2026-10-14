@@ -691,6 +691,47 @@ pub unsafe extern "C" fn mdc_mirror_stats(
     0
 }
 
+/// # Safety
+/// `session` must be alive; `json` must be a NUL-terminated UTF-8 SceneNode.
+/// N63: set a vector scene on a simulator session. 0 or negative.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_set_scene(session: *mut MdcSession, json: *const c_char) -> c_int {
+    let Some(session) = session.as_mut() else {
+        return -1;
+    };
+    if json.is_null() {
+        return -1;
+    }
+    let text = CStr::from_ptr(json).to_string_lossy();
+    let node: mdc_protocol::SceneNode = match serde_json::from_str(&text) {
+        Ok(node) => node,
+        Err(_) => return -2,
+    };
+    match session.session.set_scene(node) {
+        Ok(_) => {
+            let _ = pump(session);
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
+/// # Safety
+/// `session` must be alive. N63: clear the vector scene. 0 or negative.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_clear_scene(session: *mut MdcSession) -> c_int {
+    let Some(session) = session.as_mut() else {
+        return -1;
+    };
+    match session.session.clear_scene() {
+        Ok(_) => {
+            let _ = pump(session);
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1028,6 +1069,20 @@ mod tests {
                 ),
                 -1
             );
+            mdc_session_destroy(session);
+        }
+    }
+
+    #[test]
+    fn scene_set_and_clear_via_c_abi() {
+        unsafe {
+            let session = mdc_session_create();
+            assert!(!session.is_null());
+            let node = std::ffi::CString::new(r#"{"name":"root","kind":"rect"}"#).unwrap();
+            assert_eq!(mdc_set_scene(session, node.as_ptr()), 0);
+            assert_eq!(mdc_clear_scene(session), 0);
+            let bad = std::ffi::CString::new("not json").unwrap();
+            assert_eq!(mdc_set_scene(session, bad.as_ptr()), -2);
             mdc_session_destroy(session);
         }
     }

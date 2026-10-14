@@ -103,6 +103,15 @@ int64_t mdc_take_mirror_frame(MdcSession* session, uint16_t* width, uint16_t* he
 /** Form B: mirror counters. Writes received/dropped; returns 0 or -1. */
 int mdc_mirror_stats(const MdcSession* session, uint64_t* received, uint64_t* dropped);
 
+/**
+ * Set a vector scene from a NUL-terminated JSON SceneNode.
+ * Returns 0, -1 on a bad pointer/session, or -2 on malformed JSON.
+ */
+int mdc_set_scene(MdcSession* session, const char* json);
+
+/** Clear the vector scene. Returns 0 or -1. */
+int mdc_clear_scene(MdcSession* session);
+
 /** Free a heap buffer returned by future helpers (no-op placeholder for symmetry). */
 void mdc_free(void* ptr);
 

@@ -542,6 +542,7 @@ dependencies = [
  "mdc-protocol",
  "mdc-simulator",
  "mdc-transport",
+ "serde_json",
 ]
 
 [[package]]
