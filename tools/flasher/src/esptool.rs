@@ -117,6 +117,8 @@ pub struct EspToolFlasher {
     pub identity_override: Option<String>,
     /// Port used for post-write DTR/RTS pulse when not dry_run.
     pub reset_port: Option<String>,
+    /// N44: check the pinned esptool version before a live write.
+    pub verify_version_on_flash: bool,
     runner: Box<dyn Runner>,
 }
 
@@ -133,6 +135,7 @@ impl EspToolFlasher {
             expected_device_id: String::new(),
             identity_override: None,
             reset_port: None,
+            verify_version_on_flash: true,
             runner: Box::new(ProcessRunner),
         }
     }
@@ -222,10 +225,15 @@ impl Flasher for EspToolFlasher {
         }
         self.validate_image_present()?;
         let argv = self.build_write_argv(&plan.port);
-        self.last_argv = argv.clone();
         if self.dry_run {
+            self.last_argv = argv;
             return Ok(());
         }
+        // N44: never write with an unpinned esptool version.
+        if self.verify_version_on_flash {
+            self.verify_esptool_version()?;
+        }
+        self.last_argv = argv.clone();
         let out = self.runner.run(&argv)?;
         self.run_count = self.run_count.saturating_add(1);
         if out.status != 0 {
@@ -411,6 +419,7 @@ mod tests {
         let ok = FakeRunner::with_outputs(vec![output(0, "", "")]);
         let mut flasher = EspToolFlasher::new(&image).with_runner(Box::new(ok));
         flasher.dry_run = false;
+        flasher.verify_version_on_flash = false; // this test isolates the write path
         flasher.flash(&plan()).unwrap();
         assert_eq!(flasher.run_count, 1);
         assert!(flasher.last_argv.join(" ").contains("write-flash"));
@@ -418,6 +427,7 @@ mod tests {
         let bad = FakeRunner::with_outputs(vec![output(2, "", "boom")]);
         let mut flasher = EspToolFlasher::new(&image).with_runner(Box::new(bad));
         flasher.dry_run = false;
+        flasher.verify_version_on_flash = false;
         let err = flasher.flash(&plan()).unwrap_err();
         assert!(err.contains("boom"), "{err}");
 
@@ -447,6 +457,30 @@ mod tests {
             .verify_esptool_version()
             .unwrap_err()
             .contains("exited 1"));
+
+        let _ = std::fs::remove_file(image);
+    }
+
+    #[test]
+    fn live_flash_enforces_the_version_lock_before_writing() {
+        let image = temp_image();
+        // Good version, then a successful write.
+        let runner = FakeRunner::with_outputs(vec![
+            output(0, "esptool.py v4.7.0\n", ""),
+            output(0, "", ""),
+        ]);
+        let mut flasher = EspToolFlasher::new(&image).with_runner(Box::new(runner));
+        flasher.dry_run = false;
+        flasher.flash(&plan()).unwrap();
+        assert_eq!(flasher.run_count, 2, "version check + write");
+
+        // Wrong version refuses before any write argv is recorded.
+        let runner = FakeRunner::with_outputs(vec![output(0, "esptool.py v4.6.0\n", "")]);
+        let mut flasher = EspToolFlasher::new(&image).with_runner(Box::new(runner));
+        flasher.dry_run = false;
+        let error = flasher.flash(&plan()).unwrap_err();
+        assert!(error.contains("4.7.0"), "{error}");
+        assert!(flasher.last_argv.is_empty(), "no write was attempted");
 
         let _ = std::fs::remove_file(image);
     }
