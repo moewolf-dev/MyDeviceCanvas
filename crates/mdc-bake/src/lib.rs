@@ -25,6 +25,10 @@ pub enum BakeError {
     Budget(u32, u32),
     #[error("decode failed: {0}")]
     Decode(String),
+    #[error("expected {0} frames, got {1}")]
+    FrameCount(usize, usize),
+    #[error("a frame is {0}x{1}, expected {2}x{2}")]
+    FrameSize(u32, u32, u32, u32),
 }
 
 /// Bake limits: input, source dimensions and output budget.
@@ -59,7 +63,10 @@ pub fn decode_resize_rgb565(
     limits: &BakeLimits,
 ) -> Result<BakedTexture, BakeError> {
     if bytes.len() > limits.max_input_bytes {
-        return Err(BakeError::InputTooLarge(bytes.len(), limits.max_input_bytes));
+        return Err(BakeError::InputTooLarge(
+            bytes.len(),
+            limits.max_input_bytes,
+        ));
     }
     let reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
@@ -84,12 +91,8 @@ pub fn decode_resize_rgb565(
         .map_err(|e| BakeError::Decode(e.to_string()))?
         .decode()
         .map_err(|e| BakeError::Decode(e.to_string()))?;
-    let resized = image::imageops::resize(
-        &image.to_rgb8(),
-        target.0,
-        target.1,
-        FilterType::Triangle,
-    );
+    let resized =
+        image::imageops::resize(&image.to_rgb8(), target.0, target.1, FilterType::Triangle);
 
     let mut rgb565 = Vec::with_capacity(output_bytes as usize);
     for pixel in resized.pixels() {
@@ -107,6 +110,77 @@ pub fn decode_resize_rgb565(
 /// Pack one RGB888 pixel into RGB565.
 pub fn rgb565_of(r: u8, g: u8, b: u8) -> u16 {
     (u16::from(r >> 3) << 11) | (u16::from(g >> 2) << 5) | u16::from(b >> 3)
+}
+
+/// An atlas of baked frames laid out on an `mdc_model::AtlasPlan` grid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BakedAtlas {
+    pub width: u32,
+    pub height: u32,
+    pub sprite_width: u32,
+    pub sprite_height: u32,
+    pub frames: u32,
+    pub columns: u32,
+    pub rows: u32,
+    /// RGB565 little-endian atlas pixels.
+    pub rgb565: Vec<u8>,
+}
+
+impl BakedAtlas {
+    /// Byte offset of the top-left pixel of frame `index`, or `None` when out of
+    /// range. Frames fill the grid left-to-right, top-to-bottom.
+    pub fn frame_offset(&self, index: u32) -> Option<usize> {
+        if index >= self.frames {
+            return None;
+        }
+        let column = (index % self.columns) as usize;
+        let row = (index / self.columns) as usize;
+        let pixel = row * self.sprite_height as usize * self.width as usize
+            + column * self.sprite_width as usize;
+        Some(pixel * 2)
+    }
+}
+
+/// Lay `frames` onto the grid `plan` describes. Every frame must match the
+/// sprite size and the count must match the plan.
+pub fn pack(plan: &mdc_model::AtlasPlan, frames: &[BakedTexture]) -> Result<BakedAtlas, BakeError> {
+    if frames.len() != plan.frames as usize {
+        return Err(BakeError::FrameCount(plan.frames as usize, frames.len()));
+    }
+    for frame in frames {
+        if frame.width != plan.sprite_width || frame.height != plan.sprite_height {
+            return Err(BakeError::FrameSize(
+                frame.width,
+                frame.height,
+                plan.sprite_width,
+                plan.sprite_height,
+            ));
+        }
+    }
+    let width = plan.columns.saturating_mul(plan.sprite_width);
+    let height = plan.rows.saturating_mul(plan.sprite_height);
+    let row_bytes = (plan.sprite_width as usize) * 2;
+    let mut rgb565 = vec![0u8; (width as usize) * (height as usize) * 2];
+    for (index, frame) in frames.iter().enumerate() {
+        let column = index as u32 % plan.columns;
+        let row = index as u32 / plan.columns;
+        for y in 0..plan.sprite_height as usize {
+            let src = y * row_bytes;
+            let dst = ((row as usize) * plan.sprite_height as usize + y) * (width as usize) * 2
+                + (column as usize) * row_bytes;
+            rgb565[dst..dst + row_bytes].copy_from_slice(&frame.rgb565[src..src + row_bytes]);
+        }
+    }
+    Ok(BakedAtlas {
+        width,
+        height,
+        sprite_width: plan.sprite_width,
+        sprite_height: plan.sprite_height,
+        frames: plan.frames,
+        columns: plan.columns,
+        rows: plan.rows,
+        rgb565,
+    })
 }
 
 #[cfg(test)]
@@ -173,6 +247,59 @@ mod tests {
         assert!(matches!(
             decode_resize_rgb565(b"not an image", (4, 4), &BakeLimits::default()),
             Err(BakeError::Decode(_))
+        ));
+    }
+
+    fn solid(width: u32, height: u32, value: u16) -> BakedTexture {
+        let mut rgb565 = Vec::with_capacity((width * height * 2) as usize);
+        for _ in 0..width * height {
+            rgb565.push((value & 0xff) as u8);
+            rgb565.push((value >> 8) as u8);
+        }
+        BakedTexture {
+            width,
+            height,
+            rgb565,
+        }
+    }
+
+    fn plan_of(sprite: u32, frames: u32, columns: u32, rows: u32) -> mdc_model::AtlasPlan {
+        mdc_model::AtlasPlan {
+            sprite_width: sprite,
+            sprite_height: sprite,
+            frames,
+            columns,
+            rows,
+            total_bytes: u64::from(frames) * u64::from(sprite) * u64::from(sprite) * 2,
+            motions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn packs_frames_left_to_right_top_to_bottom() {
+        let plan = plan_of(2, 2, 2, 1);
+        let red = solid(2, 2, 0xF800);
+        let green = solid(2, 2, 0x07E0);
+        let atlas = pack(&plan, &[red, green]).unwrap();
+        assert_eq!((atlas.width, atlas.height), (4, 2));
+        assert_eq!(atlas.rgb565.len(), 4 * 2 * 2);
+        assert_eq!(atlas.frame_offset(0), Some(0));
+        assert_eq!(atlas.frame_offset(1), Some(4));
+        assert_eq!(atlas.frame_offset(2), None);
+        assert_eq!(&atlas.rgb565[0..2], &[0x00, 0xF8]);
+        assert_eq!(&atlas.rgb565[4..6], &[0xE0, 0x07]);
+    }
+
+    #[test]
+    fn frame_count_and_size_mismatches_are_rejected() {
+        let plan = plan_of(2, 2, 2, 1);
+        assert!(matches!(
+            pack(&plan, &[solid(2, 2, 0)]),
+            Err(BakeError::FrameCount(2, 1))
+        ));
+        assert!(matches!(
+            pack(&plan, &[solid(4, 4, 0), solid(2, 2, 0)]),
+            Err(BakeError::FrameSize(4, 4, 2, 2))
         ));
     }
 }
