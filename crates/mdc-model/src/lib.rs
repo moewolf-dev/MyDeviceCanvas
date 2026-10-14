@@ -8,11 +8,13 @@
 //! This crate depends only on serde; it never depends on `mdc-core`, and model
 //! formats never enter the device runtime (see
 //! `docs/render-topology-decision.md` §4 and `docs/model-compiler.md`).
+mod atlas;
 mod backend;
 mod gltf;
 mod ir;
 mod live2d;
 
+pub use atlas::{AtlasBaker, AtlasPlan, MotionFrames};
 pub use backend::{
     compile, compile_auto, compile_with, DevicePackage, Esp32PlaneBackend, LinuxMeshBackend,
     PackageMode, RendererCapability, TargetBackend,

@@ -72,6 +72,15 @@ Backend selection is **Capability-driven**, never `if board == x`.
 A weak device never receives mesh or skeleton data; a GPU package never contains
 baked sprites in mesh mode.
 
+## Sprite atlas baker
+
+`AtlasBaker` turns motion metadata into a deterministic `AtlasPlan`: every
+motion contributes `ceil(duration × fps) + 1` frames laid on a near-square grid
+clamped to the device texture limit. It is a *plan* — no pixels are decoded or
+packed — and it is bounded by `max_frames`, `max_atlas_bytes` and the texture
+limit before any allocation. An unknown sprite size (0), empty motion set, or an
+atlas larger than the texture limit is rejected.
+
 ## Memory and limits
 
 The IR is metadata-level: geometry is summarised as vertex/index counts, and
