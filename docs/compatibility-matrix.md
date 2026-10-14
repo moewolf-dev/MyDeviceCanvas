@@ -79,6 +79,8 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | `mdc inspect` mirror/renderer | sim-verified (JSON includes mirror + renderer capability, no pixels) | physical: pending |
 | OBS file sink / TCP server | sim-verified (`PpmDirectorySink` atomic + `MirrorServer` latest-wins) | n/a |
 | `mdc mirror` command | sim-verified (drives a sim board, writes PPM / serves TCP) | physical: pending |
+| Config capability + CONFIG | sim-verified (`Capabilities.config`, CBOR get/set, canonical vector) | physical: pending |
+| Config host (core/sim/CLI/Node) | sim-verified (capability gate, validation, secret redaction) | physical: pending |
 | Model compiler / MDC IR | sim-verified (`mdc-model`, glTF/GLB + Live2D → IR → package) | n/a |
 | Renderer capability on the wire | sim-verified (`Capabilities.renderer{}`, optional; Rust+C++ shared bytes) | physical: pending |
 | Runtime package transfer | sim-verified (`PACKAGE` 0x32 begin/chunk/commit; `install_package`→FakeDevice ready) | physical: pending |

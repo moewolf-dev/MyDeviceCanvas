@@ -2,6 +2,21 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.14] — Configuration host + provisioning batch (N39–N48)
+
+### Added
+
+- `Capabilities.config` + `CONFIG` (0x33) CBOR message with a canonical vector (N39)
+- Core `set_config`/`get_config` gated on the advertised keys (N40)
+- Simulator config store with per-key validation and secret redaction (N41)
+- `mdc config get|set` CLI and Node `getConfig`/`setConfig` (N42)
+- Best-effort live mDNS query in `mdc discover` (N43)
+- esptool version lock enforced before a live flash (N44)
+- Capability-driven model optimizer plan (N45)
+- VRM meta/expressions and Live2D physics/pose metadata import (N46)
+- Config compatibility fixtures (N47)
+- `docs/config-host.md` (N48)
+
 ## [0.1.13] — OBS delivery + SDK/runtime batch (N29–N38)
 
 ### Added
