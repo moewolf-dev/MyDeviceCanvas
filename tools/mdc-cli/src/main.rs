@@ -707,6 +707,11 @@ fn cmd_discover(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
     if opts.sim {
         combined.push_provider(Box::new(MockMdnsProvider::with_defaults()));
     }
+    // N43: best-effort live mDNS query alongside the serial scan. A sandbox with
+    // no multicast route simply yields no candidates.
+    let mut mdns = mdc_discovery::MdnsDiscovery::default();
+    let _ = mdns.query_live(std::time::Duration::from_millis(150));
+    combined.push_provider(Box::new(mdns));
     let rows: Vec<Row> = combined
         .discover()
         .into_iter()

@@ -289,6 +289,31 @@ impl MdnsDiscovery {
     pub fn ingest(&mut self, packet: Vec<u8>) {
         self.packets.push(packet);
     }
+
+    /// Best-effort live query: send the PTR query to `224.0.0.251:5353` and
+    /// collect responses for `timeout`. Multicast may be unavailable (sandbox,
+    /// no route); that is not an error — it simply yields no candidates.
+    pub fn query_live(&mut self, timeout: std::time::Duration) -> std::io::Result<usize> {
+        use std::net::UdpSocket;
+        let socket = UdpSocket::bind(("0.0.0.0", 0))?;
+        let slice = timeout.min(std::time::Duration::from_millis(500));
+        socket.set_read_timeout(Some(slice.max(std::time::Duration::from_millis(1))))?;
+        let query = self.query_packet();
+        let _ = socket.send_to(&query, ("224.0.0.251", 5353));
+        let deadline = std::time::Instant::now() + timeout;
+        let mut buffer = vec![0u8; 4096];
+        let mut received = 0;
+        while std::time::Instant::now() < deadline {
+            match socket.recv_from(&mut buffer) {
+                Ok((len, _)) => {
+                    self.ingest(buffer[..len].to_vec());
+                    received += 1;
+                }
+                Err(_) => break,
+            }
+        }
+        Ok(received)
+    }
     pub fn candidates_from(&self, packet: &[u8]) -> Vec<Candidate> {
         let Ok(records) = parse_records(packet) else {
             return Vec::new();
@@ -448,5 +473,20 @@ mod tests {
         let mut discovery = MdnsDiscovery::default();
         discovery.ingest(vec![0xff; 3]);
         assert!(discovery.discover().is_empty());
+    }
+
+    #[test]
+    fn live_query_is_best_effort_and_does_not_hang() {
+        let mut discovery = MdnsDiscovery::default();
+        let start = std::time::Instant::now();
+        let received = discovery.query_live(std::time::Duration::from_millis(50));
+        assert!(
+            received.is_ok(),
+            "a missing multicast route is not an error"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "the query respects its timeout"
+        );
     }
 }
