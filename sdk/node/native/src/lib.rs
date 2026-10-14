@@ -577,6 +577,44 @@ impl NativeManager {
         })
     }
 
+    /// N42: read a device configuration value (sim path).
+    #[napi(js_name = "getConfig")]
+    pub fn get_config(&self, key: String) -> Result<String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        sim.session
+            .get_config(&key)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        pump_link(sim)?;
+        Ok(sim.session.config(&key).unwrap_or("").to_string())
+    }
+
+    /// N42: write a device configuration value and return the accepted value.
+    #[napi(js_name = "setConfig")]
+    pub fn set_config(&self, key: String, value: String) -> Result<String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        sim.session
+            .set_config(&key, &value)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        pump_link(sim)?;
+        Ok(sim.session.config(&key).unwrap_or("").to_string())
+    }
+
     /// Open a named simulator board before the first `devices()` call.
     #[napi(js_name = "openBoard")]
     pub fn open_board(&self, board_id: String) -> Result<()> {

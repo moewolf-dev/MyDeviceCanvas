@@ -143,6 +143,22 @@ export class MyDeviceCanvas {
     if (this._disposed) throw new Error("manager is disposed");
     return (await this._native.mirrorStats?.()) ?? null;
   }
+  /** N42: read a device configuration value. */
+  async getConfig(key) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.getConfig !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.getConfig(key);
+  }
+  /** N42: write a device configuration value; returns the accepted value. */
+  async setConfig(key, value) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.setConfig !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.setConfig(key, String(value));
+  }
   on(event, listener) {
     if (this._disposed) throw new Error("manager is disposed");
     if (typeof listener !== "function") {

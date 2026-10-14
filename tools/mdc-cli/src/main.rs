@@ -395,6 +395,39 @@ fn cmd_install_package(opts: &GlobalOpts, path: &str) -> Result<(), Box<dyn std:
     }
     Ok(())
 }
+/// N42: read or write a device configuration value on a simulator board.
+fn cmd_config(
+    opts: &GlobalOpts,
+    action: &str,
+    key: &str,
+    value: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (mut session, mut device, _manager) = open_sim(&opts.board)?;
+    match action {
+        "get" => {
+            session.get_config(key)?;
+        }
+        "set" => {
+            let value = value.ok_or("set requires a value")?;
+            session.set_config(key, value)?;
+        }
+        other => return Err(format!("unknown config action {other}").into()),
+    }
+    device.poll()?;
+    session.poll()?;
+    let learned = session.config(key).map(str::to_string);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "board": opts.board,
+            "key": key,
+            "value": learned,
+            "ok": learned.is_some(),
+        }))?
+    );
+    Ok(())
+}
+
 /// Form B (N31): start mirroring on a simulator board, drive a fixed number of
 /// frames, and deliver them to a file watcher (`--write-dir`) and/or a TCP
 /// consumer (`--serve`). Prints JSON stats.
@@ -1682,7 +1715,8 @@ fn usage() {
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--serve ADDR]|\
-package <model.gltf> [out.mdcpkg]|install-package <file.mdcpkg>"
+package <model.gltf> [out.mdcpkg]|install-package <file.mdcpkg>|\
+config get <key>|config set <key> <value>"
     );
 }
 
@@ -1770,6 +1804,17 @@ fn main() {
             let mut o = opts.clone();
             o.sim = true;
             cmd_install_package(&o, &path)
+        }
+        Some("config") => {
+            let action = args.get(1).cloned().unwrap_or_default();
+            let key = args.get(2).cloned().unwrap_or_default();
+            if action.is_empty() || key.is_empty() {
+                eprintln!("config get <key> | config set <key> <value>");
+                std::process::exit(2);
+            }
+            let mut o = opts.clone();
+            o.sim = true;
+            cmd_config(&o, &action, &key, args.get(3).map(String::as_str))
         }
         Some("ota-confirm") => cmd_ota_confirm(&opts),
         Some("linux-accept") => cmd_linux_accept(&opts),
@@ -2414,5 +2459,19 @@ mod tests {
         // The linux-virt board advertises a mesh renderer, so install succeeds.
         cmd_install_package(&opts, out.to_str().unwrap()).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_command_sets_and_reads_back() {
+        let opts = GlobalOpts {
+            sim: true,
+            address: None,
+            port: None,
+            board: "esp32-jc3248w535-sim".into(),
+        };
+        cmd_config(&opts, "set", "brightness", Some("200")).unwrap();
+        cmd_config(&opts, "get", "brightness", None).unwrap();
+        // A secret is redacted; the call still succeeds.
+        cmd_config(&opts, "get", "wifi_password", None).unwrap();
     }
 }

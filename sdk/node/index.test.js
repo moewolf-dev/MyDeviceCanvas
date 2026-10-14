@@ -125,3 +125,15 @@ test("mirror events and controls go through the public SDK", async () => {
   const stats = await mdc.mirrorStats();
   assert.equal(stats.framesReceived, 1);
 });
+
+test("config get/set go through the public SDK", async () => {
+  const writes = [];
+  const mdc = new MyDeviceCanvas({
+    setConfig(key, value) { writes.push([key, value]); return value; },
+    getConfig(key) { return key === "wifi_password" ? "***" : "200"; },
+  });
+  assert.equal(await mdc.setConfig("brightness", 200), "200");
+  assert.deepEqual(writes, [["brightness", "200"]]);
+  assert.equal(await mdc.getConfig("brightness"), "200");
+  assert.equal(await mdc.getConfig("wifi_password"), "***");
+});
