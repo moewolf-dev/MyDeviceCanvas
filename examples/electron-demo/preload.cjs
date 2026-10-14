@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld("mdc", {
   mirrorStart: (surfaceId, maxFps) => ipcRenderer.invoke("mdc:mirror-start", surfaceId, maxFps),
   mirrorStop: (surfaceId) => ipcRenderer.invoke("mdc:mirror-stop", surfaceId),
   mirrorPoll: () => ipcRenderer.invoke("mdc:mirror-poll"),
+  getConfig: (key) => ipcRenderer.invoke("mdc:config-get", key),
+  setConfig: (key, value) => ipcRenderer.invoke("mdc:config-set", key, value),
   onMirrorMeta: (listener) => {
     const wrapped = (_event, info) => listener(info);
     ipcRenderer.on("mdc:mirror-meta", wrapped);

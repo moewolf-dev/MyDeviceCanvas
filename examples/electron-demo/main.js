@@ -7,6 +7,7 @@ import {
   decodeMirrorFrame,
   formatError,
   mirrorPanelStatus,
+  normalizeBrightness,
   originTile,
   planConnection,
 } from "./demo-logic.js";
@@ -165,6 +166,25 @@ ipcMain.handle("mdc:mirror-poll", async () => {
       };
     }
     return { ok: true, frame: preview, status: mirrorPanelStatus(stats), stats };
+  } catch (error) {
+    return { ok: false, error: formatError(error) };
+  }
+});
+
+ipcMain.handle("mdc:config-get", async (_event, key) => {
+  try {
+    const active = await ensureSim();
+    return { ok: true, value: await active.getConfig(key) };
+  } catch (error) {
+    return { ok: false, error: formatError(error) };
+  }
+});
+
+ipcMain.handle("mdc:config-set", async (_event, key, value) => {
+  try {
+    const accepted = key === "brightness" ? normalizeBrightness(value) : String(value);
+    const active = await ensureSim();
+    return { ok: true, value: await active.setConfig(key, accepted) };
   } catch (error) {
     return { ok: false, error: formatError(error) };
   }

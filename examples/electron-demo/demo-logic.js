@@ -114,3 +114,12 @@ export function mirrorPanelStatus(stats) {
   if (!stats) return "mirror: n/a";
   return `mirror: ${stats.framesReceived} frames, ${stats.framesDropped} dropped, last #${stats.lastFrameId}`;
 }
+
+/** N56: validate a brightness input before it reaches the device. */
+export function normalizeBrightness(value) {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0 || n > 255) {
+    throw new RangeError("brightness must be an integer 0..255");
+  }
+  return String(n);
+}

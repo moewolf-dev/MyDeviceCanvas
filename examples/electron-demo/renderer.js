@@ -1,4 +1,4 @@
-import { colorBarsRgb565, rgb565ToRgba } from "./demo-logic.js";
+import { colorBarsRgb565, normalizeBrightness, rgb565ToRgba } from "./demo-logic.js";
 
 const output = document.querySelector("#output");
 const canvas = document.querySelector("#preview");
@@ -116,4 +116,29 @@ document.querySelector("#mirror-stop").onclick = async () => {
   }
   show(await bridge().mirrorStop("main"));
   await pollMirror();
+};
+
+const brightness = document.querySelector("#brightness");
+
+document.querySelector("#set-brightness").onclick = async () => {
+  if (!bridge()) {
+    show("没有 preload，无法设置亮度。");
+    return;
+  }
+  try {
+    const value = normalizeBrightness(brightness.value);
+    show(await bridge().setConfig("brightness", value));
+  } catch (error) {
+    show(error.message);
+  }
+};
+
+document.querySelector("#get-brightness").onclick = async () => {
+  if (!bridge()) {
+    show("没有 preload，无法读取亮度。");
+    return;
+  }
+  const result = await bridge().getConfig("brightness");
+  if (result.ok) brightness.value = result.value;
+  show(result);
 };

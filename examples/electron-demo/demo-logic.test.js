@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { colorBarsRgb565, decodeMirrorFrame, formatError, mirrorPanelStatus, originTile, planConnection, rejectNonSimEndpoint } from "./demo-logic.js";
+import { colorBarsRgb565, decodeMirrorFrame, formatError, mirrorPanelStatus, normalizeBrightness, originTile, planConnection, rejectNonSimEndpoint } from "./demo-logic.js";
 
 test("color bars are RGB565 little-endian and start with red", () => {
   const frame = colorBarsRgb565(8, 1);
@@ -60,4 +60,11 @@ test("mirrorPanelStatus summarizes counters or reports n/a", () => {
     /3 frames/,
   );
   assert.equal(mirrorPanelStatus(null), "mirror: n/a");
+});
+
+test("normalizeBrightness accepts 0..255 and rejects the rest", () => {
+  assert.equal(normalizeBrightness("128"), "128");
+  assert.equal(normalizeBrightness(0), "0");
+  assert.throws(() => normalizeBrightness(256), /0\.\.255/);
+  assert.throws(() => normalizeBrightness("x"), /0\.\.255/);
 });
