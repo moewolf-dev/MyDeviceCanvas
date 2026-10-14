@@ -45,6 +45,19 @@ struct DeviceDto {
     /// the device can do without draining the mirror inbox.
     mirror: MirrorDto,
     renderer: Option<RendererDto>,
+    /// N64: configuration keys and scene limits.
+    #[serde(rename = "configKeys")]
+    config_keys: Vec<String>,
+    scene: SceneDto,
+}
+
+#[derive(Serialize)]
+struct SceneDto {
+    supported: bool,
+    #[serde(rename = "maxNodes")]
+    max_nodes: u32,
+    #[serde(rename = "maxDepth")]
+    max_depth: u32,
 }
 
 #[derive(Serialize)]
@@ -180,6 +193,12 @@ fn devices_json(manager: &DeviceManager) -> String {
                 max_texture: r.max_texture,
                 max_vertices: r.max_vertices,
             }),
+            config_keys: d.capabilities.config.keys.clone(),
+            scene: SceneDto {
+                supported: !d.capabilities.scene.is_disabled(),
+                max_nodes: d.capabilities.scene.max_nodes,
+                max_depth: d.capabilities.scene.max_depth,
+            },
         })
         .collect();
     serde_json::to_string_pretty(&list).unwrap_or_else(|_| "[]".into())
@@ -229,6 +248,12 @@ fn inspect_json(manager: &DeviceManager, metrics: Option<&SimMetrics>) -> String
                 max_texture: r.max_texture,
                 max_vertices: r.max_vertices,
             }),
+            config_keys: d.capabilities.config.keys.clone(),
+            scene: SceneDto {
+                supported: !d.capabilities.scene.is_disabled(),
+                max_nodes: d.capabilities.scene.max_nodes,
+                max_depth: d.capabilities.scene.max_depth,
+            },
         })
         .collect();
     serde_json::to_string_pretty(&Inspect {
@@ -358,6 +383,8 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
                 serde_json::json!({
                     "tick": tick,
                     "board": opts.board,
+                    "scene_nodes": device.scene_node_count(),
+                    "atlas_frames": device.atlas_frames(),
                     "config": inspect_json(&mgr, Some(&snapshot)),
                 })
             );
@@ -2522,6 +2549,8 @@ mod tests {
         assert!(json.contains("\"mesh2d\": true"));
         assert!(json.contains("\"mirror\""));
         assert!(json.contains("\"supported\": true"));
+        assert!(json.contains("\"configKeys\""));
+        assert!(json.contains("\"scene\""));
         assert!(!json.contains("\"pixels\""));
     }
 
