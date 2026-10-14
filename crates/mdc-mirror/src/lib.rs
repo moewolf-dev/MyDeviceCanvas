@@ -10,6 +10,8 @@
 use mdc_protocol::{decode_frame_payload, FramePayload, MessageType, HEADER_LEN};
 use mdc_transport::Transport;
 use serde::{Deserialize, Serialize};
+use std::io::{self, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -778,6 +780,103 @@ impl MirrorSink for QueueSink {
     }
 }
 
+/// A bounded TCP fan-out of mirrored frames (N30). A headless preview, an OBS
+/// browser source, or a test can connect and read length-prefixed PPM frames.
+/// At most one frame is queued per client: a consumer slower than the device
+/// drops older frames (latest-wins) instead of growing memory.
+pub struct MirrorServer {
+    listener: TcpListener,
+    clients: Vec<ServerClient>,
+    max_clients: usize,
+    frames: u64,
+    dropped: u64,
+}
+
+struct ServerClient {
+    stream: TcpStream,
+    pending: Option<Vec<u8>>,
+}
+
+impl MirrorServer {
+    pub fn bind(addr: &str) -> io::Result<Self> {
+        let listener = TcpListener::bind(addr)?;
+        listener.set_nonblocking(true)?;
+        Ok(Self {
+            listener,
+            clients: Vec::new(),
+            max_clients: 8,
+            frames: 0,
+            dropped: 0,
+        })
+    }
+    pub fn with_max_clients(mut self, max_clients: usize) -> Self {
+        self.max_clients = max_clients;
+        self
+    }
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.listener.local_addr()
+    }
+    /// Accept any pending clients (non-blocking), capped at `max_clients`.
+    pub fn accept_pending(&mut self) -> io::Result<usize> {
+        let mut accepted = 0;
+        while self.clients.len() < self.max_clients {
+            match self.listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = stream.set_nonblocking(true);
+                    self.clients.push(ServerClient {
+                        stream,
+                        pending: None,
+                    });
+                    accepted += 1;
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(accepted)
+    }
+    /// Queue a frame for every client. A client that still has an unwritten
+    /// frame counts a drop and keeps only the newest.
+    pub fn publish(&mut self, frame: &ShadowFrame<'_>) {
+        let body = encode_ppm(frame.width, frame.height, frame.pixels);
+        let mut packet = Vec::with_capacity(4 + body.len());
+        packet.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        packet.extend_from_slice(&body);
+        for client in &mut self.clients {
+            if client.pending.is_some() {
+                self.dropped = self.dropped.saturating_add(1);
+            }
+            client.pending = Some(packet.clone());
+        }
+        self.frames = self.frames.saturating_add(1);
+    }
+    /// Try to write each queued frame. A client that would block keeps its frame;
+    /// a client that errors is dropped.
+    pub fn flush(&mut self) {
+        self.clients.retain_mut(|client| {
+            if let Some(packet) = client.pending.take() {
+                match client.stream.write_all(&packet) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        client.pending = Some(packet);
+                    }
+                    Err(_) => return false,
+                }
+            }
+            true
+        });
+    }
+    pub fn client_count(&self) -> usize {
+        self.clients.len()
+    }
+    pub fn frames_published(&self) -> u64 {
+        self.frames
+    }
+    pub fn frames_dropped(&self) -> u64 {
+        self.dropped
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -786,6 +885,8 @@ mod tests {
         VERSION,
     };
     use mdc_transport::MemoryLink;
+    use std::io::Read;
+    use std::time::Duration;
 
     fn mirror_packet(payload: Vec<u8>) -> Vec<u8> {
         Packet {
@@ -1177,5 +1278,68 @@ mod tests {
         // The very first frame is pinned while a consumer holds its lease.
         assert_eq!(fb.frame_view(&held).pixels, &expected[..]);
         assert!(fb.busy_drops() >= 1);
+    }
+
+    fn accept_one(server: &mut MirrorServer) {
+        for _ in 0..200 {
+            if server.accept_pending().unwrap() >= 1 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("no loopback client was accepted");
+    }
+
+    #[test]
+    fn mirror_server_fans_out_to_a_loopback_client() {
+        let mut server = MirrorServer::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        accept_one(&mut server);
+        assert_eq!(server.client_count(), 1);
+
+        let pixels = vec![0u8, 0, 255, 255]; // 1x1 BGRA red
+        server.publish(&ShadowFrame {
+            width: 1,
+            height: 1,
+            generation: 1,
+            frame_id: 1,
+            pixels: &pixels,
+        });
+        server.flush();
+
+        let mut header = [0u8; 4];
+        client.read_exact(&mut header).unwrap();
+        let len = u32::from_be_bytes(header) as usize;
+        let mut body = vec![0u8; len];
+        client.read_exact(&mut body).unwrap();
+        assert_eq!(&body[..11], b"P6\n1 1\n255\n");
+        assert_eq!(server.frames_published(), 1);
+        assert_eq!(server.frames_dropped(), 0);
+    }
+
+    #[test]
+    fn mirror_server_keeps_only_the_newest_frame_for_a_slow_client() {
+        let mut server = MirrorServer::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let _client = std::net::TcpStream::connect(addr).unwrap();
+        accept_one(&mut server);
+
+        let pixels = vec![0u8, 0, 0, 255];
+        let frame = ShadowFrame {
+            width: 1,
+            height: 1,
+            generation: 1,
+            frame_id: 1,
+            pixels: &pixels,
+        };
+        server.publish(&frame);
+        server.publish(&frame); // not flushed yet → replaces the pending frame
+        assert_eq!(server.frames_published(), 2);
+        assert_eq!(server.frames_dropped(), 1);
+        server.flush();
     }
 }
