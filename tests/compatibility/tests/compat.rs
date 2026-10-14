@@ -38,6 +38,7 @@ fn major_version_mismatch_is_rejected_at_decode() {
             mirror_bandwidth: 0,
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
+            scene: mdc_protocol::SceneCapability::default(),
         })
         .unwrap(),
     }

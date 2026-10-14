@@ -1,0 +1,6 @@
+{
+  "name": "scene_command",
+  "description": "Host->device SCENE set (MessageType::Scene 0x34, CBOR SceneCommand with a root rect holding a text child)",
+  "message_type": 52,
+  "hex": "a266616374696f6e63736574657363656e65a3646e616d6564726f6f74646b696e646472656374686368696c6472656e81a3646e616d65656c6162656c646b696e6464746578746576616c7565626869"
+}

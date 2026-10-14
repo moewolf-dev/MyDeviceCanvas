@@ -43,6 +43,8 @@ pub enum MessageType {
     Package = 0x32,
     /// Host -> device configuration get/set (CBOR ConfigCommand, N39).
     Config = 0x33,
+    /// Host -> device vector scene (CBOR SceneCommand, N53).
+    Scene = 0x34,
     Ping = 0x40,
     Pong = 0x41,
     Ack = 0x50,
@@ -62,6 +64,7 @@ impl TryFrom<u8> for MessageType {
             0x31 => Ok(Self::MirrorCtrl),
             0x32 => Ok(Self::Package),
             0x33 => Ok(Self::Config),
+            0x34 => Ok(Self::Scene),
             0x40 => Ok(Self::Ping),
             0x41 => Ok(Self::Pong),
             0x50 => Ok(Self::Ack),
@@ -388,6 +391,66 @@ pub struct Capabilities {
     /// see an unchanged map.
     #[serde(default, skip_serializing_if = "ConfigCapability::is_empty")]
     pub config: ConfigCapability,
+    /// N53: vector scene limits. Omitted when disabled.
+    #[serde(default, skip_serializing_if = "SceneCapability::is_disabled")]
+    pub scene: SceneCapability,
+}
+
+/// Vector scene limits a device advertises (N53). `max_nodes == 0` means the
+/// device does not implement the Scene path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SceneCapability {
+    pub max_nodes: u32,
+    pub max_depth: u32,
+}
+impl SceneCapability {
+    pub fn enabled(max_nodes: u32, max_depth: u32) -> Self {
+        Self {
+            max_nodes,
+            max_depth,
+        }
+    }
+    pub fn is_disabled(&self) -> bool {
+        self.max_nodes == 0
+    }
+}
+
+/// A node in the host vector scene (CBOR, N53). `kind` selects the primitive
+/// (rect/text/sprite/image); `value` is kind-specific.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SceneNode {
+    pub name: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<SceneNode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+impl SceneNode {
+    /// Total node count including this one.
+    pub fn count(&self) -> u32 {
+        self.children
+            .iter()
+            .fold(1u32, |total, child| total.saturating_add(child.count()))
+    }
+    /// Maximum nesting depth (a leaf is 1).
+    pub fn depth(&self) -> u32 {
+        self.children
+            .iter()
+            .map(SceneNode::depth)
+            .max()
+            .unwrap_or(0)
+            + 1
+    }
+}
+
+/// Host -> device scene command (CBOR for MessageType::Scene).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SceneCommand {
+    /// set | clear
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<SceneNode>,
 }
 
 /// Configuration keys a device accepts via `CONFIG` (N39). Empty means the
@@ -1339,6 +1402,7 @@ mod tests {
             mirror_bandwidth: 5_000_000,
             renderer: None,
             config: ConfigCapability::default(),
+            scene: SceneCapability::default(),
         };
         // No mirror advertised -> rejected.
         assert!(negotiate_mirror(&caps, "main", "full-frame", 30, "RGB565").is_none());
@@ -1387,6 +1451,7 @@ mod tests {
             mirror_bandwidth: 0,
             renderer: None,
             config: ConfigCapability::default(),
+            scene: SceneCapability::default(),
         };
         // Absent renderer: the key is not serialized.
         let bytes = encode_control(&caps).unwrap();
@@ -1429,6 +1494,7 @@ mod tests {
             mirror_bandwidth: 0,
             renderer: None,
             config: ConfigCapability::default(),
+            scene: SceneCapability::default(),
         };
         let bytes = encode_control(&caps).unwrap();
         assert!(!bytes.windows(6).any(|w| w == b"config"));
@@ -1472,5 +1538,82 @@ mod tests {
         let bytes = encode_control(&reply).unwrap();
         let back: ConfigReply = decode_control(&bytes).unwrap();
         assert_eq!(back, reply);
+    }
+
+    fn scene_command() -> SceneCommand {
+        SceneCommand {
+            action: "set".into(),
+            scene: Some(SceneNode {
+                name: "root".into(),
+                kind: "rect".into(),
+                children: vec![SceneNode {
+                    name: "label".into(),
+                    kind: "text".into(),
+                    children: Vec::new(),
+                    value: Some("hi".into()),
+                }],
+                value: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn scene_capability_and_command_round_trip() {
+        let mut caps = Capabilities {
+            device_id: "dev1".into(),
+            firmware: "1".into(),
+            surfaces: vec![Surface {
+                id: "main".into(),
+                width: 2,
+                height: 2,
+                pixel_format: "RGB565".into(),
+                stride: 4,
+                rotation: 0,
+            }],
+            frame: true,
+            tile: true,
+            touch: false,
+            ota: false,
+            max_message: 4096,
+            max_chunk: 1024,
+            max_in_flight: 1,
+            max_fps: 30,
+            mirror: MirrorCapability::disabled(),
+            local_display_fps: 0,
+            mirror_fps: 0,
+            mirror_bandwidth: 0,
+            renderer: None,
+            config: ConfigCapability::default(),
+            scene: SceneCapability::enabled(64, 4),
+        };
+        let bytes = encode_control(&caps).unwrap();
+        let back: Capabilities = decode_control(&bytes).unwrap();
+        assert_eq!(back.scene, caps.scene);
+
+        // A disabled scene capability is omitted.
+        caps.scene = SceneCapability::default();
+        let bytes = encode_control(&caps).unwrap();
+        assert!(!bytes.windows(5).any(|w| w == b"scene"));
+
+        let command = scene_command();
+        let root = command.scene.as_ref().unwrap();
+        assert_eq!(root.count(), 2);
+        assert_eq!(root.depth(), 2);
+        let bytes = encode_control(&command).unwrap();
+        let back: SceneCommand = decode_control(&bytes).unwrap();
+        assert_eq!(back, command);
+        let vector = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../protocol/vectors/scene_command.json"),
+        )
+        .unwrap();
+        let hex = vector
+            .split("\"hex\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .nth(1)
+            .unwrap();
+        assert_eq!(bytes, parse_hex(hex));
     }
 }

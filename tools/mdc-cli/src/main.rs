@@ -2191,6 +2191,7 @@ mod tests {
                 mirror_bandwidth: 0,
                 renderer: None,
                 config: mdc_protocol::ConfigCapability::default(),
+                scene: mdc_protocol::SceneCapability::default(),
             })
             .unwrap(),
         }
@@ -2265,6 +2266,7 @@ mod tests {
                                             mirror_bandwidth: 0,
                                             renderer: None,
                                             config: mdc_protocol::ConfigCapability::default(),
+                                            scene: mdc_protocol::SceneCapability::default(),
                                         };
                                         let reply = Packet {
                                             version: VERSION,

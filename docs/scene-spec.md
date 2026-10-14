@@ -1,18 +1,47 @@
-# Scene Capability (Reserved)
+# Scene Format (v1)
 
-## Intent
+Status: **sim-verified** (host logic); physical delivery is `physical: pending`.
+This is the L01 vector-scene contract. A device that does not implement Scene
+keeps using Frame/Tile only.
 
-A future **Scene** message family may describe multi-layer / declarative layouts. For protocol v1.0 host and devices:
+## Capability
 
-- Capability bit / flag for Scene is **reserved** (not negotiated in Capabilities CBOR yet).
-- Existing devices remain **Frame** and **Tile** only.
-- Hosts must not require Scene to render; absence of Scene is not an error.
+`CAPABILITIES.scene { max_nodes, max_depth }`. `max_nodes == 0` (the default)
+means the device does not implement Scene; the field is omitted on the wire so
+pre-scene peers decode unchanged. A host must reject a scene that exceeds the
+advertised limits before sending.
 
-## Compatibility
+## Message
 
-| Device era | Required | Optional |
-|---|---|---|
-| v1 Frame/Tile | Frame | Tile, Input, OTA |
-| Future Scene | Frame | Scene (when advertised) |
+`SCENE` (0x34) carries a CBOR `SceneCommand`:
 
-Until a minor protocol bump documents the Scene payload, an unknown message type is rejected before the declared payload is allocated. The host API `Session::send_scene` and `mdc_session_send_scene` return unsupported and do not write a Scene packet. Old devices stay on Frame and Tile.
+```text
+SceneCommand:
+  action: "set" | "clear"
+  scene:  SceneNode?          # required for "set"
+
+SceneNode:
+  name:     string
+  kind:     "rect" | "text" | "sprite" | "image"
+  children: [SceneNode]       # optional, ordered back-to-front
+  value:    string?           # kind-specific (text payload, sprite ref)
+```
+
+Canonical bytes: `protocol/vectors/scene_command.json`.
+
+## Rules
+
+1. A host may only send a `set` after the device advertised scene support and
+   the node count/depth fit `max_nodes`/`max_depth`.
+2. `clear` removes the current scene; the device keeps presenting the last
+   Frame/Tile until a new scene or frame arrives.
+3. Scene is a *structure* message only: it does not define a full renderer or
+   animation; a device with a GPU may render it, a weak MCU may refuse.
+4. Unknown `kind` values are rejected by the device rather than ignored.
+5. Scene never changes the Frame/Tile path; a scene-unaware device is unaffected.
+
+## Non-goals
+
+- No full Scene runtime, shader, or 3D path in this wave.
+- No host-side rendering; the host only describes structure.
+- No physical device required; D05/G03 remain open.

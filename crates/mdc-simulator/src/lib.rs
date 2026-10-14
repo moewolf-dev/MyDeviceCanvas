@@ -562,6 +562,7 @@ impl FakeDevice {
             config: mdc_protocol::ConfigCapability {
                 keys: self.profile.config_keys.clone(),
             },
+            scene: mdc_protocol::SceneCapability::enabled(64, 4),
         }
     }
     /// Advance virtual clock and process inbound packets.

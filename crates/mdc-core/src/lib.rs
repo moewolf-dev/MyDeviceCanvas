@@ -1843,6 +1843,7 @@ mod tests {
             mirror_bandwidth: 0,
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
+            scene: mdc_protocol::SceneCapability::default(),
         }
     }
     fn s() -> Surface {
@@ -1897,6 +1898,7 @@ mod tests {
             mirror_bandwidth: 0,
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
+            scene: mdc_protocol::SceneCapability::default(),
         };
         let mut d = Device::new(caps);
         assert!(!d.update_surface_geometry("main", 2, 2).unwrap());
@@ -1925,6 +1927,7 @@ mod tests {
             mirror_bandwidth: 0,
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
+            scene: mdc_protocol::SceneCapability::default(),
         };
         let d = Device::new(c);
         assert_eq!(
@@ -2494,6 +2497,7 @@ mod tests {
             mirror_bandwidth: 0,
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
+            scene: mdc_protocol::SceneCapability::default(),
         };
         let mut manager = DeviceManager::new();
         manager.upsert(caps.clone()).unwrap();
@@ -2627,6 +2631,7 @@ mod tests {
             mirror_bandwidth: 0,
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
+            scene: mdc_protocol::SceneCapability::default(),
         };
         assert_eq!(
             manager.upsert(caps.clone()),
@@ -2686,6 +2691,7 @@ mod tests {
                         mirror_bandwidth: 0,
                         renderer: None,
                         config: mdc_protocol::ConfigCapability::default(),
+                        scene: mdc_protocol::SceneCapability::default(),
                     })
                     .unwrap(),
                 }
@@ -2726,6 +2732,7 @@ mod tests {
                         mirror_bandwidth: 0,
                         renderer: None,
                         config: mdc_protocol::ConfigCapability::default(),
+                        scene: mdc_protocol::SceneCapability::default(),
                     })
                     .unwrap(),
                 }
@@ -2825,6 +2832,7 @@ mod tests {
             mirror_bandwidth: 0,
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
+            scene: mdc_protocol::SceneCapability::default(),
         };
         let reply = Packet {
             version: VERSION,
@@ -2921,6 +2929,7 @@ mod tests {
             mirror_bandwidth: 0,
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
+            scene: mdc_protocol::SceneCapability::default(),
         };
         device_link
             .write(
@@ -3006,6 +3015,7 @@ mod tests {
                         mirror_bandwidth: 0,
                         renderer: None,
                         config: mdc_protocol::ConfigCapability::default(),
+                        scene: mdc_protocol::SceneCapability::default(),
                     })
                     .unwrap(),
                 }
@@ -3057,6 +3067,7 @@ mod tests {
                         mirror_bandwidth: 0,
                         renderer: None,
                         config: mdc_protocol::ConfigCapability::default(),
+                        scene: mdc_protocol::SceneCapability::default(),
                     })
                     .unwrap(),
                 }
@@ -3093,6 +3104,7 @@ mod tests {
             mirror_bandwidth: 0,
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
+            scene: mdc_protocol::SceneCapability::default(),
         };
         device_link
             .write(
@@ -3152,6 +3164,7 @@ mod tests {
                 mirror_bandwidth: 0,
                 renderer: None,
                 config: mdc_protocol::ConfigCapability::default(),
+                scene: mdc_protocol::SceneCapability::default(),
             };
             device_link
                 .write(
@@ -3204,6 +3217,7 @@ mod tests {
             mirror_bandwidth: 0,
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
+            scene: mdc_protocol::SceneCapability::default(),
         };
         device_link
             .write(
