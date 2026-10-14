@@ -26,6 +26,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 16 | N08: real glTF/GLB importer (bounds + image probe), Live2D model3 importer, second target backend (linux-mesh) | sim-verified |
 | 17 | N09–N18: skins/VRM + motion3, atlas baker, mirror sinks/queue + dirty-region, board grounding, real mDNS, renderer capability, esptool runner | sim-verified |
 | 18 | N19–N28: runtime package container/upload/message, install end-to-end, mirror event + Node/Electron surface, board renderer section, inspector metrics | sim-verified |
+| 19 | N29–N38: OBS file/TCP delivery + `mdc mirror`, `mdc package`/`install-package`, C++ package+mirror, C/Swift mirror, memory/compat tests | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 

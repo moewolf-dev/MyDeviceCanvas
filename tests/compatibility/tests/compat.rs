@@ -182,9 +182,11 @@ fn package_capability_gate_follows_the_device_renderer() {
     let model = mdc_model::GltfImporter
         .import(gltf, &mdc_model::ImportLimits::default())
         .unwrap();
-    let mesh = mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d())
-        .unwrap();
-    assert!(mesh.accepted_by(&mdc_model::RendererCapability::full_3d()).is_ok());
+    let mesh =
+        mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d()).unwrap();
+    assert!(mesh
+        .accepted_by(&mdc_model::RendererCapability::full_3d())
+        .is_ok());
     assert!(matches!(
         mesh.accepted_by(&mdc_model::RendererCapability::sprite_only()),
         Err(mdc_model::ModelError::Unsupported(_))
@@ -219,7 +221,11 @@ fn full_frame_receiver_refuses_a_dirty_region_commit() {
         ))
         .unwrap();
     receiver
-        .feed(&packet(mdc_protocol::encode_frame_chunk(2, 2, &[0x1F, 0x00])))
+        .feed(&packet(mdc_protocol::encode_frame_chunk(
+            2,
+            2,
+            &[0x1F, 0x00],
+        )))
         .unwrap();
     receiver
         .feed(&packet(mdc_protocol::encode_frame_commit(2)))

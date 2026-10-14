@@ -2,6 +2,18 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.13] — OBS delivery + SDK/runtime batch (N29–N38)
+
+### Added
+
+- `mdc-mirror` atomic PPM directory sink and bounded TCP mirror server (N29, N30)
+- `mdc mirror` CLI command writing PPM files or serving TCP (N31)
+- `mdc package` / `mdc install-package` CLI commands (N32)
+- C++ runtime `PACKAGE` receive + `MIRRORFRAME` emit (N33)
+- C ABI and Swift mirror surfaces (N34, N35)
+- Bounded mirror + package memory soak crate and package/mirror fixtures (N36, N37)
+- `docs/obs-bridge.md` OBS delivery guide (N38)
+
 ## [0.1.12] — Form B end-to-end batch (N19–N28)
 
 ### Added
