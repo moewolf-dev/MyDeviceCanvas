@@ -168,6 +168,8 @@ impl Default for BoardProfile {
                 "rotation".into(),
                 "wifi_ssid".into(),
                 "wifi_password".into(),
+                // N71: atlas animation control (only meaningful with a baked atlas).
+                "animation".into(),
             ],
         }
     }
@@ -305,6 +307,10 @@ pub struct FakeDevice {
     /// N61: baked atlas grid from the last accepted package.
     atlas_frames: u32,
     atlas_sprite: (u32, u32),
+    /// N71: the accepted baked atlas + running clip.
+    atlas: Option<mdc_model::AtlasBlob>,
+    anim_clip: Option<String>,
+    anim_start_tick: u64,
 }
 impl FakeDevice {
     pub fn from_transport(link: Box<dyn Transport>, profile: BoardProfile) -> Self {
@@ -349,6 +355,9 @@ impl FakeDevice {
             scene_present: false,
             atlas_frames: 0,
             atlas_sprite: (0, 0),
+            atlas: None,
+            anim_clip: None,
+            anim_start_tick: 0,
         }
     }
 
@@ -845,6 +854,8 @@ impl FakeDevice {
                     self.atlas_frames = atlas.frames;
                     self.atlas_sprite = (atlas.sprite_width, atlas.sprite_height);
                 }
+                self.atlas = package.package.atlas.clone();
+                self.anim_clip = None;
                 self.metrics.packages_received = self.metrics.packages_received.saturating_add(1);
                 self.ack(packet.request_id, self.current_frame_id, true, false)
             }
@@ -871,6 +882,25 @@ impl FakeDevice {
     }
     pub fn atlas_sprite(&self) -> (u32, u32) {
         self.atlas_sprite
+    }
+    /// N71: the atlas frame currently selected by the running clip, if any.
+    pub fn current_atlas_frame(&self) -> Option<u32> {
+        let atlas = self.atlas.as_ref()?;
+        let clip = atlas.clip(self.anim_clip.as_deref()?)?;
+        if clip.frames == 0 {
+            return Some(clip.start);
+        }
+        let elapsed_ms = self.clock.tick.saturating_sub(self.anim_start_tick);
+        let local = (elapsed_ms.saturating_mul(u64::from(clip.fps)) / 1000) as u32;
+        let within = if clip.looping {
+            local % clip.frames
+        } else {
+            local.min(clip.frames - 1)
+        };
+        Some(clip.start + within)
+    }
+    pub fn active_clip(&self) -> Option<&str> {
+        self.anim_clip.as_deref()
     }
     /// N54: accept a vector scene within the advertised limits.
     fn handle_scene(&mut self, packet: Packet) -> Result<(), SimError> {
@@ -907,6 +937,10 @@ impl FakeDevice {
         let command: ConfigCommand =
             decode_control(&packet.payload).map_err(|e| SimError::Protocol(e.to_string()))?;
         self.metrics.config_commands = self.metrics.config_commands.saturating_add(1);
+        // N71: "animation" is handled by the atlas runtime, not the config map.
+        if command.key == "animation" {
+            return self.handle_animation_config(&packet, &command);
+        }
         if !self.profile.config_keys.iter().any(|k| k == &command.key) {
             return self.reply_config(&command.key, false, None, Some("E_UNSUPPORTED"));
         }
@@ -954,6 +988,40 @@ impl FakeDevice {
             error: error.map(str::to_string),
         };
         self.write_control(MessageType::Config, 0, &reply)
+    }
+    /// N71: `config animation <clip|off>` starts/stops the atlas runtime.
+    fn handle_animation_config(
+        &mut self,
+        packet: &Packet,
+        command: &ConfigCommand,
+    ) -> Result<(), SimError> {
+        match command.action.as_str() {
+            "get" => {
+                let value = self.anim_clip.clone().unwrap_or_else(|| "off".to_string());
+                self.reply_config("animation", true, Some(value), None)
+            }
+            "set" => {
+                let Some(atlas) = self.atlas.as_ref() else {
+                    return self.reply_error(
+                        packet.request_id,
+                        "E_UNSUPPORTED",
+                        "no baked atlas installed",
+                    );
+                };
+                let value = command.value.clone().unwrap_or_default();
+                if value.is_empty() || value == "off" {
+                    self.anim_clip = None;
+                    return self.reply_config("animation", true, Some("off".into()), None);
+                }
+                if atlas.clip(&value).is_none() {
+                    return self.reply_config("animation", false, None, Some("E_VALUE"));
+                }
+                self.anim_clip = Some(value.clone());
+                self.anim_start_tick = self.clock.tick;
+                self.reply_config("animation", true, Some(value), None)
+            }
+            _ => self.reply_config("animation", false, None, Some("E_ACTION")),
+        }
     }
     /// Form B: true once a host MirrorCtrl start has been accepted.
     pub fn mirror_active(&self) -> bool {
@@ -1301,6 +1369,73 @@ mod tests {
         assert!(device.package_ready());
         assert_eq!(device.atlas_frames(), 2);
         assert_eq!(device.atlas_sprite(), (2, 2));
+    }
+
+    #[test]
+    fn atlas_animation_runtime_indexes_frames_by_the_clock() {
+        let (host, mut device) = FakeDevice::pair(BoardProfile::default());
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+        // Install a baked atlas with a 4-frame looping clip.
+        let atlas = mdc_model::AtlasBlob {
+            sprite_width: 2,
+            sprite_height: 2,
+            frames: 4,
+            columns: 2,
+            rows: 2,
+            rgb565: vec![0u8; 2 * 2 * 4 * 2],
+            clips: vec![mdc_model::AtlasClip {
+                name: "idle".into(),
+                start: 0,
+                frames: 4,
+                fps: 30,
+                looping: true,
+                fade_in_ms: 0,
+                fade_out_ms: 0,
+            }],
+        };
+        let package = mdc_model::DevicePackage {
+            target: "esp32-plane".into(),
+            mode: mdc_model::PackageMode::BakedSprites,
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            textures: Vec::new(),
+            materials: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: atlas.rgb565.len() as u64,
+            atlas: Some(atlas),
+        };
+        let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+        session
+            .install_package(&sealed.to_bytes().unwrap())
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.package_ready());
+        assert_eq!(device.current_atlas_frame(), None, "no clip running yet");
+
+        session.set_config("animation", "idle").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.active_clip(), Some("idle"));
+        assert_eq!(device.current_atlas_frame(), Some(0));
+
+        // 40ms at 30fps -> frame 1; 4 frames loop.
+        device.clock.advance(40);
+        assert_eq!(device.current_atlas_frame(), Some(1));
+        device.clock.advance(4 * 1000);
+        assert_eq!(device.current_atlas_frame(), Some(1));
+
+        session.set_config("animation", "off").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.current_atlas_frame(), None);
     }
 
     #[test]
