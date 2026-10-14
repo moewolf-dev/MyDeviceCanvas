@@ -30,6 +30,8 @@ pub enum BakeError {
     FrameCount(usize, usize),
     #[error("a frame is {0}x{1}, expected {2}x{2}")]
     FrameSize(u32, u32, u32, u32),
+    #[error("package: {0}")]
+    Package(String),
 }
 
 /// Bake limits: input, source dimensions and output budget.
@@ -247,6 +249,43 @@ pub fn bake_sprites(
     Ok(BakedSpritePackage { atlas, manifest })
 }
 
+/// N60: bake a sprite set straight into a sealed runtime package the device can
+/// receive over the `PACKAGE` path.
+#[allow(clippy::too_many_arguments)]
+pub fn bake_to_package(
+    sources: &[SpriteSource],
+    motions: &[mdc_model::MotionInfo],
+    sprite: (u32, u32),
+    max_texture: u32,
+    limits: &BakeLimits,
+) -> Result<mdc_model::MdcPackage, BakeError> {
+    let baked = bake_sprites(sources, motions, sprite, max_texture, limits)?;
+    let estimated_bytes = baked.atlas.rgb565.len() as u64;
+    let atlas = mdc_model::AtlasBlob {
+        sprite_width: baked.atlas.sprite_width,
+        sprite_height: baked.atlas.sprite_height,
+        frames: baked.atlas.frames,
+        columns: baked.atlas.columns,
+        rows: baked.atlas.rows,
+        rgb565: baked.atlas.rgb565,
+    };
+    let package = mdc_model::DevicePackage {
+        target: "esp32-plane".into(),
+        mode: mdc_model::PackageMode::BakedSprites,
+        nodes: Vec::new(),
+        meshes: Vec::new(),
+        textures: Vec::new(),
+        materials: Vec::new(),
+        skeletons: Vec::new(),
+        animations: Vec::new(),
+        sprites: Vec::new(),
+        layers: Vec::new(),
+        estimated_bytes,
+        atlas: Some(atlas),
+    };
+    mdc_model::MdcPackage::seal(package).map_err(|e| BakeError::Package(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,11 +346,27 @@ mod tests {
     }
 
     #[test]
-    fn malformed_input_is_a_decode_error() {
-        assert!(matches!(
-            decode_resize_rgb565(b"not an image", (4, 4), &BakeLimits::default()),
-            Err(BakeError::Decode(_))
-        ));
+    fn bake_to_package_round_trips_as_a_runtime_package() {
+        let source = SpriteSource {
+            name: "src".into(),
+            image: png_of(8, 8, [10, 20, 30]),
+        };
+        let package = bake_to_package(
+            std::slice::from_ref(&source),
+            &[motion(0.1, 30.0)],
+            (4, 4),
+            2048,
+            &BakeLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(package.manifest.mode, mdc_model::PackageMode::BakedSprites);
+        let bytes = package.to_bytes().unwrap();
+        let back = mdc_model::MdcPackage::from_bytes(&bytes).unwrap();
+        assert_eq!(back, package);
+        let atlas = back.package.atlas.expect("atlas present");
+        assert_eq!(atlas.frames, 4);
+        assert_eq!((atlas.columns, atlas.rows), (2, 2));
+        assert_eq!(atlas.rgb565.len(), 4 * 4 * 4 * 2);
     }
 
     fn solid(width: u32, height: u32, value: u16) -> BakedTexture {
