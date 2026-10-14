@@ -1,0 +1,11 @@
+[package]
+name = "mdc-bake"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Host-side pixel baking: decode, resize and pack textures into device atlases"
+
+[dependencies]
+mdc-model = { path = "../mdc-model" }
+image = { version = "=0.24.9", default-features = false, features = ["png", "jpeg"] }
+thiserror.workspace = true

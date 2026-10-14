@@ -361,6 +361,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdc-bake"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "mdc-model",
+ "thiserror",
+]
+
+[[package]]
 name = "mdc-compatibility-tests"
 version = "0.1.0"
 dependencies = [
