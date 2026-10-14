@@ -3,7 +3,9 @@
 //! PNG/JPEG headers for real pixel dimensions. Image bytes are never decoded —
 //! only the header is read — so a decode bomb is rejected before any decode
 //! buffer is allocated.
-use crate::ir::{Animation, ImportLimits, Layer, Material, Mesh, Model, ModelError, Node, Texture};
+use crate::ir::{
+    Animation, ImportLimits, Layer, Material, Mesh, Model, ModelError, Node, Skeleton, Texture,
+};
 use serde_json::Value;
 
 pub struct GltfImporter;
@@ -236,7 +238,7 @@ impl GltfImporter {
             meshes,
             textures,
             materials,
-            skeletons: Vec::new(),
+            skeletons: read_skeletons(&doc, nodes_json.len())?,
             animations,
             sprites: Vec::new(),
             layers: vec![layer],
@@ -537,6 +539,57 @@ fn read_be_u16(bytes: &[u8], offset: usize) -> Option<u16> {
     Some(u16::from_be_bytes([slice[0], slice[1]]))
 }
 
+/// Read glTF `skins` and any VRM humanoid extension into IR skeletons. Joint
+/// indices are validated against the node array; an out-of-range joint is
+/// rejected rather than silently imported.
+fn read_skeletons(doc: &Value, node_count: usize) -> Result<Vec<Skeleton>, ModelError> {
+    let mut out = Vec::new();
+    let empty = Vec::new();
+    if let Some(skins) = doc.get("skins").and_then(Value::as_array) {
+        for (i, skin) in skins.iter().enumerate() {
+            let joints = skin
+                .get("joints")
+                .and_then(Value::as_array)
+                .unwrap_or(&empty);
+            for joint in joints {
+                let index = joint.as_u64().unwrap_or(u64::MAX);
+                if index as usize >= node_count {
+                    return Err(ModelError::Unsupported(format!(
+                        "skin {i} joint {index} out of range ({node_count} nodes)"
+                    )));
+                }
+            }
+            out.push(Skeleton {
+                name: json_name(skin, &format!("skin{i}")),
+                bones: joints.len().min(u32::MAX as usize) as u32,
+            });
+        }
+    }
+    // VRM 0.x stores humanBones as an array; VRM 1.0 as an object map.
+    for key in ["VRM", "VRMC_vrm"] {
+        let human_bones = doc
+            .get("extensions")
+            .and_then(|e| e.get(key))
+            .and_then(|v| v.get("humanoid"))
+            .and_then(|h| h.get("humanBones"));
+        if let Some(bones) = human_bones {
+            let count = bones
+                .as_array()
+                .map(|a| a.len())
+                .or_else(|| bones.as_object().map(|o| o.len()))
+                .unwrap_or(0);
+            if count > 0 {
+                out.push(Skeleton {
+                    name: "vrm-humanoid".into(),
+                    bones: count.min(u32::MAX as usize) as u32,
+                });
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub(crate) fn json_name(value: &Value, fallback: &str) -> String {
     value
         .get("name")
@@ -763,6 +816,63 @@ mod tests {
             .import(&bytes, &ImportLimits::default())
             .unwrap_err();
         assert!(matches!(err, ModelError::Unsupported(_)), "{err:?}");
+    }
+
+    #[test]
+    fn skins_import_as_skeletons_and_bad_joints_are_rejected() {
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "nodes": [{"name": "root"}, {"name": "hips"}, {"name": "spine"}],
+            "skins": [{"name": "rig", "joints": [0, 1, 2]}]
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        assert_eq!(model.skeletons.len(), 1);
+        assert_eq!(model.skeletons[0].name, "rig");
+        assert_eq!(model.skeletons[0].bones, 3);
+
+        let bad = json!({
+            "asset": {"version": "2.0"},
+            "nodes": [{"name": "root"}],
+            "skins": [{"joints": [0, 5]}]
+        });
+        assert!(matches!(
+            GltfImporter.import(&serde_json::to_vec(&bad).unwrap(), &ImportLimits::default()),
+            Err(ModelError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn vrm_humanoid_extension_adds_a_skeleton() {
+        // VRM 0.x: humanBones is an array.
+        let vrm0 = json!({
+            "asset": {"version": "2.0"},
+            "nodes": [{"name": "root"}],
+            "extensions": {"VRM": {"humanoid": {"humanBones": [{"bone": "hips"}, {"bone": "head"}]}}}
+        });
+        let model = GltfImporter
+            .import(
+                &serde_json::to_vec(&vrm0).unwrap(),
+                &ImportLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(model.skeletons[0].name, "vrm-humanoid");
+        assert_eq!(model.skeletons[0].bones, 2);
+
+        // VRM 1.0: humanBones is an object map.
+        let vrm1 = json!({
+            "asset": {"version": "2.0"},
+            "nodes": [{"name": "root"}],
+            "extensions": {"VRMC_vrm": {"humanoid": {"humanBones": {"hips": {}, "spine": {}, "head": {}}}}}
+        });
+        let model = GltfImporter
+            .import(
+                &serde_json::to_vec(&vrm1).unwrap(),
+                &ImportLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(model.skeletons[0].bones, 3);
     }
 
     #[test]

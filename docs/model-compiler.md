@@ -23,7 +23,7 @@ Source model (glTF / GLB / Live2D model3.json)
 
 | Importer | Input | Reads | Does **not** read |
 |---|---|---|---|
-| `GltfImporter` | glTF 2.0 `.gltf` (JSON) and `.glb` (binary container) | nodes, meshes, accessors, materials, textures, animations; buffer/bufferView/accessor bounds; embedded PNG/JPEG header for real pixel size | pixels (no image decode), external buffer files, skins/morph targets |
+| `GltfImporter` | glTF 2.0 `.gltf` (JSON) and `.glb` (binary container) | nodes, meshes, accessors, materials, textures, animations, `skins`, VRM humanoid; buffer/bufferView/accessor bounds; embedded PNG/JPEG header for real pixel size | pixels (no image decode), external buffer files, morph targets, VRM meta/spring bones |
 | `Live2DImporter` | Cubism `model3.json` (Version 2–5) | textures, motion groups, expressions, moc reference | `.moc3` binary (mesh / deformer / parameter data) |
 
 Both importers check `ImportLimits` **before allocating**: `max_input_bytes`
@@ -40,6 +40,9 @@ A decode bomb is refused before any decode buffer is created.
   bufferViews against their buffer. An overrun is rejected before use.
 - Embedded image dimensions come from the PNG IHDR or the JPEG SOF marker; when
   bytes are not on disk the declared `width`/`height` is used.
+- `skins` become IR skeletons (joints count); an out-of-range joint index is
+  rejected. A VRM humanoid extension (`VRM.humanoid.humanBones` array or
+  `VRMC_vrm.humanoid.humanBones` map) adds one `vrm-humanoid` skeleton.
 
 ### Live2D details
 

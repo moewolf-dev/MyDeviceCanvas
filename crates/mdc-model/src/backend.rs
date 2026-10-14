@@ -379,6 +379,35 @@ mod tests {
     }
 
     #[test]
+    fn skeleton_survives_only_on_skeleton_capable_devices() {
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "nodes": [{"name": "root", "mesh": 0}, {"name": "hips"}],
+            "meshes": [{"name": "body", "primitives": [{"attributes": {"POSITION": 0}}]}],
+            "accessors": [{"count": 4, "type": "VEC3"}],
+            "skins": [{"name": "rig", "joints": [0, 1]}]
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        assert_eq!(model.skeletons.len(), 1);
+
+        let strong = compile(&model, &RendererCapability::full_3d()).unwrap();
+        assert_eq!(strong.skeletons.len(), 1);
+        let with_mesh_no_skeleton = compile(
+            &model,
+            &RendererCapability {
+                skeleton: false,
+                ..RendererCapability::full_3d()
+            },
+        )
+        .unwrap();
+        assert!(with_mesh_no_skeleton.skeletons.is_empty());
+        let weak = compile(&model, &RendererCapability::sprite_only()).unwrap();
+        assert!(weak.skeletons.is_empty());
+    }
+
+    #[test]
     fn packages_round_trip_as_json() {
         let model = sample_model();
         for package in [
