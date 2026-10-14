@@ -14,6 +14,25 @@ std::uint16_t u16le(const std::uint8_t* p) {
 std::uint32_t u32le(const std::uint8_t* p) {
   return static_cast<std::uint32_t>(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24));
 }
+std::uint32_t u32be(const std::uint8_t* p) {
+  return (static_cast<std::uint32_t>(p[0]) << 24) | (static_cast<std::uint32_t>(p[1]) << 16) |
+         (static_cast<std::uint32_t>(p[2]) << 8) | static_cast<std::uint32_t>(p[3]);
+}
+std::uint64_t u64be(const std::uint8_t* p) {
+  std::uint64_t v = 0;
+  for (int i = 0; i < 8; ++i) v = (v << 8) | p[i];
+  return v;
+}
+/// FNV-1a 64-bit, matching mdc-protocol::package_checksum (N22/N33).
+std::uint64_t fnv1a64(const std::uint8_t* p, std::size_t n) {
+  std::uint64_t h = 0xcbf29ce484222325ull;
+  for (std::size_t i = 0; i < n; ++i) {
+    h ^= p[i];
+    h *= 0x100000001b3ull;
+  }
+  return h;
+}
+constexpr std::size_t kMaxPackage = 16u * 1024u * 1024u;
 }  // namespace
 
 SessionDispatcher::SessionDispatcher(DisplayBackend& display, ReplyFn reply, PeerIdentity identity)
@@ -64,6 +83,8 @@ bool SessionDispatcher::handle(const Packet& packet) {
     }
     case MessageType::MirrorCtrl:
       return handle_mirror_ctrl(packet);
+    case MessageType::Package:
+      return handle_package(packet);
     default:
       return false;
   }
@@ -214,6 +235,94 @@ bool SessionDispatcher::handle_mirror_ctrl(const Packet& packet) {
     return true;
   }
   send_ack(packet.request_id, current_frame_id_, true);
+  return true;
+}
+
+/// N33: assemble a host runtime package. The device verifies the transport
+/// checksum and the container magic; the IR itself is the host's concern.
+bool SessionDispatcher::handle_package(const Packet& packet) {
+  if (packet.payload.empty()) return false;
+  const auto phase = packet.payload[0];
+  if (phase == 1) {
+    if (packet.payload.size() != 1 + 4 + 8) return false;
+    package_expected_ = u32be(packet.payload.data() + 1);
+    package_checksum_ = u64be(packet.payload.data() + 5);
+    if (package_expected_ == 0 || package_expected_ > kMaxPackage) {
+      send_error(packet.request_id, "E_PACKAGE", "package size over limit");
+      return true;
+    }
+    package_staging_.assign(package_expected_, 0);
+    package_filled_ = 0;
+    return true;
+  }
+  if (phase == 2) {
+    if (package_expected_ == 0) {
+      send_error(packet.request_id, "E_PACKAGE", "chunk before begin");
+      return true;
+    }
+    if (packet.payload.size() < 1 + 4) return false;
+    const auto offset = u32be(packet.payload.data() + 1);
+    const auto* data = packet.payload.data() + 5;
+    const auto data_len = packet.payload.size() - 5;
+    if (static_cast<std::size_t>(offset) + data_len > package_staging_.size()) {
+      send_error(packet.request_id, "E_PACKAGE", "chunk over package");
+      return true;
+    }
+    std::memcpy(package_staging_.data() + offset, data, data_len);
+    package_filled_ += static_cast<std::uint32_t>(data_len);
+    return true;
+  }
+  if (phase == 3) {
+    if (package_expected_ == 0) {
+      send_error(packet.request_id, "E_PACKAGE", "commit before begin");
+      return true;
+    }
+    if (package_filled_ != package_expected_) {
+      send_error(packet.request_id, "E_PACKAGE", "incomplete package");
+      return true;
+    }
+    if (fnv1a64(package_staging_.data(), package_staging_.size()) != package_checksum_) {
+      send_error(packet.request_id, "E_PACKAGE", "checksum mismatch");
+      return true;
+    }
+    if (package_staging_.size() < 4 ||
+        std::memcmp(package_staging_.data(), "MDCP", 4) != 0) {
+      send_error(packet.request_id, "E_PACKAGE", "bad package magic");
+      return true;
+    }
+    package_ready_ = true;
+    package_bytes_ = package_staging_.size();
+    package_staging_.clear();
+    package_expected_ = 0;
+    package_filled_ = 0;
+    send_ack(packet.request_id, current_frame_id_, true);
+    return true;
+  }
+  return false;
+}
+
+/// N33: emit the current framebuffer as a device -> host mirror frame.
+bool SessionDispatcher::emit_mirror_frame() {
+  if (!mirror_active_ || !identity_.mirror) return false;
+  const auto& pixels = store_.active();
+  if (pixels.empty()) return false;
+  const std::string id = "main";
+  Packet frame;
+  frame.type = MessageType::MirrorFrame;
+  frame.flags = 0;
+  frame.request_id = 0;
+  frame.payload.push_back(0);  // legacy phase
+  frame.payload.push_back(static_cast<std::uint8_t>(id.size()));
+  frame.payload.insert(frame.payload.end(), id.begin(), id.end());
+  for (int i = 0; i < 8; ++i)
+    frame.payload.push_back(static_cast<std::uint8_t>(current_frame_id_ >> (8 * i)));
+  frame.payload.push_back(static_cast<std::uint8_t>(display_.width() & 0xff));
+  frame.payload.push_back(static_cast<std::uint8_t>((display_.width() >> 8) & 0xff));
+  frame.payload.push_back(static_cast<std::uint8_t>(display_.height() & 0xff));
+  frame.payload.push_back(static_cast<std::uint8_t>((display_.height() >> 8) & 0xff));
+  frame.payload.insert(frame.payload.end(), pixels.begin(), pixels.end());
+  mirror_frames_ += 1;
+  reply_(frame);
   return true;
 }
 

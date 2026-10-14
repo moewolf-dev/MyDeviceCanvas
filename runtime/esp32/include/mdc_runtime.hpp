@@ -20,6 +20,8 @@ enum class MessageType : std::uint8_t {
   Input = 0x20,
   Ota = 0x30,
   MirrorCtrl = 0x31,
+  /// Host -> device runtime package (N33): phase byte like Frame.
+  Package = 0x32,
   Ping = 0x40,
   Pong = 0x41,
   Ack = 0x50,
@@ -104,6 +106,12 @@ class SessionDispatcher {
   const PeerIdentity& identity() const { return identity_; }
   /// Form B: whether the host has started mirroring on this session.
   bool mirror_active() const { return mirror_active_; }
+  /// N33: true once a runtime package was accepted (transport checksum + magic).
+  bool package_ready() const { return package_ready_; }
+  std::size_t package_bytes() const { return package_bytes_; }
+  std::uint64_t mirror_frames_sent() const { return mirror_frames_; }
+  /// N33: device -> host mirror frame using the legacy Frame layout (phase 0).
+  bool emit_mirror_frame();
 
  private:
   DisplayBackend& display_;
@@ -118,9 +126,18 @@ class SessionDispatcher {
   bool render_frozen_ = false;
   /// Form B: true after a host MirrorCtrl start; cleared by stop.
   bool mirror_active_ = false;
+  /// N33: package assembly state.
+  std::vector<std::uint8_t> package_staging_;
+  std::uint32_t package_expected_ = 0;
+  std::uint32_t package_filled_ = 0;
+  std::uint64_t package_checksum_ = 0;
+  bool package_ready_ = false;
+  std::size_t package_bytes_ = 0;
+  std::uint64_t mirror_frames_ = 0;
   bool handle_frame(const Packet& packet);
   bool handle_tile(const Packet& packet);
   bool handle_mirror_ctrl(const Packet& packet);
+  bool handle_package(const Packet& packet);
   void send_ack(std::uint32_t request_id, std::uint64_t frame_id, bool displayed);
   void send_error(std::uint32_t request_id, const char* code, const char* message);
   void send_pong(std::uint32_t request_id);
