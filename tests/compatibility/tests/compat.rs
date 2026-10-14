@@ -141,3 +141,90 @@ fn oversized_frame_rejected_by_core() {
         Err(CoreError::TooLarge)
     );
 }
+
+// ---- N37: runtime package + mirror fixtures ----
+
+fn sample_package() -> mdc_model::MdcPackage {
+    let gltf = br#"{"asset":{"version":"2.0"},"nodes":[{"name":"root","mesh":0}],
+        "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+        "accessors":[{"count":4,"type":"VEC3"}]}"#;
+    let model = mdc_model::GltfImporter
+        .import(gltf, &mdc_model::ImportLimits::default())
+        .unwrap();
+    mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::sprite_only()).unwrap()
+}
+
+#[test]
+fn package_rejects_bad_magic_and_oversized_headers() {
+    let package = sample_package();
+    let mut bytes = package.to_bytes().unwrap();
+    bytes[0] = b'X';
+    assert!(matches!(
+        mdc_model::MdcPackage::from_bytes(&bytes),
+        Err(mdc_model::ModelError::Unsupported(_))
+    ));
+
+    let mut header = vec![0u8; 10];
+    header[0..4].copy_from_slice(b"MDCP");
+    header[5] = 1;
+    header[6..10].copy_from_slice(&u32::MAX.to_be_bytes());
+    assert!(matches!(
+        mdc_model::MdcPackage::from_bytes(&header),
+        Err(mdc_model::ModelError::Budget(_))
+    ));
+}
+
+#[test]
+fn package_capability_gate_follows_the_device_renderer() {
+    let gltf = br#"{"asset":{"version":"2.0"},"nodes":[{"name":"root","mesh":0}],
+        "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+        "accessors":[{"count":4,"type":"VEC3"}]}"#;
+    let model = mdc_model::GltfImporter
+        .import(gltf, &mdc_model::ImportLimits::default())
+        .unwrap();
+    let mesh = mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d())
+        .unwrap();
+    assert!(mesh.accepted_by(&mdc_model::RendererCapability::full_3d()).is_ok());
+    assert!(matches!(
+        mesh.accepted_by(&mdc_model::RendererCapability::sprite_only()),
+        Err(mdc_model::ModelError::Unsupported(_))
+    ));
+}
+
+#[test]
+fn full_frame_receiver_refuses_a_dirty_region_commit() {
+    use mdc_mirror::{MirrorReceiver, MockObsSink};
+    let mut receiver =
+        MirrorReceiver::new("main", 2, 1, "full-frame", MockObsSink::default()).unwrap();
+    let packet = |payload: Vec<u8>| {
+        Packet {
+            version: VERSION,
+            kind: MessageType::MirrorFrame,
+            flags: 0,
+            request_id: 0,
+            payload,
+        }
+        .encode(1024 * 1024)
+        .unwrap()
+    };
+    receiver
+        .feed(&packet(
+            mdc_protocol::encode_frame_payload("main", 1, 2, 1, &[0x00, 0xF8, 0xE0, 0x07]).unwrap(),
+        ))
+        .unwrap();
+    // A dirty patch (only the second pixel) must be refused by a full-frame sink.
+    receiver
+        .feed(&packet(
+            mdc_protocol::encode_frame_begin("main", 2, 2, 1, 4).unwrap(),
+        ))
+        .unwrap();
+    receiver
+        .feed(&packet(mdc_protocol::encode_frame_chunk(2, 2, &[0x1F, 0x00])))
+        .unwrap();
+    receiver
+        .feed(&packet(mdc_protocol::encode_frame_commit(2)))
+        .unwrap();
+    let stats = receiver.stats();
+    assert_eq!(stats.frames_published, 1);
+    assert!(stats.frames_dropped >= 1);
+}

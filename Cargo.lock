@@ -365,6 +365,8 @@ name = "mdc-compatibility-tests"
 version = "0.1.0"
 dependencies = [
  "mdc-core",
+ "mdc-mirror",
+ "mdc-model",
  "mdc-protocol",
  "mdc-simulator",
  "mdc-transport",
