@@ -31,6 +31,12 @@ def generate(profile: Path, output: Path) -> None:
 #define MDC_DMA_ALIGN_BYTES {values.get('dma_align_bytes', 4)}u
 #define MDC_TOUCH {1 if values.get('touch') is True else 0}
 #define MDC_OTA {1 if values.get('ota') is True else 0}
+#define MDC_RENDERER_SPRITE {1 if values.get('renderer_sprite', True) is True else 0}
+#define MDC_RENDERER_MESH2D {1 if values.get('renderer_mesh2d') is True else 0}
+#define MDC_RENDERER_MESH3D {1 if values.get('renderer_mesh3d') is True else 0}
+#define MDC_RENDERER_SKELETON {1 if values.get('renderer_skeleton') is True else 0}
+#define MDC_RENDERER_MAX_TEXTURE {values.get('renderer_max_texture', 512)}u
+#define MDC_RENDERER_MAX_VERTICES {values.get('renderer_max_vertices', 0)}u
 #define MDC_BOARD_{name} 1
 """
     _ = fb

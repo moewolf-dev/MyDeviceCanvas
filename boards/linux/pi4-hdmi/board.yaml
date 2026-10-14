@@ -18,3 +18,9 @@ min_internal_largest_block_bytes: 1
 max_psram_used_bytes: 1
 dma_align_bytes: 1
 reset_strategy: none
+renderer_sprite: true
+renderer_mesh2d: true
+renderer_mesh3d: true
+renderer_skeleton: true
+renderer_max_texture: 2048
+renderer_max_vertices: 200000

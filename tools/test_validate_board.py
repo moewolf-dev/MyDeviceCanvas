@@ -52,6 +52,23 @@ class BoardValidationTests(unittest.TestCase):
         errors = validate(ROOT / "boards/sim/esp32-jc3248w535-sim/board.yaml")
         self.assertFalse(any("collision" in e for e in errors))
 
+    def test_renderer_mesh_requires_vertex_budget(self):
+        text = (ROOT / "boards/esp32/test-valid/board.yaml").read_text(encoding="utf-8")
+        bad = ROOT / "boards/esp32/test-valid/board.yaml.tmp-test"
+        bad.write_text(
+            text.replace("renderer_mesh2d: false", "renderer_mesh2d: true"),
+            encoding="utf-8",
+        )
+        try:
+            errors = validate(bad)
+        finally:
+            bad.unlink(missing_ok=True)
+        self.assertTrue(any("renderer_max_vertices" in error for error in errors), errors)
+
+    def test_renderer_profiles_are_accepted(self):
+        self.assertEqual(validate(ROOT / "boards/esp32/test-valid/board.yaml"), [])
+        self.assertEqual(validate(ROOT / "boards/linux/pi4-hdmi/board.yaml"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

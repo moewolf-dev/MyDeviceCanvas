@@ -33,3 +33,9 @@ min_internal_largest_block_bytes: 32768
 max_psram_used_bytes: 4194304
 dma_align_bytes: 4
 reset_strategy: native-usb-no_reset-before
+renderer_sprite: true
+renderer_mesh2d: false
+renderer_mesh3d: false
+renderer_skeleton: false
+renderer_max_texture: 512
+renderer_max_vertices: 0

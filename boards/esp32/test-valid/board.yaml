@@ -5,3 +5,9 @@ psram_bytes: 8388608
 display: {width: 480, height: 320, format: RGB565_LE, rotation: 0, bus: spi}
 touch: false
 ota: false
+renderer_sprite: true
+renderer_mesh2d: false
+renderer_mesh3d: false
+renderer_skeleton: false
+renderer_max_texture: 512
+renderer_max_vertices: 0

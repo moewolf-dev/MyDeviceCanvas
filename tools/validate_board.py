@@ -111,6 +111,15 @@ def validate(path: Path) -> list[str]:
     if status in UNVERIFIED_STATUS:
         errors.append(f"status {status}: not physically verified (reference only)")
 
+    # N27: a mesh renderer must declare a vertex budget.
+    if values.get("renderer_mesh2d") is True:
+        vertices = values.get("renderer_max_vertices")
+        if not isinstance(vertices, int) or vertices <= 0:
+            errors.append("renderer_mesh2d requires renderer_max_vertices > 0")
+    texture = values.get("renderer_max_texture")
+    if texture is not None and (not isinstance(texture, int) or texture <= 0):
+        errors.append("renderer_max_texture must be positive")
+
     return errors
 
 

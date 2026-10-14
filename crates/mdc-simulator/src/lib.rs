@@ -83,6 +83,14 @@ pub struct BoardProfile {
     pub mirror: bool,
     pub mirror_fps: u16,
     pub local_display_fps: u16,
+    /// N27: local renderer capability advertised on the wire (not inferred from
+    /// `mirror`). Drives the model-compiler target backend.
+    pub renderer_sprite: bool,
+    pub renderer_mesh2d: bool,
+    pub renderer_mesh3d: bool,
+    pub renderer_skeleton: bool,
+    pub renderer_max_texture: u32,
+    pub renderer_max_vertices: u32,
 }
 impl Default for BoardProfile {
     fn default() -> Self {
@@ -100,6 +108,13 @@ impl Default for BoardProfile {
             mirror: false,
             mirror_fps: 0,
             local_display_fps: 30,
+            // MCU class: sprites only.
+            renderer_sprite: true,
+            renderer_mesh2d: false,
+            renderer_mesh3d: false,
+            renderer_skeleton: false,
+            renderer_max_texture: 512,
+            renderer_max_vertices: 0,
         }
     }
 }
@@ -118,6 +133,11 @@ impl BoardProfile {
                 // Form B: a Linux board with a GPU renders and mirrors.
                 mirror: true,
                 mirror_fps: 10,
+                renderer_mesh2d: true,
+                renderer_mesh3d: true,
+                renderer_skeleton: true,
+                renderer_max_texture: 2048,
+                renderer_max_vertices: 200_000,
                 ..Self::default()
             },
             "pi4-hdmi" => Self {
@@ -129,6 +149,11 @@ impl BoardProfile {
                 color_fps: true,
                 mirror: true,
                 mirror_fps: 15,
+                renderer_mesh2d: true,
+                renderer_mesh3d: true,
+                renderer_skeleton: true,
+                renderer_max_texture: 2048,
+                renderer_max_vertices: 200_000,
                 ..Self::default()
             },
             "waveshare-eink" => Self {
@@ -465,15 +490,15 @@ impl FakeDevice {
             } else {
                 0
             },
-            // N17: local renderer capability. A device that renders locally (Form
-            // B) advertises meshes+skeleton; a passive MCU advertises sprites.
-            renderer: Some(if self.profile.mirror {
-                mdc_protocol::RendererCapability::full_3d(
-                    u32::from(self.profile.width).max(u32::from(self.profile.height)),
-                    200_000,
-                )
-            } else {
-                mdc_protocol::RendererCapability::sprite_only(512)
+            // N27: local renderer capability from the board profile (not inferred
+            // from `mirror`).
+            renderer: Some(mdc_protocol::RendererCapability {
+                sprite_2d: self.profile.renderer_sprite,
+                mesh2d: self.profile.renderer_mesh2d,
+                mesh3d: self.profile.renderer_mesh3d,
+                skeleton: self.profile.renderer_skeleton,
+                max_texture: self.profile.renderer_max_texture,
+                max_vertices: self.profile.renderer_max_vertices,
             }),
         }
     }
@@ -995,6 +1020,20 @@ mod tests {
     use mdc_core::{ConnectionState, Frame, Session, Tile};
     use mdc_protocol::OtaCommand;
     use mdc_transport::MemoryLink;
+
+    #[test]
+    fn renderer_capability_follows_the_board_profile() {
+        let (_, esp) = FakeDevice::with_default_profile();
+        let renderer = esp.capabilities().renderer.unwrap();
+        assert!(renderer.sprite_2d && !renderer.mesh2d && !renderer.skeleton);
+        assert_eq!(renderer.max_texture, 512);
+
+        let (_, gpu) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+        let renderer = gpu.capabilities().renderer.unwrap();
+        assert!(renderer.mesh2d && renderer.mesh3d && renderer.skeleton);
+        assert_eq!(renderer.max_texture, 2048);
+        assert_eq!(renderer.max_vertices, 200_000);
+    }
 
     #[test]
     fn accepts_a_runtime_package_and_reports_ready() {
