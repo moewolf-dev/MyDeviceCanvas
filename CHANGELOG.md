@@ -2,6 +2,20 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.11] — Model compiler, mirror and capability batch (N09–N18)
+
+### Added
+
+- glTF `skins` and VRM humanoid import into IR skeletons (N09)
+- Live2D `motion3.json` bundle import with real curve counts and fade metadata (N10)
+- Deterministic sprite-atlas baker with bounded frame/grid layout (N11)
+- `mdc-mirror` reference PPM sink and bounded latest-wins publish queue with pacing (N12)
+- Capability-gated dirty-region mirror path that patches the base frame (N13)
+- ESP32-S3-BOX-3 profile grounded in the esp-bsp reference; Arduino AVR profile grounded in arduino-core-avr; Rockchip/Jetson profiles cite their SDK references (N14, N15)
+- Real mDNS / DNS-SD subset discovery with a loopback responder test (N16)
+- `Capabilities.renderer{}` on the wire with Rust/C++ shared bytes and `compile_auto` wiring (N17)
+- `Runner` abstraction, fake runner, and a pinned esptool version lock (N18)
+
 ## [0.1.10] — Model compiler deepening
 
 ### Added

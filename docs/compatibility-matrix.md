@@ -33,6 +33,7 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Touch corners and two pointers | sim-verified | physical: pending |
 | Chunked asset upload | sim-verified (abort clears bytes; `jpeg: false` falls back to RGB565) | n/a |
 | Flash lease vs second open | sim-verified (fake port, no device node opened) | physical: pending |
+| esptool runner + version lock | sim-verified (`FakeRunner`; pinned 4.7.0; no binary spawned) | physical: pending |
 | Linux display backend | sim-verified (memory framebuffer or no session = 2; no DRM link) | physical: pending |
 | Provision log redaction | sim-verified | n/a |
 | Stale ACK after transport switch | sim-verified (previous request id cannot release the new frame) | n/a |

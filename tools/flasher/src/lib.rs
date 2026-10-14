@@ -2,7 +2,10 @@
 //! Reset / write semantics from AgentDeck flash experience (MIT, reimplemented).
 mod esptool;
 mod file_lease;
-pub use esptool::{flags_for_board, require_merged_image, EspToolBoardFlags, EspToolFlasher};
+pub use esptool::{
+    flags_for_board, require_merged_image, EspToolBoardFlags, EspToolFlasher, FakeRunner,
+    ProcessRunner, Runner, RunnerOutput, REQUIRED_ESPTOOL_VERSION,
+};
 pub use file_lease::{FilePortLease, LeaseStatus};
 
 use mdc_provision::{Flasher, InstallPlan};

@@ -8,8 +8,72 @@
 
 use crate::post_write_reset_sequence;
 use mdc_provision::{Flasher, InstallPlan};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// esptool version this project pins (see `tools/flasher/esptool.lock`).
+pub const REQUIRED_ESPTOOL_VERSION: &str = "4.7.0";
+
+/// Output of one external command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunnerOutput {
+    pub status: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// How the flasher runs esptool. The production runner spawns a process; tests
+/// script outputs so no binary is required.
+pub trait Runner: std::fmt::Debug {
+    fn run(&mut self, argv: &[String]) -> Result<RunnerOutput, String>;
+}
+
+/// Spawns the real command.
+#[derive(Debug, Default)]
+pub struct ProcessRunner;
+
+impl Runner for ProcessRunner {
+    fn run(&mut self, argv: &[String]) -> Result<RunnerOutput, String> {
+        let output = Command::new(&argv[0])
+            .args(&argv[1..])
+            .output()
+            .map_err(|e| format!("failed to spawn {}: {e}", argv[0]))?;
+        Ok(RunnerOutput {
+            status: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
+}
+
+/// Scripted runner for offline tests.
+#[derive(Debug, Default)]
+pub struct FakeRunner {
+    outputs: VecDeque<RunnerOutput>,
+    pub calls: Vec<Vec<String>>,
+}
+
+impl FakeRunner {
+    pub fn with_outputs(outputs: Vec<RunnerOutput>) -> Self {
+        Self {
+            outputs: outputs.into(),
+            calls: Vec::new(),
+        }
+    }
+    pub fn push(&mut self, output: RunnerOutput) {
+        self.outputs.push_back(output);
+    }
+}
+
+impl Runner for FakeRunner {
+    fn run(&mut self, argv: &[String]) -> Result<RunnerOutput, String> {
+        self.calls.push(argv.to_vec());
+        self.outputs
+            .pop_front()
+            .ok_or_else(|| "FakeRunner has no scripted output".to_string())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct EspToolBoardFlags {
@@ -39,7 +103,7 @@ impl Default for EspToolBoardFlags {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct EspToolFlasher {
     pub esptool_bin: PathBuf,
     pub image_path: PathBuf,
@@ -48,10 +112,12 @@ pub struct EspToolFlasher {
     pub dry_run: bool,
     pub last_argv: Vec<String>,
     pub reset_count: u32,
+    pub run_count: u32,
     pub expected_device_id: String,
     pub identity_override: Option<String>,
     /// Port used for post-write DTR/RTS pulse when not dry_run.
     pub reset_port: Option<String>,
+    runner: Box<dyn Runner>,
 }
 
 impl EspToolFlasher {
@@ -63,9 +129,11 @@ impl EspToolFlasher {
             dry_run: true,
             last_argv: Vec::new(),
             reset_count: 0,
+            run_count: 0,
             expected_device_id: String::new(),
             identity_override: None,
             reset_port: None,
+            runner: Box::new(ProcessRunner),
         }
     }
 
@@ -73,6 +141,33 @@ impl EspToolFlasher {
         self.esptool_bin = bin.into();
         self.dry_run = false;
         self
+    }
+
+    /// Replace the command runner (tests inject a [`FakeRunner`]).
+    pub fn with_runner(mut self, runner: Box<dyn Runner>) -> Self {
+        self.runner = runner;
+        self
+    }
+
+    /// Run `esptool version` and check it matches [`REQUIRED_ESPTOOL_VERSION`].
+    pub fn verify_esptool_version(&mut self) -> Result<String, String> {
+        let argv = vec![
+            self.esptool_bin.display().to_string(),
+            "version".to_string(),
+        ];
+        let out = self.runner.run(&argv)?;
+        self.run_count = self.run_count.saturating_add(1);
+        if out.status != 0 {
+            return Err(format!("esptool version check exited {}", out.status));
+        }
+        let text = format!("{}\n{}", out.stdout, out.stderr);
+        if !text.contains(REQUIRED_ESPTOOL_VERSION) {
+            return Err(format!(
+                "esptool {REQUIRED_ESPTOOL_VERSION} required, got: {}",
+                text.trim()
+            ));
+        }
+        Ok(text.trim().to_string())
     }
 
     /// Build esptool write-flash argv for merged image @ 0x0.
@@ -131,12 +226,14 @@ impl Flasher for EspToolFlasher {
         if self.dry_run {
             return Ok(());
         }
-        let status = Command::new(&argv[0])
-            .args(&argv[1..])
-            .status()
-            .map_err(|e| format!("failed to spawn esptool: {e}"))?;
-        if !status.success() {
-            return Err(format!("esptool exited with {status}"));
+        let out = self.runner.run(&argv)?;
+        self.run_count = self.run_count.saturating_add(1);
+        if out.status != 0 {
+            return Err(format!(
+                "esptool exited with {}: {}",
+                out.status,
+                out.stderr.trim()
+            ));
         }
         Ok(())
     }
@@ -279,5 +376,78 @@ mod tests {
     fn flags_for_ips35_board_ids() {
         assert!(flags_for_board("ips35").is_some());
         assert!(flags_for_board("unknown-board").is_none());
+    }
+
+    fn plan() -> InstallPlan {
+        InstallPlan {
+            port: "/dev/cu.usbmodem1".into(),
+            artifact: Artifact {
+                board_id: "jc3248w535".into(),
+                mcu: "esp32-s3".into(),
+                runtime: "0.1.0".into(),
+                protocol_major: 1,
+                protocol_minor: 0,
+                image_size: 6,
+                sha256: "0".repeat(64),
+                source: "test".into(),
+                public_key: Vec::new(),
+                signature: Vec::new(),
+            },
+            expected_device_id: "device-a".into(),
+        }
+    }
+
+    fn output(status: i32, stdout: &str, stderr: &str) -> RunnerOutput {
+        RunnerOutput {
+            status,
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+        }
+    }
+
+    #[test]
+    fn fake_runner_drives_flash_and_reports_failures() {
+        let image = temp_image();
+        let ok = FakeRunner::with_outputs(vec![output(0, "", "")]);
+        let mut flasher = EspToolFlasher::new(&image).with_runner(Box::new(ok));
+        flasher.dry_run = false;
+        flasher.flash(&plan()).unwrap();
+        assert_eq!(flasher.run_count, 1);
+        assert!(flasher.last_argv.join(" ").contains("write-flash"));
+
+        let bad = FakeRunner::with_outputs(vec![output(2, "", "boom")]);
+        let mut flasher = EspToolFlasher::new(&image).with_runner(Box::new(bad));
+        flasher.dry_run = false;
+        let err = flasher.flash(&plan()).unwrap_err();
+        assert!(err.contains("boom"), "{err}");
+
+        let _ = std::fs::remove_file(image);
+    }
+
+    #[test]
+    fn version_lock_accepts_and_rejects() {
+        let image = temp_image();
+        let mut ok =
+            EspToolFlasher::new(&image).with_runner(Box::new(FakeRunner::with_outputs(vec![
+                output(0, "esptool.py v4.7.0\n", ""),
+            ])));
+        assert!(ok.verify_esptool_version().is_ok());
+
+        let mut bad =
+            EspToolFlasher::new(&image).with_runner(Box::new(FakeRunner::with_outputs(vec![
+                output(0, "esptool.py v4.6.2\n", ""),
+            ])));
+        assert!(bad.verify_esptool_version().unwrap_err().contains("4.7.0"));
+
+        let mut failed =
+            EspToolFlasher::new(&image).with_runner(Box::new(FakeRunner::with_outputs(vec![
+                output(1, "", "no such file"),
+            ])));
+        assert!(failed
+            .verify_esptool_version()
+            .unwrap_err()
+            .contains("exited 1"));
+
+        let _ = std::fs::remove_file(image);
     }
 }
