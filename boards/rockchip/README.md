@@ -1,7 +1,7 @@
 # Rockchip family
 
 Skeleton board profiles for Rockchip SoC boards (N06). Reference tree:
-`docs/reference/rockchip-mpp` (Media Process Platform).
+workspace `docs/rockchip-mpp` (Media Process Platform, outside this repo).
 
 - Status is `sim-baseline`; `physical: pending`.
 - **Form B** candidates: they can render locally and mirror frames to the host

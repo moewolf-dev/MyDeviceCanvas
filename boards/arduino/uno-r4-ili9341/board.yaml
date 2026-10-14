@@ -1,12 +1,13 @@
 # Arduino family (N06 skeleton).
 #
-# N02 landed the reference tree in docs/reference/arduino-core-avr. These
+# N02 landed the reference tree in the workspace docs/ tree (docs/arduino-core-avr,
+# outside this repo). These
 # profiles are architecture-only: no Arduino board has been measured, so every
 # entry stays `physical: pending`. Composition is Capability-driven; adding a
 # board here must not change the protocol.
 id: arduino-uno-r4-ili9341
 status: sim-baseline
-source: docs/reference/arduino-core-avr (reference only; no physical measurement)
+source: workspace docs/arduino-core-avr (reference only; no physical measurement)
 physical: pending
 mcu: ra4m1
 flash_bytes: 262144

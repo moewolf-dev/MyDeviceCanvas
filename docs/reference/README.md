@@ -1,20 +1,28 @@
-# Reference SDK Snapshots (N02)
+# Reference SDK Registry (N02)
 
 The 2026-10-13 instruction required upstream SDK / protocol sources on disk so
-board and transport compatibility is written from facts, not from memory. Each
-repository is a **read-only snapshot** cloned into its own subdirectory here.
+board and transport compatibility is written from facts, not from memory.
 
-- The snapshots themselves are git-ignored (third-party trees, not our code).
+**Snapshots are not part of this project.** They are read-only clones that live
+in the **workspace `docs/` tree** (next to `PLAN.md`, `AgentDeck-master` and
+`frameos-main`), *not* inside the `MyDeviceCanvas/` repository — they are
+references only and have no relation to the project source (N02 correction,
+2026-10-14).
+
+This directory keeps only the tracked metadata:
+
 - `references.lock` records every snapshot's URL, branch/tag, commit hash and
-  license. `fetch-references.sh` reproduces the set.
-- `THIRD_PARTY_NOTICES` and `docs/upstream-porting.md` carry the licensing rule.
+  license.
+- `fetch-references.sh` reproduces the set into the workspace `docs/` root.
 
-Reproduce or update:
+Reproduce or update (from the repo root):
 
 ```sh
 docs/reference/fetch-references.sh            # all
 docs/reference/fetch-references.sh esp-idf    # one
 ```
+
+Snapshot root defaults to `<workspace>/docs`; override with `MDC_REFS_ROOT`.
 
 ## Purpose per repository
 
@@ -36,7 +44,7 @@ docs/reference/fetch-references.sh esp-idf    # one
 - These are **design references**. No source from them is copied into a
   MyDeviceCanvas crate or runtime without a `THIRD_PARTY_NOTICES` entry.
 - FrameOS remains **AGPL-3.0 and design-only**; no FrameOS source is downloaded
-  or copied here.
+  or copied into the workspace reference set or the repo.
 - Board profiles and compatibility code must cite the exact file and commit
   from `references.lock` before claiming a hardware detail.
 - A snapshot existing on disk does **not** make its board or transport

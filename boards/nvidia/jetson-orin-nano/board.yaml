@@ -1,11 +1,11 @@
 # NVIDIA Jetson family (N06 skeleton).
 #
-# N02 landed docs/reference/nvidia-cuda-samples as the 3D path reference. This
+# N02 landed the workspace docs/nvidia-cuda-samples as the 3D path reference. This
 # profile is architecture-only: no Jetson board has been measured, so it stays
 # `physical: pending`. Form B candidate (device render + mirror).
 id: jetson-orin-nano
 status: sim-baseline
-source: docs/reference/nvidia-cuda-samples (reference only; no physical measurement)
+source: workspace docs/nvidia-cuda-samples (reference only; no physical measurement)
 physical: pending
 mcu: tegra234
 flash_bytes: 8388608

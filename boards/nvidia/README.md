@@ -1,7 +1,7 @@
 # NVIDIA Jetson family
 
 Skeleton board profiles for NVIDIA Jetson boards (N06). Reference tree:
-`docs/reference/nvidia-cuda-samples` (3D rendering path reference).
+workspace `docs/nvidia-cuda-samples` (3D rendering path reference, outside this repo).
 
 - Status is `sim-baseline`; `physical: pending`.
 - **Form B** candidates: local render + mirror. The high-end 3D path is a

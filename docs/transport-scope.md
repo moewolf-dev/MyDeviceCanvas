@@ -27,9 +27,9 @@ cannot satisfy short-write, close-idempotency and cancel semantics is not ready.
 
 | Transport | Engine to port from | Why reserved | Advertise? |
 |---|---|---|---|
-| BLE GATT | `docs/reference/nimble` (Apache NimBLE) | MTU + notify credit flow; pairing/credentials overlap with `mdc-discovery` | **No** |
-| Native USB bulk | `docs/reference/libusb` | Needs a device-side USB stack and endpoint contract; serial/JTAG is the 0.x path | **No** |
-| PCIe | Rockchip / Jetson BSPs (`docs/reference/rockchip-mpp`, `docs/reference/nvidia-cuda-samples`) | Board bring-up, not a host-side adapter; DMA/bar mapping is board-specific | **No** |
+| BLE GATT | workspace `docs/nimble` (Apache NimBLE) | MTU + notify credit flow; pairing/credentials overlap with `mdc-discovery` | **No** |
+| Native USB bulk | workspace `docs/libusb` | Needs a device-side USB stack and endpoint contract; serial/JTAG is the 0.x path | **No** |
+| PCIe | Rockchip / Jetson BSPs (workspace `docs/rockchip-mpp`, `docs/nvidia-cuda-samples`) | Board bring-up, not a host-side adapter; DMA/bar mapping is board-specific | **No** |
 
 Rules for reserved transports:
 
@@ -51,6 +51,6 @@ channel.
 
 ## Evidence
 
-Reference trees live under `docs/reference/` (N02) and are recorded in
-`references.lock` and `THIRD_PARTY_NOTICES`. They are read-only design
-references; none is vendored into the build.
+Reference trees live in the **workspace `docs/`** tree (N02) and are recorded in
+`docs/reference/references.lock` and `THIRD_PARTY_NOTICES`. They are read-only
+design references outside this repo; none is vendored into the build.

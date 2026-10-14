@@ -1,7 +1,7 @@
 # Arduino family
 
 Skeleton board profiles for the Arduino MCU class (N06). Reference tree:
-`docs/reference/arduino-core-avr`.
+workspace `docs/arduino-core-avr` (outside this repo).
 
 - Status is `sim-baseline`; `physical: pending` until a real board is measured.
 - These are **Form A** devices (Host render → push frames). They do not

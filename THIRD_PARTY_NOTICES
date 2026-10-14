@@ -2,7 +2,7 @@ MyDeviceCanvas does not copy source code from AgentDeck or FrameOS. Their reposi
 
 AgentDeck: MIT License, as documented by its upstream repository. FrameOS: AGPL-3.0, as documented by its upstream repository. No FrameOS code is included here.
 
-N02 read-only upstream snapshots live under `docs/reference/` and are git-ignored; only `references.lock` (URL/branch/commit/license) is tracked. None of their source is compiled or copied into the build.
+N02 read-only upstream snapshots live in the **workspace `docs/` tree** (next to `PLAN.md`, `AgentDeck-master`, `frameos-main`), outside this repository; they are references only and share no code with the project. Only the registry `docs/reference/references.lock` (URL/branch/commit/license) is tracked here. None of their source is compiled or copied into the build.
 
 | Snapshot | License | Purpose |
 |---|---|---|

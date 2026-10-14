@@ -1,11 +1,11 @@
 # Rockchip family (N06 skeleton).
 #
-# N02 landed docs/reference/rockchip-mpp (Rockchip Media Process Platform). This
+# N02 landed the workspace docs/rockchip-mpp (Rockchip Media Process Platform). This
 # profile is architecture-only: no RK3399 board has been measured, so it stays
 # `physical: pending`. Form B candidates (device render + mirror) live here.
 id: rk3399-nanopc-t4
 status: sim-baseline
-source: docs/reference/rockchip-mpp (reference only; no physical measurement)
+source: workspace docs/rockchip-mpp (reference only; no physical measurement)
 physical: pending
 mcu: rk3399
 flash_bytes: 4194304

@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # N02 — read-only reference snapshots for board / transport compatibility work.
 #
-# Each upstream project lands in its own subdirectory under docs/reference/.
-# Clones are git-ignored (they are third-party read-only snapshots, not our
-# code). The tracked metadata is written to docs/reference/references.lock.
+# Snapshots are NOT part of this project. They live in the workspace `docs/`
+# tree, next to PLAN.md, AgentDeck-master and frameos-main (N02 correction
+# 2026-10-14). Each upstream project lands in its own subdirectory there.
+# The tracked metadata stays here in docs/reference/references.lock.
 #
 # Usage: docs/reference/fetch-references.sh [name ...]
 #        (no arguments clones every entry)
+#        MDC_REFS_ROOT overrides the snapshot root (default: workspace docs/)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LOCK="$HERE/references.lock"
+# Workspace docs/ == this repo's docs/../.. /docs (references are not our code).
+REFS_ROOT="${MDC_REFS_ROOT:-$HERE/../../../docs}"
 
 # name|url|tag-or-branch ("default" = upstream default branch)
 REPOS=(
@@ -38,7 +42,7 @@ echo -e "name\turl\tref\tcommit\tlicense" >>"$LOCK.tmp"
 status=0
 while IFS='|' read -r name url ref; do
   if ! wanted "$name" "$@"; then continue; fi
-  dest="$HERE/$name"
+  dest="$REFS_ROOT/$name"
   echo "== $name ($ref)"
   if [[ -d "$dest/.git" ]]; then
     git -C "$dest" fetch --depth 1 origin >/dev/null 2>&1 || true

@@ -10,8 +10,7 @@ runtime/esp32/build/
 runtime/esp32/generated/
 runtime/linux/build/
 
-# N02 read-only upstream reference snapshots (third-party; not our code).
-docs/reference/*/
-!docs/reference/README.md
-!docs/reference/references.lock
-!docs/reference/fetch-references.sh
+# N02 reference snapshots are NOT part of this repo. They live in the workspace
+# docs/ tree (next to PLAN.md, AgentDeck-master, frameos-main). Only the
+# registry in docs/reference/ (README, references.lock, fetch-references.sh) is
+# tracked here.

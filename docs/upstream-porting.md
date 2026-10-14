@@ -37,7 +37,9 @@ This project consulted local snapshots under the parent workspace `docs/` tree.
 
 ## N02 upstream SDK references (2026-10-13)
 
-Read-only snapshots now live under `docs/reference/` (git-ignored). The tracked
+Read-only snapshots live in the **workspace `docs/` tree** (next to `PLAN.md`
+and `AgentDeck-master`), not inside this repository — they are references only
+and share no code with the project. The tracked registry
 `docs/reference/references.lock` records URL, branch/tag, commit hash and
 license; `docs/reference/README.md` maps each tree to its purpose.
 
