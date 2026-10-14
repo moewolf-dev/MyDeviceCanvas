@@ -75,6 +75,38 @@ pub struct AtlasBlob {
     pub columns: u32,
     pub rows: u32,
     pub rgb565: Vec<u8>,
+    /// N69: playable clips (one per motion). Empty means "one implicit clip".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clips: Vec<AtlasClip>,
+}
+
+/// N69: a playable range of atlas frames.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AtlasClip {
+    pub name: String,
+    pub start: u32,
+    pub frames: u32,
+    pub fps: u32,
+    pub looping: bool,
+    pub fade_in_ms: u32,
+    pub fade_out_ms: u32,
+}
+
+impl AtlasBlob {
+    /// Byte offset of the top-left pixel of `index`, or `None` when out of range.
+    pub fn frame_offset(&self, index: u32) -> Option<usize> {
+        if index >= self.frames || self.sprite_width == 0 || self.columns == 0 {
+            return None;
+        }
+        let column = (index % self.columns) as usize;
+        let row = (index / self.columns) as usize;
+        let width = (self.columns * self.sprite_width) as usize;
+        let pixel = row * self.sprite_height as usize * width + column * self.sprite_width as usize;
+        Some(pixel * 2)
+    }
+    pub fn clip(&self, name: &str) -> Option<&AtlasClip> {
+        self.clips.iter().find(|clip| clip.name == name)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

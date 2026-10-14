@@ -127,6 +127,8 @@ pub struct BakedAtlas {
     pub rows: u32,
     /// RGB565 little-endian atlas pixels.
     pub rgb565: Vec<u8>,
+    /// N70: playable clips (one per motion).
+    pub clips: Vec<mdc_model::AtlasClip>,
 }
 
 impl BakedAtlas {
@@ -183,6 +185,7 @@ pub fn pack(plan: &mdc_model::AtlasPlan, frames: &[BakedTexture]) -> Result<Bake
         columns: plan.columns,
         rows: plan.rows,
         rgb565,
+        clips: Vec::new(),
     })
 }
 
@@ -242,6 +245,22 @@ pub fn bake_sprites(
         )?);
     }
     let atlas = pack(&plan, &frames)?;
+    let clips = plan
+        .motions
+        .iter()
+        .zip(motions.iter())
+        .map(|(range, motion)| mdc_model::AtlasClip {
+            name: motion.name.clone(),
+            start: range.start,
+            frames: range.count,
+            fps: motion.fps.max(0.0) as u32,
+            looping: motion.looping,
+            fade_in_ms: (motion.fade_in_sec.max(0.0) * 1000.0) as u32,
+            fade_out_ms: (motion.fade_out_sec.max(0.0) * 1000.0) as u32,
+        })
+        .collect();
+    let mut atlas = atlas;
+    atlas.clips = clips;
     let manifest = BakedManifest {
         atlas_bytes: atlas.rgb565.len() as u64,
         plan,
@@ -268,6 +287,7 @@ pub fn bake_to_package(
         columns: baked.atlas.columns,
         rows: baked.atlas.rows,
         rgb565: baked.atlas.rgb565,
+        clips: baked.atlas.clips,
     };
     let package = mdc_model::DevicePackage {
         target: "esp32-plane".into(),
@@ -367,6 +387,11 @@ mod tests {
         assert_eq!(atlas.frames, 4);
         assert_eq!((atlas.columns, atlas.rows), (2, 2));
         assert_eq!(atlas.rgb565.len(), 4 * 4 * 4 * 2);
+        assert_eq!(atlas.clips.len(), 1);
+        assert_eq!(atlas.clips[0].name, "idle");
+        assert_eq!(atlas.clips[0].frames, 4);
+        assert!(atlas.clips[0].looping);
+        assert_eq!(atlas.frame_offset(0), Some(0));
     }
 
     fn solid(width: u32, height: u32, value: u16) -> BakedTexture {

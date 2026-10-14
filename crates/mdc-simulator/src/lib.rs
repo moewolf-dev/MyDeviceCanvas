@@ -1276,6 +1276,7 @@ mod tests {
             columns: 2,
             rows: 1,
             rgb565: vec![0u8; 2 * 2 * 2 * 2],
+            clips: Vec::new(),
         };
         let package = mdc_model::DevicePackage {
             target: "esp32-plane".into(),

@@ -284,6 +284,7 @@ fn baked_package(frames: u32, pixels: usize) -> mdc_model::MdcPackage {
         columns: frames.max(1),
         rows: 1,
         rgb565: vec![0u8; pixels],
+        clips: Vec::new(),
     };
     let package = mdc_model::DevicePackage {
         target: "esp32-plane".into(),
