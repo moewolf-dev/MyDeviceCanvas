@@ -235,3 +235,40 @@ fn full_frame_receiver_refuses_a_dirty_region_commit() {
     assert_eq!(stats.frames_published, 1);
     assert!(stats.frames_dropped >= 1);
 }
+
+// ---- N47: configuration fixtures ----
+
+#[test]
+fn config_rejects_unknown_key_oversize_and_device_invalid_value() {
+    use mdc_core::{ConnectionState, CoreError, Session};
+    let (host, mut device) = FakeDevice::pair(BoardProfile::default());
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+    // Unadvertised key is refused host-side.
+    assert!(matches!(
+        session.set_config("cpu", "1"),
+        Err(CoreError::Unsupported)
+    ));
+
+    // A value over the host limit is refused before any packet.
+    let big = "x".repeat(mdc_core::MAX_CONFIG_VALUE_BYTES + 1);
+    assert!(matches!(
+        session.set_config("brightness", &big),
+        Err(CoreError::TooLarge)
+    ));
+
+    // A valid set is accepted and cached.
+    session.set_config("brightness", "200").unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert_eq!(session.config("brightness"), Some("200"));
+
+    // An out-of-range value is rejected by the device; the previous value stays.
+    session.set_config("brightness", "999").unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert_eq!(session.config("brightness"), Some("200"));
+}
