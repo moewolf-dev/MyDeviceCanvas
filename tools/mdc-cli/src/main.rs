@@ -6,6 +6,7 @@ use mdc_discovery::{
     PairingStore,
 };
 use mdc_flasher::{flags_for_board, EspToolFlasher, SimFlasher};
+use mdc_mirror::MirrorSink;
 use mdc_protocol::{InputEvent, OtaCommand, VERSION};
 use mdc_provision::{Artifact, InstallPlan, Installer, PortLeases};
 use mdc_simulator::{BoardProfile, FakeDevice, SimMetrics};
@@ -331,6 +332,82 @@ fn cmd_inspect(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", inspect_json(mgr, metrics));
         Ok(())
     })
+}
+
+/// Form B (N31): start mirroring on a simulator board, drive a fixed number of
+/// frames, and deliver them to a file watcher (`--write-dir`) and/or a TCP
+/// consumer (`--serve`). Prints JSON stats.
+fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut frames = 3u32;
+    let mut write_dir: Option<String> = None;
+    let mut serve: Option<String> = None;
+    let mut iter = extra.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--frames" => {
+                frames = iter.next().and_then(|v| v.parse().ok()).unwrap_or(frames);
+            }
+            "--write-dir" => write_dir = iter.next().cloned(),
+            "--serve" => serve = iter.next().cloned(),
+            _ => {}
+        }
+    }
+    let (mut session, mut device, _manager) = open_sim(&opts.board)?;
+    if !session.supports_mirror() {
+        return Err(format!("board {} does not advertise mirror", opts.board).into());
+    }
+    session.start_mirror("main", "full-frame", 15)?;
+    device.poll()?;
+    session.poll()?;
+
+    let mut sink = write_dir.map(|dir| mdc_mirror::PpmDirectorySink::new(dir, "frame.ppm", 0));
+    let mut server = match &serve {
+        Some(address) => Some(mdc_mirror::MirrorServer::bind(address)?),
+        None => None,
+    };
+
+    let mut frames_seen = 0u64;
+    for _ in 0..frames {
+        device.emit_mirror_frame()?;
+        session.poll()?;
+        let Some(frame) = session.take_mirror_frame() else {
+            continue;
+        };
+        frames_seen += 1;
+        if let Some(sink) = sink.as_mut() {
+            sink.on_frame(mdc_mirror::ShadowFrame {
+                width: frame.width,
+                height: frame.height,
+                generation: frames_seen,
+                frame_id: frame.frame_id,
+                pixels: &frame.bytes,
+            });
+        }
+        if let Some(server) = server.as_mut() {
+            let _ = server.accept_pending();
+            server.publish(&mdc_mirror::ShadowFrame {
+                width: frame.width,
+                height: frame.height,
+                generation: frames_seen,
+                frame_id: frame.frame_id,
+                pixels: &frame.bytes,
+            });
+            server.flush();
+        }
+    }
+    let stats = session.mirror_stats();
+    let out = serde_json::json!({
+        "board": opts.board,
+        "frames_requested": frames,
+        "frames_seen": frames_seen,
+        "mirror_received": stats.frames_received,
+        "mirror_dropped": stats.frames_dropped,
+        "ppm_written": sink.as_ref().map(|s| s.frames_written()),
+        "served_clients": server.as_ref().map(|s| s.client_count()),
+        "served_dropped": server.as_ref().map(|s| s.frames_dropped()),
+    });
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
 }
 
 #[cfg(feature = "serial")]
@@ -1543,7 +1620,7 @@ fn usage() {
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
-authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo"
+authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--serve ADDR]"
     );
 }
 
@@ -1609,6 +1686,11 @@ fn main() {
             cmd_h06_demo(&o)
         }
         Some("sim-accept") => cmd_sim_accept(&opts),
+        Some("mirror") => {
+            let mut o = opts.clone();
+            o.sim = true;
+            cmd_mirror(&o, &args[1..])
+        }
         Some("ota-confirm") => cmd_ota_confirm(&opts),
         Some("linux-accept") => cmd_linux_accept(&opts),
         Some("pair") => {
@@ -2192,5 +2274,31 @@ mod tests {
         assert!(idle, "websocket full frame was not acknowledged");
         session.disconnect();
         let _ = server.join();
+    }
+
+    #[test]
+    fn mirror_command_writes_ppm_frames() {
+        let dir = std::env::temp_dir().join(format!("mdc-cli-mirror-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let opts = GlobalOpts {
+            sim: true,
+            address: None,
+            port: None,
+            board: "linux-virt".into(),
+        };
+        let extra = vec![
+            "--frames".to_string(),
+            "1".to_string(),
+            "--write-dir".to_string(),
+            dir.to_string_lossy().into_owned(),
+        ];
+        cmd_mirror(&opts, &extra).unwrap();
+        let written = std::fs::read(dir.join("frame.ppm")).unwrap();
+        assert!(
+            written.starts_with(b"P6\n800 480\n255\n"),
+            "unexpected PPM header"
+        );
+        assert!(written.len() > 14);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
