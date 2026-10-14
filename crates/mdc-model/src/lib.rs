@@ -13,6 +13,7 @@ mod backend;
 mod gltf;
 mod ir;
 mod live2d;
+mod optimizer;
 mod package;
 
 pub use atlas::{AtlasBaker, AtlasPlan, MotionFrames};
@@ -26,6 +27,7 @@ pub use ir::{
     Texture,
 };
 pub use live2d::{ImportedBundle, Live2DBundle, Live2DImporter, MotionInfo};
+pub use optimizer::{plan as plan_optimization, OptimizerPlan, TexturePlan};
 pub use package::{
     compile_to_package, fnv1a, MdcPackage, PackageAssembler, PackageManifest, MAX_PACKAGE_BYTES,
     PACKAGE_VERSION,

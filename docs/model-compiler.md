@@ -84,6 +84,13 @@ packed — and it is bounded by `max_frames`, `max_atlas_bytes` and the texture
 limit before any allocation. An unknown sprite size (0), empty motion set, or an
 atlas larger than the texture limit is rejected.
 
+## Optimizer
+
+`plan_optimization(model, caps)` produces an `OptimizerPlan`: per-texture
+downscale targets (clamped to `max_texture`) and a vertex decimation ratio
+(`1.0` fits, `< 1.0` scales down, `0.0` when the device is sprite-only). It is
+metadata only and is bounded by `MAX_OPTIMIZED_TEXTURE_BYTES` before any work.
+
 ## Runtime package container
 
 `MdcPackage::seal(package)` wraps a `DevicePackage` in a versioned container:
