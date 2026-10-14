@@ -62,6 +62,19 @@ impl RendererCapability {
 pub enum PackageMode {
     Mesh,
     SpriteAtlas,
+    /// N59: a pre-baked sprite atlas (pixels already composited by `mdc-bake`).
+    BakedSprites,
+}
+
+/// N59: a baked sprite atlas carried inside a device package (RGB565 LE).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AtlasBlob {
+    pub sprite_width: u32,
+    pub sprite_height: u32,
+    pub frames: u32,
+    pub columns: u32,
+    pub rows: u32,
+    pub rgb565: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +90,9 @@ pub struct DevicePackage {
     pub sprites: Vec<Sprite>,
     pub layers: Vec<Layer>,
     pub estimated_bytes: u64,
+    /// N59: present only for `BakedSprites` packages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub atlas: Option<AtlasBlob>,
 }
 
 /// A compiler that turns MDC IR into a device package for one target family.
@@ -168,6 +184,7 @@ impl TargetBackend for Esp32PlaneBackend {
                 sprites: model.sprites.clone(),
                 layers: model.layers.clone(),
                 estimated_bytes: model.texture_bytes(),
+                atlas: None,
             });
         }
 
@@ -189,6 +206,7 @@ impl TargetBackend for Esp32PlaneBackend {
             sprites,
             layers: model.layers.clone(),
             estimated_bytes,
+            atlas: None,
         })
     }
 }
@@ -236,6 +254,7 @@ impl TargetBackend for LinuxMeshBackend {
                 sprites,
                 layers: model.layers.clone(),
                 estimated_bytes,
+                atlas: None,
             });
         }
         // Estimated package size: textures plus 12 bytes per vertex (3×f32).
@@ -256,6 +275,7 @@ impl TargetBackend for LinuxMeshBackend {
             sprites: model.sprites.clone(),
             layers: model.layers.clone(),
             estimated_bytes,
+            atlas: None,
         })
     }
 }
