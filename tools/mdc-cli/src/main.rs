@@ -470,6 +470,7 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut sprite: u32 = 64;
     let mut max_texture: u32 = 2048;
     let mut out_dir = String::from(".");
+    let mut package_path: Option<String> = None;
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -482,6 +483,7 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or(max_texture)
             }
             "--out" => out_dir = iter.next().cloned().unwrap_or(out_dir),
+            "--package" => package_path = iter.next().cloned(),
             other => images.push(other.to_string()),
         }
     }
@@ -521,6 +523,29 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         max_texture,
         &mdc_bake::BakeLimits::default(),
     )?;
+    if let Some(path) = &package_path {
+        // N62: write a runtime package instead of (or as well as) preview files.
+        let sealed = mdc_bake::bake_to_package(
+            &sources,
+            &motions,
+            (sprite, sprite),
+            max_texture,
+            &mdc_bake::BakeLimits::default(),
+        )?;
+        let bytes = sealed.to_bytes().map_err(|e| format!("package: {e}"))?;
+        std::fs::write(path, &bytes)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "sources": images.len(),
+                "frames": package.atlas.frames,
+                "mode": sealed.manifest.mode,
+                "package_path": path,
+                "package_bytes": bytes.len(),
+            }))?
+        );
+        return Ok(());
+    }
     std::fs::create_dir_all(&out_dir)?;
     let atlas_path = Path::new(&out_dir).join("atlas.ppm");
     std::fs::write(&atlas_path, rgb565_to_ppm(&package.atlas))?;
@@ -1881,7 +1906,7 @@ fn usage() {
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--serve ADDR]|\
 package <model.gltf> [out.mdcpkg]|install-package <file.mdcpkg>|\
-config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] --out DIR|\
+config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
 scene <file.json>|scene clear|inspect [--watch --count N --interval MS]"
     );
 }
@@ -2720,6 +2745,39 @@ mod tests {
         );
         let manifest = std::fs::read_to_string(out.join("atlas.json")).unwrap();
         assert!(manifest.contains("\"frames\": 4"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bake_package_installs_on_a_sim_board() {
+        use image::{Rgb, RgbImage};
+        let dir = std::env::temp_dir().join(format!("mdc-cli-bakepkg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("src.png");
+        RgbImage::from_pixel(8, 8, Rgb([9, 9, 9]))
+            .save(&source)
+            .unwrap();
+        let package_path = dir.join("baked.mdcpkg");
+        let args = vec![
+            source.to_string_lossy().into_owned(),
+            "--frames".to_string(),
+            "4".to_string(),
+            "--sprite".to_string(),
+            "4".to_string(),
+            "--package".to_string(),
+            package_path.to_string_lossy().into_owned(),
+        ];
+        cmd_bake(&args).unwrap();
+        assert!(package_path.exists());
+
+        let opts = GlobalOpts {
+            sim: true,
+            address: None,
+            port: None,
+            board: "esp32-jc3248w535-sim".into(),
+        };
+        cmd_install_package(&opts, package_path.to_str().unwrap()).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
