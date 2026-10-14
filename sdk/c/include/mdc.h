@@ -82,6 +82,27 @@ int mdc_session_poll_event_with_pointer(MdcSession* session, int* kind, char* de
 /** Simulator-only touch injection. Returns 0, or negative when the session is not a FakeDevice. */
 int mdc_session_simulate_input(MdcSession* session, const char* phase, uint16_t x, uint16_t y);
 
+/** Form B: ask the device to start mirroring `surface_id` (NULL = "main"). 0 or negative. */
+int mdc_start_mirror(MdcSession* session, const char* surface_id, uint16_t max_fps);
+
+/** Form B: stop mirroring. 0 or negative. */
+int mdc_stop_mirror(MdcSession* session, const char* surface_id);
+
+/** Simulator-only: emit one mirrored frame from the FakeDevice. 0 or negative. */
+int mdc_emit_mirror_frame(MdcSession* session);
+
+/**
+ * Copy the newest complete mirrored frame (RGB565). Writes width/height/frame_id
+ * when the pointers are non-NULL. With `out == NULL`, returns the byte count;
+ * otherwise copies up to `cap` bytes and returns the byte count, or -2 if `cap`
+ * is too small, or -1 when no frame is available.
+ */
+int64_t mdc_take_mirror_frame(MdcSession* session, uint16_t* width, uint16_t* height,
+                              uint64_t* frame_id, uint8_t* out, size_t cap);
+
+/** Form B: mirror counters. Writes received/dropped; returns 0 or -1. */
+int mdc_mirror_stats(const MdcSession* session, uint64_t* received, uint64_t* dropped);
+
 /** Free a heap buffer returned by future helpers (no-op placeholder for symmetry). */
 void mdc_free(void* ptr);
 

@@ -562,6 +562,135 @@ pub unsafe extern "C" fn mdc_free(ptr: *mut std::ffi::c_void) {
     let _ = ptr;
 }
 
+unsafe fn mirror_surface(surface_id: *const c_char) -> String {
+    if surface_id.is_null() {
+        "main".to_string()
+    } else {
+        CStr::from_ptr(surface_id).to_string_lossy().into_owned()
+    }
+}
+
+/// # Safety
+/// `session` must come from a create/connect function and be alive.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_start_mirror(
+    session: *mut MdcSession,
+    surface_id: *const c_char,
+    max_fps: u16,
+) -> c_int {
+    let Some(session) = session.as_mut() else {
+        return -1;
+    };
+    let surface = mirror_surface(surface_id);
+    match session
+        .session
+        .start_mirror(&surface, "full-frame", max_fps)
+    {
+        Ok(_) => {
+            let _ = pump(session);
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
+/// # Safety
+/// `session` must come from a create/connect function and be alive.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_stop_mirror(
+    session: *mut MdcSession,
+    surface_id: *const c_char,
+) -> c_int {
+    let Some(session) = session.as_mut() else {
+        return -1;
+    };
+    let surface = mirror_surface(surface_id);
+    match session.session.stop_mirror(&surface) {
+        Ok(_) => {
+            let _ = pump(session);
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
+/// # Safety
+/// `session` must be a simulator session.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_emit_mirror_frame(session: *mut MdcSession) -> c_int {
+    let Some(session) = session.as_mut() else {
+        return -1;
+    };
+    let Some(device) = session.device.as_mut() else {
+        return -1;
+    };
+    match device.emit_mirror_frame() {
+        Ok(()) => {
+            let _ = session.session.poll();
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
+/// # Safety
+/// `session` must be alive; `out` must point to `cap` writable bytes when non-NULL.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_take_mirror_frame(
+    session: *mut MdcSession,
+    width: *mut u16,
+    height: *mut u16,
+    frame_id: *mut u64,
+    out: *mut u8,
+    cap: usize,
+) -> i64 {
+    let Some(session) = session.as_mut() else {
+        return -1;
+    };
+    let Some(frame) = session.session.take_mirror_frame() else {
+        return -1;
+    };
+    if !width.is_null() {
+        *width = frame.width;
+    }
+    if !height.is_null() {
+        *height = frame.height;
+    }
+    if !frame_id.is_null() {
+        *frame_id = frame.frame_id;
+    }
+    let len = frame.bytes.len();
+    if out.is_null() {
+        return len as i64;
+    }
+    if cap < len {
+        return -2;
+    }
+    ptr::copy_nonoverlapping(frame.bytes.as_ptr(), out, len);
+    len as i64
+}
+
+/// # Safety
+/// `session` must be alive; the out pointers may be NULL.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_mirror_stats(
+    session: *const MdcSession,
+    received: *mut u64,
+    dropped: *mut u64,
+) -> c_int {
+    let Some(session) = session.as_ref() else {
+        return -1;
+    };
+    let stats = session.session.mirror_stats();
+    if !received.is_null() {
+        *received = stats.frames_received;
+    }
+    if !dropped.is_null() {
+        *dropped = stats.frames_dropped;
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -853,6 +982,52 @@ mod tests {
                 }
             }
             assert!(saw_cancel);
+            mdc_session_destroy(session);
+        }
+    }
+
+    #[test]
+    fn mirror_start_emit_and_take() {
+        unsafe {
+            let board = std::ffi::CString::new("linux-virt").unwrap();
+            let session = mdc_session_create_board(board.as_ptr());
+            assert!(!session.is_null());
+            assert_eq!(mdc_start_mirror(session, std::ptr::null(), 15), 0);
+            assert_eq!(mdc_emit_mirror_frame(session), 0);
+
+            let mut width = 0u16;
+            let mut height = 0u16;
+            let mut frame_id = 0u64;
+            let mut buf = vec![0u8; 800 * 480 * 2];
+            let n = mdc_take_mirror_frame(
+                session,
+                &mut width,
+                &mut height,
+                &mut frame_id,
+                buf.as_mut_ptr(),
+                buf.len(),
+            );
+            assert_eq!(n, (800 * 480 * 2) as i64);
+            assert_eq!((width, height), (800, 480));
+
+            let mut received = 0u64;
+            let mut dropped = 0u64;
+            assert_eq!(mdc_mirror_stats(session, &mut received, &mut dropped), 0);
+            assert_eq!(received, 1);
+            assert_eq!(dropped, 0);
+
+            // No further frame is available.
+            assert_eq!(
+                mdc_take_mirror_frame(
+                    session,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    0
+                ),
+                -1
+            );
             mdc_session_destroy(session);
         }
     }
