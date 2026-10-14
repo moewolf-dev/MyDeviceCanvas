@@ -148,3 +148,14 @@ test("scene set/clear go through the public SDK", async () => {
   await mdc.clearScene();
   assert.deepEqual(calls, [["set", "rect"], ["clear"]]);
 });
+
+test("animation helpers go through the public SDK", async () => {
+  const calls = [];
+  const mdc = new MyDeviceCanvas({
+    setAnimation(clip) { calls.push(clip); return clip; },
+    stopAnimation() { calls.push("off"); },
+  });
+  assert.equal(await mdc.setAnimation("idle"), "idle");
+  await mdc.stopAnimation();
+  assert.deepEqual(calls, ["idle", "off"]);
+});

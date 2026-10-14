@@ -654,6 +654,43 @@ impl NativeManager {
         Ok(())
     }
 
+    /// N74: play a baked-atlas clip on the device (via the animation setting).
+    #[napi(js_name = "setAnimation")]
+    pub fn set_animation(&self, clip: String) -> Result<String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        sim.session
+            .set_animation(&clip)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        pump_link(sim)?;
+        Ok(sim.session.active_animation().unwrap_or("off").to_string())
+    }
+
+    #[napi(js_name = "stopAnimation")]
+    pub fn stop_animation(&self) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        sim.session
+            .stop_animation()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        pump_link(sim)?;
+        Ok(())
+    }
+
     /// Open a named simulator board before the first `devices()` call.
     #[napi(js_name = "openBoard")]
     pub fn open_board(&self, board_id: String) -> Result<()> {

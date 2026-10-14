@@ -174,6 +174,21 @@ export class MyDeviceCanvas {
     }
     return this._native.clearScene();
   }
+  /** N74: play a baked-atlas clip; returns the accepted clip name ("off" when stopped). */
+  async setAnimation(clip) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.setAnimation !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.setAnimation(clip);
+  }
+  async stopAnimation() {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.stopAnimation !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.stopAnimation();
+  }
   on(event, listener) {
     if (this._disposed) throw new Error("manager is disposed");
     if (typeof listener !== "function") {

@@ -80,6 +80,8 @@ export declare class MyDeviceCanvas {
   setConfig(key: string, value: string | number): Promise<string>;
   setScene(node: { name: string; kind: string; children?: unknown[]; value?: string }): Promise<void>;
   clearScene(): Promise<void>;
+  setAnimation(clip: string): Promise<string>;
+  stopAnimation(): Promise<void>;
   on(event: string, listener: (value: unknown) => void): () => void;
   off(event: string, listener: (value: unknown) => void): boolean;
   dispose(): void;
