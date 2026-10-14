@@ -1,0 +1,33 @@
+# Arduino AVR (UNO class) family profile (N15).
+#
+# Grounded in the read-only arduino-core-avr snapshot for this project:
+#   workspace docs/arduino-core-avr @ 11b9130371e8447920edb65a75706a6c951e51fc
+#     boards.txt   uno.build.mcu=atmega328p, uno.build.f_cpu=16000000L,
+#                  uno.upload.maximum_size=32256 (32 KiB flash), AVR_UNO variant
+# The ILI9341 TFT is a shield, not part of boards.txt; no AVR board has been
+# measured, so the profile stays `physical: pending`.
+id: arduino-uno-tft
+status: sim-baseline
+source: workspace arduino-core-avr boards.txt @ 11b91303 (AVR UNO; reference only; not measured)
+physical: pending
+mcu: atmega328p
+chip_family: AVR
+flash_bytes: 32768
+psram_bytes: 0
+usb: uart
+baud_default: 115200
+baud_flash: 115200
+display: {width: 320, height: 240, format: RGB565_LE, rotation: 0, bus: spi, controller: ili9341}
+display_note: ili9341-tft-shield-not-from-boards-txt
+touch: false
+ota: false
+color_fps: true
+max_framebuffer_bytes: 307200
+min_internal_free_bytes: 512
+min_internal_largest_block_bytes: 256
+max_psram_used_bytes: 0
+dma_align_bytes: 1
+reset_strategy: dtr-bootloader
+framebuffer_note: line-buffered; a full RGB565 frame is not resident on AVR
+# Form A only: MCU class, no local render / mirror.
+mirror: false

@@ -3,9 +3,12 @@
 # N02 landed the workspace docs/rockchip-mpp (Rockchip Media Process Platform). This
 # profile is architecture-only: no RK3399 board has been measured, so it stays
 # `physical: pending`. Form B candidates (device render + mirror) live here.
+# N15 grounding: docs/rockchip-mpp readme.txt lists RK3399 among supported SoCs,
+# but MPP is a *media* (video decode/encode) SDK; panel/DRM/HDMI bring-up is not
+# covered by it and is left unverified rather than invented.
 id: rk3399-nanopc-t4
 status: sim-baseline
-source: workspace docs/rockchip-mpp (reference only; no physical measurement)
+source: workspace rockchip-mpp @ 14729dd5 (RK3399 in readme.txt; reference only; not measured)
 physical: pending
 mcu: rk3399
 flash_bytes: 4194304
