@@ -366,6 +366,8 @@ version = "0.1.0"
 dependencies = [
  "image",
  "mdc-model",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 

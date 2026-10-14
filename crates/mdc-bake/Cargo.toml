@@ -8,4 +8,6 @@ description = "Host-side pixel baking: decode, resize and pack textures into dev
 [dependencies]
 mdc-model = { path = "../mdc-model" }
 image = { version = "=0.24.9", default-features = false, features = ["png", "jpeg"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror.workspace = true

@@ -9,6 +9,7 @@
 //! decompression bomb is refused before any pixel buffer is allocated.
 use image::imageops::FilterType;
 use image::io::Reader as ImageReader;
+pub use mdc_model::AtlasPlan;
 use std::io::Cursor;
 use thiserror::Error;
 
@@ -183,6 +184,69 @@ pub fn pack(plan: &mdc_model::AtlasPlan, frames: &[BakedTexture]) -> Result<Bake
     })
 }
 
+use serde::{Deserialize, Serialize};
+
+/// One source image available for baking, by name.
+#[derive(Debug, Clone)]
+pub struct SpriteSource {
+    pub name: String,
+    pub image: Vec<u8>,
+}
+
+/// Serializable manifest for a baked atlas.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BakedManifest {
+    pub plan: AtlasPlan,
+    pub atlas_bytes: u64,
+}
+
+impl BakedManifest {
+    pub fn to_json(&self) -> Result<String, BakeError> {
+        serde_json::to_string_pretty(self).map_err(|e| BakeError::Decode(e.to_string()))
+    }
+}
+
+/// A baked atlas plus its manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BakedSpritePackage {
+    pub atlas: BakedAtlas,
+    pub manifest: BakedManifest,
+}
+
+/// Bake every sampled frame into one atlas. Each frame is produced from a source
+/// image (cycled when there are fewer sources than frames); the target grid comes
+/// from `mdc_model::AtlasBaker` for the device texture limit.
+#[allow(clippy::too_many_arguments)]
+pub fn bake_sprites(
+    sources: &[SpriteSource],
+    motions: &[mdc_model::MotionInfo],
+    sprite: (u32, u32),
+    max_texture: u32,
+    limits: &BakeLimits,
+) -> Result<BakedSpritePackage, BakeError> {
+    if sources.is_empty() {
+        return Err(BakeError::Decode("no source images".into()));
+    }
+    let plan = mdc_model::AtlasBaker::default()
+        .bake(sprite, max_texture, motions)
+        .map_err(|e| BakeError::Decode(e.to_string()))?;
+    let mut frames = Vec::with_capacity(plan.frames as usize);
+    for index in 0..plan.frames as usize {
+        let source = &sources[index % sources.len()];
+        frames.push(decode_resize_rgb565(
+            &source.image,
+            (plan.sprite_width, plan.sprite_height),
+            limits,
+        )?);
+    }
+    let atlas = pack(&plan, &frames)?;
+    let manifest = BakedManifest {
+        atlas_bytes: atlas.rgb565.len() as u64,
+        plan,
+    };
+    Ok(BakedSpritePackage { atlas, manifest })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,6 +364,68 @@ mod tests {
         assert!(matches!(
             pack(&plan, &[solid(4, 4, 0), solid(2, 2, 0)]),
             Err(BakeError::FrameSize(4, 4, 2, 2))
+        ));
+    }
+
+    fn motion(duration: f64, fps: f64) -> mdc_model::MotionInfo {
+        mdc_model::MotionInfo {
+            name: "idle".into(),
+            channels: 1,
+            duration_sec: duration,
+            fps,
+            fade_in_sec: 0.0,
+            fade_out_sec: 0.0,
+            looping: true,
+        }
+    }
+
+    #[test]
+    fn bake_sprites_cycles_sources_and_produces_a_manifest() {
+        let red = SpriteSource {
+            name: "red".into(),
+            image: png_of(8, 8, [255, 0, 0]),
+        };
+        let green = SpriteSource {
+            name: "green".into(),
+            image: png_of(8, 8, [0, 255, 0]),
+        };
+        // 0.1s @ 30fps -> 4 frames; sprite 4x4 -> 2x2 grid.
+        let package = bake_sprites(
+            &[red, green],
+            &[motion(0.1, 30.0)],
+            (4, 4),
+            2048,
+            &BakeLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(package.atlas.frames, 4);
+        assert_eq!((package.atlas.columns, package.atlas.rows), (2, 2));
+        assert_eq!(
+            package.manifest.atlas_bytes,
+            package.atlas.rgb565.len() as u64
+        );
+        assert_eq!(package.manifest.plan.frames, 4);
+        // Frame 0 is red, frame 1 is green.
+        assert_eq!(&package.atlas.rgb565[0..2], &[0x00, 0xF8]);
+        assert_eq!(
+            &package.atlas.rgb565[package.atlas.frame_offset(1).unwrap()..][..2],
+            &[0xE0, 0x07]
+        );
+        let json = package.manifest.to_json().unwrap();
+        assert!(json.contains("\"frames\": 4"));
+    }
+
+    #[test]
+    fn bake_sprites_requires_a_source() {
+        assert!(matches!(
+            bake_sprites(
+                &[],
+                &[motion(0.1, 30.0)],
+                (4, 4),
+                2048,
+                &BakeLimits::default()
+            ),
+            Err(BakeError::Decode(_))
         ));
     }
 }
