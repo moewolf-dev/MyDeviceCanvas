@@ -142,3 +142,48 @@ fn bake_soak_stays_bounded() {
     }
     assert!(bytes > 0);
 }
+
+#[test]
+fn baked_package_soak_is_bounded() {
+    use image::{Rgb, RgbImage};
+    use std::io::Cursor;
+
+    let image = RgbImage::from_pixel(8, 8, Rgb([30, 60, 90]));
+    let mut png = Vec::new();
+    image
+        .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let source = mdc_bake::SpriteSource {
+        name: "src".into(),
+        image: png,
+    };
+    let motion = mdc_model::MotionInfo {
+        name: "idle".into(),
+        channels: 1,
+        duration_sec: 0.1,
+        fps: 30.0,
+        fade_in_sec: 0.0,
+        fade_out_sec: 0.0,
+        looping: true,
+    };
+    let mut size = 0usize;
+    for _ in 0..100 {
+        let package = mdc_bake::bake_to_package(
+            std::slice::from_ref(&source),
+            std::slice::from_ref(&motion),
+            (8, 8),
+            2048,
+            &mdc_bake::BakeLimits::default(),
+        )
+        .unwrap();
+        let bytes = package.to_bytes().unwrap();
+        if size == 0 {
+            size = bytes.len();
+            // integrity round-trip once
+            let back = mdc_model::MdcPackage::from_bytes(&bytes).unwrap();
+            assert_eq!(back, package);
+        }
+        assert_eq!(bytes.len(), size, "package size is constant");
+    }
+    assert!(size > 0);
+}
