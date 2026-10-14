@@ -8,7 +8,52 @@ use crate::gltf::json_name;
 use crate::ir::{
     Animation, ImportLimits, Layer, Material, Model, ModelError, Node, Skeleton, Sprite, Texture,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
+
+/// A Live2D bundle: the `model3.json` manifest plus any referenced motion files
+/// keyed by their manifest path. Only the files provided are read.
+#[derive(Debug, Default, Clone)]
+pub struct Live2DBundle {
+    pub manifest: Vec<u8>,
+    pub motions: BTreeMap<String, Vec<u8>>,
+}
+
+/// Metadata of one `motion3.json`, read from its `Meta` block and curves.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MotionInfo {
+    pub name: String,
+    /// Number of curves, i.e. animated parameters/parts.
+    pub channels: u32,
+    pub duration_sec: f64,
+    pub fps: f64,
+    pub fade_in_sec: f64,
+    pub fade_out_sec: f64,
+    pub looping: bool,
+}
+
+impl MotionInfo {
+    /// Discrete frame count a sampler needs, capped by the duration budget.
+    pub fn frame_count(&self) -> u32 {
+        if self.fps <= 0.0 || self.duration_sec <= 0.0 {
+            return 0;
+        }
+        let frames = (self.duration_sec * self.fps).ceil();
+        if frames >= f64::from(u32::MAX) {
+            u32::MAX
+        } else {
+            frames as u32 + 1
+        }
+    }
+}
+
+/// A manifest compiled together with its motions.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportedBundle {
+    pub model: Model,
+    pub motions: Vec<MotionInfo>,
+}
 
 pub struct Live2DImporter;
 
@@ -134,7 +179,93 @@ impl Live2DImporter {
             layers: vec![layer],
         })
     }
+
+    /// Read one `motion3.json`: curve count plus the `Meta` block. Segments are
+    /// not expanded into keyframes.
+    pub fn import_motion(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        limits: &ImportLimits,
+    ) -> Result<MotionInfo, ModelError> {
+        if bytes.len() > limits.max_input_bytes {
+            return Err(ModelError::InputTooLarge(
+                bytes.len(),
+                limits.max_input_bytes,
+            ));
+        }
+        let doc: Value =
+            serde_json::from_slice(bytes).map_err(|e| ModelError::Json(e.to_string()))?;
+        let version = doc.get("Version").and_then(Value::as_u64).unwrap_or(0);
+        if !(2..=5).contains(&version) {
+            return Err(ModelError::Unsupported(format!(
+                "Live2D motion3 Version {version}"
+            )));
+        }
+        let curves = doc
+            .get("Curves")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ModelError::Unsupported("motion3 Curves missing".into()))?;
+        if curves.len() > limits.max_nodes {
+            return Err(ModelError::Budget(format!(
+                "{} motion curves over {} limit",
+                curves.len(),
+                limits.max_nodes
+            )));
+        }
+        let meta = doc.get("Meta");
+        let number = |key: &str| meta.and_then(|m| m.get(key)).and_then(Value::as_f64);
+        let duration_sec = number("Duration").unwrap_or(0.0);
+        if duration_sec > MAX_MOTION_SECS {
+            return Err(ModelError::Budget(format!(
+                "motion duration {duration_sec}s over {MAX_MOTION_SECS}s limit"
+            )));
+        }
+        let fps = match number("Fps") {
+            Some(fps) if fps > 0.0 => fps,
+            _ => 30.0,
+        };
+        Ok(MotionInfo {
+            name: name.to_string(),
+            channels: curves.len().min(u32::MAX as usize) as u32,
+            duration_sec,
+            fps,
+            fade_in_sec: number("FadeInTime").unwrap_or(0.0),
+            fade_out_sec: number("FadeOutTime").unwrap_or(0.0),
+            looping: meta
+                .and_then(|m| m.get("Loop"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        })
+    }
+
+    /// Compile the manifest together with the supplied motion files. The
+    /// manifest's per-group stubs are replaced by one animation per motion with
+    /// its real curve count; expression animations are kept.
+    pub fn import_bundle(
+        &self,
+        bundle: &Live2DBundle,
+        limits: &ImportLimits,
+    ) -> Result<ImportedBundle, ModelError> {
+        let mut model = self.import(&bundle.manifest, limits)?;
+        model
+            .animations
+            .retain(|a| a.name.starts_with("expression:"));
+        let mut motions = Vec::with_capacity(bundle.motions.len());
+        for (path, bytes) in &bundle.motions {
+            let info = self.import_motion(path, bytes, limits)?;
+            model.animations.push(Animation {
+                name: info.name.clone(),
+                channels: info.channels,
+            });
+            motions.push(info);
+        }
+        Ok(ImportedBundle { model, motions })
+    }
 }
+
+/// Longest motion accepted before the sampler budget is exceeded.
+const MAX_MOTION_SECS: f64 = 600.0;
 
 fn file_stem(path: &str, fallback: &str) -> String {
     let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
@@ -254,5 +385,85 @@ mod tests {
             Live2DImporter.import(&sample_model3(), &limits),
             Err(ModelError::Budget(_))
         ));
+    }
+
+    fn sample_motion() -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "Version": 3,
+            "Meta": {"Duration": 2.0, "Fps": 30.0, "Loop": true, "FadeInTime": 0.5, "FadeOutTime": 0.25},
+            "Curves": [
+                {"Target": "Parameter", "Id": "ParamAngleX", "Segments": [0.0, 0.0]},
+                {"Target": "Parameter", "Id": "ParamAngleY", "Segments": [0.0, 0.0]},
+                {"Target": "Parameter", "Id": "ParamEyeOpen", "Segments": [0.0, 0.0]}
+            ]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn imports_a_motion_with_meta_and_curves() {
+        let info = Live2DImporter
+            .import_motion("idle_00", &sample_motion(), &ImportLimits::default())
+            .unwrap();
+        assert_eq!(info.name, "idle_00");
+        assert_eq!(info.channels, 3);
+        assert_eq!(info.duration_sec, 2.0);
+        assert_eq!(info.fps, 30.0);
+        assert_eq!(info.fade_in_sec, 0.5);
+        assert_eq!(info.fade_out_sec, 0.25);
+        assert!(info.looping);
+        assert_eq!(info.frame_count(), 61, "2s × 30fps + 1");
+    }
+
+    #[test]
+    fn bad_motions_are_rejected() {
+        let bad_version = serde_json::to_vec(&json!({"Version": 9, "Curves": []})).unwrap();
+        assert!(matches!(
+            Live2DImporter.import_motion("m", &bad_version, &ImportLimits::default()),
+            Err(ModelError::Unsupported(_))
+        ));
+        let no_curves = serde_json::to_vec(&json!({"Version": 3, "Meta": {}})).unwrap();
+        assert!(matches!(
+            Live2DImporter.import_motion("m", &no_curves, &ImportLimits::default()),
+            Err(ModelError::Unsupported(_))
+        ));
+        let too_long = serde_json::to_vec(&json!({
+            "Version": 3,
+            "Meta": {"Duration": 100000.0, "Fps": 30.0},
+            "Curves": []
+        }))
+        .unwrap();
+        assert!(matches!(
+            Live2DImporter.import_motion("m", &too_long, &ImportLimits::default()),
+            Err(ModelError::Budget(_))
+        ));
+    }
+
+    #[test]
+    fn bundle_replaces_group_stubs_with_real_channels() {
+        let mut motions = BTreeMap::new();
+        motions.insert("motions/idle_00.motion3.json".to_string(), sample_motion());
+        let bundle = Live2DBundle {
+            manifest: sample_model3(),
+            motions,
+        };
+        let imported = Live2DImporter
+            .import_bundle(&bundle, &ImportLimits::default())
+            .unwrap();
+        assert_eq!(imported.motions.len(), 1);
+        assert_eq!(imported.motions[0].channels, 3);
+        // Two expression animations remain; the two group stubs are gone and
+        // replaced by the one real motion.
+        assert_eq!(imported.model.animations.len(), 3);
+        assert!(imported
+            .model
+            .animations
+            .iter()
+            .any(|a| a.name == "motions/idle_00.motion3.json" && a.channels == 3));
+        assert!(imported
+            .model
+            .animations
+            .iter()
+            .any(|a| a.name == "expression:F01"));
     }
 }

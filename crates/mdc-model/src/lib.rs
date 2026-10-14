@@ -22,7 +22,7 @@ pub use ir::{
     Animation, ImportLimits, Layer, Material, Mesh, Model, ModelError, Node, Skeleton, Sprite,
     Texture,
 };
-pub use live2d::Live2DImporter;
+pub use live2d::{ImportedBundle, Live2DBundle, Live2DImporter, MotionInfo};
 
 #[cfg(test)]
 mod tests {

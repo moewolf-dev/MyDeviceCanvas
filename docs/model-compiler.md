@@ -24,7 +24,7 @@ Source model (glTF / GLB / Live2D model3.json)
 | Importer | Input | Reads | Does **not** read |
 |---|---|---|---|
 | `GltfImporter` | glTF 2.0 `.gltf` (JSON) and `.glb` (binary container) | nodes, meshes, accessors, materials, textures, animations, `skins`, VRM humanoid; buffer/bufferView/accessor bounds; embedded PNG/JPEG header for real pixel size | pixels (no image decode), external buffer files, morph targets, VRM meta/spring bones |
-| `Live2DImporter` | Cubism `model3.json` (Version 2–5) | textures, motion groups, expressions, moc reference | `.moc3` binary (mesh / deformer / parameter data) |
+| `Live2DImporter` | Cubism `model3.json` (Version 2–5) and `motion3.json` bundle | textures, motion groups, expressions, moc reference; motion curve count + `Meta` (duration/fps/loop/fade) | `.moc3` binary (mesh / deformer / parameter data), motion keyframes |
 
 Both importers check `ImportLimits` **before allocating**: `max_input_bytes`
 (also caps resolved buffers), `max_texture_bytes`, `max_nodes`, `max_vertices`.
@@ -50,6 +50,10 @@ A decode bomb is refused before any decode buffer is created.
   become animations and expressions become `expression:<Name>` animations.
 - The `.moc3` is not decoded, so atlas geometry (sprite sizes) is 0 and a weak
   backend simply plays the author sprites.
+- `import_motion` reads one `motion3.json` (`Meta` duration/fps/loop/fade + curve
+  count) into `MotionInfo`; `import_bundle` compiles the manifest together with
+  the supplied motions, replacing the per-group stubs with one animation per
+  motion carrying its real curve count. Motion keyframes are not expanded.
 
 ## Target backends
 
