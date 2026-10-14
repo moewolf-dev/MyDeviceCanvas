@@ -615,6 +615,45 @@ impl NativeManager {
         Ok(sim.session.config(&key).unwrap_or("").to_string())
     }
 
+    /// N55: set a vector scene from a JSON SceneNode (sim path).
+    #[napi(js_name = "setScene")]
+    pub fn set_scene(&self, json: String) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let node: mdc_protocol::SceneNode = serde_json::from_str(&json)
+            .map_err(|e| Error::from_reason(format!("scene json: {e}")))?;
+        let sim = state.sim.as_mut().unwrap();
+        sim.session
+            .set_scene(node)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        pump_link(sim)?;
+        Ok(())
+    }
+
+    #[napi(js_name = "clearScene")]
+    pub fn clear_scene(&self) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        sim.session
+            .clear_scene()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        pump_link(sim)?;
+        Ok(())
+    }
+
     /// Open a named simulator board before the first `devices()` call.
     #[napi(js_name = "openBoard")]
     pub fn open_board(&self, board_id: String) -> Result<()> {

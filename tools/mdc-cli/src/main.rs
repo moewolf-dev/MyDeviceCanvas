@@ -395,6 +395,35 @@ fn cmd_install_package(opts: &GlobalOpts, path: &str) -> Result<(), Box<dyn std:
     }
     Ok(())
 }
+/// N55: set a scene from a JSON file, or clear it, on a simulator board.
+fn cmd_scene(opts: &GlobalOpts, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let (mut session, mut device, _manager) = open_sim(&opts.board)?;
+    let mut action = "set";
+    if args.first().map(String::as_str) == Some("clear") {
+        session.clear_scene()?;
+        action = "clear";
+    } else {
+        let path = args
+            .first()
+            .ok_or("scene requires a JSON file or 'clear'")?;
+        let text = std::fs::read_to_string(path)?;
+        let node: mdc_protocol::SceneNode = serde_json::from_str(&text)?;
+        session.set_scene(node)?;
+    }
+    device.poll()?;
+    session.poll()?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "board": opts.board,
+            "action": action,
+            "scene_nodes": device.scene_node_count(),
+            "present": device.has_scene(),
+        }))?
+    );
+    Ok(())
+}
+
 /// N52: bake source images into a device sprite atlas (pixels + manifest).
 fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut images: Vec<String> = Vec::new();
@@ -1813,7 +1842,8 @@ fn usage() {
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--serve ADDR]|\
 package <model.gltf> [out.mdcpkg]|install-package <file.mdcpkg>|\
-config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] --out DIR"
+config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] --out DIR|\
+scene <file.json>|scene clear"
     );
 }
 
@@ -1914,6 +1944,11 @@ fn main() {
             cmd_config(&o, &action, &key, args.get(3).map(String::as_str))
         }
         Some("bake") => cmd_bake(&args[1..]),
+        Some("scene") => {
+            let mut o = opts.clone();
+            o.sim = true;
+            cmd_scene(&o, &args[1..])
+        }
         Some("ota-confirm") => cmd_ota_confirm(&opts),
         Some("linux-accept") => cmd_linux_accept(&opts),
         Some("pair") => {
@@ -2573,6 +2608,28 @@ mod tests {
         cmd_config(&opts, "get", "brightness", None).unwrap();
         // A secret is redacted; the call still succeeds.
         cmd_config(&opts, "get", "wifi_password", None).unwrap();
+    }
+
+    #[test]
+    fn scene_command_sets_and_clears() {
+        let dir = std::env::temp_dir().join(format!("mdc-cli-scene-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("scene.json");
+        std::fs::write(
+            &path,
+            r#"{"name":"root","kind":"rect","children":[{"name":"t","kind":"text","value":"hi"}]}"#,
+        )
+        .unwrap();
+        let opts = GlobalOpts {
+            sim: true,
+            address: None,
+            port: None,
+            board: "linux-virt".into(),
+        };
+        cmd_scene(&opts, &[path.to_string_lossy().into_owned()]).unwrap();
+        cmd_scene(&opts, &["clear".to_string()]).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

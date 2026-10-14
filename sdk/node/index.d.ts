@@ -78,6 +78,8 @@ export declare class MyDeviceCanvas {
   mirrorStats(): Promise<MirrorStats | null>;
   getConfig(key: string): Promise<string>;
   setConfig(key: string, value: string | number): Promise<string>;
+  setScene(node: { name: string; kind: string; children?: unknown[]; value?: string }): Promise<void>;
+  clearScene(): Promise<void>;
   on(event: string, listener: (value: unknown) => void): () => void;
   off(event: string, listener: (value: unknown) => void): boolean;
   dispose(): void;

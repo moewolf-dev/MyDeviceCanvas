@@ -159,6 +159,21 @@ export class MyDeviceCanvas {
     }
     return this._native.setConfig(key, String(value));
   }
+  /** N55: set a vector scene (plain object serialized to the SceneNode JSON). */
+  async setScene(node) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.setScene !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.setScene(JSON.stringify(node ?? {}));
+  }
+  async clearScene() {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.clearScene !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.clearScene();
+  }
   on(event, listener) {
     if (this._disposed) throw new Error("manager is disposed");
     if (typeof listener !== "function") {

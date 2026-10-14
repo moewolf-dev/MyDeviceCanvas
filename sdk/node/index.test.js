@@ -137,3 +137,14 @@ test("config get/set go through the public SDK", async () => {
   assert.equal(await mdc.getConfig("brightness"), "200");
   assert.equal(await mdc.getConfig("wifi_password"), "***");
 });
+
+test("scene set/clear go through the public SDK", async () => {
+  const calls = [];
+  const mdc = new MyDeviceCanvas({
+    setScene(json) { calls.push(["set", JSON.parse(json).kind]); },
+    clearScene() { calls.push(["clear"]); },
+  });
+  await mdc.setScene({ name: "root", kind: "rect" });
+  await mdc.clearScene();
+  assert.deepEqual(calls, [["set", "rect"], ["clear"]]);
+});
