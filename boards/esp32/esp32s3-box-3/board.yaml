@@ -1,0 +1,51 @@
+# ESP32-S3-BOX-3 family profile (N14).
+#
+# Grounded in the read-only esp-bsp reference snapshot for this project:
+#   workspace docs/esp-bsp @ f259a6abd5808019b1903a422092a4234ca95a51
+#     bsp/esp-box-3/include/bsp/esp-box-3.h   (LCD/I2C/touch/USB pins)
+#     bsp/esp-box-3/include/bsp/display.h      (320x240, 16 bpp)
+#     bsp/esp-box-3/README.md                  (16MB QSPI flash, 16MB Octal PSRAM,
+#                                               Type-C USB serial/JTAG)
+#     bsp/esp-box-3/idf_component.yml          (esp_lcd_ili9341, tt21100/gt911)
+# No BOX-3 unit has been measured, so the profile stays `physical: pending`
+# (schema-complete like the other N06 families, never physically verified).
+id: esp32s3-box-3
+status: sim-baseline
+source: workspace esp-bsp bsp/esp-box-3 @ f259a6ab (reference only; not measured)
+physical: pending
+mcu: esp32-s3
+chip_family: ESP32-S3
+flash_bytes: 16777216
+flash_mode: qio
+flash_freq_mhz: 80
+bootloader_offset: 0x0
+psram_bytes: 16777216
+psram_mode: octal
+usb: native-usb-serial-jtag
+native_usb: true
+baud_default: 115200
+baud_flash: 460800
+flash_before: no_reset
+flash_after: hard_reset
+display: {width: 320, height: 240, format: RGB565_LE, rotation: 0, bus: spi, controller: ili9341}
+touch: true
+touch_controller: tt21100-or-gt911
+ota: true
+# LCD SPI: CS=5, SCLK=7, MOSI=6 (DATA0), DC=4, RST=48, BL=47; touch INT=3.
+pin_qspi_cs: 5
+pin_qspi_clk: 7
+pin_qspi_d0: 6
+pin_backlight: 47
+pin_dc: 4
+pin_lcd_rst: 48
+pin_touch_int: 3
+pin_touch_sda: 8
+pin_touch_scl: 18
+max_framebuffer_bytes: 307200
+min_internal_free_bytes: 65536
+min_internal_largest_block_bytes: 32768
+max_psram_used_bytes: 4194304
+dma_align_bytes: 4
+reset_strategy: document-before-use
+# Form A only: MCU class, no local render / mirror.
+mirror: false
