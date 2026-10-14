@@ -84,6 +84,16 @@ packed — and it is bounded by `max_frames`, `max_atlas_bytes` and the texture
 limit before any allocation. An unknown sprite size (0), empty motion set, or an
 atlas larger than the texture limit is rejected.
 
+## Runtime package container
+
+`MdcPackage::seal(package)` wraps a `DevicePackage` in a versioned container:
+a `MDCP` magic, a `u16` version, a length-prefixed JSON manifest (`target`,
+`mode`, `estimated_bytes`, body length and an FNV-1a checksum) and the JSON IR
+body. `compile_to_package(model, caps)` compiles with the capability-selected
+backend and seals the result. `to_bytes`/`from_bytes` move it over the wire; the
+body and manifest are bounded (16 MiB / 64 KiB). N20 adds checksum verification
+and the device capability gate.
+
 ## Memory and limits
 
 The IR is metadata-level: geometry is summarised as vertex/index counts, and

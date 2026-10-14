@@ -13,6 +13,7 @@ mod backend;
 mod gltf;
 mod ir;
 mod live2d;
+mod package;
 
 pub use atlas::{AtlasBaker, AtlasPlan, MotionFrames};
 pub use backend::{
@@ -25,6 +26,9 @@ pub use ir::{
     Texture,
 };
 pub use live2d::{ImportedBundle, Live2DBundle, Live2DImporter, MotionInfo};
+pub use package::{
+    compile_to_package, fnv1a, MdcPackage, PackageManifest, MAX_PACKAGE_BYTES, PACKAGE_VERSION,
+};
 
 #[cfg(test)]
 mod tests {
