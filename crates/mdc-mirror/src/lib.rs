@@ -11,7 +11,7 @@ use mdc_protocol::{decode_frame_payload, FramePayload, MessageType, HEADER_LEN};
 use mdc_transport::Transport;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 /// Hard cap on front+back shadow buffers (N01 §6). 480×480 BGRA double buffer
@@ -517,6 +517,146 @@ impl MirrorSink for MockObsSink {
     }
 }
 
+/// Encode a BGRA8888 frame as a binary PPM (P6) image. OBS-adjacent previews and
+/// tests can use this without linking an image library.
+pub fn encode_ppm(width: u16, height: u16, bgra: &[u8]) -> Vec<u8> {
+    let pixels = usize::from(width) * usize::from(height);
+    let mut out = Vec::with_capacity(pixels * 3 + 32);
+    out.extend_from_slice(format!("P6\n{width} {height}\n255\n").as_bytes());
+    for chunk in bgra.chunks_exact(4) {
+        out.push(chunk[2]); // R
+        out.push(chunk[1]); // G
+        out.push(chunk[0]); // B
+    }
+    out
+}
+
+/// Reference OBS/preview sink: keeps the last frame encoded as PPM bytes.
+#[derive(Default)]
+pub struct PpmSink {
+    pub frame_count: u64,
+    pub last: Vec<u8>,
+}
+
+impl PpmSink {
+    pub fn last_bytes(&self) -> &[u8] {
+        &self.last
+    }
+}
+
+impl MirrorSink for PpmSink {
+    fn on_frame(&mut self, frame: ShadowFrame<'_>) {
+        self.last = encode_ppm(frame.width, frame.height, frame.pixels);
+        self.frame_count = self.frame_count.saturating_add(1);
+    }
+}
+
+/// A complete published frame owned by a slow consumer (OBS).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedFrame {
+    pub frame_id: u64,
+    pub generation: u64,
+    pub width: u16,
+    pub height: u16,
+    pub pixels: Vec<u8>,
+}
+
+/// Bounded latest-wins frame queue for a consumer slower than the device. Both
+/// the frame count and the total pixel bytes are capped; a full queue drops the
+/// oldest frame and counts it, so memory never grows without bound.
+pub struct PublishQueue {
+    max_frames: usize,
+    max_bytes: usize,
+    bytes: usize,
+    frames: std::collections::VecDeque<QueuedFrame>,
+    dropped: u64,
+}
+
+impl PublishQueue {
+    pub fn new(max_frames: usize, max_bytes: usize) -> Self {
+        Self {
+            max_frames,
+            max_bytes,
+            bytes: 0,
+            frames: std::collections::VecDeque::new(),
+            dropped: 0,
+        }
+    }
+    pub fn len(&self) -> usize {
+        self.frames.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+    pub fn dropped(&self) -> u64 {
+        self.dropped
+    }
+    /// Newest frame without consuming it — a pacing boundary lets OBS read the
+    /// same frame more than once (OBS 30 FPS vs device 15 FPS).
+    pub fn latest(&self) -> Option<&QueuedFrame> {
+        self.frames.back()
+    }
+    pub fn push(&mut self, frame: QueuedFrame) {
+        if self.max_frames == 0 || frame.pixels.len() > self.max_bytes {
+            self.dropped = self.dropped.saturating_add(1);
+            return;
+        }
+        while !self.frames.is_empty()
+            && (self.frames.len() + 1 > self.max_frames
+                || self.bytes + frame.pixels.len() > self.max_bytes)
+        {
+            if let Some(old) = self.frames.pop_front() {
+                self.bytes = self.bytes.saturating_sub(old.pixels.len());
+                self.dropped = self.dropped.saturating_add(1);
+            }
+        }
+        self.bytes += frame.pixels.len();
+        self.frames.push_back(frame);
+    }
+    pub fn pop(&mut self) -> Option<QueuedFrame> {
+        let frame = self.frames.pop_front()?;
+        self.bytes = self.bytes.saturating_sub(frame.pixels.len());
+        Some(frame)
+    }
+}
+
+/// A [`MirrorSink`] that copies each frame into a shared [`PublishQueue`]. The
+/// copy is bounded by the queue's byte cap, never by the device rate.
+pub struct QueueSink {
+    queue: Arc<Mutex<PublishQueue>>,
+}
+
+impl QueueSink {
+    pub fn new(max_frames: usize, max_bytes: usize) -> Self {
+        Self {
+            queue: Arc::new(Mutex::new(PublishQueue::new(max_frames, max_bytes))),
+        }
+    }
+    pub fn queue(&self) -> Arc<Mutex<PublishQueue>> {
+        Arc::clone(&self.queue)
+    }
+    pub fn with_queue(queue: Arc<Mutex<PublishQueue>>) -> Self {
+        Self { queue }
+    }
+}
+
+impl MirrorSink for QueueSink {
+    fn on_frame(&mut self, frame: ShadowFrame<'_>) {
+        if let Ok(mut queue) = self.queue.lock() {
+            queue.push(QueuedFrame {
+                frame_id: frame.frame_id,
+                generation: frame.generation,
+                width: frame.width,
+                height: frame.height,
+                pixels: frame.pixels.to_vec(),
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,6 +827,87 @@ mod tests {
         assert_eq!(receiver.stats().frames_published, 1);
         assert_eq!(receiver.stats().last_frame_id, 9);
         assert_eq!(receiver.sink().frames, vec![(9, 2, 1)]);
+    }
+
+    #[test]
+    fn ppm_encodes_bgra_as_rgb() {
+        let ppm = encode_ppm(2, 1, &[0, 0, 255, 255, 0, 255, 0, 255]);
+        assert_eq!(&ppm[..11], b"P6\n2 1\n255\n");
+        assert_eq!(&ppm[11..], &[255, 0, 0, 0, 255, 0]);
+    }
+
+    #[test]
+    fn ppm_sink_encodes_each_published_frame() {
+        let mut receiver =
+            MirrorReceiver::new("main", 2, 1, "full-frame", PpmSink::default()).unwrap();
+        // red, green in RGB565 little-endian.
+        receiver
+            .feed(&mirror_packet(
+                encode_frame_payload("main", 1, 2, 1, &[0x00, 0xF8, 0xE0, 0x07]).unwrap(),
+            ))
+            .unwrap();
+        let sink = receiver.sink();
+        assert_eq!(sink.frame_count, 1);
+        assert_eq!(&sink.last_bytes()[11..], &[255, 0, 0, 0, 255, 0]);
+    }
+
+    #[test]
+    fn publish_queue_is_bounded_and_latest_wins() {
+        let frame = |id: u64| QueuedFrame {
+            frame_id: id,
+            generation: id,
+            width: 1,
+            height: 1,
+            pixels: vec![id as u8; 4],
+        };
+        let mut queue = PublishQueue::new(2, 64);
+        queue.push(frame(1));
+        queue.push(frame(2));
+        queue.push(frame(3));
+        assert_eq!(queue.len(), 2, "oldest is dropped to make room");
+        assert_eq!(queue.dropped(), 1);
+        assert_eq!(queue.bytes(), 8);
+        assert_eq!(queue.latest().unwrap().frame_id, 3);
+        assert_eq!(queue.pop().unwrap().frame_id, 2);
+        assert_eq!(queue.pop().unwrap().frame_id, 3);
+        assert!(queue.is_empty());
+        assert_eq!(queue.bytes(), 0);
+    }
+
+    #[test]
+    fn publish_queue_rejects_a_frame_larger_than_its_byte_cap() {
+        let mut queue = PublishQueue::new(4, 2);
+        queue.push(QueuedFrame {
+            frame_id: 1,
+            generation: 1,
+            width: 1,
+            height: 1,
+            pixels: vec![0; 4],
+        });
+        assert!(queue.is_empty());
+        assert_eq!(queue.dropped(), 1);
+    }
+
+    #[test]
+    fn queue_sink_decouples_and_paces_the_consumer() {
+        let sink = QueueSink::new(4, 1024);
+        let queue = sink.queue();
+        let mut receiver = MirrorReceiver::new("main", 2, 1, "full-frame", sink).unwrap();
+        for id in 1..=2 {
+            receiver
+                .feed(&mirror_packet(
+                    encode_frame_payload("main", id, 2, 1, &[0; 4]).unwrap(),
+                ))
+                .unwrap();
+        }
+        let mut guard = queue.lock().unwrap();
+        assert_eq!(guard.len(), 2);
+        // OBS reads the newest frame repeatedly while the device is slower.
+        let first = guard.latest().unwrap().frame_id;
+        let second = guard.latest().unwrap().frame_id;
+        assert_eq!((first, second), (2, 2));
+        assert_eq!(guard.pop().unwrap().frame_id, 1);
+        assert_eq!(guard.len(), 1);
     }
 
     #[test]

@@ -168,6 +168,9 @@ pub trait MirrorSink {
   buffer only after every lease is released.
 - An OBS plugin/adapter (later wave) or the Node/Electron demo implements
   `MirrorSink`. `mdc-mirror` never links OBS, Electron, or Tauri.
+- Reference sinks ship in `mdc-mirror`: `PpmSink` encodes the leased frame as a
+  binary PPM, and `QueueSink` copies into a bounded latest-wins `PublishQueue`
+  for a consumer slower than the device.
 - Frame pacing is a host concern: the sink may be called with the same front
   buffer more than once (OBS 30 FPS vs device 15 FPS); the shadow buffer is the
   pacing boundary between the device clock and the OBS clock.

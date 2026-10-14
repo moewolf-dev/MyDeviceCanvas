@@ -69,6 +69,7 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | MIRRORFRAME / MIRRORCTRL types | sim-verified (Rust + C++ shared vector, dispatcher gate) | physical: pending |
 | Mirror capability fields | sim-verified (old caps decode disabled; negotiate clamps fps/mode) | physical: pending |
 | Host shadow framebuffer | sim-verified (`mdc-mirror`, bounded, lease-guarded) | n/a |
+| Mirror reference sink + queue | sim-verified (`PpmSink` encode; bounded latest-wins `PublishQueue`, pacing) | n/a |
 | Model compiler / MDC IR | sim-verified (`mdc-model`, glTF/GLB + Live2D → IR → package) | n/a |
 | glTF/GLB bounds + image probe | sim-verified (accessor bufferView overrun rejected; PNG/JPEG size from header) | n/a |
 | Target backends (esp32-plane / linux-mesh) | sim-verified (mesh↔sprite by capability; no board-id branch) | n/a |
