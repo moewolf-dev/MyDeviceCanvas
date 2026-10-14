@@ -96,6 +96,10 @@ checksum and declared length, and `accepted_by(caps)` is the capability gate: a
 mesh package needs `mesh2d`, a sprite atlas needs sprite support — checked
 against the advertised capability, never a board id.
 
+`PackageAssembler` rebuilds an `MdcPackage` from upload chunks: it validates the
+header (magic/version/manifest length) as soon as the first 10 bytes arrive, is
+bounded by `MAX_PACKAGE_BYTES`, and `finish()` runs the full integrity check.
+
 ## Memory and limits
 
 The IR is metadata-level: geometry is summarised as vertex/index counts, and

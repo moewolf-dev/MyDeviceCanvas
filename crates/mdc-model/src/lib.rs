@@ -27,7 +27,8 @@ pub use ir::{
 };
 pub use live2d::{ImportedBundle, Live2DBundle, Live2DImporter, MotionInfo};
 pub use package::{
-    compile_to_package, fnv1a, MdcPackage, PackageManifest, MAX_PACKAGE_BYTES, PACKAGE_VERSION,
+    compile_to_package, fnv1a, MdcPackage, PackageAssembler, PackageManifest, MAX_PACKAGE_BYTES,
+    PACKAGE_VERSION,
 };
 
 #[cfg(test)]

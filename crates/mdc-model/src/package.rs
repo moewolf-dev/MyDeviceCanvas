@@ -156,6 +156,73 @@ impl MdcPackage {
     }
 }
 
+/// Assemble a package from chunks (N21). The header is validated as soon as the
+/// first 10 bytes arrive, so a bad magic/version is rejected before the rest of
+/// a hostile upload is buffered. `finish` runs the full integrity check.
+#[derive(Debug, Default)]
+pub struct PackageAssembler {
+    limit: usize,
+    buffer: Vec<u8>,
+    prechecked: bool,
+}
+
+impl PackageAssembler {
+    /// New assembler bounded by `MAX_PACKAGE_BYTES` for the body.
+    pub fn begin() -> Self {
+        Self {
+            limit: MAX_PACKAGE_BYTES + MAX_MANIFEST_BYTES,
+            buffer: Vec::new(),
+            prechecked: false,
+        }
+    }
+
+    pub fn received(&self) -> usize {
+        self.buffer.len()
+    }
+
+    pub fn push_chunk(&mut self, bytes: &[u8]) -> Result<(), ModelError> {
+        if bytes.is_empty() {
+            return Err(ModelError::Unsupported("empty package chunk".into()));
+        }
+        if self.buffer.len() + bytes.len() > self.limit {
+            return Err(ModelError::Budget("package over the upload limit".into()));
+        }
+        self.buffer.extend_from_slice(bytes);
+        if !self.prechecked && self.buffer.len() >= 10 {
+            self.precheck()?;
+            self.prechecked = true;
+        }
+        Ok(())
+    }
+
+    fn precheck(&self) -> Result<(), ModelError> {
+        if &self.buffer[0..4] != PACKAGE_MAGIC {
+            return Err(ModelError::Unsupported("bad package magic".into()));
+        }
+        let version = u16::from_be_bytes([self.buffer[4], self.buffer[5]]);
+        if version != PACKAGE_VERSION {
+            return Err(ModelError::Unsupported(format!(
+                "package version {version}"
+            )));
+        }
+        let manifest_len = u32::from_be_bytes([
+            self.buffer[6],
+            self.buffer[7],
+            self.buffer[8],
+            self.buffer[9],
+        ]) as usize;
+        if manifest_len > MAX_MANIFEST_BYTES {
+            return Err(ModelError::Budget("manifest length over limit".into()));
+        }
+        Ok(())
+    }
+
+    /// Validate and decode the assembled package.
+    pub fn finish(self) -> Result<MdcPackage, ModelError> {
+        MdcPackage::from_bytes(&self.buffer)
+    }
+}
+
 /// Compile a model to a runtime package using the capability-selected backend.
 pub fn compile_to_package(
     model: &Model,
@@ -284,6 +351,46 @@ mod tests {
         assert!(matches!(
             mesh.accepted_by(&RendererCapability::sprite_only()),
             Err(ModelError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn assembler_rebuilds_a_package_from_chunks() {
+        let package = compile_to_package(&model(), &RendererCapability::sprite_only()).unwrap();
+        let bytes = package.to_bytes().unwrap();
+        let mut assembler = PackageAssembler::begin();
+        for chunk in bytes.chunks(7) {
+            assembler.push_chunk(chunk).unwrap();
+        }
+        assert_eq!(assembler.received(), bytes.len());
+        assert_eq!(assembler.finish().unwrap(), package);
+    }
+
+    #[test]
+    fn assembler_checks_the_header_early_and_bounds_the_upload() {
+        // A bad magic is rejected on the very first header chunk.
+        let mut assembler = PackageAssembler::begin();
+        let err = assembler.push_chunk(b"XXXX000000").unwrap_err();
+        assert!(matches!(err, ModelError::Unsupported(_)), "{err:?}");
+
+        // A hostile manifest length is rejected at the header too.
+        let mut header = Vec::new();
+        header.extend_from_slice(PACKAGE_MAGIC);
+        header.extend_from_slice(&PACKAGE_VERSION.to_be_bytes());
+        header.extend_from_slice(&u32::MAX.to_be_bytes());
+        assert!(matches!(
+            PackageAssembler::begin().push_chunk(&header),
+            Err(ModelError::Budget(_))
+        ));
+
+        // The upload is bounded.
+        let mut assembler = PackageAssembler::begin();
+        let mut big = vec![0u8; MAX_PACKAGE_BYTES + MAX_MANIFEST_BYTES + 8];
+        big[0..4].copy_from_slice(PACKAGE_MAGIC);
+        big[4..6].copy_from_slice(&PACKAGE_VERSION.to_be_bytes());
+        assert!(matches!(
+            assembler.push_chunk(&big),
+            Err(ModelError::Budget(_))
         ));
     }
 }
