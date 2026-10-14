@@ -416,11 +416,15 @@ impl SceneCapability {
 }
 
 /// A node in the host vector scene (CBOR, N53). `kind` selects the primitive
-/// (rect/text/sprite/image); `value` is kind-specific.
+/// (rect/text/sprite/image); `value` is kind-specific. N79 adds optional geometry
+/// (`rect: [x, y, w, h]`) and treats `value` on a `rect` as a `#RRGGBB` colour.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SceneNode {
     pub name: String,
     pub kind: String,
+    /// N79: `[x, y, width, height]` for kinds that rasterize (rect).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rect: Option<[u16; 4]>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<SceneNode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -441,6 +445,24 @@ impl SceneNode {
             .max()
             .unwrap_or(0)
             + 1
+    }
+    /// N79: the fill colour for a `rect`, parsed from `value` as `#RRGGBB` /
+    /// `RRGGBB`. Missing or malformed values use opaque white.
+    pub fn color_rgb565(&self) -> u16 {
+        let Some(value) = self.value.as_deref() else {
+            return 0xFFFF;
+        };
+        let hex = value.strip_prefix('#').unwrap_or(value);
+        if hex.len() != 6 {
+            return 0xFFFF;
+        }
+        let Ok(rgb) = u32::from_str_radix(hex, 16) else {
+            return 0xFFFF;
+        };
+        let r = ((rgb >> 16) & 0xff) as u16;
+        let g = ((rgb >> 8) & 0xff) as u16;
+        let b = (rgb & 0xff) as u16;
+        ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
     }
 }
 
@@ -1546,15 +1568,56 @@ mod tests {
             scene: Some(SceneNode {
                 name: "root".into(),
                 kind: "rect".into(),
+                rect: None,
                 children: vec![SceneNode {
                     name: "label".into(),
                     kind: "text".into(),
+                    rect: None,
                     children: Vec::new(),
                     value: Some("hi".into()),
                 }],
                 value: None,
             }),
         }
+    }
+
+    #[test]
+    fn scene_rect_geometry_and_colour() {
+        let node = SceneNode {
+            name: "bg".into(),
+            kind: "rect".into(),
+            rect: Some([1, 2, 3, 4]),
+            children: Vec::new(),
+            value: Some("#FF0000".into()),
+        };
+        assert_eq!(node.color_rgb565(), 0xF800);
+        assert_eq!(
+            SceneNode {
+                name: "x".into(),
+                kind: "rect".into(),
+                rect: None,
+                children: Vec::new(),
+                value: None,
+            }
+            .color_rgb565(),
+            0xFFFF
+        );
+        let bytes = encode_control(&node).unwrap();
+        let back: SceneNode = decode_control(&bytes).unwrap();
+        assert_eq!(back, node);
+        let vector = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../protocol/vectors/scene_rect.json"),
+        )
+        .unwrap();
+        let hex = vector
+            .split("\"hex\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .nth(1)
+            .unwrap();
+        assert_eq!(bytes, parse_hex(hex));
     }
 
     #[test]

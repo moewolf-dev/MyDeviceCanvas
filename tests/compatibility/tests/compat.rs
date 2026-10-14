@@ -345,6 +345,7 @@ fn scene_over_the_depth_limit_is_refused() {
     let mut node = SceneNode {
         name: "leaf".into(),
         kind: "rect".into(),
+        rect: None,
         children: Vec::new(),
         value: None,
     };
@@ -352,6 +353,7 @@ fn scene_over_the_depth_limit_is_refused() {
         node = SceneNode {
             name: format!("n{i}"),
             kind: "rect".into(),
+            rect: None,
             children: vec![node],
             value: None,
         };

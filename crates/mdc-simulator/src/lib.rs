@@ -1346,6 +1346,7 @@ mod tests {
         let leaf = |name: &str, kind: &str, value: Option<&str>| SceneNode {
             name: name.into(),
             kind: kind.into(),
+            rect: None,
             children: Vec::new(),
             value: value.map(str::to_string),
         };

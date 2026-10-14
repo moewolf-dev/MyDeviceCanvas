@@ -1,0 +1,5 @@
+{
+  "name": "scene_rect",
+  "description": "A SceneNode rect with geometry [1,2,3,4] and colour #FF0000 (N79)",
+  "hex": "a4646e616d65626267646b696e646472656374647265637484010203046576616c75656723464630303030"
+}
