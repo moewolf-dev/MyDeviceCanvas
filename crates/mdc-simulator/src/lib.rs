@@ -902,6 +902,37 @@ impl FakeDevice {
     pub fn active_clip(&self) -> Option<&str> {
         self.anim_clip.as_deref()
     }
+    /// N72: draw the current atlas frame into the local framebuffer (top-left).
+    /// Returns true when a frame was drawn.
+    pub fn render_atlas_frame(&mut self) -> bool {
+        let Some(index) = self.current_atlas_frame() else {
+            return false;
+        };
+        let Some(atlas) = self.atlas.clone() else {
+            return false;
+        };
+        let Some(offset) = atlas.frame_offset(index) else {
+            return false;
+        };
+        let sprite_w = atlas.sprite_width as usize;
+        let sprite_h = atlas.sprite_height as usize;
+        let row_bytes = sprite_w * 2;
+        let atlas_row_bytes = (atlas.columns as usize) * sprite_w * 2;
+        let dst_row_bytes = self.profile.width as usize * 2;
+        if sprite_w == 0 || sprite_h == 0 || dst_row_bytes == 0 {
+            return false;
+        }
+        let rows = sprite_h.min(self.pixels.len() / dst_row_bytes);
+        for y in 0..rows {
+            let src = offset + y * atlas_row_bytes;
+            let dst = y * dst_row_bytes;
+            if src + row_bytes > atlas.rgb565.len() || dst + row_bytes > self.pixels.len() {
+                break;
+            }
+            self.pixels[dst..dst + row_bytes].copy_from_slice(&atlas.rgb565[src..src + row_bytes]);
+        }
+        true
+    }
     /// N54: accept a vector scene within the advertised limits.
     fn handle_scene(&mut self, packet: Packet) -> Result<(), SimError> {
         let command: mdc_protocol::SceneCommand =
@@ -1031,6 +1062,10 @@ impl FakeDevice {
     pub fn emit_mirror_frame(&mut self) -> Result<(), SimError> {
         if !self.profile.mirror {
             return Err(SimError::Protocol("mirror capability disabled".into()));
+        }
+        // N72: when an atlas clip is running, the device renders it locally first.
+        if self.anim_clip.is_some() {
+            let _ = self.render_atlas_frame();
         }
         let payload = mdc_protocol::encode_frame_payload(
             "main",
@@ -1436,6 +1471,76 @@ mod tests {
         device.poll().unwrap();
         session.poll().unwrap();
         assert_eq!(device.current_atlas_frame(), None);
+    }
+
+    #[test]
+    fn device_renders_the_running_atlas_frame_into_the_mirror() {
+        let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+        // A 4x2 atlas: row = [frame0, frame0, frame1, frame1] (red, green).
+        let mut pixels = Vec::new();
+        for _row in 0..2 {
+            for value in [0xF800u16, 0xF800u16, 0x07E0u16, 0x07E0u16] {
+                pixels.push((value & 0xff) as u8);
+                pixels.push((value >> 8) as u8);
+            }
+        }
+        let atlas = mdc_model::AtlasBlob {
+            sprite_width: 2,
+            sprite_height: 2,
+            frames: 2,
+            columns: 2,
+            rows: 1,
+            rgb565: pixels,
+            clips: vec![mdc_model::AtlasClip {
+                name: "idle".into(),
+                start: 0,
+                frames: 2,
+                fps: 30,
+                looping: false,
+                fade_in_ms: 0,
+                fade_out_ms: 0,
+            }],
+        };
+        let package = mdc_model::DevicePackage {
+            target: "esp32-plane".into(),
+            mode: mdc_model::PackageMode::BakedSprites,
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            textures: Vec::new(),
+            materials: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: atlas.rgb565.len() as u64,
+            atlas: Some(atlas),
+        };
+        let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+        session
+            .install_package(&sealed.to_bytes().unwrap())
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+
+        session.start_mirror("main", "full-frame", 15).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session.set_config("animation", "idle").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+
+        // 40ms at 30fps -> frame 1 (green).
+        device.clock.advance(40);
+        assert_eq!(device.current_atlas_frame(), Some(1));
+        device.emit_mirror_frame().unwrap();
+        session.poll().unwrap();
+        let frame = session.take_mirror_frame().unwrap();
+        assert_eq!(&frame.bytes[0..2], &[0xE0, 0x07], "second frame is green");
     }
 
     #[test]
