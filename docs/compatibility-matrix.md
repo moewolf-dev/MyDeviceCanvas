@@ -85,6 +85,8 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Scene capability + SCENE | sim-verified (`Capabilities.scene`, node set/clear, vector) | physical: pending |
 | Baked sprite package | sim-verified (`bake_to_package` + device grid recorded, capability gate) | physical: pending |
 | Scene C ABI + Swift | sim-verified (`mdc_set_scene`/`clearScene`) | physical: pending |
+| Device atlas animation | sim-verified (clip via `animation` key; clock-indexed frame) | physical: pending |
+| Device-rendered mirror | sim-verified (running atlas frame emitted as `MIRRORFRAME`) | physical: pending |
 | Model compiler / MDC IR | sim-verified (`mdc-model`, glTF/GLB + Live2D → IR → package) | n/a |
 | Renderer capability on the wire | sim-verified (`Capabilities.renderer{}`, optional; Rust+C++ shared bytes) | physical: pending |
 | Runtime package transfer | sim-verified (`PACKAGE` 0x32 begin/chunk/commit; `install_package`→FakeDevice ready) | physical: pending |

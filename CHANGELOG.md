@@ -2,6 +2,19 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.17] — Device animation batch (N69–N78)
+
+### Added
+
+- `AtlasClip` + `AtlasBlob.clips`, populated by the baker (N69, N70)
+- Device atlas animation runtime driven by the `animation` config key (N71)
+- Device renders the running clip and emits it as a `MIRRORFRAME` (N72)
+- Core `set_animation`/`stop_animation`/`active_animation` (N73)
+- Node `setAnimation`/`stopAnimation` (N74)
+- Electron animation controls (N75)
+- Animation compatibility fixtures (N76) and soak (N77)
+- `docs/baked-sprites.md` playback section (N78)
+
 ## [0.1.16] — Baked sprite delivery batch (N59–N68)
 
 ### Added

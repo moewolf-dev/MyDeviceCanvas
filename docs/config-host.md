@@ -23,6 +23,9 @@ see an unchanged capabilities map. `CONFIG` (0x33) carries a CBOR
 - `Session::config(key)` / `config_values()` — the values learned from replies.
 - `mdc config get <key>` / `mdc config set <key> <value>` (CLI, sim).
 - Node `getConfig` / `setConfig`; C ABI and Swift use the same Core path.
+- The reserved `animation` key plays a baked-atlas clip (see
+  [baked-sprites.md](baked-sprites.md)); it is handled by the device runtime, not
+  the settings map, and is refused when no atlas is installed.
 
 ## Guarantees
 

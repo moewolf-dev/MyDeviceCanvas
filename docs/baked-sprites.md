@@ -43,6 +43,23 @@ mdc --board esp32-jc3248w535-sim install-package baked.mdcpkg
 - **No silent accept**: a wrong atlas size or a non-sprite device is refused with
   `Unsupported`; the host surfaces the error.
 
+## Device playback
+
+A baked package carries one clip per motion (`AtlasBlob.clips`: name, start,
+frames, fps, loop, fades). The device plays a clip on request through the
+`animation` configuration key:
+
+```sh
+mdc --board linux-virt install-package baked.mdcpkg
+mdc --board linux-virt config set animation idle    # play
+mdc --board linux-virt config set animation off     # stop
+```
+
+While a clip runs, the device indexes the current frame from its clock
+(`current_atlas_frame`), renders it into the local framebuffer, and — when
+mirroring — emits it as a `MIRRORFRAME` so the host/OBS sees the device-rendered
+result. An unknown clip or a device with no atlas is refused.
+
 ## Non-goals
 
 - No on-device image decode (the atlas arrives as RGB565).
