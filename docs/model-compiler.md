@@ -30,6 +30,11 @@ Both importers check `ImportLimits` **before allocating**: `max_input_bytes`
 (also caps resolved buffers), `max_texture_bytes`, `max_nodes`, `max_vertices`.
 A decode bomb is refused before any decode buffer is created.
 
+`Model.meta` carries source metadata: VRM `vrm.title` / `vrm.author` /
+`vrm.expressions` (VRM 0.x array and VRMC_vrm 1.0 object forms, plus one
+`vrm-expression:<name>` animation each), and Live2D `physics.settings` /
+`pose.groups` counts when the bundle supplies `physics3.json` / `pose3.json`.
+
 ### glTF details
 
 - `.glb` is split into its JSON and BIN chunks; truncated headers, a bad version,

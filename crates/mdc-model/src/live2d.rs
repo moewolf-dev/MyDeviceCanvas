@@ -18,6 +18,10 @@ use std::collections::BTreeMap;
 pub struct Live2DBundle {
     pub manifest: Vec<u8>,
     pub motions: BTreeMap<String, Vec<u8>>,
+    /// N46: optional `physics3.json` bytes referenced by the manifest.
+    pub physics: Option<Vec<u8>>,
+    /// N46: optional `pose3.json` bytes referenced by the manifest.
+    pub pose: Option<Vec<u8>>,
 }
 
 /// Metadata of one `motion3.json`, read from its `Meta` block and curves.
@@ -177,6 +181,7 @@ impl Live2DImporter {
             animations,
             sprites,
             layers: vec![layer],
+            meta: BTreeMap::new(),
         })
     }
 
@@ -259,6 +264,29 @@ impl Live2DImporter {
                 channels: info.channels,
             });
             motions.push(info);
+        }
+        // N46: record physics/pose metadata counts when the files are supplied.
+        if let Some(physics) = &bundle.physics {
+            if let Ok(doc) = serde_json::from_slice::<Value>(physics) {
+                let count = doc
+                    .get("PhysicsSettings")
+                    .and_then(Value::as_array)
+                    .map(|list| list.len())
+                    .unwrap_or(0);
+                model
+                    .meta
+                    .insert("physics.settings".into(), count.to_string());
+            }
+        }
+        if let Some(pose) = &bundle.pose {
+            if let Ok(doc) = serde_json::from_slice::<Value>(pose) {
+                let count = doc
+                    .get("Groups")
+                    .and_then(Value::as_array)
+                    .map(|list| list.len())
+                    .unwrap_or(0);
+                model.meta.insert("pose.groups".into(), count.to_string());
+            }
         }
         Ok(ImportedBundle { model, motions })
     }
@@ -446,6 +474,7 @@ mod tests {
         let bundle = Live2DBundle {
             manifest: sample_model3(),
             motions,
+            ..Live2DBundle::default()
         };
         let imported = Live2DImporter
             .import_bundle(&bundle, &ImportLimits::default())
@@ -465,5 +494,30 @@ mod tests {
             .animations
             .iter()
             .any(|a| a.name == "expression:F01"));
+    }
+
+    #[test]
+    fn bundle_records_physics_and_pose_metadata() {
+        let physics = serde_json::to_vec(&json!({
+            "Version": 3,
+            "PhysicsSettings": [{"Id": "hair"}, {"Id": "body"}]
+        }))
+        .unwrap();
+        let pose = serde_json::to_vec(&json!({
+            "Version": 3,
+            "Groups": [{"Name": "LeftArm", "Ids": []}]
+        }))
+        .unwrap();
+        let bundle = Live2DBundle {
+            manifest: sample_model3(),
+            physics: Some(physics),
+            pose: Some(pose),
+            ..Live2DBundle::default()
+        };
+        let imported = Live2DImporter
+            .import_bundle(&bundle, &ImportLimits::default())
+            .unwrap();
+        assert_eq!(imported.model.meta.get("physics.settings").unwrap(), "2");
+        assert_eq!(imported.model.meta.get("pose.groups").unwrap(), "1");
     }
 }

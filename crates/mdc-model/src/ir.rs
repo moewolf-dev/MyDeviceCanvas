@@ -109,6 +109,9 @@ pub struct Model {
     #[serde(default)]
     pub sprites: Vec<Sprite>,
     pub layers: Vec<Layer>,
+    /// N46: free-form source metadata (VRM title/author, physics/pose counts).
+    #[serde(default)]
+    pub meta: std::collections::BTreeMap<String, String>,
 }
 
 impl Model {

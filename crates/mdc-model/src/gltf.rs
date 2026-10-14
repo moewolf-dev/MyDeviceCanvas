@@ -7,6 +7,7 @@ use crate::ir::{
     Animation, ImportLimits, Layer, Material, Mesh, Model, ModelError, Node, Skeleton, Texture,
 };
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 pub struct GltfImporter;
 
@@ -208,7 +209,7 @@ impl GltfImporter {
             });
         }
 
-        let animations = doc
+        let animations: Vec<Animation> = doc
             .get("animations")
             .and_then(Value::as_array)
             .map(|list| {
@@ -232,6 +233,10 @@ impl GltfImporter {
             nodes: (0..nodes.len()).collect(),
         };
 
+        let (meta, expressions) = read_vrm(&doc);
+        let mut animations = animations;
+        animations.extend(expressions);
+
         Ok(Model {
             source: "gltf".into(),
             nodes,
@@ -242,6 +247,7 @@ impl GltfImporter {
             animations,
             sprites: Vec::new(),
             layers: vec![layer],
+            meta,
         })
     }
 }
@@ -590,6 +596,61 @@ fn read_skeletons(doc: &Value, node_count: usize) -> Result<Vec<Skeleton>, Model
     Ok(out)
 }
 
+/// N46: read VRM metadata and expressions (VRM 0.x and VRMC_vrm 1.0) into a
+/// small meta map plus one animation per expression.
+fn read_vrm(doc: &Value) -> (BTreeMap<String, String>, Vec<Animation>) {
+    let mut meta = BTreeMap::new();
+    let mut animations = Vec::new();
+    let extensions = doc.get("extensions");
+    if let Some(vrm) = extensions.and_then(|e| e.get("VRM")) {
+        if let Some(meta_json) = vrm.get("meta") {
+            for (key, field) in [("title", "vrm.title"), ("author", "vrm.author")] {
+                if let Some(value) = meta_json.get(key).and_then(Value::as_str) {
+                    meta.insert(field.to_string(), value.to_string());
+                }
+            }
+        }
+        if let Some(groups) = vrm
+            .get("blendShapeMaster")
+            .and_then(|b| b.get("blendShapeGroups"))
+            .and_then(Value::as_array)
+        {
+            meta.insert("vrm.expressions".into(), groups.len().to_string());
+            for group in groups {
+                animations.push(Animation {
+                    name: format!("vrm-expression:{}", json_name(group, "expression")),
+                    channels: 1,
+                });
+            }
+        }
+    }
+    if let Some(vrm) = extensions.and_then(|e| e.get("VRMC_vrm")) {
+        if let Some(meta_json) = vrm.get("meta") {
+            if let Some(name) = meta_json.get("name").and_then(Value::as_str) {
+                meta.insert("vrm.title".into(), name.to_string());
+            }
+            if let Some(author) = meta_json
+                .get("authors")
+                .and_then(Value::as_array)
+                .and_then(|list| list.first())
+                .and_then(Value::as_str)
+            {
+                meta.insert("vrm.author".into(), author.to_string());
+            }
+        }
+        if let Some(expressions) = vrm.get("expressions").and_then(Value::as_object) {
+            meta.insert("vrm.expressions".into(), expressions.len().to_string());
+            for name in expressions.keys() {
+                animations.push(Animation {
+                    name: format!("vrm-expression:{name}"),
+                    channels: 1,
+                });
+            }
+        }
+    }
+    (meta, animations)
+}
+
 pub(crate) fn json_name(value: &Value, fallback: &str) -> String {
     value
         .get("name")
@@ -873,6 +934,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(model.skeletons[0].bones, 3);
+    }
+
+    #[test]
+    fn vrm_meta_and_expressions_are_imported() {
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "nodes": [{"name": "root"}],
+            "extensions": {
+                "VRM": {
+                    "meta": {"title": "Haru", "author": "Me"},
+                    "blendShapeMaster": {"blendShapeGroups": [{"name": "Joy"}, {"name": "Angry"}]}
+                }
+            }
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        assert_eq!(model.meta.get("vrm.title").unwrap(), "Haru");
+        assert_eq!(model.meta.get("vrm.author").unwrap(), "Me");
+        assert_eq!(model.meta.get("vrm.expressions").unwrap(), "2");
+        assert!(model
+            .animations
+            .iter()
+            .any(|a| a.name == "vrm-expression:Joy"));
+
+        // VRM 1.0 object form.
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "extensions": {"VRMC_vrm": {"meta": {"name": "Aria", "authors": ["Dev"]}, "expressions": {"happy": {}, "sad": {}}}}
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        assert_eq!(model.meta.get("vrm.title").unwrap(), "Aria");
+        assert_eq!(model.meta.get("vrm.author").unwrap(), "Dev");
+        assert_eq!(model.meta.get("vrm.expressions").unwrap(), "2");
     }
 
     #[test]
