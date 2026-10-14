@@ -33,6 +33,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 23 | N69–N78: atlas clips, device animation runtime, device-rendered mirror, Node/Electron animation, fixtures + soak, docs | sim-verified |
 | 24 | N79–N88: scene geometry + device rasterizer, scene mirror, `scene-render`, Node/Electron scene preview, fixtures + soak, docs | sim-verified |
 | 25 | N89–N98: glTF preview pixels, triangle raster, scene text/image blit | sim-verified |
+| 26 | N99–N108: mesh preview blit, scene sprite, atlas fade-in | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 

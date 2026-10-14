@@ -44,7 +44,9 @@ A device that accepts a scene rasterizes it locally:
   The string lives in `value` (it is not a colour). Unknown letters are skipped.
 - `image` blits tightly packed RGB565 when `value` is `w*h` hex words (4 digits
   each, little-endian on the framebuffer). A short or malformed string draws nothing.
-- `sprite` is still recorded without a pixel blit in this wave.
+- `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour.
+  A missing atlas or index draws nothing.
+- A clip `fade_in_ms` darkens the atlas frame until that many virtual milliseconds pass.
 - When the device mirrors, the rasterized scene is emitted as a `MIRRORFRAME`.
   Setting a scene clears any running animation clip (last-wins).
 

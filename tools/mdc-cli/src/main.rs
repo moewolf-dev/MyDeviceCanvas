@@ -1968,6 +1968,17 @@ fn cmd_linux_accept(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>>
     }
 }
 
+fn cmd_preview_mesh() -> Result<(), Box<dyn std::error::Error>> {
+    let points = [(1i16, 1), (10, 1), (1, 10)];
+    let pixels = mdc_bake::raster_triangle_fan(&points, 16, 16, 0xF800)?;
+    let covered = pixels.chunks(2).filter(|px| px != &[0, 0]).count();
+    println!("preview-mesh points={} covered={covered}", points.len());
+    if covered == 0 {
+        return Err("preview mesh covered no pixels".into());
+    }
+    Ok(())
+}
+
 fn cmd_raster_demo() -> Result<(), Box<dyn std::error::Error>> {
     let pixels = mdc_bake::raster_triangle_fan(&[(2, 2), (20, 2), (2, 20)], 32, 32, 0xF800)?;
     let covered = pixels.chunks(2).filter(|px| px != &[0, 0]).count();
@@ -1986,7 +1997,7 @@ flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <t
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--serve ADDR]|\
 package <model.gltf> [out.mdcpkg]|install-package <file.mdcpkg>|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
-scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|raster-demo|inspect [--watch --count N --interval MS]"
+scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|raster-demo|preview-mesh|inspect [--watch --count N --interval MS]"
     );
 }
 
@@ -2127,6 +2138,7 @@ fn main() {
             cmd_authorize(&id, &kind, &value)
         }
         Some("raster-demo") => cmd_raster_demo(),
+        Some("preview-mesh") => cmd_preview_mesh(),
         Some("switch-demo") => {
             let mut o = opts.clone();
             o.sim = true;

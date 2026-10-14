@@ -18,6 +18,8 @@ fn glyph_columns(ch: u8) -> Option<[u8; 5]> {
         b'H' => Some([0x7f, 0x08, 0x08, 0x08, 0x7f]),
         b'I' => Some([0x00, 0x41, 0x7f, 0x41, 0x00]),
         b'A' => Some([0x7e, 0x09, 0x09, 0x09, 0x7e]),
+        b'0' => Some([0x3e, 0x51, 0x49, 0x45, 0x3e]),
+        b'1' => Some([0x00, 0x42, 0x7f, 0x40, 0x00]),
         _ => None,
     }
 }
@@ -87,12 +89,127 @@ fn blit_hex_rgb565(
     drew
 }
 
+fn blit_sprite(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    atlas: &mdc_model::AtlasBlob,
+    index: u32,
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+) -> bool {
+    let Some(offset) = atlas.frame_offset(index) else {
+        return false;
+    };
+    if w == 0 || h == 0 || atlas.sprite_width == 0 || atlas.sprite_height == 0 {
+        return false;
+    }
+    let sprite_w = atlas.sprite_width as usize;
+    let atlas_row = (atlas.columns as usize) * sprite_w * 2;
+    let mut drew = false;
+    for row in 0..u32::from(h) {
+        for col in 0..u32::from(w) {
+            let px = u32::from(x) + col;
+            let py = u32::from(y) + row;
+            if px >= width || py >= height {
+                continue;
+            }
+            let sx = (col * atlas.sprite_width / u32::from(w)) as usize;
+            let sy = (row * atlas.sprite_height / u32::from(h)) as usize;
+            let src = offset + sy * atlas_row + sx * 2;
+            let dst = ((py * width + px) * 2) as usize;
+            if src + 1 >= atlas.rgb565.len() || dst + 1 >= pixels.len() {
+                continue;
+            }
+            pixels[dst] = atlas.rgb565[src];
+            pixels[dst + 1] = atlas.rgb565[src + 1];
+            drew = true;
+        }
+    }
+    drew
+}
+
+fn fill_fan(pixels: &mut [u8], width: u32, height: u32, points: &[(i16, i16)], color: u16) {
+    if points.len() < 3 || width == 0 || height == 0 {
+        return;
+    }
+    let origin = points[0];
+    for window in points[1..].windows(2) {
+        fill_triangle(pixels, width, height, origin, window[0], window[1], color);
+    }
+}
+
+fn fill_triangle(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    a: (i16, i16),
+    b: (i16, i16),
+    c: (i16, i16),
+    color: u16,
+) {
+    let low = (color & 0xff) as u8;
+    let high = (color >> 8) as u8;
+    let min_x = a.0.min(b.0).min(c.0).max(0) as u32;
+    let max_x = (a.0.max(b.0).max(c.0).max(0) as u32).min(width.saturating_sub(1));
+    let min_y = a.1.min(b.1).min(c.1).max(0) as u32;
+    let max_y = (a.1.max(b.1).max(c.1).max(0) as u32).min(height.saturating_sub(1));
+    let area = fan_edge(a, b, c);
+    if area == 0 {
+        return;
+    }
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let p = (x as i16, y as i16);
+            let w0 = fan_edge(b, c, p);
+            let w1 = fan_edge(c, a, p);
+            let w2 = fan_edge(a, b, p);
+            let inside = if area > 0 {
+                w0 >= 0 && w1 >= 0 && w2 >= 0
+            } else {
+                w0 <= 0 && w1 <= 0 && w2 <= 0
+            };
+            if !inside {
+                continue;
+            }
+            let index = ((y * width + x) * 2) as usize;
+            if index + 1 < pixels.len() {
+                pixels[index] = low;
+                pixels[index + 1] = high;
+            }
+        }
+    }
+}
+
+fn fade_toward_black(pixels: &mut [u8], quarters: u8) {
+    let keep = u32::from(quarters.min(3));
+    for chunk in pixels.chunks_exact_mut(2) {
+        let value = u16::from_le_bytes([chunk[0], chunk[1]]);
+        let channel = |shift: u32, mask: u16| {
+            let sample = u32::from((value >> shift) & mask);
+            ((sample * keep / 4) as u16) << shift
+        };
+        let mixed = channel(11, 0x1f) | channel(5, 0x3f) | channel(0, 0x1f);
+        let bytes = mixed.to_le_bytes();
+        chunk[0] = bytes[0];
+        chunk[1] = bytes[1];
+    }
+}
+
+fn fan_edge(a: (i16, i16), b: (i16, i16), p: (i16, i16)) -> i32 {
+    (i32::from(p.0) - i32::from(a.0)) * (i32::from(b.1) - i32::from(a.1))
+        - (i32::from(p.1) - i32::from(a.1)) * (i32::from(b.0) - i32::from(a.0))
+}
+
 /// N80: depth-first scene rasterizer; `rect` nodes fill from their colour.
 fn fill_scene(
     node: &mdc_protocol::SceneNode,
     pixels: &mut [u8],
     width: u32,
     height: u32,
+    atlas: Option<&mdc_model::AtlasBlob>,
     drew: &mut bool,
 ) {
     if node.kind == "rect" {
@@ -128,9 +245,19 @@ fn fill_scene(
                 *drew = true;
             }
         }
+    } else if node.kind == "sprite" {
+        if let (Some(atlas), Some([x, y, w, h]), Some(index)) = (
+            atlas,
+            node.rect,
+            node.value.as_deref().and_then(|v| v.parse::<u32>().ok()),
+        ) {
+            if blit_sprite(pixels, width, height, atlas, index, x, y, w, h) {
+                *drew = true;
+            }
+        }
     }
     for child in &node.children {
-        fill_scene(child, pixels, width, height, drew);
+        fill_scene(child, pixels, width, height, atlas, drew);
     }
 }
 
@@ -436,6 +563,8 @@ pub struct FakeDevice {
     atlas: Option<mdc_model::AtlasBlob>,
     anim_clip: Option<String>,
     anim_start_tick: u64,
+    /// First accepted mesh preview, in framebuffer pixels.
+    preview_xy: Vec<(i16, i16)>,
 }
 impl FakeDevice {
     pub fn from_transport(link: Box<dyn Transport>, profile: BoardProfile) -> Self {
@@ -484,6 +613,7 @@ impl FakeDevice {
             atlas: None,
             anim_clip: None,
             anim_start_tick: 0,
+            preview_xy: Vec::new(),
         }
     }
 
@@ -981,6 +1111,12 @@ impl FakeDevice {
                     self.atlas_sprite = (atlas.sprite_width, atlas.sprite_height);
                 }
                 self.atlas = package.package.atlas.clone();
+                self.preview_xy = package
+                    .package
+                    .meshes
+                    .first()
+                    .map(|mesh| mesh.preview_xy.clone())
+                    .unwrap_or_default();
                 self.anim_clip = None;
                 self.metrics.packages_received = self.metrics.packages_received.saturating_add(1);
                 self.ack(packet.request_id, self.current_frame_id, true, false)
@@ -1038,8 +1174,27 @@ impl FakeDevice {
         let width = u32::from(self.profile.width);
         let height = u32::from(self.profile.height);
         let mut drew = false;
-        fill_scene(&scene, &mut self.pixels, width, height, &mut drew);
+        fill_scene(
+            &scene,
+            &mut self.pixels,
+            width,
+            height,
+            self.atlas.as_ref(),
+            &mut drew,
+        );
         drew
+    }
+    /// Draw the accepted mesh preview as a red triangle fan. Returns true when
+    /// at least three points were available.
+    pub fn render_preview(&mut self) -> bool {
+        if self.preview_xy.len() < 3 {
+            return false;
+        }
+        let width = u32::from(self.profile.width);
+        let height = u32::from(self.profile.height);
+        let points = self.preview_xy.clone();
+        fill_fan(&mut self.pixels, width, height, &points, 0xF800);
+        true
     }
     /// N80: RGB565 pixel at (x, y) of the local framebuffer.
     pub fn pixel_rgb565(&self, x: u16, y: u16) -> Option<u16> {
@@ -1080,6 +1235,13 @@ impl FakeDevice {
                 break;
             }
             self.pixels[dst..dst + row_bytes].copy_from_slice(&atlas.rgb565[src..src + row_bytes]);
+        }
+        if let Some(clip) = atlas.clip(self.anim_clip.as_deref().unwrap_or("")) {
+            let elapsed = self.clock.tick.saturating_sub(self.anim_start_tick);
+            if clip.fade_in_ms > 0 && elapsed < u64::from(clip.fade_in_ms) {
+                let quarters = ((elapsed.saturating_mul(4) / u64::from(clip.fade_in_ms)) as u8).min(3);
+                fade_toward_black(&mut self.pixels, quarters);
+            }
         }
         true
     }
@@ -1851,6 +2013,149 @@ mod tests {
         session.poll().unwrap();
         assert_eq!(device.current_atlas_frame(), None, "scene took over");
         assert!(device.render_scene());
+    }
+
+    #[test]
+    fn mesh_preview_rasterizes_after_install() {
+        let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        let package = mdc_model::DevicePackage {
+            target: "linux-mesh".into(),
+            mode: mdc_model::PackageMode::Mesh,
+            nodes: Vec::new(),
+            meshes: vec![mdc_model::Mesh {
+                name: "tri".into(),
+                vertices: 3,
+                indices: 0,
+                material: None,
+                preview_xy: vec![(1, 1), (6, 1), (1, 6)],
+            }],
+            textures: Vec::new(),
+            materials: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 36,
+            atlas: None,
+        };
+        let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+        session.install_package(&sealed.to_bytes().unwrap()).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_preview());
+        assert_ne!(device.pixel_rgb565(1, 1), Some(0));
+    }
+
+    #[test]
+    fn scene_sprite_blits_an_atlas_frame() {
+        use mdc_protocol::SceneNode;
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 2,
+            height: 2,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        let package = mdc_model::DevicePackage {
+            target: "esp32-plane".into(),
+            mode: mdc_model::PackageMode::BakedSprites,
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            textures: Vec::new(),
+            materials: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 8,
+            atlas: Some(mdc_model::AtlasBlob {
+                sprite_width: 1,
+                sprite_height: 1,
+                frames: 1,
+                columns: 1,
+                rows: 1,
+                rgb565: vec![0x00, 0xF8],
+                clips: Vec::new(),
+            }),
+        };
+        let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+        session.install_package(&sealed.to_bytes().unwrap()).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .set_scene(SceneNode {
+                name: "icon".into(),
+                kind: "sprite".into(),
+                rect: Some([0, 0, 1, 1]),
+                children: Vec::new(),
+                value: Some("0".into()),
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(0, 0), Some(0xF800));
+    }
+
+    #[test]
+    fn atlas_fade_in_darkens_the_first_frame() {
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 1,
+            height: 1,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        let package = mdc_model::DevicePackage {
+            target: "esp32-plane".into(),
+            mode: mdc_model::PackageMode::BakedSprites,
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            textures: Vec::new(),
+            materials: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 2,
+            atlas: Some(mdc_model::AtlasBlob {
+                sprite_width: 1,
+                sprite_height: 1,
+                frames: 1,
+                columns: 1,
+                rows: 1,
+                rgb565: vec![0x00, 0xF8],
+                clips: vec![mdc_model::AtlasClip {
+                    name: "idle".into(),
+                    start: 0,
+                    frames: 1,
+                    fps: 30,
+                    looping: true,
+                    fade_in_ms: 100,
+                    fade_out_ms: 0,
+                }],
+            }),
+        };
+        let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+        session.install_package(&sealed.to_bytes().unwrap()).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session.set_config("animation", "idle").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_atlas_frame());
+        assert_eq!(device.pixel_rgb565(0, 0), Some(0));
+        device.clock.advance(100);
+        assert!(device.render_atlas_frame());
+        assert_eq!(device.pixel_rgb565(0, 0), Some(0xF800));
     }
 
     #[test]

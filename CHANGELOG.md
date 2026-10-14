@@ -2,6 +2,16 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.20] — Preview, sprite blit, fade-in (N99–N108)
+
+### Added
+
+- Installed mesh `preview_xy` rasterizes on the simulator (N99)
+- Scene `sprite` nearest-neighbour atlas blit (N100)
+- Atlas clip `fade_in_ms` darkens the first frames (N101)
+- Bitmap glyphs `0` and `1` (N102)
+- CLI `mdc preview-mesh` (N103)
+
 ## [0.1.19] — Pixel raster batch (N89–N98)
 
 ### Added
