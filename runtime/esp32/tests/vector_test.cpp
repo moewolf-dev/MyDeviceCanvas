@@ -62,5 +62,11 @@ int main(int argc, char** argv) {
   assert(std::string(reinterpret_cast<const char*>(mirror.data() + 2), 4) == "main");
   assert(u16le(mirror.data() + 2 + 4 + 8) == 2);
   assert(u16le(mirror.data() + 2 + 4 + 8 + 2) == 2);
+
+  // N22: host -> device runtime package begin (phase=1, total_bytes=12).
+  const auto package = parse_hex(json_hex(read_file(dir + "/package_begin.json")));
+  assert(package[0] == 1);
+  assert(package[1] == 0x00 && package[2] == 0x00 && package[3] == 0x00 && package[4] == 0x0c);
+  assert(package[5] == 0x01 && package[12] == 0x08);
   return 0;
 }

@@ -39,6 +39,8 @@ pub enum MessageType {
     Ota = 0x30,
     /// Host -> device mirror start/stop control (CBOR MirrorCommand, Form B).
     MirrorCtrl = 0x31,
+    /// Host -> device runtime package transfer (phase byte like Frame, Form B).
+    Package = 0x32,
     Ping = 0x40,
     Pong = 0x41,
     Ack = 0x50,
@@ -56,6 +58,7 @@ impl TryFrom<u8> for MessageType {
             0x20 => Ok(Self::Input),
             0x30 => Ok(Self::Ota),
             0x31 => Ok(Self::MirrorCtrl),
+            0x32 => Ok(Self::Package),
             0x40 => Ok(Self::Ping),
             0x41 => Ok(Self::Pong),
             0x50 => Ok(Self::Ack),
@@ -545,6 +548,81 @@ pub fn encode_frame_commit(frame_id: u64) -> Vec<u8> {
     payload.push(FRAME_PHASE_COMMIT);
     payload.extend_from_slice(&frame_id.to_le_bytes());
     payload
+}
+
+// ---- Runtime package transfer (N22) --------------------------------------
+// Payload phases mirror FRAME: 1 begin, 2 chunk, 3 commit. The container itself
+// (MDCP magic + manifest + body) is the byte stream being transferred, so the
+// begin only needs the total length and checksum for the device to size and
+// verify its assembly buffer before the chunks arrive.
+
+pub const PACKAGE_PHASE_BEGIN: u8 = 1;
+pub const PACKAGE_PHASE_CHUNK: u8 = 2;
+pub const PACKAGE_PHASE_COMMIT: u8 = 3;
+
+/// Begin: [1][total_bytes u32 BE][checksum u64 BE].
+pub fn encode_package_begin(total_bytes: u32, checksum: u64) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(13);
+    payload.push(PACKAGE_PHASE_BEGIN);
+    payload.extend_from_slice(&total_bytes.to_be_bytes());
+    payload.extend_from_slice(&checksum.to_be_bytes());
+    payload
+}
+
+/// Chunk: [2][offset u32 BE][data...].
+pub fn encode_package_chunk(offset: u32, data: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(5 + data.len());
+    payload.push(PACKAGE_PHASE_CHUNK);
+    payload.extend_from_slice(&offset.to_be_bytes());
+    payload.extend_from_slice(data);
+    payload
+}
+
+/// Commit: [3].
+pub fn encode_package_commit() -> Vec<u8> {
+    vec![PACKAGE_PHASE_COMMIT]
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PackagePayload {
+    Begin { total_bytes: u32, checksum: u64 },
+    Chunk { offset: u32, data: Vec<u8> },
+    Commit,
+}
+
+pub fn decode_package_payload(payload: &[u8]) -> Result<PackagePayload, CodecError> {
+    let (phase, body) = payload.split_first().ok_or(CodecError::Truncated)?;
+    match *phase {
+        PACKAGE_PHASE_BEGIN => {
+            if body.len() != 12 {
+                return Err(CodecError::Truncated);
+            }
+            let total_bytes = u32::from_be_bytes(body[0..4].try_into().unwrap());
+            let checksum = u64::from_be_bytes(body[4..12].try_into().unwrap());
+            Ok(PackagePayload::Begin {
+                total_bytes,
+                checksum,
+            })
+        }
+        PACKAGE_PHASE_CHUNK => {
+            if body.len() < 4 {
+                return Err(CodecError::Truncated);
+            }
+            let offset = u32::from_be_bytes(body[0..4].try_into().unwrap());
+            Ok(PackagePayload::Chunk {
+                offset,
+                data: body[4..].to_vec(),
+            })
+        }
+        PACKAGE_PHASE_COMMIT => {
+            if body.is_empty() {
+                Ok(PackagePayload::Commit)
+            } else {
+                Err(CodecError::Length(body.len()))
+            }
+        }
+        other => Err(CodecError::UnknownType(other)),
+    }
 }
 
 pub fn decode_frame_payload(payload: &[u8]) -> Result<FramePayload, CodecError> {
@@ -1046,6 +1124,41 @@ mod tests {
 
         let truncated = std::fs::read(dir.join("truncated.bin")).unwrap();
         assert_eq!(Packet::decode(&truncated, 4096), Err(CodecError::Truncated));
+
+        // N22: runtime package begin/chunk/commit share the Frame phase style.
+        let package = std::fs::read_to_string(dir.join("package_begin.json")).unwrap();
+        let hex = package
+            .split("\"hex\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .nth(1)
+            .unwrap();
+        let bytes = parse_hex(hex);
+        assert_eq!(
+            decode_package_payload(&bytes).unwrap(),
+            PackagePayload::Begin {
+                total_bytes: 12,
+                checksum: 0x0102_0304_0506_0708,
+            }
+        );
+        assert_eq!(bytes, encode_package_begin(12, 0x0102_0304_0506_0708));
+        let chunk = encode_package_chunk(4, &[0xaa, 0xbb]);
+        assert_eq!(
+            decode_package_payload(&chunk).unwrap(),
+            PackagePayload::Chunk {
+                offset: 4,
+                data: vec![0xaa, 0xbb],
+            }
+        );
+        assert_eq!(
+            decode_package_payload(&encode_package_commit()).unwrap(),
+            PackagePayload::Commit
+        );
+        assert_eq!(
+            decode_package_payload(&[9]),
+            Err(CodecError::UnknownType(9))
+        );
     }
 
     #[test]

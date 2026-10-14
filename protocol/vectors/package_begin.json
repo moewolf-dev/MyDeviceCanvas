@@ -1,0 +1,7 @@
+{
+  "name": "package_begin",
+  "description": "Host->device runtime package begin (MessageType::Package 0x32, phase=1), total_bytes=12, checksum=0x0102030405060708",
+  "message_type": 50,
+  "phase": 1,
+  "hex": "010000000c0102030405060708"
+}

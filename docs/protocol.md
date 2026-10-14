@@ -16,7 +16,7 @@ The wire format is a byte stream. Every packet starts with the 20-byte little-en
 
 Integers are little-endian. Control payloads are CBOR and are limited to 4096 bytes. Frame and tile payloads are raw RGB565 little-endian bytes, never base64. The default chunk limit is 16 KiB. A receiver must reject invalid magic, unsupported major versions, unknown message types, lengths above its negotiated limit, truncation and checksum failures without allocating the advertised payload first.
 
-Supported types are HELLO, CAPABILITIES, FRAME, TILE, MIRRORFRAME, INPUT, OTA, MIRRORCTRL, PING, PONG, ACK and ERROR. Input and OTA are reserved in 0.1 and return `Unsupported` unless capabilities explicitly enable them.
+Supported types are HELLO, CAPABILITIES, FRAME, TILE, MIRRORFRAME, INPUT, OTA, MIRRORCTRL, PACKAGE, PING, PONG, ACK and ERROR. Input and OTA are reserved in 0.1 and return `Unsupported` unless capabilities explicitly enable them.
 
 ## Form B: mirror upstream (N03)
 
@@ -44,3 +44,13 @@ device produces a 15-entry map and a device that advertises renderer produces a
 (`mdc-model::RendererCapability::from_wire`); an absent capability is treated as
 sprite-only. Rust and C++ share the exact encoding
 (`cbor_control_test.cpp` reproduces the `mdc-protocol` bytes).
+
+## Runtime package transfer (N22)
+
+`PACKAGE` (0x32) is a host → device message that carries an MDC runtime package
+to the device. Its payload reuses the `FRAME` phase byte: `1` begin
+(`[1][total_bytes u32 BE][checksum u64 BE]`), `2` chunk (`[2][offset u32 BE]
+[data]`), `3` commit (`[3]`). The container bytes (see
+[model-compiler.md](model-compiler.md)) are the stream being transferred, so the
+begin only sizes and checks the assembly buffer; the container's own manifest
+and checksum are verified after assembly.
