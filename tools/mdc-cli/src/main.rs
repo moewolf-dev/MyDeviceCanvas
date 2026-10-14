@@ -334,6 +334,67 @@ fn cmd_inspect(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
     })
 }
 
+/// N32: compile a source model into a runtime package for a board's renderer.
+fn cmd_package(
+    opts: &GlobalOpts,
+    model_path: &str,
+    out: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(model_path)?;
+    let model = if model_path.to_ascii_lowercase().ends_with(".json") {
+        mdc_model::Live2DImporter.import(&bytes, &mdc_model::ImportLimits::default())?
+    } else {
+        mdc_model::GltfImporter.import(&bytes, &mdc_model::ImportLimits::default())?
+    };
+    let profile = BoardProfile::from_board_id(&opts.board);
+    let caps = mdc_model::RendererCapability {
+        sprite: profile.renderer_sprite,
+        mesh2d: profile.renderer_mesh2d,
+        skeleton: profile.renderer_skeleton,
+        max_texture: profile.renderer_max_texture,
+        max_vertices: profile.renderer_max_vertices,
+    };
+    let package = mdc_model::compile_to_package(&model, &caps)?;
+    let bytes = package.to_bytes()?;
+    let out = out.unwrap_or_else(|| format!("{model_path}.mdcpkg"));
+    std::fs::write(&out, &bytes)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "board": opts.board,
+            "source": model_path,
+            "target": package.manifest.target,
+            "mode": package.manifest.mode,
+            "package_bytes": bytes.len(),
+            "output": out,
+        }))?
+    );
+    Ok(())
+}
+
+/// N32: upload a runtime package to a simulator board and report readiness.
+fn cmd_install_package(opts: &GlobalOpts, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path)?;
+    let (mut session, mut device, _manager) = open_sim(&opts.board)?;
+    session.install_package(&bytes)?;
+    device.poll()?;
+    session.poll()?;
+    let ready = device.package_ready();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "board": opts.board,
+            "package": path,
+            "package_bytes": bytes.len(),
+            "renderer_ready": ready,
+            "packages_received": device.metrics.packages_received,
+        }))?
+    );
+    if !ready {
+        return Err("device did not accept the runtime package".into());
+    }
+    Ok(())
+}
 /// Form B (N31): start mirroring on a simulator board, drive a fixed number of
 /// frames, and deliver them to a file watcher (`--write-dir`) and/or a TCP
 /// consumer (`--serve`). Prints JSON stats.
@@ -1620,7 +1681,8 @@ fn usage() {
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
-authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--serve ADDR]"
+authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--serve ADDR]|\
+package <model.gltf> [out.mdcpkg]|install-package <file.mdcpkg>"
     );
 }
 
@@ -1690,6 +1752,24 @@ fn main() {
             let mut o = opts.clone();
             o.sim = true;
             cmd_mirror(&o, &args[1..])
+        }
+        Some("package") => {
+            let path = args.get(1).cloned().unwrap_or_default();
+            if path.is_empty() {
+                eprintln!("package requires a model path");
+                std::process::exit(2);
+            }
+            cmd_package(&opts, &path, args.get(2).cloned())
+        }
+        Some("install-package") => {
+            let path = args.get(1).cloned().unwrap_or_default();
+            if path.is_empty() {
+                eprintln!("install-package requires a package path");
+                std::process::exit(2);
+            }
+            let mut o = opts.clone();
+            o.sim = true;
+            cmd_install_package(&o, &path)
         }
         Some("ota-confirm") => cmd_ota_confirm(&opts),
         Some("linux-accept") => cmd_linux_accept(&opts),
@@ -2299,6 +2379,38 @@ mod tests {
             "unexpected PPM header"
         );
         assert!(written.len() > 14);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn package_and_install_round_trip_on_a_sim_board() {
+        let dir = std::env::temp_dir().join(format!("mdc-cli-pkg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("sample.gltf");
+        std::fs::write(
+            &model,
+            r#"{"asset":{"version":"2.0"},"nodes":[{"name":"root","mesh":0}],
+                "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+                "accessors":[{"count":4,"type":"VEC3"}]}"#,
+        )
+        .unwrap();
+        let out = dir.join("sample.mdcpkg");
+        let opts = GlobalOpts {
+            sim: true,
+            address: None,
+            port: None,
+            board: "linux-virt".into(),
+        };
+        cmd_package(
+            &opts,
+            model.to_str().unwrap(),
+            Some(out.to_string_lossy().into_owned()),
+        )
+        .unwrap();
+        assert!(out.exists());
+        // The linux-virt board advertises a mesh renderer, so install succeeds.
+        cmd_install_package(&opts, out.to_str().unwrap()).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
