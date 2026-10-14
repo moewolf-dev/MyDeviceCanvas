@@ -151,6 +151,26 @@ impl MdcPackage {
             PackageMode::SpriteAtlas if !caps.sprite => Err(ModelError::Unsupported(
                 "device has no sprite support".into(),
             )),
+            PackageMode::BakedSprites => {
+                if !caps.sprite {
+                    return Err(ModelError::Unsupported(
+                        "device has no sprite support".into(),
+                    ));
+                }
+                let atlas = self.package.atlas.as_ref().ok_or_else(|| {
+                    ModelError::Unsupported("baked package is missing its atlas".into())
+                })?;
+                let expected = u64::from(atlas.sprite_width)
+                    .saturating_mul(u64::from(atlas.sprite_height))
+                    .saturating_mul(u64::from(atlas.frames))
+                    .saturating_mul(2);
+                if atlas.rgb565.len() as u64 != expected {
+                    return Err(ModelError::Unsupported(
+                        "baked atlas pixel size does not match its grid".into(),
+                    ));
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }

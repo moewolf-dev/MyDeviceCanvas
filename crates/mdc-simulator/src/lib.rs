@@ -302,6 +302,9 @@ pub struct FakeDevice {
     /// N54: last accepted scene (node count); 0 with `scene_present` false = none.
     scene_nodes: u32,
     scene_present: bool,
+    /// N61: baked atlas grid from the last accepted package.
+    atlas_frames: u32,
+    atlas_sprite: (u32, u32),
 }
 impl FakeDevice {
     pub fn from_transport(link: Box<dyn Transport>, profile: BoardProfile) -> Self {
@@ -344,6 +347,8 @@ impl FakeDevice {
             config: default_config(),
             scene_nodes: 0,
             scene_present: false,
+            atlas_frames: 0,
+            atlas_sprite: (0, 0),
         }
     }
 
@@ -836,6 +841,10 @@ impl FakeDevice {
                     return self.reply_error(packet.request_id, "E_PACKAGE", &error.to_string());
                 }
                 self.package_ready = true;
+                if let Some(atlas) = &package.package.atlas {
+                    self.atlas_frames = atlas.frames;
+                    self.atlas_sprite = (atlas.sprite_width, atlas.sprite_height);
+                }
                 self.metrics.packages_received = self.metrics.packages_received.saturating_add(1);
                 self.ack(packet.request_id, self.current_frame_id, true, false)
             }
@@ -855,6 +864,13 @@ impl FakeDevice {
     }
     pub fn has_scene(&self) -> bool {
         self.scene_present
+    }
+    /// N61: frames in the last accepted baked atlas (0 if none).
+    pub fn atlas_frames(&self) -> u32 {
+        self.atlas_frames
+    }
+    pub fn atlas_sprite(&self) -> (u32, u32) {
+        self.atlas_sprite
     }
     /// N54: accept a vector scene within the advertised limits.
     fn handle_scene(&mut self, packet: Packet) -> Result<(), SimError> {
@@ -1243,6 +1259,47 @@ mod tests {
         session.poll().unwrap();
         assert!(!device.has_scene());
         assert!(device.metrics.scene_commands >= 2);
+    }
+
+    #[test]
+    fn accepts_a_baked_sprites_package_and_records_the_grid() {
+        let (host, mut device) = FakeDevice::pair(BoardProfile::default());
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+        let atlas = mdc_model::AtlasBlob {
+            sprite_width: 2,
+            sprite_height: 2,
+            frames: 2,
+            columns: 2,
+            rows: 1,
+            rgb565: vec![0u8; 2 * 2 * 2 * 2],
+        };
+        let package = mdc_model::DevicePackage {
+            target: "esp32-plane".into(),
+            mode: mdc_model::PackageMode::BakedSprites,
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            textures: Vec::new(),
+            materials: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 16,
+            atlas: Some(atlas),
+        };
+        let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+        session
+            .install_package(&sealed.to_bytes().unwrap())
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.package_ready());
+        assert_eq!(device.atlas_frames(), 2);
+        assert_eq!(device.atlas_sprite(), (2, 2));
     }
 
     #[test]
