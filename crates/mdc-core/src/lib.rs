@@ -1224,10 +1224,44 @@ impl<T: Transport> Session<T> {
         .map_err(|e| CoreError::Protocol(e.to_string()))?;
         self.write_packet(MessageType::Hello, hello)
     }
-    /// v1 不发送 Scene。旧设备继续只用 Frame/Tile，调用得到 Unsupported。
+    /// v1 raw Scene payload is not accepted; use [`Session::set_scene`] with a
+    /// structured node. Kept for ABI stability.
     pub fn send_scene(&mut self, _payload: &[u8]) -> Result<u32, CoreError> {
         let _ = (self.state, _payload);
         Err(CoreError::Unsupported)
+    }
+    /// N54: set a vector scene, gated on the device's advertised scene limits.
+    pub fn set_scene(&mut self, scene: mdc_protocol::SceneNode) -> Result<u32, CoreError> {
+        let caps = self.scene_gate()?;
+        if scene.count() > caps.max_nodes || scene.depth() > caps.max_depth {
+            return Err(CoreError::TooLarge);
+        }
+        let command = mdc_protocol::SceneCommand {
+            action: "set".into(),
+            scene: Some(scene),
+        };
+        let payload = encode_control(&command).map_err(|e| CoreError::Protocol(e.to_string()))?;
+        self.write_packet(MessageType::Scene, payload)
+    }
+    /// N54: clear the vector scene.
+    pub fn clear_scene(&mut self) -> Result<u32, CoreError> {
+        self.scene_gate()?;
+        let command = mdc_protocol::SceneCommand {
+            action: "clear".into(),
+            scene: None,
+        };
+        let payload = encode_control(&command).map_err(|e| CoreError::Protocol(e.to_string()))?;
+        self.write_packet(MessageType::Scene, payload)
+    }
+    fn scene_gate(&self) -> Result<mdc_protocol::SceneCapability, CoreError> {
+        if self.state != ConnectionState::Ready {
+            return Err(CoreError::NotReady);
+        }
+        let device = self.device.as_ref().ok_or(CoreError::NotReady)?;
+        if device.capabilities.scene.is_disabled() {
+            return Err(CoreError::Unsupported);
+        }
+        Ok(device.capabilities.scene.clone())
     }
     /// Form B: true when the negotiated device advertises a usable mirror mode.
     pub fn supports_mirror(&self) -> bool {

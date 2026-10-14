@@ -253,6 +253,7 @@ pub struct SimMetrics {
     pub mirror_commands: u64,
     pub packages_received: u64,
     pub config_commands: u64,
+    pub scene_commands: u64,
     pub current_frame_id: u64,
     pub pixel_bytes: usize,
 }
@@ -298,6 +299,9 @@ pub struct FakeDevice {
     package_ready: bool,
     /// N41: managed configuration values.
     config: BTreeMap<String, String>,
+    /// N54: last accepted scene (node count); 0 with `scene_present` false = none.
+    scene_nodes: u32,
+    scene_present: bool,
 }
 impl FakeDevice {
     pub fn from_transport(link: Box<dyn Transport>, profile: BoardProfile) -> Self {
@@ -338,6 +342,8 @@ impl FakeDevice {
             package_assembler: None,
             package_ready: false,
             config: default_config(),
+            scene_nodes: 0,
+            scene_present: false,
         }
     }
 
@@ -691,6 +697,7 @@ impl FakeDevice {
             MessageType::MirrorCtrl => self.handle_mirror_ctrl(packet),
             MessageType::Package => self.handle_package(packet),
             MessageType::Config => self.handle_config(packet),
+            MessageType::Scene => self.handle_scene(packet),
             MessageType::Input => {
                 // Host→device input is unusual; reject unless touch is enabled.
                 if !self.profile.touch {
@@ -841,6 +848,43 @@ impl FakeDevice {
     /// N41: read a managed configuration value (test / inspector helper).
     pub fn config_value(&self, key: &str) -> Option<&str> {
         self.config.get(key).map(String::as_str)
+    }
+    /// N54: node count of the last accepted scene (0 with `has_scene()` false).
+    pub fn scene_node_count(&self) -> u32 {
+        self.scene_nodes
+    }
+    pub fn has_scene(&self) -> bool {
+        self.scene_present
+    }
+    /// N54: accept a vector scene within the advertised limits.
+    fn handle_scene(&mut self, packet: Packet) -> Result<(), SimError> {
+        let command: mdc_protocol::SceneCommand =
+            decode_control(&packet.payload).map_err(|e| SimError::Protocol(e.to_string()))?;
+        self.metrics.scene_commands = self.metrics.scene_commands.saturating_add(1);
+        match command.action.as_str() {
+            "clear" => {
+                self.scene_nodes = 0;
+                self.scene_present = false;
+                self.ack(packet.request_id, self.current_frame_id, true, false)
+            }
+            "set" => {
+                let Some(scene) = command.scene else {
+                    return self.reply_error(packet.request_id, "E_SCENE", "set without scene");
+                };
+                let caps = mdc_protocol::SceneCapability::enabled(64, 4);
+                if scene.count() > caps.max_nodes || scene.depth() > caps.max_depth {
+                    return self.reply_error(packet.request_id, "E_SCENE", "scene over limits");
+                }
+                self.scene_nodes = scene.count();
+                self.scene_present = true;
+                self.ack(packet.request_id, self.current_frame_id, true, false)
+            }
+            other => self.reply_error(
+                packet.request_id,
+                "E_SCENE",
+                &format!("unknown action {other}"),
+            ),
+        }
     }
     /// N41: apply a configuration get/set command and reply with ConfigReply.
     fn handle_config(&mut self, packet: Packet) -> Result<(), SimError> {
@@ -1169,6 +1213,36 @@ mod tests {
         assert_eq!(session.config("wifi_password"), Some("***"));
         assert_eq!(device.config_value("wifi_password"), Some("mdc-sim-secret"));
         assert!(device.metrics.config_commands >= 3);
+    }
+
+    #[test]
+    fn scene_set_and_clear_are_capability_gated() {
+        use mdc_protocol::SceneNode;
+        let (host, mut device) = FakeDevice::pair(BoardProfile::default());
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+        let leaf = |name: &str, kind: &str, value: Option<&str>| SceneNode {
+            name: name.into(),
+            kind: kind.into(),
+            children: Vec::new(),
+            value: value.map(str::to_string),
+        };
+        let mut root = leaf("root", "rect", None);
+        root.children.push(leaf("label", "text", Some("hi")));
+        session.set_scene(root).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.has_scene());
+        assert_eq!(device.scene_node_count(), 2);
+
+        session.clear_scene().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(!device.has_scene());
+        assert!(device.metrics.scene_commands >= 2);
     }
 
     #[test]
