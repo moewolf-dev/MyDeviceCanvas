@@ -11,6 +11,42 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
+/// N80: depth-first scene rasterizer; `rect` nodes fill from their colour.
+fn fill_scene(
+    node: &mdc_protocol::SceneNode,
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    drew: &mut bool,
+) {
+    if node.kind == "rect" {
+        if let Some([x, y, w, h]) = node.rect {
+            let color = node.color_rgb565();
+            let low = (color & 0xff) as u8;
+            let high = (color >> 8) as u8;
+            for yy in y..y.saturating_add(h) {
+                if u32::from(yy) >= height {
+                    break;
+                }
+                for xx in x..x.saturating_add(w) {
+                    if u32::from(xx) >= width {
+                        break;
+                    }
+                    let index = ((u32::from(yy) * width + u32::from(xx)) * 2) as usize;
+                    if index + 1 < pixels.len() {
+                        pixels[index] = low;
+                        pixels[index + 1] = high;
+                    }
+                }
+            }
+            *drew = true;
+        }
+    }
+    for child in &node.children {
+        fill_scene(child, pixels, width, height, drew);
+    }
+}
+
 /// 虚拟时钟上，begin 之后这么多个 tick 没有 chunk 就回滚。
 const OTA_CHUNK_TIMEOUT_TICKS: u64 = 5_000;
 
@@ -304,6 +340,8 @@ pub struct FakeDevice {
     /// N54: last accepted scene (node count); 0 with `scene_present` false = none.
     scene_nodes: u32,
     scene_present: bool,
+    /// N80: the accepted scene for rasterization.
+    scene: Option<mdc_protocol::SceneNode>,
     /// N61: baked atlas grid from the last accepted package.
     atlas_frames: u32,
     atlas_sprite: (u32, u32),
@@ -353,6 +391,7 @@ impl FakeDevice {
             config: default_config(),
             scene_nodes: 0,
             scene_present: false,
+            scene: None,
             atlas_frames: 0,
             atlas_sprite: (0, 0),
             atlas: None,
@@ -902,6 +941,26 @@ impl FakeDevice {
     pub fn active_clip(&self) -> Option<&str> {
         self.anim_clip.as_deref()
     }
+    /// N80: rasterize the accepted scene into the local framebuffer (rect fills,
+    /// parent then children so children draw on top; bounds clipped). Returns
+    /// true when at least one rect was drawn.
+    pub fn render_scene(&mut self) -> bool {
+        let Some(scene) = self.scene.clone() else {
+            return false;
+        };
+        let width = u32::from(self.profile.width);
+        let height = u32::from(self.profile.height);
+        let mut drew = false;
+        fill_scene(&scene, &mut self.pixels, width, height, &mut drew);
+        drew
+    }
+    /// N80: RGB565 pixel at (x, y) of the local framebuffer.
+    pub fn pixel_rgb565(&self, x: u16, y: u16) -> Option<u16> {
+        let width = usize::from(self.profile.width);
+        let index = (usize::from(y) * width + usize::from(x)) * 2;
+        let slice = self.pixels.get(index..index + 2)?;
+        Some(u16::from_le_bytes([slice[0], slice[1]]))
+    }
     /// N72: draw the current atlas frame into the local framebuffer (top-left).
     /// Returns true when a frame was drawn.
     pub fn render_atlas_frame(&mut self) -> bool {
@@ -942,6 +1001,7 @@ impl FakeDevice {
             "clear" => {
                 self.scene_nodes = 0;
                 self.scene_present = false;
+                self.scene = None;
                 self.ack(packet.request_id, self.current_frame_id, true, false)
             }
             "set" => {
@@ -954,6 +1014,7 @@ impl FakeDevice {
                 }
                 self.scene_nodes = scene.count();
                 self.scene_present = true;
+                self.scene = Some(scene);
                 self.ack(packet.request_id, self.current_frame_id, true, false)
             }
             other => self.reply_error(
@@ -1542,6 +1603,50 @@ mod tests {
         session.poll().unwrap();
         let frame = session.take_mirror_frame().unwrap();
         assert_eq!(&frame.bytes[0..2], &[0xE0, 0x07], "second frame is green");
+    }
+
+    #[test]
+    fn scene_renders_rects_with_bounds_and_z_order() {
+        use mdc_protocol::SceneNode;
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 4,
+            height: 4,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+        let rect = |name: &str, geom: [u16; 4], color: &str| SceneNode {
+            name: name.into(),
+            kind: "rect".into(),
+            rect: Some(geom),
+            children: Vec::new(),
+            value: Some(color.into()),
+        };
+        // Background red covers all; a green child on top; a third clipped.
+        let scene = SceneNode {
+            name: "root".into(),
+            kind: "rect".into(),
+            rect: Some([0, 0, 4, 4]),
+            children: vec![
+                rect("green", [1, 1, 1, 1], "#00FF00"),
+                rect("clip", [3, 3, 10, 10], "#0000FF"),
+            ],
+            value: Some("#FF0000".into()),
+        };
+        session.set_scene(scene).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(0, 0), Some(0xF800), "red background");
+        assert_eq!(device.pixel_rgb565(1, 1), Some(0x07E0), "green on top");
+        assert_eq!(
+            device.pixel_rgb565(3, 3),
+            Some(0x001F),
+            "clipped blue corner"
+        );
     }
 
     #[test]
