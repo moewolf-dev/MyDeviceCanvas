@@ -86,9 +86,9 @@ void push_kv_null(std::vector<std::uint8_t>& o, const char* key) {
 std::vector<std::uint8_t> encode_capabilities_cbor(const PeerIdentity& id,
                                                    const SurfaceDesc& surface) {
   std::vector<std::uint8_t> o;
-  o.reserve(320);
-  // map(15) — field order matches serde struct field declaration order
-  push_u8(o, 0xaf);
+  o.reserve(384);
+  // map(16 with renderer, 15 without) — field order matches serde struct order
+  push_u8(o, id.renderer ? 0xb0 : 0xaf);
   push_kv_text(o, "device_id", id.device_id);
   push_kv_text(o, "firmware", id.firmware);
 
@@ -131,6 +131,18 @@ std::vector<std::uint8_t> encode_capabilities_cbor(const PeerIdentity& id,
   push_kv_uint(o, "local_display_fps", id.local_display_fps);
   push_kv_uint(o, "mirror_fps", id.mirror ? id.mirror_fps : 0);
   push_kv_uint(o, "mirror_bandwidth", id.mirror_bandwidth);
+
+  // renderer: map(6) RendererCapability (N17). Only when advertised.
+  if (id.renderer) {
+    push_text(o, "renderer");
+    push_u8(o, 0xa6);
+    push_kv_bool(o, "sprite_2d", id.renderer_sprite_2d);
+    push_kv_bool(o, "mesh2d", id.renderer_mesh2d);
+    push_kv_bool(o, "mesh3d", id.renderer_mesh3d);
+    push_kv_bool(o, "skeleton", id.renderer_skeleton);
+    push_kv_uint(o, "max_texture", id.renderer_max_texture);
+    push_kv_uint(o, "max_vertices", id.renderer_max_vertices);
+  }
   return o;
 }
 

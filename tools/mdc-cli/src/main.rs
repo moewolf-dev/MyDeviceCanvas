@@ -1828,6 +1828,7 @@ mod tests {
                 local_display_fps: 0,
                 mirror_fps: 0,
                 mirror_bandwidth: 0,
+                renderer: None,
             })
             .unwrap(),
         }
@@ -1900,6 +1901,7 @@ mod tests {
                                             local_display_fps: 0,
                                             mirror_fps: 0,
                                             mirror_bandwidth: 0,
+                                            renderer: None,
                                         };
                                         let reply = Packet {
                                             version: VERSION,

@@ -418,6 +418,7 @@ dependencies = [
 name = "mdc-model"
 version = "0.1.0"
 dependencies = [
+ "mdc-protocol",
  "serde",
  "serde_json",
  "thiserror",

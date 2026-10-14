@@ -33,3 +33,14 @@ decodes as mirror-disabled (empty `mode`). `local_display_fps` and `mirror_fps`
 are independent; `mirror_bandwidth` is advisory. See
 [render-topology-decision.md](render-topology-decision.md) for the full mode
 contract.
+
+## Renderer capability (N17)
+
+`CAPABILITIES` optionally carries `renderer { sprite_2d, mesh2d, mesh3d,
+skeleton, max_texture, max_vertices }`: the local rendering a device supports.
+It is `Option` and `skip_serializing_if = "Option::is_none"`, so a pre-renderer
+device produces a 15-entry map and a device that advertises renderer produces a
+16-entry map. The host model compiler reads it to pick a target backend
+(`mdc-model::RendererCapability::from_wire`); an absent capability is treated as
+sprite-only. Rust and C++ share the exact encoding
+(`cbor_control_test.cpp` reproduces the `mdc-protocol` bytes).

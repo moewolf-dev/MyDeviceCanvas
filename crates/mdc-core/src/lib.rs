@@ -1659,6 +1659,7 @@ mod tests {
             local_display_fps: 0,
             mirror_fps: 0,
             mirror_bandwidth: 0,
+            renderer: None,
         }
     }
     fn s() -> Surface {
@@ -1711,6 +1712,7 @@ mod tests {
             local_display_fps: 0,
             mirror_fps: 0,
             mirror_bandwidth: 0,
+            renderer: None,
         };
         let mut d = Device::new(caps);
         assert!(!d.update_surface_geometry("main", 2, 2).unwrap());
@@ -1737,6 +1739,7 @@ mod tests {
             local_display_fps: 0,
             mirror_fps: 0,
             mirror_bandwidth: 0,
+            renderer: None,
         };
         let d = Device::new(c);
         assert_eq!(
@@ -2175,6 +2178,7 @@ mod tests {
             local_display_fps: 0,
             mirror_fps: 0,
             mirror_bandwidth: 0,
+            renderer: None,
         };
         let mut manager = DeviceManager::new();
         manager.upsert(caps.clone()).unwrap();
@@ -2306,6 +2310,7 @@ mod tests {
             local_display_fps: 0,
             mirror_fps: 0,
             mirror_bandwidth: 0,
+            renderer: None,
         };
         assert_eq!(
             manager.upsert(caps.clone()),
@@ -2363,6 +2368,7 @@ mod tests {
                         local_display_fps: 0,
                         mirror_fps: 0,
                         mirror_bandwidth: 0,
+                        renderer: None,
                     })
                     .unwrap(),
                 }
@@ -2401,6 +2407,7 @@ mod tests {
                         local_display_fps: 0,
                         mirror_fps: 0,
                         mirror_bandwidth: 0,
+                        renderer: None,
                     })
                     .unwrap(),
                 }
@@ -2498,6 +2505,7 @@ mod tests {
             local_display_fps: 0,
             mirror_fps: 0,
             mirror_bandwidth: 0,
+            renderer: None,
         };
         let reply = Packet {
             version: VERSION,
@@ -2592,6 +2600,7 @@ mod tests {
             local_display_fps: 0,
             mirror_fps: 0,
             mirror_bandwidth: 0,
+            renderer: None,
         };
         device_link
             .write(
@@ -2675,6 +2684,7 @@ mod tests {
                         local_display_fps: 0,
                         mirror_fps: 0,
                         mirror_bandwidth: 0,
+                        renderer: None,
                     })
                     .unwrap(),
                 }
@@ -2724,6 +2734,7 @@ mod tests {
                         local_display_fps: 0,
                         mirror_fps: 0,
                         mirror_bandwidth: 0,
+                        renderer: None,
                     })
                     .unwrap(),
                 }
@@ -2758,6 +2769,7 @@ mod tests {
             local_display_fps: 0,
             mirror_fps: 0,
             mirror_bandwidth: 0,
+            renderer: None,
         };
         device_link
             .write(
@@ -2815,6 +2827,7 @@ mod tests {
                 local_display_fps: 0,
                 mirror_fps: 0,
                 mirror_bandwidth: 0,
+                renderer: None,
             };
             device_link
                 .write(
@@ -2865,6 +2878,7 @@ mod tests {
             local_display_fps: 0,
             mirror_fps: 0,
             mirror_bandwidth: 0,
+            renderer: None,
         };
         device_link
             .write(

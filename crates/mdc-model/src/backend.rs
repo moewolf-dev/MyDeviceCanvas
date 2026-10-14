@@ -40,6 +40,21 @@ impl RendererCapability {
             max_vertices: 200_000,
         }
     }
+
+    /// Build from the renderer capability a device advertised (N17). A device
+    /// that never sent one (`None`) is treated as a passive sprite-only target.
+    pub fn from_wire(caps: Option<&mdc_protocol::RendererCapability>) -> Self {
+        match caps {
+            Some(caps) => Self {
+                sprite: caps.sprite_2d,
+                mesh2d: caps.mesh2d,
+                skeleton: caps.skeleton,
+                max_texture: caps.max_texture,
+                max_vertices: caps.max_vertices,
+            },
+            None => Self::sprite_only(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -376,6 +391,23 @@ mod tests {
                 .target,
             "esp32-plane"
         );
+    }
+
+    #[test]
+    fn compile_auto_reads_a_device_advertised_renderer_capability() {
+        let model = sample_model();
+        // A pre-renderer device (None) is sprite-only.
+        let passive = RendererCapability::from_wire(None);
+        assert!(!passive.mesh2d);
+        assert_eq!(
+            compile_auto(&model, &passive).unwrap().target,
+            "esp32-plane"
+        );
+        // A device advertising meshes+skeleton gets the GPU backend.
+        let wire = mdc_protocol::RendererCapability::full_3d(2048, 200_000);
+        let gpu = RendererCapability::from_wire(Some(&wire));
+        assert!(gpu.mesh2d && gpu.skeleton);
+        assert_eq!(compile_auto(&model, &gpu).unwrap().target, "linux-mesh");
     }
 
     #[test]

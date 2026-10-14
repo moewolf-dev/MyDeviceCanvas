@@ -36,6 +36,7 @@ fn major_version_mismatch_is_rejected_at_decode() {
             local_display_fps: 0,
             mirror_fps: 0,
             mirror_bandwidth: 0,
+            renderer: None,
         })
         .unwrap(),
     }

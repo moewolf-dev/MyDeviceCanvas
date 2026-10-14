@@ -316,6 +316,43 @@ pub fn negotiate_mirror(
     })
 }
 
+/// Form B renderer capability (N17): what a device can draw locally, used to
+/// drive the model compiler's target-backend choice. Absent on pre-renderer
+/// devices; `None` on `Capabilities` means "unknown / Form A only".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct RendererCapability {
+    pub sprite_2d: bool,
+    pub mesh2d: bool,
+    pub mesh3d: bool,
+    pub skeleton: bool,
+    pub max_texture: u32,
+    pub max_vertices: u32,
+}
+impl RendererCapability {
+    /// A weak MCU: sprites only.
+    pub fn sprite_only(max_texture: u32) -> Self {
+        Self {
+            sprite_2d: true,
+            mesh2d: false,
+            mesh3d: false,
+            skeleton: false,
+            max_texture,
+            max_vertices: 0,
+        }
+    }
+    /// A GPU board: meshes and skeleton.
+    pub fn full_3d(max_texture: u32, max_vertices: u32) -> Self {
+        Self {
+            sprite_2d: true,
+            mesh2d: true,
+            mesh3d: true,
+            skeleton: true,
+            max_texture,
+            max_vertices,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Capabilities {
     pub device_id: String,
@@ -338,6 +375,9 @@ pub struct Capabilities {
     pub mirror_fps: u16,
     #[serde(default)]
     pub mirror_bandwidth: u64,
+    /// N17: omitted entirely when absent, so older peers see an unchanged map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renderer: Option<RendererCapability>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Surface {
@@ -1125,6 +1165,7 @@ mod tests {
             local_display_fps: 60,
             mirror_fps: 10,
             mirror_bandwidth: 5_000_000,
+            renderer: None,
         };
         // No mirror advertised -> rejected.
         assert!(negotiate_mirror(&caps, "main", "full-frame", 30, "RGB565").is_none());
@@ -1144,5 +1185,45 @@ mod tests {
         );
         caps.mirror.mode = vec!["dirty-region".into()];
         assert!(negotiate_mirror(&caps, "main", "full-frame", 5, "RGB565").is_none());
+    }
+
+    #[test]
+    fn renderer_capability_is_optional_and_round_trips() {
+        let mut caps = Capabilities {
+            device_id: "sim-linux-virt".into(),
+            firmware: "0.1.0-linux".into(),
+            surfaces: vec![Surface {
+                id: "main".into(),
+                width: 800,
+                height: 480,
+                pixel_format: "RGB565".into(),
+                stride: 1600,
+                rotation: 0,
+            }],
+            frame: true,
+            tile: true,
+            touch: false,
+            ota: false,
+            max_message: 1048576,
+            max_chunk: 16384,
+            max_in_flight: 1,
+            max_fps: 30,
+            mirror: MirrorCapability::disabled(),
+            local_display_fps: 0,
+            mirror_fps: 0,
+            mirror_bandwidth: 0,
+            renderer: None,
+        };
+        // Absent renderer: the key is not serialized.
+        let bytes = encode_control(&caps).unwrap();
+        assert!(!bytes.windows(8).any(|w| w == b"renderer"));
+        let back: Capabilities = decode_control(&bytes).unwrap();
+        assert!(back.renderer.is_none());
+
+        caps.renderer = Some(RendererCapability::full_3d(2048, 200_000));
+        let bytes = encode_control(&caps).unwrap();
+        // The C++ encoder reproduces these exact bytes (cbor_control_test.cpp).
+        let back: Capabilities = decode_control(&bytes).unwrap();
+        assert_eq!(back.renderer, caps.renderer);
     }
 }

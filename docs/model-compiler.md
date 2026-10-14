@@ -68,6 +68,9 @@ Backend selection is **Capability-driven**, never `if board == x`.
 - `compile_with(&backend, model, caps)` uses an explicit backend.
 - `compile_auto(model, caps)` picks the Linux/GPU backend when a device advertises
   `mesh2d && skeleton`, otherwise the MCU backend.
+- `RendererCapability::from_wire(caps.renderer)` builds the compiler capability
+  from the device's wire `renderer` field (N17); a device that advertised none is
+  treated as sprite-only.
 
 A weak device never receives mesh or skeleton data; a GPU package never contains
 baked sprites in mesh mode.

@@ -44,6 +44,14 @@ Capabilities:
     max_height: u16
     pixel_formats: [string]       # e.g. ["RGB565"]
     recommended_transport: Optional[string]
+  renderer: Optional[               # N17, optional on the wire
+    sprite_2d: bool
+    mesh2d: bool
+    mesh3d: bool
+    skeleton: bool
+    max_texture: u32
+    max_vertices: u32
+  ]
 ```
 
 Rules:

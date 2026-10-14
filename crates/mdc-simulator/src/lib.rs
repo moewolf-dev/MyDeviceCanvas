@@ -458,6 +458,16 @@ impl FakeDevice {
             } else {
                 0
             },
+            // N17: local renderer capability. A device that renders locally (Form
+            // B) advertises meshes+skeleton; a passive MCU advertises sprites.
+            renderer: Some(if self.profile.mirror {
+                mdc_protocol::RendererCapability::full_3d(
+                    u32::from(self.profile.width).max(u32::from(self.profile.height)),
+                    200_000,
+                )
+            } else {
+                mdc_protocol::RendererCapability::sprite_only(512)
+            }),
         }
     }
     /// Advance virtual clock and process inbound packets.

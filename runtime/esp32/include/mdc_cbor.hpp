@@ -23,6 +23,15 @@ struct PeerIdentity {
   std::uint16_t local_display_fps = 0;
   std::uint16_t mirror_fps = 0;
   std::uint64_t mirror_bandwidth = 0;
+  // Form B renderer capability (N17). Emitted only when `renderer` is true, so
+  // pre-renderer peers see the same map as before.
+  bool renderer = false;
+  bool renderer_sprite_2d = true;
+  bool renderer_mesh2d = false;
+  bool renderer_mesh3d = false;
+  bool renderer_skeleton = false;
+  std::uint32_t renderer_max_texture = 0;
+  std::uint32_t renderer_max_vertices = 0;
 };
 
 struct SurfaceDesc {
