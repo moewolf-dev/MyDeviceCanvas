@@ -107,11 +107,41 @@ export class MyDeviceCanvas {
         this.emit("input", event.input);
       } else if (event.kind === "error") {
         this.emit("error", new Error(event.message ?? "device error"));
+      } else if (event.kind === "mirror" && event.mirror) {
+        this.emit("mirror", event.mirror);
       } else {
         this.emit(event.kind, event);
       }
     }
     return events;
+  }
+  /** Subscribe to Form B mirrored frame metadata. Returns an unsubscribe fn. */
+  onMirrorFrame(listener) {
+    return this.on("mirror", listener);
+  }
+  /** Form B: ask the device to start mirroring `surfaceId`. */
+  async startMirror(surfaceId, { mode = "full-frame", maxFps = 30 } = {}) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.startMirror !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.startMirror(surfaceId, mode, maxFps);
+  }
+  async stopMirror(surfaceId) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.stopMirror !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.stopMirror(surfaceId);
+  }
+  /** Drain the latest complete mirrored frame (pixels copied out of native). */
+  async takeMirrorFrame() {
+    if (this._disposed) throw new Error("manager is disposed");
+    return (await this._native.takeMirrorFrame?.()) ?? null;
+  }
+  async mirrorStats() {
+    if (this._disposed) throw new Error("manager is disposed");
+    return (await this._native.mirrorStats?.()) ?? null;
   }
   on(event, listener) {
     if (this._disposed) throw new Error("manager is disposed");

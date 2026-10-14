@@ -56,13 +56,45 @@ pub struct InputEventDto {
 }
 
 #[napi(object)]
+pub struct MirrorInfoDto {
+    #[napi(js_name = "surfaceId")]
+    pub surface_id: String,
+    #[napi(js_name = "frameId")]
+    pub frame_id: u32,
+    pub width: u16,
+    pub height: u16,
+}
+
+#[napi(object)]
+pub struct MirrorFrameDto {
+    #[napi(js_name = "surfaceId")]
+    pub surface_id: String,
+    #[napi(js_name = "frameId")]
+    pub frame_id: u32,
+    pub width: u16,
+    pub height: u16,
+    pub pixels: Buffer,
+}
+
+#[napi(object)]
+pub struct MirrorStatsDto {
+    #[napi(js_name = "framesReceived")]
+    pub frames_received: f64,
+    #[napi(js_name = "framesDropped")]
+    pub frames_dropped: f64,
+    #[napi(js_name = "lastFrameId")]
+    pub last_frame_id: f64,
+}
+
+#[napi(object)]
 pub struct NativeEvent {
-    /// "input" | "connected" | "disconnected" | "endpointSwitched" | "error"
+    /// "input" | "connected" | "disconnected" | "endpointSwitched" | "error" | "mirror"
     pub kind: String,
     #[napi(js_name = "deviceId")]
     pub device_id: Option<String>,
     pub input: Option<InputEventDto>,
     pub message: Option<String>,
+    pub mirror: Option<MirrorInfoDto>,
 }
 
 struct SimSession {
@@ -158,18 +190,21 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                 device_id: Some(id),
                 input: None,
                 message: None,
+                mirror: None,
             },
             ManagerEvent::Removed(id) | ManagerEvent::Disconnected(id) => NativeEvent {
                 kind: "disconnected".into(),
                 device_id: Some(id),
                 input: None,
                 message: None,
+                mirror: None,
             },
             ManagerEvent::EndpointSwitched { device_id } => NativeEvent {
                 kind: "endpointSwitched".into(),
                 device_id: Some(device_id),
                 input: None,
                 message: None,
+                mirror: None,
             },
             ManagerEvent::Input { device_id, event } => NativeEvent {
                 kind: "input".into(),
@@ -183,15 +218,18 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                     y: event.y,
                 }),
                 message: None,
+                mirror: None,
             },
             ManagerEvent::Error { device_id, message } => NativeEvent {
                 kind: "error".into(),
                 device_id: Some(device_id),
                 input: None,
                 message: Some(message),
+                mirror: None,
             },
             ManagerEvent::Mirror {
                 device_id,
+                surface_id,
                 frame_id,
                 width,
                 height,
@@ -200,7 +238,13 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                 kind: "mirror".into(),
                 device_id: Some(device_id),
                 input: None,
-                message: Some(format!("{frame_id}:{width}x{height}")),
+                message: None,
+                mirror: Some(MirrorInfoDto {
+                    surface_id,
+                    frame_id: frame_id as u32,
+                    width,
+                    height,
+                }),
             },
         });
     }
@@ -427,6 +471,110 @@ impl NativeManager {
             .poll()
             .map_err(|e| Error::from_reason(e.to_string()))?;
         Ok(())
+    }
+
+    /// Form B: ask the device to start/stop mirroring (capability-gated).
+    #[napi(js_name = "startMirror")]
+    pub fn start_mirror(&self, surface_id: String, mode: String, max_fps: u16) -> Result<u32> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        let request = sim
+            .session
+            .start_mirror(&surface_id, &mode, max_fps)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        pump_link(sim)?;
+        Ok(request)
+    }
+
+    #[napi(js_name = "stopMirror")]
+    pub fn stop_mirror(&self, surface_id: String) -> Result<u32> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        let request = sim
+            .session
+            .stop_mirror(&surface_id)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        pump_link(sim)?;
+        Ok(request)
+    }
+
+    /// Sim-only: push one mirrored frame from FakeDevice toward the host.
+    #[napi(js_name = "emitMirrorFrame")]
+    pub fn emit_mirror_frame(&self) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        let device = sim
+            .device
+            .as_mut()
+            .ok_or_else(|| Error::from_reason("tcp session cannot emit a local mirror frame"))?;
+        device
+            .emit_mirror_frame()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        sim.session
+            .poll()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Drain the latest complete mirrored frame (pixels are copied out).
+    #[napi(js_name = "takeMirrorFrame")]
+    pub fn take_mirror_frame(&self) -> Result<Option<MirrorFrameDto>> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        Ok(sim.session.take_mirror_frame().map(|frame| MirrorFrameDto {
+            surface_id: frame.surface_id,
+            frame_id: frame.frame_id as u32,
+            width: frame.width,
+            height: frame.height,
+            pixels: Buffer::from(frame.bytes),
+        }))
+    }
+
+    #[napi(js_name = "mirrorStats")]
+    pub fn mirror_stats(&self) -> Result<MirrorStatsDto> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        let stats = sim.session.mirror_stats();
+        Ok(MirrorStatsDto {
+            frames_received: stats.frames_received as f64,
+            frames_dropped: stats.frames_dropped as f64,
+            last_frame_id: stats.last_frame_id as f64,
+        })
     }
 
     /// Open a named simulator board before the first `devices()` call.

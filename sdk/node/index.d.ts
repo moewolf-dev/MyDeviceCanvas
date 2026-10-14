@@ -27,11 +27,26 @@ export interface InputEventDto {
   x: number;
   y: number;
 }
+export interface MirrorInfo {
+  surfaceId: string;
+  frameId: number;
+  width: number;
+  height: number;
+}
+export interface MirrorFrame extends MirrorInfo {
+  pixels: Uint8Array;
+}
+export interface MirrorStats {
+  framesReceived: number;
+  framesDropped: number;
+  lastFrameId: number;
+}
 export interface NativeEvent {
   kind: string;
   deviceId?: string;
   input?: InputEventDto;
   message?: string;
+  mirror?: MirrorInfo;
 }
 export declare function loadNative(): unknown | null;
 export declare class Surface {
@@ -53,6 +68,14 @@ export declare class MyDeviceCanvas {
   connectTcp(address: string): Promise<void>;
   devices(): Promise<Device[]>;
   pollEvents(): Promise<NativeEvent[]>;
+  onMirrorFrame(listener: (frame: MirrorInfo) => void): () => void;
+  startMirror(
+    surfaceId: string,
+    options?: { mode?: string; maxFps?: number },
+  ): Promise<number>;
+  stopMirror(surfaceId: string): Promise<number>;
+  takeMirrorFrame(): Promise<MirrorFrame | null>;
+  mirrorStats(): Promise<MirrorStats | null>;
   on(event: string, listener: (value: unknown) => void): () => void;
   off(event: string, listener: (value: unknown) => void): boolean;
   dispose(): void;

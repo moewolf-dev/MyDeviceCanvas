@@ -93,3 +93,35 @@ test("pollEvents re-emits native input events", async () => {
   assert.equal(seen[0].phase, "down");
   assert.equal(seen[0].x, 2);
 });
+
+test("mirror events and controls go through the public SDK", async () => {
+  let started;
+  const mdc = new MyDeviceCanvas({
+    pollEvents: async () => [{
+      kind: "mirror",
+      deviceId: "dev",
+      mirror: { surfaceId: "main", frameId: 3, width: 2, height: 1 },
+    }],
+    startMirror(surfaceId, mode, maxFps) { started = [surfaceId, mode, maxFps]; return 7; },
+    stopMirror() { return 8; },
+    takeMirrorFrame: async () => ({
+      surfaceId: "main", frameId: 3, width: 2, height: 1, pixels: new Uint8Array(4),
+    }),
+    mirrorStats: async () => ({ framesReceived: 1, framesDropped: 0, lastFrameId: 3 }),
+  });
+
+  const seen = [];
+  mdc.onMirrorFrame((frame) => seen.push(frame.frameId));
+  await mdc.pollEvents();
+  assert.deepEqual(seen, [3]);
+
+  assert.equal(await mdc.startMirror("main", { mode: "dirty-region", maxFps: 15 }), 7);
+  assert.deepEqual(started, ["main", "dirty-region", 15]);
+  assert.equal(await mdc.stopMirror("main"), 8);
+
+  const frame = await mdc.takeMirrorFrame();
+  assert.equal(frame.frameId, 3);
+  assert.equal(frame.pixels.length, 4);
+  const stats = await mdc.mirrorStats();
+  assert.equal(stats.framesReceived, 1);
+});
