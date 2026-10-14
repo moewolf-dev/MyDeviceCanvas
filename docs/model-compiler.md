@@ -91,8 +91,10 @@ a `MDCP` magic, a `u16` version, a length-prefixed JSON manifest (`target`,
 `mode`, `estimated_bytes`, body length and an FNV-1a checksum) and the JSON IR
 body. `compile_to_package(model, caps)` compiles with the capability-selected
 backend and seals the result. `to_bytes`/`from_bytes` move it over the wire; the
-body and manifest are bounded (16 MiB / 64 KiB). N20 adds checksum verification
-and the device capability gate.
+body and manifest are bounded (16 MiB / 64 KiB). `from_bytes` verifies the
+checksum and declared length, and `accepted_by(caps)` is the capability gate: a
+mesh package needs `mesh2d`, a sprite atlas needs sprite support — checked
+against the advertised capability, never a board id.
 
 ## Memory and limits
 

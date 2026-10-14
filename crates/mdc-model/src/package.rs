@@ -76,8 +76,8 @@ impl MdcPackage {
         Ok(out)
     }
 
-    /// Parse a wire container. Structural validation only (magic, version,
-    /// bounds); N20 verifies the checksum and the device capability.
+    /// Parse a wire container. Structural validation (magic, version, bounds)
+    /// plus integrity (checksum / declared length).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ModelError> {
         if bytes.len() < 10 {
             return Err(ModelError::Unsupported("package header truncated".into()));
@@ -110,7 +110,49 @@ impl MdcPackage {
             return Err(ModelError::Budget("package body over limit".into()));
         }
         let package: DevicePackage = serde_json::from_slice(body).map_err(json_err)?;
-        Ok(Self { manifest, package })
+        let parsed = Self { manifest, package };
+        parsed.verify_integrity()?;
+        Ok(parsed)
+    }
+
+    /// Check the manifest against the actual body (length, checksum, target/mode).
+    pub fn verify_integrity(&self) -> Result<(), ModelError> {
+        let body = body_bytes(&self.package)?;
+        if body.len() as u64 != self.manifest.body_bytes {
+            return Err(ModelError::Unsupported(format!(
+                "body length {} != manifest {}",
+                body.len(),
+                self.manifest.body_bytes
+            )));
+        }
+        if fnv1a(&body) != self.manifest.checksum {
+            return Err(ModelError::Unsupported("package checksum mismatch".into()));
+        }
+        if self.manifest.target != self.package.target || self.manifest.mode != self.package.mode {
+            return Err(ModelError::Unsupported(
+                "manifest target/mode does not match the package".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Capability gate: a device may only accept a package its renderer can run.
+    /// Mesh needs `mesh2d`; a sprite atlas needs sprite support. Checked against
+    /// the advertised capability, never a board id.
+    pub fn accepted_by(&self, caps: &RendererCapability) -> Result<(), ModelError> {
+        self.verify_integrity()?;
+        if self.manifest.estimated_bytes > MAX_PACKAGE_BYTES as u64 {
+            return Err(ModelError::Budget("package over device size limit".into()));
+        }
+        match self.manifest.mode {
+            PackageMode::Mesh if !caps.mesh2d => Err(ModelError::Unsupported(
+                "device has no mesh2d for a mesh package".into(),
+            )),
+            PackageMode::SpriteAtlas if !caps.sprite => Err(ModelError::Unsupported(
+                "device has no sprite support".into(),
+            )),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -208,6 +250,40 @@ mod tests {
         assert!(matches!(
             MdcPackage::from_bytes(&bytes),
             Err(ModelError::Budget(_))
+        ));
+    }
+
+    #[test]
+    fn tampered_packages_fail_integrity() {
+        let mut package = compile_to_package(&model(), &RendererCapability::sprite_only()).unwrap();
+        package.manifest.checksum ^= 1;
+        assert!(matches!(
+            package.verify_integrity(),
+            Err(ModelError::Unsupported(_))
+        ));
+
+        let mut mismatched =
+            compile_to_package(&model(), &RendererCapability::sprite_only()).unwrap();
+        mismatched.package.target = "somewhere-else".into();
+        assert!(matches!(
+            mismatched.verify_integrity(),
+            Err(ModelError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn capability_gate_rejects_a_package_the_device_cannot_run() {
+        let sprite = compile_to_package(&model(), &RendererCapability::sprite_only()).unwrap();
+        assert!(sprite
+            .accepted_by(&RendererCapability::sprite_only())
+            .is_ok());
+
+        let mesh = compile_to_package(&model(), &RendererCapability::full_3d()).unwrap();
+        assert_eq!(mesh.manifest.mode, PackageMode::Mesh);
+        assert!(mesh.accepted_by(&RendererCapability::full_3d()).is_ok());
+        assert!(matches!(
+            mesh.accepted_by(&RendererCapability::sprite_only()),
+            Err(ModelError::Unsupported(_))
         ));
     }
 }
