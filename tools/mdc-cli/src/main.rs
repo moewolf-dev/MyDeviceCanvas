@@ -593,9 +593,14 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Encode a baked RGB565 atlas as a binary PPM (P6).
 fn rgb565_to_ppm(atlas: &mdc_bake::BakedAtlas) -> Vec<u8> {
-    let mut out = Vec::with_capacity(atlas.rgb565.len() / 2 * 3 + 32);
-    out.extend_from_slice(format!("P6\n{} {}\n255\n", atlas.width, atlas.height).as_bytes());
-    for chunk in atlas.rgb565.chunks_exact(2) {
+    rgb565_frame_to_ppm(atlas.width, atlas.height, &atlas.rgb565)
+}
+
+/// Encode a tightly packed RGB565 frame as a binary PPM (P6).
+fn rgb565_frame_to_ppm(width: u32, height: u32, rgb565: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rgb565.len() / 2 * 3 + 32);
+    out.extend_from_slice(format!("P6\n{width} {height}\n255\n").as_bytes());
+    for chunk in rgb565.chunks_exact(2) {
         let value = u16::from_le_bytes([chunk[0], chunk[1]]);
         let r = ((value >> 11) & 0x1f) as u8;
         let g = ((value >> 5) & 0x3f) as u8;
@@ -605,6 +610,43 @@ fn rgb565_to_ppm(atlas: &mdc_bake::BakedAtlas) -> Vec<u8> {
         out.push((b << 3) | (b >> 2));
     }
     out
+}
+
+/// N82: render a scene on a simulator device and export the framebuffer as PPM.
+fn cmd_scene_render(opts: &GlobalOpts, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut file: Option<String> = None;
+    let mut out: Option<String> = None;
+    let mut iter = args.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--out" => out = iter.next().cloned(),
+            other => file = Some(other.to_string()),
+        }
+    }
+    let file = file.ok_or("scene-render requires a scene JSON file")?;
+    let out = out.ok_or("scene-render requires --out <file.ppm>")?;
+    let text = std::fs::read_to_string(&file)?;
+    let node: mdc_protocol::SceneNode = serde_json::from_str(&text)?;
+    let (mut session, mut device, _manager) = open_sim(&opts.board)?;
+    session.set_scene(node)?;
+    device.poll()?;
+    session.poll()?;
+    let drew = device.render_scene();
+    let profile = BoardProfile::from_board_id(&opts.board);
+    let pixels = device.framebuffer();
+    std::fs::write(
+        &out,
+        rgb565_frame_to_ppm(u32::from(profile.width), u32::from(profile.height), pixels),
+    )?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "board": opts.board,
+            "drew": drew,
+            "output": out,
+        }))?
+    );
+    Ok(())
 }
 
 /// N42: read or write a device configuration value on a simulator board.
@@ -1934,7 +1976,7 @@ flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <t
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--serve ADDR]|\
 package <model.gltf> [out.mdcpkg]|install-package <file.mdcpkg>|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
-scene <file.json>|scene clear|inspect [--watch --count N --interval MS]"
+scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|inspect [--watch --count N --interval MS]"
     );
 }
 
@@ -2039,6 +2081,11 @@ fn main() {
             let mut o = opts.clone();
             o.sim = true;
             cmd_scene(&o, &args[1..])
+        }
+        Some("scene-render") => {
+            let mut o = opts.clone();
+            o.sim = true;
+            cmd_scene_render(&o, &args[1..])
         }
         Some("ota-confirm") => cmd_ota_confirm(&opts),
         Some("linux-accept") => cmd_linux_accept(&opts),
@@ -2740,6 +2787,40 @@ mod tests {
         };
         cmd_scene(&opts, &[path.to_string_lossy().into_owned()]).unwrap();
         cmd_scene(&opts, &["clear".to_string()]).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scene_render_writes_a_ppm() {
+        let dir = std::env::temp_dir().join(format!("mdc-cli-srender-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let scene = dir.join("scene.json");
+        std::fs::write(
+            &scene,
+            r##"{"name":"bg","kind":"rect","rect":[0,0,4,4],"value":"#0000FF"}"##,
+        )
+        .unwrap();
+        let out = dir.join("frame.ppm");
+        let opts = GlobalOpts {
+            sim: true,
+            address: None,
+            port: None,
+            board: "esp32-jc3248w535-sim".into(),
+        };
+        cmd_scene_render(
+            &opts,
+            &[
+                scene.to_string_lossy().into_owned(),
+                "--out".to_string(),
+                out.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        let ppm = std::fs::read(&out).unwrap();
+        assert!(ppm.starts_with(b"P6\n480 320\n255\n"));
+        // The blue rect fills [0,0,4,4]; the first pixel is blue.
+        assert_eq!(&ppm[15..18], &[0, 0, 255]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

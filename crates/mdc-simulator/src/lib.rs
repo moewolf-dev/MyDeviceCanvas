@@ -961,6 +961,10 @@ impl FakeDevice {
         let slice = self.pixels.get(index..index + 2)?;
         Some(u16::from_le_bytes([slice[0], slice[1]]))
     }
+    /// N82: the local framebuffer (RGB565 LE, tightly packed).
+    pub fn framebuffer(&self) -> &[u8] {
+        &self.pixels
+    }
     /// N72: draw the current atlas frame into the local framebuffer (top-left).
     /// Returns true when a frame was drawn.
     pub fn render_atlas_frame(&mut self) -> bool {
