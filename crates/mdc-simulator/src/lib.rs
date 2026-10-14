@@ -1019,6 +1019,8 @@ impl FakeDevice {
                 self.scene_nodes = scene.count();
                 self.scene_present = true;
                 self.scene = Some(scene);
+                // N83: setting a scene takes over rendering (last-wins).
+                self.anim_clip = None;
                 self.ack(packet.request_id, self.current_frame_id, true, false)
             }
             other => self.reply_error(
@@ -1653,6 +1655,73 @@ mod tests {
             Some(0x001F),
             "clipped blue corner"
         );
+    }
+
+    #[test]
+    fn setting_a_scene_stops_the_running_animation() {
+        use mdc_protocol::SceneNode;
+        let (host, mut device) = FakeDevice::pair(BoardProfile::default());
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+        // Install an atlas and play a clip.
+        let atlas = mdc_model::AtlasBlob {
+            sprite_width: 2,
+            sprite_height: 2,
+            frames: 2,
+            columns: 2,
+            rows: 1,
+            rgb565: vec![0u8; 16],
+            clips: vec![mdc_model::AtlasClip {
+                name: "idle".into(),
+                start: 0,
+                frames: 2,
+                fps: 30,
+                looping: true,
+                fade_in_ms: 0,
+                fade_out_ms: 0,
+            }],
+        };
+        let package = mdc_model::DevicePackage {
+            target: "esp32-plane".into(),
+            mode: mdc_model::PackageMode::BakedSprites,
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            textures: Vec::new(),
+            materials: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 16,
+            atlas: Some(atlas),
+        };
+        let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+        session
+            .install_package(&sealed.to_bytes().unwrap())
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session.set_config("animation", "idle").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.current_atlas_frame().is_some());
+
+        session
+            .set_scene(SceneNode {
+                name: "bg".into(),
+                kind: "rect".into(),
+                rect: Some([0, 0, 2, 2]),
+                children: Vec::new(),
+                value: Some("#FFFFFF".into()),
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.current_atlas_frame(), None, "scene took over");
+        assert!(device.render_scene());
     }
 
     #[test]

@@ -1397,6 +1397,12 @@ impl<T: Transport> Session<T> {
         self.config("animation").filter(|value| *value != "off")
     }
 
+    /// N83: stop any running animation so the device presents its scene (if one
+    /// was set). The scene itself is unchanged.
+    pub fn show_scene(&mut self) -> Result<u32, CoreError> {
+        self.stop_animation()
+    }
+
     fn config_gate(&self, key: &str) -> Result<(), CoreError> {
         if self.state != ConnectionState::Ready {
             return Err(CoreError::NotReady);
