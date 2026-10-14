@@ -187,3 +187,64 @@ fn baked_package_soak_is_bounded() {
     }
     assert!(size > 0);
 }
+
+#[test]
+fn atlas_animation_soak_is_bounded() {
+    use mdc_core::Session;
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    let atlas = mdc_model::AtlasBlob {
+        sprite_width: 2,
+        sprite_height: 2,
+        frames: 8,
+        columns: 4,
+        rows: 2,
+        rgb565: vec![0u8; 2 * 2 * 8 * 2],
+        clips: vec![mdc_model::AtlasClip {
+            name: "idle".into(),
+            start: 0,
+            frames: 8,
+            fps: 30,
+            looping: true,
+            fade_in_ms: 0,
+            fade_out_ms: 0,
+        }],
+    };
+    let package = mdc_model::DevicePackage {
+        target: "esp32-plane".into(),
+        mode: mdc_model::PackageMode::BakedSprites,
+        nodes: Vec::new(),
+        meshes: Vec::new(),
+        textures: Vec::new(),
+        materials: Vec::new(),
+        skeletons: Vec::new(),
+        animations: Vec::new(),
+        sprites: Vec::new(),
+        layers: Vec::new(),
+        estimated_bytes: atlas.rgb565.len() as u64,
+        atlas: Some(atlas),
+    };
+    let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+    session
+        .install_package(&sealed.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    session.set_config("animation", "idle").unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    for _ in 0..5000 {
+        device.clock.advance(3);
+        let frame = device.current_atlas_frame().unwrap();
+        assert!(frame < 8, "frame index stays in range");
+    }
+    assert_eq!(device.atlas_frames(), 8);
+}
