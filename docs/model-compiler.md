@@ -89,6 +89,15 @@ packed — and it is bounded by `max_frames`, `max_atlas_bytes` and the texture
 limit before any allocation. An unknown sprite size (0), empty motion set, or an
 atlas larger than the texture limit is rejected.
 
+## Pixel baking (`mdc-bake`)
+
+The model compiler plans; `mdc-bake` does the pixels. `decode_resize_rgb565`
+reads a PNG/JPEG header first (a bomb is refused before decode), resizes to the
+device target and emits RGB565 LE rows. `pack(plan, frames)` lays baked frames on
+an `AtlasPlan` grid; `bake_sprites` samples frames from source images, bakes each
+and packs one atlas plus a JSON `BakedManifest`. `mdc bake <image>... --out DIR`
+writes `atlas.ppm` (P6) and `atlas.json`.
+
 ## Optimizer
 
 `plan_optimization(model, caps)` produces an `OptimizerPlan`: per-texture

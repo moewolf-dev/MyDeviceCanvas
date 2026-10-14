@@ -2,6 +2,20 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.15] — Pixel baking + Scene batch (N49–N58)
+
+### Added
+
+- `mdc-bake` crate: PNG/JPEG decode + resize + RGB565 with a decode-bomb guard (N49)
+- `AtlasPacker` and `bake_sprites` producing a baked atlas + manifest (N50, N51)
+- `mdc bake` CLI writing `atlas.ppm` + `atlas.json` (N52)
+- Scene capability + `SCENE` (0x34) contract and spec (N53)
+- Structured scene set/clear in Core and the simulator (N54)
+- `mdc scene` CLI and Node `setScene`/`clearScene` (N55)
+- Electron configuration panel (N56)
+- `mdc inspect --watch` bounded live metrics (N57)
+- Bake soak test and docs (N58)
+
 ## [0.1.14] — Configuration host + provisioning batch (N39–N48)
 
 ### Added

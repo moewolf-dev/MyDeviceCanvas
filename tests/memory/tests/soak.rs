@@ -100,3 +100,45 @@ fn mirror_receiver_soak_is_bounded() {
     }
     assert!(receiver.stats().frames_published >= 1);
 }
+
+#[test]
+fn bake_soak_stays_bounded() {
+    use image::{Rgb, RgbImage};
+    use std::io::Cursor;
+
+    let image = RgbImage::from_pixel(8, 8, Rgb([200, 100, 50]));
+    let mut png = Vec::new();
+    image
+        .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let source = mdc_bake::SpriteSource {
+        name: "src".into(),
+        image: png,
+    };
+    let motion = mdc_model::MotionInfo {
+        name: "idle".into(),
+        channels: 1,
+        duration_sec: 0.1,
+        fps: 30.0,
+        fade_in_sec: 0.0,
+        fade_out_sec: 0.0,
+        looping: true,
+    };
+    let mut bytes = 0usize;
+    for _ in 0..200 {
+        let package = mdc_bake::bake_sprites(
+            std::slice::from_ref(&source),
+            std::slice::from_ref(&motion),
+            (8, 8),
+            2048,
+            &mdc_bake::BakeLimits::default(),
+        )
+        .unwrap();
+        if bytes == 0 {
+            bytes = package.atlas.rgb565.len();
+        }
+        assert_eq!(package.atlas.rgb565.len(), bytes, "atlas size is constant");
+        assert_eq!(package.manifest.atlas_bytes, bytes as u64);
+    }
+    assert!(bytes > 0);
+}

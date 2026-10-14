@@ -15,3 +15,5 @@ mdc-protocol = { path = "../../crates/mdc-protocol" }
 mdc-model = { path = "../../crates/mdc-model" }
 mdc-mirror = { path = "../../crates/mdc-mirror" }
 mdc-simulator = { path = "../../crates/mdc-simulator" }
+mdc-bake = { path = "../../crates/mdc-bake" }
+image = { version = "=0.24.9", default-features = false, features = ["png"] }

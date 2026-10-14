@@ -425,6 +425,8 @@ dependencies = [
 name = "mdc-memory-tests"
 version = "0.1.0"
 dependencies = [
+ "image",
+ "mdc-bake",
  "mdc-core",
  "mdc-mirror",
  "mdc-model",
