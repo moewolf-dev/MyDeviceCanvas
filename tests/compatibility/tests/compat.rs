@@ -432,3 +432,79 @@ fn animation_requires_a_baked_atlas_and_a_known_clip() {
     session.poll().unwrap();
     assert_eq!(session.active_animation(), Some("idle"));
 }
+
+// ---- N84: scene geometry fixtures ----
+
+#[test]
+fn non_rect_scene_kinds_are_recorded_but_not_rasterized() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_protocol::SceneNode;
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 4,
+        height: 4,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+    session
+        .set_scene(SceneNode {
+            name: "label".into(),
+            kind: "text".into(),
+            rect: Some([0, 0, 4, 4]),
+            children: Vec::new(),
+            value: Some("hi".into()),
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.has_scene());
+    assert!(!device.render_scene(), "text is not rasterized");
+    assert_eq!(
+        device.pixel_rgb565(0, 0),
+        Some(0x0000),
+        "framebuffer untouched"
+    );
+}
+
+#[test]
+fn out_of_bounds_rects_are_clipped_without_panicking() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_protocol::SceneNode;
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 4,
+        height: 4,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+    session
+        .set_scene(SceneNode {
+            name: "bg".into(),
+            kind: "rect".into(),
+            rect: Some([2, 2, 100, 100]),
+            children: Vec::new(),
+            value: Some("#FF0000".into()),
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.render_scene());
+    assert_eq!(
+        device.pixel_rgb565(2, 2),
+        Some(0xF800),
+        "in-bounds part drawn"
+    );
+    assert_eq!(
+        device.pixel_rgb565(0, 0),
+        Some(0x0000),
+        "outside stays clear"
+    );
+}
