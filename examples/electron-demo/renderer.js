@@ -76,3 +76,44 @@ document.querySelector("#dispose").onclick = async () => {
   }
   show(await bridge().dispose());
 };
+
+const mirrorCanvas = document.querySelector("#mirror");
+const mirrorStatus = document.querySelector("#mirror-status");
+
+function drawMirror(frame) {
+  const ctx = mirrorCanvas.getContext("2d");
+  mirrorCanvas.width = frame.width;
+  mirrorCanvas.height = frame.height;
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(frame.rgba), frame.width, frame.height), 0, 0);
+}
+
+async function pollMirror() {
+  if (!bridge() || typeof bridge().mirrorPoll !== "function") return;
+  const result = await bridge().mirrorPoll();
+  if (!result.ok) {
+    mirrorStatus.textContent = `mirror: ${result.error}`;
+    return;
+  }
+  mirrorStatus.textContent = result.status;
+  if (result.frame) drawMirror(result.frame);
+}
+
+document.querySelector("#mirror-start").onclick = async () => {
+  if (!bridge()) {
+    show("没有 preload，无法开始镜像。");
+    return;
+  }
+  show(await bridge().mirrorStart("main", 15));
+  bridge().onMirrorMeta?.(() => {
+    pollMirror();
+  });
+};
+
+document.querySelector("#mirror-stop").onclick = async () => {
+  if (!bridge()) {
+    show("没有 preload，无法停止镜像。");
+    return;
+  }
+  show(await bridge().mirrorStop("main"));
+  await pollMirror();
+};

@@ -75,6 +75,7 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Dirty-region mirror | sim-verified (capability-gated; patches the base frame, misaligned/earlier drops) | n/a |
 | Mirror event + stats | sim-verified (`ManagerEvent::Mirror` metadata + `mirror_stats()`, no polling) | n/a |
 | Node mirror surface | sim-verified (`onMirrorFrame`/`startMirror`/`takeMirrorFrame`, JS mock test) | n/a |
+| Electron mirror preview | sim-verified (`decodeMirrorFrame` + panel; `demo-logic.test.js`) | n/a |
 | Model compiler / MDC IR | sim-verified (`mdc-model`, glTF/GLB + Live2D → IR → package) | n/a |
 | Renderer capability on the wire | sim-verified (`Capabilities.renderer{}`, optional; Rust+C++ shared bytes) | physical: pending |
 | Runtime package transfer | sim-verified (`PACKAGE` 0x32 begin/chunk/commit; `install_package`→FakeDevice ready) | physical: pending |

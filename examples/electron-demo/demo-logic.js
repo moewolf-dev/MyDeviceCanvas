@@ -82,3 +82,35 @@ export function rgb565ToRgba(bytes, width, height) {
   }
   return data;
 }
+
+/**
+ * Decode a Form B mirror frame DTO (from `onMirrorFrame`/`takeMirrorFrame`) into
+ * an RGBA preview. Pure logic: no device or Electron access.
+ */
+export function decodeMirrorFrame(frame) {
+  if (!frame || !(frame.pixels instanceof Uint8Array)) {
+    throw new TypeError("mirror frame pixels must be a Uint8Array");
+  }
+  const { width, height } = frame;
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+    throw new TypeError("mirror geometry must be positive integers");
+  }
+  if (frame.pixels.length !== width * height * 2) {
+    throw new RangeError(
+      `mirror pixel length ${frame.pixels.length} != ${width}x${height} RGB565`,
+    );
+  }
+  return {
+    surfaceId: String(frame.surfaceId ?? "main"),
+    frameId: Number(frame.frameId ?? 0),
+    width,
+    height,
+    rgba: rgb565ToRgba(frame.pixels, width, height),
+  };
+}
+
+/** One-line status for the mirror panel; `null` stats read as unavailable. */
+export function mirrorPanelStatus(stats) {
+  if (!stats) return "mirror: n/a";
+  return `mirror: ${stats.framesReceived} frames, ${stats.framesDropped} dropped, last #${stats.lastFrameId}`;
+}

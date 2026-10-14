@@ -2,12 +2,20 @@ import { app, BrowserWindow, ipcMain } from "electron";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { MyDeviceCanvas } from "../../sdk/node/index.js";
-import { colorBarsRgb565, formatError, originTile, planConnection } from "./demo-logic.js";
+import {
+  colorBarsRgb565,
+  decodeMirrorFrame,
+  formatError,
+  mirrorPanelStatus,
+  originTile,
+  planConnection,
+} from "./demo-logic.js";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 let window;
 let manager;
 let endpoint = "";
+let mirrorSubscribed = false;
 
 function createWindow() {
   window = new BrowserWindow({
@@ -26,6 +34,12 @@ async function ensureSim() {
   manager ??= await MyDeviceCanvas.create();
   if (!manager.nativeLoaded()) {
     throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）。请先 cargo build -p mdc-node-native 并复制为 sdk/node/mdc-node-native.node");
+  }
+  if (!mirrorSubscribed && typeof manager.onMirrorFrame === "function") {
+    mirrorSubscribed = true;
+    manager.onMirrorFrame((info) => {
+      window?.webContents.send("mdc:mirror-meta", info);
+    });
   }
   return manager;
 }
@@ -96,9 +110,70 @@ ipcMain.handle("mdc:send-tile", async () => {
   }
 });
 
+ipcMain.handle("mdc:mirror-start", async (_event, surfaceId = "main", maxFps = 15) => {
+  try {
+    const active = await ensureSim();
+    const requestId = await active.startMirror(surfaceId, { mode: "full-frame", maxFps });
+    return { ok: true, requestId };
+  } catch (error) {
+    return { ok: false, error: formatError(error) };
+  }
+});
+
+ipcMain.handle("mdc:mirror-stop", async (_event, surfaceId = "main") => {
+  try {
+    const active = await ensureSim();
+    return { ok: true, requestId: await active.stopMirror(surfaceId) };
+  } catch (error) {
+    return { ok: false, error: formatError(error) };
+  }
+});
+
+/**
+ * Poll the device mirror: drain the manager events (which drives onMirrorFrame)
+ * and return the newest decoded frame plus a status line for the panel.
+ */
+ipcMain.handle("mdc:mirror-poll", async () => {
+  try {
+    const active = await ensureSim();
+    await active.pollEvents();
+    if (typeof active.emitMirrorFrame === "function") {
+      try {
+        await active.emitMirrorFrame();
+        await active.pollEvents();
+      } catch {
+        // A Form A / TCP device has no local emitter; the frame simply stays.
+      }
+    }
+    const frame = await active.takeMirrorFrame();
+    const stats = await active.mirrorStats();
+    let preview = null;
+    if (frame) {
+      const decoded = decodeMirrorFrame({
+        surfaceId: frame.surfaceId,
+        frameId: frame.frameId,
+        width: frame.width,
+        height: frame.height,
+        pixels: new Uint8Array(frame.pixels),
+      });
+      preview = {
+        width: decoded.width,
+        height: decoded.height,
+        frameId: decoded.frameId,
+        surfaceId: decoded.surfaceId,
+        rgba: Array.from(decoded.rgba),
+      };
+    }
+    return { ok: true, frame: preview, status: mirrorPanelStatus(stats), stats };
+  } catch (error) {
+    return { ok: false, error: formatError(error) };
+  }
+});
+
 ipcMain.handle("mdc:dispose", () => {
   manager?.dispose();
   manager = undefined;
+  mirrorSubscribed = false;
   endpoint = "";
   return { ok: true };
 });

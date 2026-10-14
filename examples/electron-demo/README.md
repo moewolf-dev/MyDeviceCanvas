@@ -2,7 +2,9 @@
 
 Device access stays in the main process. The page only receives DTOs and errors through the preload bridge.
 
-Buttons: connect simulator, connect an explicit endpoint, refresh devices, send RGB565 color bars, send a 1×1 tile, dispose. A non-`sim` endpoint is rejected and does not open a serial port. Color bars are also drawn locally so the page can be checked without Electron.
+Buttons: connect simulator, connect an explicit endpoint, refresh devices, send RGB565 color bars, send a 1×1 tile, start/stop Form B mirror, dispose. A non-`sim` endpoint is rejected and does not open a serial port. Color bars are also drawn locally so the page can be checked without Electron.
+
+The mirror panel subscribes to the public `onMirrorFrame` event, polls the device for the newest mirrored frame, and draws it on a canvas via `decodeMirrorFrame` (RGB565→RGBA). It is a preview consumer only; no OBS dependency is linked.
 
 ```sh
 node --test demo-logic.test.js

@@ -23,10 +23,16 @@
     <button id="refresh" type="button">刷新设备</button>
     <button id="bars" type="button">发送色条</button>
     <button id="tile" type="button">发送 Tile</button>
+    <button id="mirror-start" type="button">开始镜像</button>
+    <button id="mirror-stop" type="button">停止镜像</button>
     <button id="dispose" type="button">释放</button>
   </div>
   <div class="row">
     <canvas id="preview" width="240" height="120"></canvas>
+    <div>
+      <canvas id="mirror" width="240" height="120"></canvas>
+      <p id="mirror-status">mirror: n/a</p>
+    </div>
     <pre id="output">尚未连接。</pre>
   </div>
   <script type="module" src="./renderer.js"></script>

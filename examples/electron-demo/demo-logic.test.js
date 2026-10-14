@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { colorBarsRgb565, formatError, originTile, planConnection, rejectNonSimEndpoint } from "./demo-logic.js";
+import { colorBarsRgb565, decodeMirrorFrame, formatError, mirrorPanelStatus, originTile, planConnection, rejectNonSimEndpoint } from "./demo-logic.js";
 
 test("color bars are RGB565 little-endian and start with red", () => {
   const frame = colorBarsRgb565(8, 1);
@@ -39,4 +39,25 @@ test("tcp plan forwards the address and serial plans open no port", () => {
 
 test("formatError prefers Error.message", () => {
   assert.equal(formatError(new Error("未连接")), "未连接");
+});
+
+test("decodeMirrorFrame expands RGB565 and validates length", () => {
+  const pixels = colorBarsRgb565(2, 1);
+  const decoded = decodeMirrorFrame({ surfaceId: "main", frameId: 5, width: 2, height: 1, pixels });
+  assert.equal(decoded.rgba.length, 2 * 1 * 4);
+  assert.ok(decoded.rgba[0] > 200, "first bar is red");
+  assert.equal(decoded.frameId, 5);
+  assert.throws(
+    () => decodeMirrorFrame({ width: 2, height: 1, pixels: new Uint8Array(2) }),
+    /length/,
+  );
+  assert.throws(() => decodeMirrorFrame({ width: 0, height: 1, pixels: new Uint8Array(0) }), /positive/);
+});
+
+test("mirrorPanelStatus summarizes counters or reports n/a", () => {
+  assert.match(
+    mirrorPanelStatus({ framesReceived: 3, framesDropped: 1, lastFrameId: 9 }),
+    /3 frames/,
+  );
+  assert.equal(mirrorPanelStatus(null), "mirror: n/a");
 });
