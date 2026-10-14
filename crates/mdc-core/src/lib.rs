@@ -1382,6 +1382,21 @@ impl<T: Transport> Session<T> {
         &self.config_cache
     }
 
+    /// N73: play a baked-atlas clip on the device (via the `animation` setting).
+    pub fn set_animation(&mut self, clip: &str) -> Result<u32, CoreError> {
+        self.set_config("animation", clip)
+    }
+
+    /// N73: stop the device-side animation.
+    pub fn stop_animation(&mut self) -> Result<u32, CoreError> {
+        self.set_config("animation", "off")
+    }
+
+    /// N73: the clip the device reported as active, if any.
+    pub fn active_animation(&self) -> Option<&str> {
+        self.config("animation").filter(|value| *value != "off")
+    }
+
     fn config_gate(&self, key: &str) -> Result<(), CoreError> {
         if self.state != ConnectionState::Ready {
             return Err(CoreError::NotReady);
@@ -2163,6 +2178,64 @@ mod tests {
         .unwrap();
         session.poll().unwrap();
         assert_eq!(session.config("brightness"), Some("200"));
+    }
+
+    #[test]
+    fn animation_helpers_drive_the_device_config() {
+        let (host, mut dev) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        let hello = Packet::decode(&dev.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        let mut capability = caps();
+        capability.config = mdc_protocol::ConfigCapability::new(&["animation"]);
+        write_caps(&mut dev, hello.request_id, &capability);
+        session.poll().unwrap();
+
+        session.set_animation("idle").unwrap();
+        dev.write(
+            &Packet {
+                version: VERSION,
+                kind: MessageType::Config,
+                flags: 0,
+                request_id: 0,
+                payload: encode_control(&ConfigReply {
+                    key: "animation".into(),
+                    ok: true,
+                    value: Some("idle".into()),
+                    error: None,
+                })
+                .unwrap(),
+            }
+            .encode(4096)
+            .unwrap(),
+        )
+        .unwrap();
+        session.poll().unwrap();
+        assert_eq!(session.active_animation(), Some("idle"));
+
+        session.stop_animation().unwrap();
+        dev.write(
+            &Packet {
+                version: VERSION,
+                kind: MessageType::Config,
+                flags: 0,
+                request_id: 0,
+                payload: encode_control(&ConfigReply {
+                    key: "animation".into(),
+                    ok: true,
+                    value: Some("off".into()),
+                    error: None,
+                })
+                .unwrap(),
+            }
+            .encode(4096)
+            .unwrap(),
+        )
+        .unwrap();
+        session.poll().unwrap();
+        assert_eq!(session.active_animation(), None);
     }
 
     fn frame(bytes: &[u8]) -> Frame {
