@@ -2,6 +2,20 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.12] — Form B end-to-end batch (N19–N28)
+
+### Added
+
+- `MdcPackage` versioned runtime package container with integrity + capability gate (N19, N20)
+- `PackageAssembler` bounded chunked upload (N21)
+- `PACKAGE` protocol message (0x32) begin/chunk/commit with a shared vector (N22)
+- `mdc-core install_package` gated on the device renderer; FakeDevice accepts it and reports ready (N23)
+- `ManagerEvent::Mirror` metadata event and `mirror_stats()` (N24)
+- Node SDK `onMirrorFrame`/`startMirror`/`stopMirror`/`takeMirrorFrame`/`mirrorStats` (N25)
+- Electron mirror preview panel (N26)
+- Board profile `renderer` section + generated header macros (N27)
+- `mdc inspect` reports mirror + renderer capability (N28)
+
 ## [0.1.11] — Model compiler, mirror and capability batch (N09–N18)
 
 ### Added

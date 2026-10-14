@@ -40,6 +40,30 @@ struct DeviceDto {
     firmware: String,
     surfaces: Vec<SurfaceDto>,
     state: String,
+    /// Form B (N28): mirror + renderer capability so the inspector shows what
+    /// the device can do without draining the mirror inbox.
+    mirror: MirrorDto,
+    renderer: Option<RendererDto>,
+}
+
+#[derive(Serialize)]
+struct MirrorDto {
+    supported: bool,
+    modes: Vec<String>,
+    max_fps: u16,
+    mirror_fps: u16,
+    local_display_fps: u16,
+    bandwidth: u64,
+}
+
+#[derive(Serialize)]
+struct RendererDto {
+    sprite_2d: bool,
+    mesh2d: bool,
+    mesh3d: bool,
+    skeleton: bool,
+    max_texture: u32,
+    max_vertices: u32,
 }
 
 #[derive(Serialize)]
@@ -139,6 +163,22 @@ fn devices_json(manager: &DeviceManager) -> String {
                     rotation: s.rotation,
                 })
                 .collect(),
+            mirror: MirrorDto {
+                supported: d.capabilities.mirror.supports(),
+                modes: d.capabilities.mirror.mode.clone(),
+                max_fps: d.capabilities.mirror.max_fps,
+                mirror_fps: d.capabilities.mirror_fps,
+                local_display_fps: d.capabilities.local_display_fps,
+                bandwidth: d.capabilities.mirror_bandwidth,
+            },
+            renderer: d.capabilities.renderer.as_ref().map(|r| RendererDto {
+                sprite_2d: r.sprite_2d,
+                mesh2d: r.mesh2d,
+                mesh3d: r.mesh3d,
+                skeleton: r.skeleton,
+                max_texture: r.max_texture,
+                max_vertices: r.max_vertices,
+            }),
         })
         .collect();
     serde_json::to_string_pretty(&list).unwrap_or_else(|_| "[]".into())
@@ -172,6 +212,22 @@ fn inspect_json(manager: &DeviceManager, metrics: Option<&SimMetrics>) -> String
                     rotation: s.rotation,
                 })
                 .collect(),
+            mirror: MirrorDto {
+                supported: d.capabilities.mirror.supports(),
+                modes: d.capabilities.mirror.mode.clone(),
+                max_fps: d.capabilities.mirror.max_fps,
+                mirror_fps: d.capabilities.mirror_fps,
+                local_display_fps: d.capabilities.local_display_fps,
+                bandwidth: d.capabilities.mirror_bandwidth,
+            },
+            renderer: d.capabilities.renderer.as_ref().map(|r| RendererDto {
+                sprite_2d: r.sprite_2d,
+                mesh2d: r.mesh2d,
+                mesh3d: r.mesh3d,
+                skeleton: r.skeleton,
+                max_texture: r.max_texture,
+                max_vertices: r.max_vertices,
+            }),
         })
         .collect();
     serde_json::to_string_pretty(&Inspect {
@@ -2048,6 +2104,17 @@ mod tests {
         assert!(!json.contains("\"pixels\""));
         assert!(json.len() < 4096);
         assert_eq!(bound_message(&"x".repeat(10_000)).chars().count(), 161);
+    }
+
+    #[test]
+    fn inspect_reports_mirror_and_renderer_capability() {
+        let (_session, _device, manager) = open_sim("linux-virt").unwrap();
+        let json = inspect_json(&manager.lock().unwrap(), None);
+        assert!(json.contains("\"renderer\""));
+        assert!(json.contains("\"mesh2d\": true"));
+        assert!(json.contains("\"mirror\""));
+        assert!(json.contains("\"supported\": true"));
+        assert!(!json.contains("\"pixels\""));
     }
 
     #[cfg(feature = "websocket")]
