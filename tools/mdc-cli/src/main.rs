@@ -327,7 +327,46 @@ fn cmd_devices(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
     })
 }
 
-fn cmd_inspect(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    // N57: bounded live stream (`--watch --count N --interval MS`).
+    let mut watch = false;
+    let mut count: u32 = 3;
+    let mut interval_ms: u64 = 200;
+    let mut iter = extra.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--watch" => watch = true,
+            "--count" => count = iter.next().and_then(|v| v.parse().ok()).unwrap_or(count),
+            "--interval" => {
+                interval_ms = iter
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(interval_ms)
+            }
+            _ => {}
+        }
+    }
+    if watch {
+        let (mut session, mut device, manager) = open_sim(&opts.board)?;
+        for tick in 0..count {
+            let _ = session.poll();
+            let _ = device.poll();
+            let snapshot = device.metrics_snapshot();
+            let mgr = manager.lock().map_err(|e| e.to_string())?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "tick": tick,
+                    "board": opts.board,
+                    "config": inspect_json(&mgr, Some(&snapshot)),
+                })
+            );
+            if tick + 1 < count {
+                std::thread::sleep(std::time::Duration::from_millis(interval_ms));
+            }
+        }
+        return Ok(());
+    }
     with_sim_or_empty(opts, |mgr, metrics| {
         println!("{}", inspect_json(mgr, metrics));
         Ok(())
@@ -1843,7 +1882,7 @@ flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <t
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--serve ADDR]|\
 package <model.gltf> [out.mdcpkg]|install-package <file.mdcpkg>|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] --out DIR|\
-scene <file.json>|scene clear"
+scene <file.json>|scene clear|inspect [--watch --count N --interval MS]"
     );
 }
 
@@ -1865,7 +1904,7 @@ fn main() {
             if opts.sim || opts.address.is_none() {
                 o.sim = true;
             }
-            cmd_inspect(&o)
+            cmd_inspect(&o, &args[1..])
         }
         Some("send-image") => {
             let path = args.get(1).cloned().unwrap_or_default();
@@ -2459,6 +2498,24 @@ mod tests {
         assert!(json.contains("\"mirror\""));
         assert!(json.contains("\"supported\": true"));
         assert!(!json.contains("\"pixels\""));
+    }
+
+    #[test]
+    fn inspect_watch_streams_a_bounded_number_of_snapshots() {
+        let opts = GlobalOpts {
+            sim: true,
+            address: None,
+            port: None,
+            board: "linux-virt".into(),
+        };
+        let args = vec![
+            "--watch".to_string(),
+            "--count".to_string(),
+            "2".to_string(),
+            "--interval".to_string(),
+            "0".to_string(),
+        ];
+        cmd_inspect(&opts, &args).unwrap();
     }
 
     #[cfg(feature = "websocket")]
