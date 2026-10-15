@@ -508,3 +508,101 @@ fn out_of_bounds_rects_are_clipped_without_panicking() {
         "outside stays clear"
     );
 }
+
+#[test]
+fn textured_skinned_bake_reaches_a_sim_device() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_model::{Animation, AnimationTrack, Mesh, Model, Node, Skeleton};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let mesh = Mesh {
+        name: "tri".into(),
+        vertices: 3,
+        indices: 0,
+        material: None,
+        preview_positions: vec![[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [0.0, 0.5, 0.0]],
+        skin_joints: vec![[1, 0, 0, 0], [1, 0, 0, 0], [1, 0, 0, 0]],
+        skin_weights: vec![
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+        ],
+        preview_uv: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+        ..Mesh::default()
+    };
+    let identity = [
+        1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    let skeleton = Skeleton {
+        name: "rig".into(),
+        bones: 2,
+        joint_nodes: vec![0, 1],
+        inverse_bind: vec![identity, identity],
+    };
+    let quarter = std::f32::consts::FRAC_1_SQRT_2;
+    let animation = Animation {
+        name: "spin".into(),
+        channels: 1,
+        tracks: vec![AnimationTrack {
+            node: 1,
+            path: "rotation".into(),
+            interpolation: "LINEAR".into(),
+            times: vec![0.0, 1.0],
+            values: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, quarter, quarter],
+        }],
+    };
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![
+            Node {
+                name: "root".into(),
+                children: vec![1],
+                ..Node::default()
+            },
+            Node {
+                name: "j1".into(),
+                mesh: Some(0),
+                ..Node::default()
+            },
+        ],
+        meshes: vec![mesh],
+        skeletons: vec![skeleton],
+        animations: vec![animation],
+        ..Model::default()
+    };
+    let texture = mdc_bake::TextureMap::from_rgb565(2, 1, vec![0x00, 0xF8, 0xE0, 0x07]).unwrap();
+    let package =
+        mdc_bake::bake_textured_to_package(&model, 0, 3, (8, 8), Some(&texture), 0x001F).unwrap();
+    assert!(package
+        .accepted_by(&mdc_model::RendererCapability::sprite_only())
+        .is_ok());
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 8,
+        height: 8,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .install_package(&package.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(
+        device.package_ready(),
+        "device accepted the textured package"
+    );
+}
+
+#[test]
+fn textured_bake_refuses_an_over_budget_texture() {
+    // The texture map and the bake both enforce a size budget; a mismatched
+    // buffer is rejected rather than silently truncated.
+    assert!(matches!(
+        mdc_bake::TextureMap::from_rgb565(4, 4, vec![0u8; 8]),
+        Err(mdc_bake::BakeError::Budget(_, _))
+    ));
+}

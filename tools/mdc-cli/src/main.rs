@@ -591,8 +591,9 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// N112: bake a skinned model's poses into sprite frames (or a runtime package)
-/// using linear blend skinning from the model's skin + animation.
+/// N112/N117: bake a skinned model's poses into sprite frames (or a runtime
+/// package) using linear blend skinning. `--texture <png>` samples the mesh UVs
+/// from a texture instead of filling a solid colour.
 fn cmd_bake_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut model_path: Option<String> = None;
     let mut frames: u32 = 8;
@@ -600,6 +601,7 @@ fn cmd_bake_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut animation: usize = 0;
     let mut out_dir = String::from(".");
     let mut package_path: Option<String> = None;
+    let mut texture_path: Option<String> = None;
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -613,15 +615,32 @@ fn cmd_bake_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             }
             "--out" => out_dir = iter.next().cloned().unwrap_or(out_dir),
             "--package" => package_path = iter.next().cloned(),
+            "--texture" => texture_path = iter.next().cloned(),
             other => model_path = Some(other.to_string()),
         }
     }
     let model_path = model_path.ok_or("bake-mesh requires a .gltf/.glb model")?;
     let bytes = std::fs::read(&model_path)?;
     let model = mdc_model::GltfImporter.import(&bytes, &mdc_model::ImportLimits::default())?;
+    let has_uv = model.meshes.iter().any(|m| !m.preview_uv.is_empty());
+    let texture = match &texture_path {
+        Some(path) => {
+            let image = std::fs::read(path)?;
+            let baked = mdc_bake::decode_rgb565_native(&image, &mdc_bake::BakeLimits::default())?;
+            Some(mdc_bake::TextureMap::from_baked(&baked)?)
+        }
+        None => None,
+    };
+    let textured = texture.is_some() && has_uv;
     if let Some(path) = &package_path {
-        let sealed =
-            mdc_bake::bake_skinned_to_package(&model, animation, frames, (sprite, sprite), 0xF800)?;
+        let sealed = mdc_bake::bake_textured_to_package(
+            &model,
+            animation,
+            frames,
+            (sprite, sprite),
+            if textured { texture.as_ref() } else { None },
+            0xF800,
+        )?;
         let package_bytes = sealed.to_bytes().map_err(|e| format!("package: {e}"))?;
         std::fs::write(path, &package_bytes)?;
         println!(
@@ -630,13 +649,22 @@ fn cmd_bake_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 "source": model_path,
                 "frames": frames,
                 "mode": sealed.manifest.mode,
+                "skinned": true,
+                "textured": textured,
                 "package_path": path,
                 "package_bytes": package_bytes.len(),
             }))?
         );
         return Ok(());
     }
-    let baked = mdc_bake::bake_skinned_mesh(&model, animation, frames, (sprite, sprite), 0xF800)?;
+    let baked = mdc_bake::bake_textured_mesh(
+        &model,
+        animation,
+        frames,
+        (sprite, sprite),
+        if textured { texture.as_ref() } else { None },
+        0xF800,
+    )?;
     std::fs::create_dir_all(&out_dir)?;
     let mut written = Vec::new();
     for (index, frame) in baked.iter().enumerate() {
@@ -653,6 +681,8 @@ fn cmd_bake_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "source": model_path,
             "frames": baked.len(),
             "sprite": format!("{sprite}x{sprite}"),
+            "skinned": true,
+            "textured": textured,
             "files": written,
         }))?
     );
@@ -2065,7 +2095,7 @@ flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <t
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--serve ADDR]|\
 package <model.gltf> [out.mdcpkg]|install-package <file.mdcpkg>|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
-bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--out DIR] [--package OUT.mdcpkg]|\
+bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|raster-demo|preview-mesh|inspect [--watch --count N --interval MS]"
     );
 }
@@ -3021,6 +3051,10 @@ mod tests {
         for v in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, quarter, quarter] {
             bin.extend_from_slice(&v.to_le_bytes());
         }
+        for (u, v) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0)] {
+            bin.extend_from_slice(&u.to_le_bytes());
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
         let doc = serde_json::json!({
             "asset": {"version": "2.0"},
             "buffers": [{"byteLength": bin.len()}],
@@ -3030,7 +3064,8 @@ mod tests {
                 {"buffer": 0, "byteOffset": 60, "byteLength": 48},
                 {"buffer": 0, "byteOffset": 108, "byteLength": 128},
                 {"buffer": 0, "byteOffset": 236, "byteLength": 8},
-                {"buffer": 0, "byteOffset": 244, "byteLength": 32}
+                {"buffer": 0, "byteOffset": 244, "byteLength": 32},
+                {"buffer": 0, "byteOffset": 276, "byteLength": 24}
             ],
             "accessors": [
                 {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
@@ -3038,9 +3073,10 @@ mod tests {
                 {"bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC4"},
                 {"bufferView": 3, "componentType": 5126, "count": 2, "type": "MAT4"},
                 {"bufferView": 4, "componentType": 5126, "count": 2, "type": "SCALAR"},
-                {"bufferView": 5, "componentType": 5126, "count": 2, "type": "VEC4"}
+                {"bufferView": 5, "componentType": 5126, "count": 2, "type": "VEC4"},
+                {"bufferView": 6, "componentType": 5126, "count": 3, "type": "VEC2"}
             ],
-            "meshes": [{"name": "body", "primitives": [{"attributes": {"POSITION": 0, "JOINTS_0": 1, "WEIGHTS_0": 2}}]}],
+            "meshes": [{"name": "body", "primitives": [{"attributes": {"POSITION": 0, "JOINTS_0": 1, "WEIGHTS_0": 2, "TEXCOORD_0": 6}}]}],
             "nodes": [
                 {"name": "root", "mesh": 0, "children": [1]},
                 {"name": "joint"}
@@ -3077,6 +3113,11 @@ mod tests {
         let model_path = dir.join("rig.glb");
         std::fs::write(&model_path, skinned_glb()).unwrap();
 
+        let texture_path = dir.join("tex.png");
+        image::RgbImage::from_pixel(2, 2, image::Rgb([200, 40, 40]))
+            .save(&texture_path)
+            .unwrap();
+
         let out_dir = dir.join("frames");
         cmd_bake_mesh(&[
             model_path.to_string_lossy().into_owned(),
@@ -3084,6 +3125,8 @@ mod tests {
             "4".to_string(),
             "--sprite".to_string(),
             "16".to_string(),
+            "--texture".to_string(),
+            texture_path.to_string_lossy().into_owned(),
             "--out".to_string(),
             out_dir.to_string_lossy().into_owned(),
         ])

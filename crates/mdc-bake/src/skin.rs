@@ -330,7 +330,7 @@ pub fn skin_preview(mesh: &Mesh, skeleton: &Skeleton, worlds: &[Mat4]) -> Vec<[f
 }
 
 /// Project a local point into `[0, width-1] × [0, height-1]`.
-fn project(point: [f32; 3], width: u32, height: u32) -> (i16, i16) {
+pub(crate) fn project(point: [f32; 3], width: u32, height: u32) -> (i16, i16) {
     let px = ((point[0] + 1.0) * 0.5 * (width.saturating_sub(1)) as f32)
         .round()
         .clamp(0.0, width.saturating_sub(1) as f32) as i16;
@@ -340,15 +340,17 @@ fn project(point: [f32; 3], width: u32, height: u32) -> (i16, i16) {
     (px, py)
 }
 
-/// N111: bake `frames` poses of the first skinned mesh in `model`, sampled from
-/// `animation_index` across its time span. At most 64 frames.
-pub fn bake_skinned_mesh(
+/// Projected preview points, one list per frame.
+type PointFrames = Vec<Vec<(i16, i16)>>;
+
+/// Resolve the skinned mesh, its skeleton and an animation, then project each
+/// preview vertex once per frame. Shared by the solid and textured bakers.
+fn skinned_point_frames(
     model: &Model,
     animation_index: usize,
     frames: u32,
     sprite: (u32, u32),
-    color: u16,
-) -> Result<Vec<BakedTexture>, BakeError> {
+) -> Result<(PointFrames, &Mesh), BakeError> {
     if frames == 0 || frames > 64 {
         return Err(BakeError::FrameCount(frames as usize, 64));
     }
@@ -370,7 +372,7 @@ pub fn bake_skinned_mesh(
         .get(animation_index)
         .ok_or_else(|| BakeError::Decode(format!("animation {animation_index} missing")))?;
     let (start, end) = animation_span(animation);
-    let mut baked = Vec::with_capacity(frames as usize);
+    let mut out = Vec::with_capacity(frames as usize);
     for frame in 0..frames {
         let time = if frames > 1 {
             start + (end - start) * (frame as f32) / ((frames - 1) as f32)
@@ -379,10 +381,28 @@ pub fn bake_skinned_mesh(
         };
         let worlds = pose_world_matrices(&model.nodes, animation, time);
         let skinned = skin_preview(mesh, skeleton, &worlds);
-        let points: Vec<(i16, i16)> = skinned
-            .iter()
-            .map(|p| project(*p, sprite.0, sprite.1))
-            .collect();
+        out.push(
+            skinned
+                .iter()
+                .map(|p| project(*p, sprite.0, sprite.1))
+                .collect(),
+        );
+    }
+    Ok((out, mesh))
+}
+
+/// N111: bake `frames` poses of the first skinned mesh in `model`, sampled from
+/// `animation_index` across its time span. At most 64 frames. Solid colour.
+pub fn bake_skinned_mesh(
+    model: &Model,
+    animation_index: usize,
+    frames: u32,
+    sprite: (u32, u32),
+    color: u16,
+) -> Result<Vec<BakedTexture>, BakeError> {
+    let (per_frame, mesh) = skinned_point_frames(model, animation_index, frames, sprite)?;
+    let mut baked = Vec::with_capacity(per_frame.len());
+    for points in per_frame {
         let rgb565 = raster_points(&points, &mesh.preview_indices, sprite.0, sprite.1, color)?;
         baked.push(BakedTexture {
             width: sprite.0,
@@ -393,16 +413,49 @@ pub fn bake_skinned_mesh(
     Ok(baked)
 }
 
-/// N112: bake skinned frames straight into a runtime `BakedSprites` package so a
-/// device can receive the poses over the `PACKAGE` path.
-pub fn bake_skinned_to_package(
+/// N115: bake skinned poses with the mesh's UVs sampled from `texture`. A mesh
+/// with no UVs (or `texture` `None`) falls back to the solid `color`.
+pub fn bake_textured_mesh(
     model: &Model,
     animation_index: usize,
     frames: u32,
     sprite: (u32, u32),
+    texture: Option<&crate::TextureMap>,
     color: u16,
+) -> Result<Vec<BakedTexture>, BakeError> {
+    let (per_frame, mesh) = skinned_point_frames(model, animation_index, frames, sprite)?;
+    let uvs: Option<&[[f32; 2]]> =
+        if mesh.preview_uv.len() >= mesh.preview_positions.len() && !mesh.preview_uv.is_empty() {
+            Some(&mesh.preview_uv)
+        } else {
+            None
+        };
+    let mut baked = Vec::with_capacity(per_frame.len());
+    for points in per_frame {
+        let rgb565 = crate::texture::raster_textured(
+            &points,
+            uvs,
+            &mesh.preview_indices,
+            sprite.0,
+            sprite.1,
+            texture,
+            color,
+        )?;
+        baked.push(BakedTexture {
+            width: sprite.0,
+            height: sprite.1,
+            rgb565,
+        });
+    }
+    Ok(baked)
+}
+
+/// Pack baked frames into a single-clip `BakedSprites` runtime package.
+fn frames_to_package(
+    baked: Vec<BakedTexture>,
+    frames: u32,
+    sprite: (u32, u32),
 ) -> Result<mdc_model::MdcPackage, BakeError> {
-    let baked = bake_skinned_mesh(model, animation_index, frames, sprite, color)?;
     let columns = (frames as f64).sqrt().ceil().max(1.0) as u32;
     let rows = frames.div_ceil(columns);
     let plan = mdc_model::AtlasPlan {
@@ -452,6 +505,32 @@ pub fn bake_skinned_to_package(
     mdc_model::MdcPackage::seal(package).map_err(|e| BakeError::Package(e.to_string()))
 }
 
+/// N112: bake solid skinned frames straight into a runtime `BakedSprites`
+/// package so a device can receive the poses over the `PACKAGE` path.
+pub fn bake_skinned_to_package(
+    model: &Model,
+    animation_index: usize,
+    frames: u32,
+    sprite: (u32, u32),
+    color: u16,
+) -> Result<mdc_model::MdcPackage, BakeError> {
+    let baked = bake_skinned_mesh(model, animation_index, frames, sprite, color)?;
+    frames_to_package(baked, frames, sprite)
+}
+
+/// N116: bake textured skinned frames into a runtime `BakedSprites` package.
+pub fn bake_textured_to_package(
+    model: &Model,
+    animation_index: usize,
+    frames: u32,
+    sprite: (u32, u32),
+    texture: Option<&crate::TextureMap>,
+    color: u16,
+) -> Result<mdc_model::MdcPackage, BakeError> {
+    let baked = bake_textured_mesh(model, animation_index, frames, sprite, texture, color)?;
+    frames_to_package(baked, frames, sprite)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,6 +559,7 @@ mod tests {
                 [1.0, 0.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0, 0.0],
             ],
+            preview_uv: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
             ..Mesh::default()
         };
         let skeleton = Skeleton {
@@ -579,6 +659,40 @@ mod tests {
         assert!(back
             .accepted_by(&mdc_model::RendererCapability::sprite_only())
             .is_ok());
+    }
+
+    #[test]
+    fn textured_bake_samples_the_texture_not_the_fallback() {
+        let model = skinned_model();
+        // 2×1 texture: left red, right green.
+        let texture = crate::TextureMap::from_rgb565(2, 1, vec![0x00, 0xF8, 0xE0, 0x07]).unwrap();
+        let frames = bake_textured_mesh(&model, 0, 1, (16, 16), Some(&texture), 0x001F).unwrap();
+        let frame = &frames[0];
+        assert_eq!(frame.rgb565.len(), 16 * 16 * 2);
+        // UV (0,0) lands on the origin texel: red. The blue fallback never shows.
+        let at = |x: usize, y: usize| {
+            u16::from_le_bytes([
+                frame.rgb565[(y * 16 + x) * 2],
+                frame.rgb565[(y * 16 + x) * 2 + 1],
+            ])
+        };
+        assert_eq!(at(8, 8), 0xF800);
+        assert!(frame
+            .rgb565
+            .chunks_exact(2)
+            .all(|px| u16::from_le_bytes([px[0], px[1]]) != 0x001F));
+    }
+
+    #[test]
+    fn textured_bake_to_package_round_trips() {
+        let model = skinned_model();
+        let texture = crate::TextureMap::from_rgb565(2, 1, vec![0x00, 0xF8, 0xE0, 0x07]).unwrap();
+        let package =
+            bake_textured_to_package(&model, 0, 3, (16, 16), Some(&texture), 0x001F).unwrap();
+        assert_eq!(package.manifest.mode, mdc_model::PackageMode::BakedSprites);
+        let bytes = package.to_bytes().unwrap();
+        let back = mdc_model::MdcPackage::from_bytes(&bytes).unwrap();
+        assert_eq!(back, package);
     }
 
     #[test]

@@ -11,4 +11,5 @@ mdc-protocol = { path = "../../crates/mdc-protocol" }
 mdc-transport = { path = "../../crates/mdc-transport" }
 mdc-simulator = { path = "../../crates/mdc-simulator" }
 mdc-model = { path = "../../crates/mdc-model" }
+mdc-bake = { path = "../../crates/mdc-bake" }
 mdc-mirror = { path = "../../crates/mdc-mirror" }

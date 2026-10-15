@@ -14,10 +14,13 @@ use std::io::Cursor;
 use thiserror::Error;
 
 mod skin;
+mod texture;
 pub use skin::{
-    animation_span, bake_skinned_mesh, bake_skinned_to_package, mat4_from_trs, mat4_identity,
-    mat4_mul, node_world_matrices, pose_world_matrices, skin_preview, transform_point, Mat4,
+    animation_span, bake_skinned_mesh, bake_skinned_to_package, bake_textured_mesh,
+    bake_textured_to_package, mat4_from_trs, mat4_identity, mat4_mul, node_world_matrices,
+    pose_world_matrices, skin_preview, transform_point, Mat4,
 };
+pub use texture::TextureMap;
 
 /// Largest source file accepted (8 MiB) before decoding.
 pub const MAX_BAKE_INPUT_BYTES: usize = 8 * 1024 * 1024;
@@ -114,6 +117,23 @@ pub fn decode_resize_rgb565(
         height: target.1,
         rgb565,
     })
+}
+
+/// Decode a PNG/JPEG at its native dimensions into RGB565 rows. Used to load a
+/// texture map for the textured bake.
+pub fn decode_rgb565_native(bytes: &[u8], limits: &BakeLimits) -> Result<BakedTexture, BakeError> {
+    if bytes.len() > limits.max_input_bytes {
+        return Err(BakeError::InputTooLarge(
+            bytes.len(),
+            limits.max_input_bytes,
+        ));
+    }
+    let (width, height) = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| BakeError::Decode(e.to_string()))?
+        .into_dimensions()
+        .map_err(|e| BakeError::Decode(e.to_string()))?;
+    decode_resize_rgb565(bytes, (width, height), limits)
 }
 
 /// Pack one RGB888 pixel into RGB565.

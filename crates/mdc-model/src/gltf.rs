@@ -158,6 +158,7 @@ impl GltfImporter {
             let mut preview_positions: Vec<[f32; 3]> = Vec::new();
             let mut skin_joints: Vec<[u16; 4]> = Vec::new();
             let mut skin_weights: Vec<[f32; 4]> = Vec::new();
+            let mut preview_uv: Vec<[f32; 2]> = Vec::new();
             if let Some(primitives) = mesh.get("primitives").and_then(Value::as_array) {
                 for primitive in primitives {
                     let attributes = primitive.get("attributes");
@@ -208,6 +209,20 @@ impl GltfImporter {
                             }
                         }
                     }
+                    if let Some(uv_accessor) = attributes
+                        .and_then(|a| a.get("TEXCOORD_0"))
+                        .and_then(Value::as_u64)
+                    {
+                        if preview_uv.is_empty() {
+                            if let Some(accessor) = accessors.get(uv_accessor as usize) {
+                                let bytes = accessor
+                                    .get("bufferView")
+                                    .and_then(Value::as_u64)
+                                    .and_then(&view_bytes);
+                                preview_uv = decode_uv(accessor, bytes);
+                            }
+                        }
+                    }
                     if let Some(index) = primitive.get("indices").and_then(Value::as_u64) {
                         indices = indices
                             .saturating_add(accessor_count(index)?.min(u64::from(u32::MAX)) as u32);
@@ -236,6 +251,7 @@ impl GltfImporter {
                 preview_positions,
                 skin_joints,
                 skin_weights,
+                preview_uv,
             });
         }
         if meshes.iter().map(|m| u64::from(m.vertices)).sum::<u64>() > limits.max_vertices {
@@ -686,6 +702,56 @@ fn decode_weights(accessor: &Value, bytes: Option<&[u8]>) -> Vec<[f32; 4]> {
                 }
                 out.push(weights);
                 offset += 8;
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// N113: TEXCOORD_0 (VEC2 f32, or normalized u8/u16) per preview vertex.
+/// glTF UVs use the top-left origin; the baker maps `v` to image rows directly.
+fn decode_uv(accessor: &Value, bytes: Option<&[u8]>) -> Vec<[f32; 2]> {
+    if accessor.get("type").and_then(Value::as_str) != Some("VEC2") {
+        return Vec::new();
+    }
+    let component = accessor.get("componentType").and_then(Value::as_u64);
+    let normalized = accessor
+        .get("normalized")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let Some(bytes) = bytes else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    match component {
+        Some(5126) => {
+            let mut offset = 0usize;
+            while offset + 8 <= bytes.len() && out.len() < 64 {
+                let u = f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap_or([0; 4]));
+                let v =
+                    f32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap_or([0; 4]));
+                out.push([u, v]);
+                offset += 8;
+            }
+        }
+        Some(5121) if normalized => {
+            let mut offset = 0usize;
+            while offset + 2 <= bytes.len() && out.len() < 64 {
+                out.push([
+                    f32::from(bytes[offset]) / 255.0,
+                    f32::from(bytes[offset + 1]) / 255.0,
+                ]);
+                offset += 2;
+            }
+        }
+        Some(5123) if normalized => {
+            let mut offset = 0usize;
+            while offset + 4 <= bytes.len() && out.len() < 64 {
+                let u = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+                let v = u16::from_le_bytes([bytes[offset + 2], bytes[offset + 3]]);
+                out.push([f32::from(u) / 65535.0, f32::from(v) / 65535.0]);
+                offset += 4;
             }
         }
         _ => {}
@@ -1200,6 +1266,43 @@ mod tests {
             .unwrap();
         assert_eq!(model.meshes[0].preview_xy.len(), 3);
         assert_eq!(model.meshes[0].preview_xy[0], (0, 31));
+    }
+
+    #[test]
+    fn texture_coordinates_import_as_preview_uv() {
+        let mut bin = Vec::new();
+        for (x, y) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0)] {
+            for v in [x, y, 0.0] {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        for (u, v) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0)] {
+            bin.extend_from_slice(&u.to_le_bytes());
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": bin.len()}],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+                {"buffer": 0, "byteOffset": 36, "byteLength": 24}
+            ],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC2"}
+            ],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "TEXCOORD_0": 1}}]}],
+            "nodes": [{"mesh": 0}]
+        });
+        let model = GltfImporter
+            .import(
+                &glb(&serde_json::to_vec(&doc).unwrap(), &bin),
+                &ImportLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(model.meshes[0].preview_uv.len(), 3);
+        assert_eq!(model.meshes[0].preview_uv[1], [1.0, 0.0]);
+        assert_eq!(model.meshes[0].preview_uv[2], [0.0, 1.0]);
     }
 
     #[test]

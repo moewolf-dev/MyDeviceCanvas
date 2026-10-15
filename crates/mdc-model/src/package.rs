@@ -160,9 +160,22 @@ impl MdcPackage {
                 let atlas = self.package.atlas.as_ref().ok_or_else(|| {
                     ModelError::Unsupported("baked package is missing its atlas".into())
                 })?;
-                let expected = u64::from(atlas.sprite_width)
+                // The pixel buffer covers the whole grid (columns × rows), which
+                // may be larger than the frame count when the grid is padded.
+                if atlas.columns == 0 || atlas.rows == 0 || atlas.frames == 0 {
+                    return Err(ModelError::Unsupported(
+                        "baked atlas has an empty grid".into(),
+                    ));
+                }
+                if atlas.frames > atlas.columns.saturating_mul(atlas.rows) {
+                    return Err(ModelError::Unsupported(
+                        "baked atlas has more frames than its grid".into(),
+                    ));
+                }
+                let expected = u64::from(atlas.columns)
+                    .saturating_mul(u64::from(atlas.rows))
+                    .saturating_mul(u64::from(atlas.sprite_width))
                     .saturating_mul(u64::from(atlas.sprite_height))
-                    .saturating_mul(u64::from(atlas.frames))
                     .saturating_mul(2);
                 if atlas.rgb565.len() as u64 != expected {
                     return Err(ModelError::Unsupported(

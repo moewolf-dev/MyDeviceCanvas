@@ -58,6 +58,8 @@ A decode bomb is refused before any decode buffer is created.
   interpolation, `times` + flat `values`, f32 only). Missing or non-f32 sampler
   data is skipped rather than guessed; animation metadata (`channels` count)
   still imports for a track-less stub.
+- N113: `TEXCOORD_0` (VEC2 f32, or normalized u8/u16) becomes `Mesh.preview_uv`,
+  parallel to `preview_positions`. Empty means a solid-colour bake.
 
 ### Live2D details
 
@@ -132,6 +134,28 @@ cycling a source image:
 
 This is a host-side approximation: only the capped preview vertices are deformed,
 there is no texture lookup, and it is not a full skinned-mesh device renderer.
+
+## Textured bake (N113–N117)
+
+`TextureMap` holds RGB565 pixels and samples UVs with a wrapping nearest-
+neighbour lookup. `raster_textured` draws the mesh triangles, interpolating UVs
+barycentrically and sampling the texture per pixel; a mesh with no UVs (or no
+texture) fills a solid fallback colour instead — the UV-missing path never
+silently samples texel 0.
+
+- `bake_textured_mesh(model, animation, frames, sprite, texture, color)` runs the
+  skinning bake and samples the texture through `Mesh.preview_uv`.
+- `bake_textured_to_package` seals the frames as one `bake-mesh` clip.
+- `decode_rgb565_native(bytes, limits)` decodes a PNG/JPEG at its native size
+  (read-header guard first) for the CLI `--texture` path.
+
+```text
+mdc bake-mesh rig.glb --frames 8 --sprite 64 --texture skin.png --package rig.mdcpkg
+```
+
+The package gate validates a baked atlas against its whole `columns × rows`
+grid, so a padded grid (frame count not a perfect square) is accepted while a
+mis-sized pixel buffer is still rejected.
 
 ## Optimizer
 

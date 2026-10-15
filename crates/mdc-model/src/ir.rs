@@ -114,6 +114,10 @@ pub struct Mesh {
     /// `preview_positions`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skin_weights: Vec<[f32; 4]>,
+    /// N113: per-preview-vertex texture coordinates (TEXCOORD_0), parallel to
+    /// `preview_positions`. Empty means a solid-colour bake.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preview_uv: Vec<[f32; 2]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

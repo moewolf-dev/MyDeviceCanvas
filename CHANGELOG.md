@@ -2,6 +2,23 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.24] — Texture-mapped skinned bake (N113–N122)
+
+### Added
+
+- `TEXCOORD_0` imports into `Mesh.preview_uv` (N113)
+- `mdc-bake` `TextureMap` + wrapping nearest sampling + barycentric textured
+  triangle rasterisation (N114, N115)
+- `bake_textured_mesh` / `bake_textured_to_package` combine skinning with UV
+  sampling; a mesh without UVs falls back to a solid colour (N115, N116)
+- CLI `mdc bake-mesh --texture <png>` and `skinned`/`textured` flags (N117, N121)
+- Device font gains punctuation glyphs and fixes lowercase mapping (N118)
+
+### Fixed
+
+- The baked-package capability gate validates the whole `columns × rows` grid,
+  so a padded atlas (frame count not a perfect square) is accepted (N119)
+
 ## [0.1.23] — Skeletal skinning bake (N109–N112)
 
 ### Added

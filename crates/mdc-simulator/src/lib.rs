@@ -11,17 +11,33 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
-/// 5×7 glyphs for digits then A–Z. Columns are the low 7 bits; bit 0 is the top row.
+/// 5×7 glyphs for digits, A–Z and common punctuation. Columns are the low 7
+/// bits; bit 0 is the top row. Lowercase letters render as their uppercase.
 fn glyph_columns(ch: u8) -> Option<[u8; 5]> {
     if ch == b' ' {
         return Some([0, 0, 0, 0, 0]);
     }
-    let index = match ch.to_ascii_uppercase() {
-        b'0'..=b'9' => (ch - b'0') as usize,
-        b'A'..=b'Z' => 10 + (ch - b'A') as usize,
+    let upper = ch.to_ascii_uppercase();
+    let index = match upper {
+        b'0'..=b'9' => (upper - b'0') as usize,
+        b'A'..=b'Z' => 10 + (upper - b'A') as usize,
+        b'.' => 36,
+        b',' => 37,
+        b':' => 38,
+        b'!' => 39,
+        b'?' => 40,
+        b'-' => 41,
+        b'_' => 42,
+        b'+' => 43,
+        b'/' => 44,
+        b'(' => 45,
+        b')' => 46,
+        b'=' => 47,
+        b'*' => 48,
+        b'#' => 49,
         _ => return None,
     };
-    const FONT: [[u8; 5]; 36] = [
+    const FONT: [[u8; 5]; 50] = [
         [0x3e, 0x51, 0x49, 0x45, 0x3e],
         [0x00, 0x42, 0x7f, 0x40, 0x00],
         [0x42, 0x61, 0x51, 0x49, 0x46],
@@ -58,6 +74,20 @@ fn glyph_columns(ch: u8) -> Option<[u8; 5]> {
         [0x63, 0x14, 0x08, 0x14, 0x63],
         [0x07, 0x08, 0x70, 0x08, 0x07],
         [0x61, 0x51, 0x49, 0x45, 0x43],
+        [0x00, 0x00, 0x00, 0x00, 0x40],
+        [0x00, 0x00, 0x00, 0x40, 0x40],
+        [0x00, 0x20, 0x00, 0x20, 0x00],
+        [0x00, 0x00, 0x5f, 0x00, 0x00],
+        [0x02, 0x01, 0x51, 0x09, 0x06],
+        [0x08, 0x08, 0x08, 0x08, 0x08],
+        [0x40, 0x40, 0x40, 0x40, 0x40],
+        [0x08, 0x08, 0x3e, 0x08, 0x08],
+        [0x20, 0x10, 0x08, 0x04, 0x02],
+        [0x00, 0x1c, 0x22, 0x41, 0x00],
+        [0x00, 0x41, 0x22, 0x1c, 0x00],
+        [0x14, 0x14, 0x14, 0x14, 0x14],
+        [0x14, 0x08, 0x3e, 0x08, 0x14],
+        [0x14, 0x7f, 0x14, 0x7f, 0x14],
     ];
     FONT.get(index).copied()
 }
@@ -2020,6 +2050,17 @@ mod tests {
         assert!(device.render_scene());
         assert_ne!(device.pixel_rgb565(0, 0), Some(0));
         assert_eq!(device.pixel_rgb565(12, 0), Some(0x07e0));
+    }
+
+    #[test]
+    fn glyphs_cover_digits_letters_and_punctuation() {
+        for ch in ".,:!?-+/()=*#".bytes() {
+            assert!(glyph_columns(ch).is_some(), "missing {}", ch as char);
+        }
+        // Lowercase renders as its uppercase glyph.
+        assert_eq!(glyph_columns(b'a'), glyph_columns(b'A'));
+        assert_eq!(glyph_columns(b' '), Some([0, 0, 0, 0, 0]));
+        assert!(glyph_columns(b'~').is_none());
     }
 
     #[test]
