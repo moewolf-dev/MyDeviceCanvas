@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { colorBarsRgb565, decodeMirrorFrame, formatError, mirrorPanelStatus, normalizeBrightness, normalizeClip, originTile, sceneRect, planConnection, rejectNonSimEndpoint } from "./demo-logic.js";
+import { colorBarsRgb565, decodeMirrorFrame, formatError, mirrorPanelStatus, normalizeBrightness, normalizeClip, originTile, packageMagicOk, sceneRect, planConnection, rejectNonSimEndpoint } from "./demo-logic.js";
 
 test("color bars are RGB565 little-endian and start with red", () => {
   const frame = colorBarsRgb565(8, 1);
@@ -81,4 +81,10 @@ test("sceneRect validates geometry and colour", () => {
   });
   assert.throws(() => sceneRect(0, 0, -1, 4, "#FFFFFF"), /non-negative/);
   assert.throws(() => sceneRect(0, 0, 1, 1, "blue"), /RRGGBB/);
+});
+
+test("packageMagicOk checks the MDCP magic", () => {
+  assert.equal(packageMagicOk(new Uint8Array([0x4d, 0x44, 0x43, 0x50, 1])), true);
+  assert.equal(packageMagicOk(new Uint8Array([1, 2, 3, 4])), false);
+  assert.equal(packageMagicOk(new Uint8Array([0x4d, 0x44])), false);
 });

@@ -1,0 +1,61 @@
+# Node SDK
+
+Status: **sim-verified** (host logic); the native binding is built per platform
+and is **not** installed by default (`loadNative()` returns `null` until a
+`mdc-node-native.node` artifact is present).
+
+`@mdc/node` (`sdk/node/`) wraps the Rust Core over N-API. It never reimplements
+Core; the JS layer validates inputs, copies caller buffers, and maps native
+methods to promises.
+
+## Loading
+
+```js
+import { MyDeviceCanvas } from "@mdc/node";
+const mdc = await MyDeviceCanvas.create();
+mdc.nativeLoaded(); // false when the .node artifact is missing
+```
+
+`MyDeviceCanvas.create()` opens the simulator board by default. `mdc.dispose()`
+is idempotent and cancels listeners; every method rejects after dispose.
+
+## API
+
+| Method | Notes |
+|---|---|
+| `devices()` | `DeviceInfo[]`, each with `surface(id)` |
+| `surface.sendFrame(bytes)` / `sendTile(tile)` | RGB565; the caller buffer is copied before dispatch |
+| `currentFrameId()` | |
+| `pollEvents()` | drained `NativeEvent[]` (`connected` / `disconnected` / `input` / `mirror` / `error`) |
+| `on(event, fn)` / `off` | subscription; cancelled by `dispose()` |
+| `startMirror(surfaceId, opts)` / `stopMirror` | Form B; needs the device `mirror` capability |
+| `takeMirrorFrame()` / `onMirrorFrame(fn)` / `mirrorStats()` | pixel + stats access |
+| `getConfig(key)` / `setConfig(key, value)` | capability-gated |
+| `setScene(node)` / `clearScene()` | CBOR scene |
+| `setAnimation(clip)` / `stopAnimation()` | baked-atlas clip |
+| `installPackage(bytes)` | N234: upload `.mdcpkg` bytes (`Uint8Array`); resolves `true` when ready |
+| `packageReady()` | N238: whether the last accepted package is render-ready |
+| `connectTcp(address)` | remote peer instead of the in-process simulator |
+
+### installPackage
+
+```js
+import fs from "node:fs";
+const bytes = fs.readFileSync("rig.mdcpkg"); // Buffer is a Uint8Array
+const ready = await mdc.installPackage(bytes);
+if (!ready) throw new Error("device rejected the package");
+```
+
+The wrapper requires a `Uint8Array` (a `Buffer` qualifies) and forwards a copy.
+A malformed package rejects with the device error; `packageReady()` stays false.
+
+## Events
+
+`on("mirror", fn)` carries `{ surfaceId, frameId, width, height }` metadata only
+(no pixels); pixels come from `takeMirrorFrame()` / `onMirrorFrame`.
+
+## Non-goals
+
+- No serial/WebSocket transport in the Node binding yet (TCP + in-process sim).
+- No native artifact vendored: build per platform (see `sdk/node/package.json`).
+- No physical-board claim; D05/G03 remain open.

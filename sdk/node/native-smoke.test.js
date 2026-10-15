@@ -46,6 +46,13 @@ test("native simulator session lists a device and accepts an RGB565 frame", { sk
   await assert.rejects(mdc.devices(), /disposed/);
 });
 
+test("native installPackage rejects a malformed package", { skip: !native }, async () => {
+  const mdc = await MyDeviceCanvas.create();
+  await assert.rejects(mdc.installPackage(new Uint8Array([1, 2, 3])));
+  assert.equal(await mdc.packageReady(), false);
+  mdc.dispose();
+});
+
 test("native connectTcp sends an RGB565 frame to mdc-sim-peer", {
   skip: !native || !fs.existsSync(peerBin),
 }, async () => {

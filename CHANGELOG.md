@@ -2,6 +2,16 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.36] — Node SDK package install (N233–N242)
+
+### Added
+
+- `sdk/node` native + JS `installPackage(bytes)` (uploads a `.mdcpkg`) and
+  `packageReady()` (N233, N234, N238)
+- JS mock test and a native smoke test for the install path (N235, N239)
+- Electron demo `packageMagicOk` helper + test (N236)
+- `docs/node-sdk.md` documenting the API (N237)
+
 ## [0.1.35] — Geometry morph targets (N223–N232)
 
 ### Added

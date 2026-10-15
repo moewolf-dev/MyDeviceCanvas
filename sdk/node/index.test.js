@@ -19,6 +19,19 @@ test("sendFrame copies caller buffer before native dispatch", async () => {
   assert.deepEqual([...received], [1, 2]);
 });
 
+test("installPackage forwards bytes and reports readiness", async () => {
+  let received;
+  const mdc = new MyDeviceCanvas({
+    installPackage(bytes) { received = bytes; return true; },
+    packageReady() { return true; },
+  });
+  const pkg = new Uint8Array([0x4d, 0x44, 0x43, 0x50]);
+  assert.equal(await mdc.installPackage(pkg), true);
+  assert.deepEqual([...received], [0x4d, 0x44, 0x43, 0x50]);
+  assert.equal(await mdc.packageReady(), true);
+  await assert.rejects(mdc.installPackage("nope"), /Uint8Array/);
+});
+
 test("dispose prevents new device calls", async () => {
   const mdc = new MyDeviceCanvas({ devices: async () => [] });
   mdc.dispose();

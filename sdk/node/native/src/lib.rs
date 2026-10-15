@@ -691,6 +691,44 @@ impl NativeManager {
         Ok(())
     }
 
+    /// N233: upload a runtime package (`.mdcpkg` bytes) and report readiness.
+    #[napi(js_name = "installPackage")]
+    pub fn install_package(&self, bytes: Buffer) -> Result<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        sim.session
+            .install_package(bytes.as_ref())
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        pump_link(sim)?;
+        Ok(sim
+            .device
+            .as_ref()
+            .map(|device| device.package_ready())
+            .unwrap_or(false))
+    }
+
+    /// N238: true once the last accepted package is render-ready.
+    #[napi(js_name = "packageReady")]
+    pub fn package_ready(&self) -> Result<bool> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        Ok(state
+            .sim
+            .as_ref()
+            .and_then(|sim| sim.device.as_ref())
+            .map(|device| device.package_ready())
+            .unwrap_or(false))
+    }
+
     /// Open a named simulator board before the first `devices()` call.
     #[napi(js_name = "openBoard")]
     pub fn open_board(&self, board_id: String) -> Result<()> {

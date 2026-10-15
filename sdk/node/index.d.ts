@@ -82,6 +82,10 @@ export declare class MyDeviceCanvas {
   clearScene(): Promise<void>;
   setAnimation(clip: string): Promise<string>;
   stopAnimation(): Promise<void>;
+  /** N234: upload a runtime package (`.mdcpkg` bytes). */
+  installPackage(bytes: Uint8Array): Promise<boolean>;
+  /** N238: true once the last accepted package is render-ready. */
+  packageReady(): Promise<boolean>;
   on(event: string, listener: (value: unknown) => void): () => void;
   off(event: string, listener: (value: unknown) => void): boolean;
   dispose(): void;

@@ -189,6 +189,22 @@ export class MyDeviceCanvas {
     }
     return this._native.stopAnimation();
   }
+  /** N234: upload a runtime package (Uint8Array of `.mdcpkg` bytes). */
+  async installPackage(bytes) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.installPackage !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    if (!(bytes instanceof Uint8Array)) {
+      throw new TypeError("installPackage expects a Uint8Array");
+    }
+    return this._native.installPackage(Buffer.from(bytes));
+  }
+  /** N238: true once the last accepted package is render-ready. */
+  async packageReady() {
+    if (this._disposed) throw new Error("manager is disposed");
+    return (await this._native.packageReady?.()) ?? false;
+  }
   on(event, listener) {
     if (this._disposed) throw new Error("manager is disposed");
     if (typeof listener !== "function") {

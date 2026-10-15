@@ -143,3 +143,11 @@ export function sceneRect(x, y, w, h, color) {
   }
   return { name: "rect", kind: "rect", rect: [x, y, w, h], value: text };
 }
+
+/** N236: validate `.mdcpkg` bytes (MDCP magic) before the demo uploads them. */
+export function packageMagicOk(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length < 4) {
+    return false;
+  }
+  return bytes[0] === 0x4d && bytes[1] === 0x44 && bytes[2] === 0x43 && bytes[3] === 0x50;
+}
