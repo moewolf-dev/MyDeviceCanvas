@@ -914,6 +914,8 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
     let mut frames = 3u32;
     let mut write_dir: Option<String> = None;
     let mut serve: Option<String> = None;
+    let mut http: Option<String> = None;
+    let mut format = String::from("ppm");
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -922,6 +924,8 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
             }
             "--write-dir" => write_dir = iter.next().cloned(),
             "--serve" => serve = iter.next().cloned(),
+            "--http" => http = iter.next().cloned(),
+            "--format" => format = iter.next().cloned().unwrap_or(format),
             _ => {}
         }
     }
@@ -933,11 +937,28 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
     device.poll()?;
     session.poll()?;
 
-    let mut sink = write_dir.map(|dir| mdc_mirror::PpmDirectorySink::new(dir, "frame.ppm", 0));
+    let mut sink = match (&write_dir, format.as_str()) {
+        (Some(dir), "ppm") => Some(mdc_mirror::PpmDirectorySink::new(dir, "frame.ppm", 0)),
+        _ => None,
+    };
+    let bmp_dir = match (&write_dir, format.as_str()) {
+        (Some(dir), "bmp") => Some(PathBuf::from(dir)),
+        _ => None,
+    };
+    if let Some(dir) = &bmp_dir {
+        std::fs::create_dir_all(dir)?;
+    }
     let mut server = match &serve {
         Some(address) => Some(mdc_mirror::MirrorServer::bind(address)?),
         None => None,
     };
+    let mut http_server = match &http {
+        Some(address) => Some(mdc_mirror::HttpMirrorServer::bind(address)?),
+        None => None,
+    };
+    if let Some(server) = &http_server {
+        println!("http mirror on {}", server.local_addr()?);
+    }
 
     let mut frames_seen = 0u64;
     for _ in 0..frames {
@@ -947,25 +968,28 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
             continue;
         };
         frames_seen += 1;
+        let shadow = |generation: u64| mdc_mirror::ShadowFrame {
+            width: frame.width,
+            height: frame.height,
+            generation,
+            frame_id: frame.frame_id,
+            pixels: &frame.bytes,
+        };
         if let Some(sink) = sink.as_mut() {
-            sink.on_frame(mdc_mirror::ShadowFrame {
-                width: frame.width,
-                height: frame.height,
-                generation: frames_seen,
-                frame_id: frame.frame_id,
-                pixels: &frame.bytes,
-            });
+            sink.on_frame(shadow(frames_seen));
+        }
+        if let Some(dir) = &bmp_dir {
+            let bmp = mdc_mirror::encode_bmp(frame.width, frame.height, &frame.bytes);
+            std::fs::write(dir.join("frame.bmp"), bmp)?;
         }
         if let Some(server) = server.as_mut() {
             let _ = server.accept_pending();
-            server.publish(&mdc_mirror::ShadowFrame {
-                width: frame.width,
-                height: frame.height,
-                generation: frames_seen,
-                frame_id: frame.frame_id,
-                pixels: &frame.bytes,
-            });
+            server.publish(&shadow(frames_seen));
             server.flush();
+        }
+        if let Some(server) = http_server.as_mut() {
+            server.publish(&shadow(frames_seen));
+            let _ = server.pump();
         }
     }
     let stats = session.mirror_stats();
@@ -978,6 +1002,7 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
         "ppm_written": sink.as_ref().map(|s| s.frames_written()),
         "served_clients": server.as_ref().map(|s| s.client_count()),
         "served_dropped": server.as_ref().map(|s| s.frames_dropped()),
+        "http_frames": http_server.as_ref().map(|s| s.frames_published()),
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
@@ -2219,7 +2244,7 @@ fn usage() {
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
-authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--serve ADDR]|\
+authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp] [--serve ADDR] [--http ADDR]|\
 package <model.gltf> [out.mdcpkg]|install-package <file.mdcpkg>|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\

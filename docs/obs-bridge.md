@@ -14,6 +14,7 @@ Device renderer ── MIRRORFRAME ──▶ Session inbox ──▶ MirrorRecei
                                        ▼                   │
                               ManagerEvent::Mirror         ├─▶ PpmDirectorySink  (file watcher)
                               (metadata, no pixels)        ├─▶ MirrorServer      (TCP fan-out)
+                                                           ├─▶ HttpMirrorServer  (OBS browser source)
                                                            └─▶ MirrorSink impl  (preview / Node / Swift)
 ```
 
@@ -22,6 +23,8 @@ Device renderer ── MIRRORFRAME ──▶ Session inbox ──▶ MirrorRecei
 | Option | API | Consumer |
 |---|---|---|
 | Atomic PPM file | `mdc_mirror::PpmDirectorySink` | OBS "Image Source" watching `<dir>/frame.ppm` (or a `_0000..N` ring) |
+| BMP file | `mdc_mirror::encode_bmp` + `mdc mirror --format bmp` | OBS "Image Source" watching `<dir>/frame.bmp` |
+| HTTP | `mdc_mirror::HttpMirrorServer` | OBS "Browser Source" at `http://127.0.0.1:<port>/` (auto-refreshing `<img>`); `/frame.bmp` and `/frame.ppm` for scripts |
 | TCP fan-out | `mdc_mirror::MirrorServer` | A local reader / browser source; one PPM frame per client, latest-wins |
 | Node | `onMirrorFrame` + `takeMirrorFrame` | Electron preview (see `examples/electron-demo`) |
 | Swift | `mirrorFrames()` `AsyncStream` | macOS app consumer |
@@ -32,20 +35,33 @@ Device renderer ── MIRRORFRAME ──▶ Session inbox ──▶ MirrorRecei
 ```sh
 # Drive mirroring on a simulator board and write frames for an OBS image source.
 mdc --board linux-virt mirror --frames 30 --write-dir ./mirror-out
+mdc --board linux-virt mirror --frames 30 --write-dir ./mirror-out --format bmp
+
+# Serve the latest frame to an OBS Browser Source (and a scriptable PPM).
+mdc --board linux-virt mirror --frames 300 --http 127.0.0.1:8080
+#   http://127.0.0.1:8080/            -> auto-refreshing page
+#   http://127.0.0.1:8080/frame.bmp   -> image/bmp
+#   http://127.0.0.1:8080/frame.ppm   -> image/x-portable-pixmap
 
 # Or fan out over TCP for a local consumer.
 mdc --board linux-virt mirror --frames 30 --serve 127.0.0.1:7777
 ```
 
 The command prints JSON stats (`mirror_received`, `mirror_dropped`,
-`ppm_written`, `served_clients`, `served_dropped`).
+`ppm_written`, `served_clients`, `served_dropped`, `http_frames`).
+
+`HttpMirrorServer` is a small HTTP/1.1 responder with no JPEG dependency: it
+caches the newest frame as BMP (bottom-up 24-bit) and PPM, accepts at most
+`max_clients`, and answers one short-lived request per connection. A slow reader
+never blocks `pump`; it simply receives the frame that is current when it asks.
 
 ## Guarantees
 
 - **Bounded**: the shadow buffer is capped at `MAX_SHADOW_BYTES` (8 MiB); the PPM
-  sink writes through a temp file + atomic rename; the server queues at most one
-  frame per client and drops older frames (latest-wins) so a slow consumer never
-  grows memory.
+  sink writes through a temp file + atomic rename; the TCP server queues at most
+  one frame per client and drops older frames (latest-wins); the HTTP server
+  caches a single BMP+PPM pair and refuses to cache a pair over the cap. A slow
+  consumer never grows memory.
 - **Pacing boundary**: the host, not the device, decides how often a consumer is
   fed; the same front buffer may be published more than once (device 15 FPS vs
   OBS 30 FPS).

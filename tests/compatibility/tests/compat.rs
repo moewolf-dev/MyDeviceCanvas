@@ -608,6 +608,63 @@ fn textured_bake_refuses_an_over_budget_texture() {
 }
 
 #[test]
+fn http_mirror_serves_a_device_frame_to_a_loopback_client() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+    use std::io::{Read, Write};
+    use std::time::Duration;
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session.start_mirror("main", "full-frame", 15).unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    let mut http = mdc_mirror::HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+    for _ in 0..5 {
+        device.emit_mirror_frame().unwrap();
+        session.poll().unwrap();
+        if let Some(frame) = session.take_mirror_frame() {
+            http.publish(&mdc_mirror::ShadowFrame {
+                width: frame.width,
+                height: frame.height,
+                generation: 1,
+                frame_id: frame.frame_id,
+                pixels: &frame.bytes,
+            });
+        }
+        let _ = http.pump();
+    }
+    assert!(http.has_frame());
+
+    let addr = http.local_addr().unwrap();
+    let mut client = std::net::TcpStream::connect(addr).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    client
+        .write_all(b"GET /frame.bmp HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    let mut response = Vec::new();
+    for _ in 0..400 {
+        let _ = http.pump();
+        let mut buffer = [0u8; 8192];
+        match client.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => response.extend_from_slice(&buffer[..n]),
+            Err(_) => std::thread::sleep(Duration::from_millis(5)),
+        }
+    }
+    let text = String::from_utf8_lossy(&response);
+    assert!(text.starts_with("HTTP/1.1 200 OK"), "{text}");
+    assert!(text.contains("image/bmp"));
+    assert!(response.windows(2).any(|w| w == b"BM"), "BMP body present");
+}
+
+#[test]
 fn scene_group_geometry_and_named_colour_reach_the_device() {
     use mdc_core::{ConnectionState, Session};
     use mdc_protocol::SceneNode;

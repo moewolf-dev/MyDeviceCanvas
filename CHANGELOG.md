@@ -2,6 +2,17 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.27] — HTTP mirror for OBS (N143–N152)
+
+### Added
+
+- `mdc-mirror::encode_bmp` — 24-bit BMP from a BGRA frame (no JPEG dependency) (N143)
+- `mdc-mirror::HttpMirrorServer` — bounded HTTP/1.1 fan-out: `/`, `/frame.bmp`,
+  `/frame.ppm` for an OBS Browser Source (N144)
+- CLI `mdc mirror --http ADDR` and `--format bmp|ppm` (N146, N147)
+- `docs/obs-bridge.md` documents the Browser Source delivery (N148)
+- HTTP-mirror compat fixture and publish soak (N149, N150)
+
 ## [0.1.26] — Offline render + scene expression (N133–N142)
 
 ### Added

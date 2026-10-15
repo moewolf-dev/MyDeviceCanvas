@@ -40,6 +40,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 30 | N113–N122: TEXCOORD_0 import, texture sampling, textured skinned bake, CLI `--texture`, punctuation font, padded-atlas gate fix | sim-verified |
 | 31 | N123–N132: glTF morph targets + weights channels, `apply_morphs` before skinning, scaled device text, animation loop metric | sim-verified |
 | 32 | N133–N142: offline `render_frame_at` + `mdc render-mesh`/`render-package`, `#RGB`/named scene colours, scene group transforms, deterministic scene clear | sim-verified |
+| 33 | N143–N152: BMP encoder + `HttpMirrorServer` (OBS browser source), `mdc mirror --http/--format`, obs-bridge docs, HTTP compat + soak | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 

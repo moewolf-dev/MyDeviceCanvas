@@ -102,6 +102,26 @@ fn mirror_receiver_soak_is_bounded() {
 }
 
 #[test]
+fn http_mirror_publish_soak_is_bounded() {
+    let mut http = mdc_mirror::HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+    let width = 480u16;
+    let height = 480u16;
+    let pixels = vec![0x40u8; width as usize * height as usize * 4];
+    for generation in 0..100 {
+        http.publish(&mdc_mirror::ShadowFrame {
+            width,
+            height,
+            generation,
+            frame_id: generation,
+            pixels: &pixels,
+        });
+    }
+    // Only the newest frame is cached, so memory does not grow with frames.
+    assert_eq!(http.frames_published(), 100);
+    assert!(http.has_frame());
+}
+
+#[test]
 fn render_frame_soak_is_bounded() {
     use mdc_model::{Animation, AnimationTrack, Mesh, Model, Node, Skeleton};
 

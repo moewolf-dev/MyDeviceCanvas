@@ -10,7 +10,7 @@
 use mdc_protocol::{decode_frame_payload, FramePayload, MessageType, HEADER_LEN};
 use mdc_transport::Transport;
 use serde::{Deserialize, Serialize};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -877,6 +877,236 @@ impl MirrorServer {
     }
 }
 
+/// N143: encode a BGRA frame as a 24-bit BMP (bottom-up rows, 4-byte padding).
+/// BMP is chosen for the OBS browser source because it needs no JPEG encoder.
+pub fn encode_bmp(width: u16, height: u16, bgra: &[u8]) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    let row_bytes = w * 3;
+    let padded = (row_bytes + 3) & !3;
+    let image_size = padded * h;
+    let file_size = 54 + image_size;
+    let mut out = Vec::with_capacity(file_size);
+    out.extend_from_slice(b"BM");
+    out.extend_from_slice(&(file_size as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&54u32.to_le_bytes());
+    out.extend_from_slice(&40u32.to_le_bytes());
+    out.extend_from_slice(&(w as i32).to_le_bytes());
+    out.extend_from_slice(&(h as i32).to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&24u16.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&(image_size as u32).to_le_bytes());
+    out.extend_from_slice(&2835u32.to_le_bytes());
+    out.extend_from_slice(&2835u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    let mut row = vec![0u8; padded];
+    for y in (0..h).rev() {
+        row.iter_mut().for_each(|byte| *byte = 0);
+        for x in 0..w {
+            let src = (y * w + x) * 4;
+            if let Some(pixel) = bgra.get(src..src + 4) {
+                row[x * 3] = pixel[0];
+                row[x * 3 + 1] = pixel[1];
+                row[x * 3 + 2] = pixel[2];
+            }
+        }
+        out.extend_from_slice(&row);
+    }
+    out
+}
+
+/// The most recent mirrored frame, cached in both served encodings.
+struct ServedFrame {
+    bmp: Vec<u8>,
+    ppm: Vec<u8>,
+}
+
+/// N144: a minimal HTTP/1.1 fan-out for an OBS browser source. It serves the
+/// latest mirrored frame as `/frame.bmp`, `/frame.ppm`, or an auto-refreshing
+/// page at `/`. Connections are short-lived (one request, `Connection: close`);
+/// at most `max_clients` are open, and a slow client never blocks `pump`.
+pub struct HttpMirrorServer {
+    listener: TcpListener,
+    clients: Vec<HttpClient>,
+    max_clients: usize,
+    frames: u64,
+    last: Option<ServedFrame>,
+}
+
+struct HttpClient {
+    stream: TcpStream,
+    request: Vec<u8>,
+    response: Option<Vec<u8>>,
+}
+
+impl HttpMirrorServer {
+    pub fn bind(addr: &str) -> io::Result<Self> {
+        let listener = TcpListener::bind(addr)?;
+        listener.set_nonblocking(true)?;
+        Ok(Self {
+            listener,
+            clients: Vec::new(),
+            max_clients: 8,
+            frames: 0,
+            last: None,
+        })
+    }
+
+    pub fn with_max_clients(mut self, max_clients: usize) -> Self {
+        self.max_clients = max_clients.max(1);
+        self
+    }
+
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.listener.local_addr()
+    }
+
+    /// Cache the newest frame; per-client queues are not used, so a slow reader
+    /// simply gets the frame that is current when it asks.
+    pub fn publish(&mut self, frame: &ShadowFrame<'_>) {
+        let bmp = encode_bmp(frame.width, frame.height, frame.pixels);
+        let ppm = encode_ppm(frame.width, frame.height, frame.pixels);
+        if bmp.len() + ppm.len() <= MAX_SHADOW_BYTES {
+            self.last = Some(ServedFrame { bmp, ppm });
+        }
+        self.frames = self.frames.saturating_add(1);
+    }
+
+    fn accept_pending(&mut self) -> io::Result<()> {
+        while self.clients.len() < self.max_clients {
+            match self.listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = stream.set_nonblocking(true);
+                    self.clients.push(HttpClient {
+                        stream,
+                        request: Vec::new(),
+                        response: None,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    /// Accept, read one request per client, queue the response, then try to
+    /// write it. A finished or errored client is dropped.
+    pub fn pump(&mut self) -> io::Result<()> {
+        self.accept_pending()?;
+        let last = self.last.as_ref();
+        for client in &mut self.clients {
+            if client.response.is_some() {
+                continue;
+            }
+            let mut buffer = [0u8; 1024];
+            match client.stream.read(&mut buffer) {
+                Ok(0) => {}
+                Ok(read) => {
+                    if client.request.len() + read > 8192 {
+                        client.response =
+                            Some(simple_response(431, "text/plain", b"header too large"));
+                        continue;
+                    }
+                    client.request.extend_from_slice(&buffer[..read]);
+                    if let Some(end) = find_header_end(&client.request) {
+                        let path = request_path(&client.request[..end]);
+                        client.response = Some(respond(last, &path));
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(_) => {
+                    client.response = Some(simple_response(500, "text/plain", b"error"));
+                }
+            }
+        }
+        self.clients.retain_mut(|client| {
+            let Some(response) = client.response.as_ref() else {
+                return true;
+            };
+            match client.stream.write_all(response) {
+                Ok(()) => false,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => true,
+                Err(_) => false,
+            }
+        });
+        Ok(())
+    }
+
+    pub fn client_count(&self) -> usize {
+        self.clients.len()
+    }
+
+    pub fn frames_published(&self) -> u64 {
+        self.frames
+    }
+
+    pub fn has_frame(&self) -> bool {
+        self.last.is_some()
+    }
+}
+
+fn find_header_end(request: &[u8]) -> Option<usize> {
+    request.windows(4).position(|w| w == b"\r\n\r\n")
+}
+
+/// The path of the first request line (`GET /x HTTP/1.1`), defaults to `/`.
+fn request_path(request: &[u8]) -> String {
+    let line = request.split(|b| *b == b'\n').next().unwrap_or(&[]);
+    let line = String::from_utf8_lossy(line);
+    line.split_whitespace()
+        .nth(1)
+        .unwrap_or("/")
+        .split('?')
+        .next()
+        .unwrap_or("/")
+        .to_string()
+}
+
+fn respond(last: Option<&ServedFrame>, path: &str) -> Vec<u8> {
+    match path {
+        "/" | "/index.html" => simple_response(
+            200,
+            "text/html; charset=utf-8",
+            b"<!doctype html><title>MyDeviceCanvas mirror</title><h1>mirror</h1>\
+              <img src=\"/frame.bmp\">",
+        ),
+        "/frame.bmp" => match last {
+            Some(frame) => simple_response(200, "image/bmp", &frame.bmp),
+            None => simple_response(503, "text/plain", b"no frame yet"),
+        },
+        "/frame.ppm" => match last {
+            Some(frame) => simple_response(200, "image/x-portable-pixmap", &frame.ppm),
+            None => simple_response(503, "text/plain", b"no frame yet"),
+        },
+        _ => simple_response(404, "text/plain", b"not found"),
+    }
+}
+
+fn simple_response(status: u16, content_type: &str, body: &[u8]) -> Vec<u8> {
+    let reason = match status {
+        200 => "OK",
+        404 => "Not Found",
+        431 => "Request Header Fields Too Large",
+        503 => "Service Unavailable",
+        _ => "Error",
+    };
+    let mut out = Vec::with_capacity(64 + body.len());
+    out.extend_from_slice(
+        format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\n\
+             Content-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .as_bytes(),
+    );
+    out.extend_from_slice(body);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1341,5 +1571,69 @@ mod tests {
         assert_eq!(server.frames_published(), 2);
         assert_eq!(server.frames_dropped(), 1);
         server.flush();
+    }
+
+    #[test]
+    fn bmp_encoder_writes_a_valid_header_and_rows() {
+        let pixels = vec![0u8, 0, 255, 255]; // 1x1 BGRA red
+        let bmp = encode_bmp(1, 1, &pixels);
+        assert_eq!(&bmp[0..2], b"BM");
+        assert_eq!(u32::from_le_bytes(bmp[2..6].try_into().unwrap()), 54 + 4);
+        assert_eq!(u32::from_le_bytes(bmp[10..14].try_into().unwrap()), 54);
+        assert_eq!(i32::from_le_bytes(bmp[18..22].try_into().unwrap()), 1);
+        assert_eq!(u16::from_le_bytes(bmp[28..30].try_into().unwrap()), 24);
+        // 1 pixel row padded to 4 bytes; red -> BGR [0, 0, 255].
+        assert_eq!(&bmp[54..57], &[0, 0, 255]);
+        assert_eq!(bmp.len(), 58);
+    }
+
+    /// Send one request and return the raw response, pumping the server.
+    fn http_get(server: &mut HttpMirrorServer, path: &str) -> Vec<u8> {
+        let addr = server.local_addr().unwrap();
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes())
+            .unwrap();
+        let mut response = Vec::new();
+        for _ in 0..400 {
+            let _ = server.pump();
+            let mut buffer = [0u8; 4096];
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => response.extend_from_slice(&buffer[..n]),
+                Err(_) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        response
+    }
+
+    #[test]
+    fn http_server_serves_the_latest_frame_and_routes() {
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        let pixels = vec![0u8, 0, 255, 255]; // 1x1 BGRA red
+        server.publish(&ShadowFrame {
+            width: 1,
+            height: 1,
+            generation: 1,
+            frame_id: 1,
+            pixels: &pixels,
+        });
+        assert!(server.has_frame());
+
+        let bmp = http_get(&mut server, "/frame.bmp");
+        let head = String::from_utf8_lossy(&bmp);
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+        assert!(head.contains("Content-Type: image/bmp"));
+        let body = bmp.windows(2).position(|w| w == b"BM").expect("BMP body");
+        assert_eq!(&bmp[body..body + 2], b"BM");
+
+        let page = String::from_utf8_lossy(&http_get(&mut server, "/")).to_string();
+        assert!(page.contains("text/html"));
+        let missing = String::from_utf8_lossy(&http_get(&mut server, "/nope")).to_string();
+        assert!(missing.contains("404 Not Found"), "{missing}");
+        assert_eq!(server.frames_published(), 1);
     }
 }
