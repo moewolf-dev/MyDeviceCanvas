@@ -102,6 +102,58 @@ fn mirror_receiver_soak_is_bounded() {
 }
 
 #[test]
+fn multi_primitive_geometry_soak_is_bounded() {
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};
+
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "body".into(),
+            vertices: 6,
+            indices: 6,
+            primitives: 2,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.9, -0.6, 0.0],
+                    [-0.3, -0.6, 0.0],
+                    [-0.6, 0.6, 0.0],
+                    [0.3, -0.6, 0.0],
+                    [0.9, -0.6, 0.0],
+                    [0.6, 0.6, 0.0],
+                ],
+                indices: vec![0, 1, 2, 3, 4, 5],
+                uv: Vec::new(),
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                morph_targets: Vec::new(),
+            }),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "red".into(),
+            texture: None,
+            color: Some([255, 0, 0]),
+        }],
+        ..Model::default()
+    };
+    let mut bytes = 0usize;
+    for _ in 0..100 {
+        let frame = mdc_bake::render_scene_at(&model, 0, 0.0, (32, 16), None, 0xFFFF).unwrap();
+        if bytes == 0 {
+            bytes = frame.rgb565.len();
+        }
+        assert_eq!(frame.rgb565.len(), bytes, "frame size is constant");
+    }
+    assert!(bytes > 0);
+}
+
+#[test]
 fn dirty_region_mirror_soak_is_bounded() {
     use mdc_core::{ConnectionState, Session};
     use mdc_protocol::SceneNode;

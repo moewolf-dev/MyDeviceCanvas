@@ -461,6 +461,7 @@ fn cmd_package(
                 .map(|g| g.morph_targets.len())
                 .max()
                 .unwrap_or(0),
+            "primitives": model.meshes.iter().map(|m| m.primitives).max().unwrap_or(0),
             "package_bytes": bytes.len(),
             "output": out,
         }))?
@@ -868,6 +869,7 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .map(|g| g.morph_targets.len())
         .max()
         .unwrap_or(0);
+    let primitives = model.meshes.iter().map(|m| m.primitives).max().unwrap_or(0);
     let texture_arg = if textured { texture.as_ref() } else { None };
     // N186: render every mesh node of the model, or a single mesh with --single.
     let frame = if single {
@@ -904,6 +906,7 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "textured": textured,
             "geometry": has_geometry,
             "morphTargets": morph_targets,
+            "primitives": primitives,
             "output": out,
         }))?
     );

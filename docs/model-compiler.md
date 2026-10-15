@@ -66,7 +66,10 @@ A decode bomb is refused before any decode buffer is created.
   preview stays a 64-vertex summary; geometry is the real mesh. N223: the same
   primitive's morph `targets[].POSITION` deltas become
   `MeshGeometry.morph_targets` (per-target, bounded by `MAX_MORPH_TARGETS`), so a
-  blend shape deforms the full mesh, not just the preview.
+  blend shape deforms the full mesh, not just the preview. N273/N274: **every**
+  primitive with POSITION is merged into one `Mesh.geometry` (`MeshGeometry::merge`
+  rebases indices by the running vertex count), so a multi-material mesh keeps its
+  full silhouette; `Mesh.primitives` records how many were merged.
 - N174: `pbrMetallicRoughness.baseColorFactor` becomes `Material.color`
   (8-bit RGB; alpha ignored); `Material::color_rgb565()` packs it. The geometry
   and preview renders prefer this colour over their fallback when no texture is

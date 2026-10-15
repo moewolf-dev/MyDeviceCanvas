@@ -778,6 +778,64 @@ fn material_colour_tints_the_package_texture_on_the_device() {
 }
 
 #[test]
+fn merged_multi_primitive_geometry_renders_every_triangle() {
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};
+
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "body".into(),
+            vertices: 6,
+            indices: 6,
+            primitives: 2,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.9, -0.6, 0.0],
+                    [-0.3, -0.6, 0.0],
+                    [-0.6, 0.6, 0.0],
+                    [0.3, -0.6, 0.0],
+                    [0.9, -0.6, 0.0],
+                    [0.6, 0.6, 0.0],
+                ],
+                indices: vec![0, 1, 2, 3, 4, 5],
+                uv: Vec::new(),
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                morph_targets: Vec::new(),
+            }),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "red".into(),
+            texture: None,
+            color: Some([255, 0, 0]),
+        }],
+        ..Model::default()
+    };
+    let frame = mdc_bake::render_scene_at(&model, 0, 0.0, (32, 16), None, 0xFFFF).unwrap();
+    let at = |x: usize, y: usize| {
+        u16::from_le_bytes([
+            frame.rgb565[(y * 32 + x) * 2],
+            frame.rgb565[(y * 32 + x) * 2 + 1],
+        ])
+    };
+    let covered: usize = (0..16)
+        .flat_map(|y| (0..32).map(move |x| (x, y)))
+        .filter(|(x, y)| at(*x, *y) != 0)
+        .count();
+    assert!(covered > 60, "two triangles cover area ({covered})");
+    // Both halves have pixels (left and right triangles).
+    assert!((0..16).any(|x| at(x, 8) != 0), "left triangle drawn");
+    assert!((16..32).any(|x| at(x, 8) != 0), "right triangle drawn");
+}
+
+#[test]
 fn cubicspline_sampling_is_deterministic_and_bounded() {
     use mdc_model::AnimationTrack;
     let cubic = AnimationTrack {

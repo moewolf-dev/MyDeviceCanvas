@@ -2,6 +2,15 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.40] — Multi-primitive mesh merge (N273–N282)
+
+### Added
+
+- `MeshGeometry::merge` rebases indices and appends positions/uv/skin (N273)
+- glTF importer merges every primitive into one `Mesh.geometry` (N274)
+- `Mesh.primitives` count + `mdc render-mesh`/`package` report it (N279)
+- Multi-primitive unit test, compat fixture and render soak (N276–N278)
+
 ## [0.1.39] — Device dirty-region mirror (N263–N272)
 
 ### Added

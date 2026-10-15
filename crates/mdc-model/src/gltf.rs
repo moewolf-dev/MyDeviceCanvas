@@ -195,15 +195,17 @@ impl GltfImporter {
                                 preview_xy = preview_positions.iter().map(project_xy).collect();
                             }
                         }
-                        // N164: bounded full geometry from the same primitive.
-                        if geometry.is_none() {
+                        // N164/N274: bounded full geometry; every primitive with
+                        // POSITION is appended into one merged geometry.
+                        let remaining = MAX_GEOMETRY_VERTICES
+                            .saturating_sub(geometry.as_ref().map_or(0, |g| g.positions.len()));
+                        if remaining > 0 {
                             if let Some(accessor) = accessors.get(position as usize) {
                                 let bytes = accessor
                                     .get("bufferView")
                                     .and_then(Value::as_u64)
                                     .and_then(&view_bytes);
-                                let positions =
-                                    decode_positions(accessor, bytes, MAX_GEOMETRY_VERTICES);
+                                let positions = decode_positions(accessor, bytes, remaining);
                                 if !positions.is_empty() {
                                     let pair = |source: &Value, key: &str| -> Option<(&Value, Option<&[u8]>)> {
                                         let index = source.get(key).and_then(Value::as_u64)?;
@@ -253,21 +255,22 @@ impl GltfImporter {
                                                 .get("bufferView")
                                                 .and_then(Value::as_u64)
                                                 .and_then(&view_bytes);
-                                            morph_targets.push(decode_positions(
-                                                accessor,
-                                                bytes,
-                                                MAX_GEOMETRY_VERTICES,
-                                            ));
+                                            morph_targets
+                                                .push(decode_positions(accessor, bytes, remaining));
                                         }
                                     }
-                                    geometry = Some(crate::ir::MeshGeometry {
+                                    let primitive_geometry = crate::ir::MeshGeometry {
                                         positions,
                                         indices,
                                         uv,
                                         skin_joints,
                                         skin_weights,
                                         morph_targets,
-                                    });
+                                    };
+                                    match geometry.as_mut() {
+                                        Some(merged) => merged.merge(primitive_geometry),
+                                        None => geometry = Some(primitive_geometry),
+                                    }
                                 }
                             }
                         }
@@ -370,6 +373,11 @@ impl GltfImporter {
                 name: json_name(mesh, &format!("mesh{i}")),
                 vertices: vertices.min(u64::from(u32::MAX)) as u32,
                 indices,
+                primitives: mesh
+                    .get("primitives")
+                    .and_then(Value::as_array)
+                    .map(|p| p.len().min(u32::MAX as usize) as u32)
+                    .unwrap_or(0),
                 material,
                 preview_xy,
                 preview_indices,
@@ -1768,6 +1776,56 @@ mod tests {
         assert_eq!(model.materials[0].color_rgb565(), Some(0xF800));
         assert_eq!(model.materials[1].color, None);
         assert_eq!(model.materials[1].color_rgb565(), None);
+    }
+
+    #[test]
+    fn multiple_primitives_merge_into_one_geometry() {
+        let mut bin = Vec::new();
+        for (x, y) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0)] {
+            for v in [x, y, 0.0] {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        for (x, y) in [(2.0f32, 0.0f32), (3.0, 0.0), (2.0, 1.0)] {
+            for v in [x, y, 0.0] {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        for i in [0u16, 1, 2, 0, 1, 2] {
+            bin.extend_from_slice(&i.to_le_bytes());
+        }
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": bin.len()}],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+                {"buffer": 0, "byteOffset": 36, "byteLength": 36},
+                {"buffer": 0, "byteOffset": 72, "byteLength": 6},
+                {"buffer": 0, "byteOffset": 78, "byteLength": 6}
+            ],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 2, "componentType": 5123, "count": 3, "type": "SCALAR"},
+                {"bufferView": 3, "componentType": 5123, "count": 3, "type": "SCALAR"}
+            ],
+            "meshes": [{"primitives": [
+                {"attributes": {"POSITION": 0}, "indices": 2},
+                {"attributes": {"POSITION": 1}, "indices": 3}
+            ]}],
+            "nodes": [{"mesh": 0}]
+        });
+        let model = GltfImporter
+            .import(
+                &glb(&serde_json::to_vec(&doc).unwrap(), &bin),
+                &ImportLimits::default(),
+            )
+            .unwrap();
+        let geometry = model.meshes[0].geometry.as_ref().expect("geometry");
+        assert_eq!(geometry.positions.len(), 6);
+        assert_eq!(geometry.positions[3], [2.0, 0.0, 0.0]);
+        // The second primitive's indices are rebased by +3.
+        assert_eq!(geometry.indices, vec![0, 1, 2, 3, 4, 5]);
     }
 
     #[test]

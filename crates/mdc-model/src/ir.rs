@@ -57,6 +57,42 @@ pub struct MeshGeometry {
     pub morph_targets: Vec<Vec<[f32; 3]>>,
 }
 
+impl MeshGeometry {
+    /// N273: append another primitive's geometry, rebasing its indices by this
+    /// geometry's vertex count. UV/skin arrays are merged only when both sides
+    /// carry them; a morph merge only happens when the target counts match.
+    pub fn merge(&mut self, other: MeshGeometry) {
+        let base = self.positions.len() as u32;
+        self.positions.extend(other.positions);
+        self.indices
+            .extend(other.indices.into_iter().map(|i| i.saturating_add(base)));
+        if !other.uv.is_empty() {
+            if self.uv.is_empty() {
+                self.uv.resize(base as usize, [0.0, 0.0]);
+            }
+            self.uv.extend(other.uv);
+        }
+        if !other.skin_joints.is_empty() {
+            if self.skin_joints.is_empty() {
+                self.skin_joints.resize(base as usize, [0; 4]);
+            }
+            self.skin_joints.extend(other.skin_joints);
+        }
+        if !other.skin_weights.is_empty() {
+            if self.skin_weights.is_empty() {
+                self.skin_weights.resize(base as usize, [0.0; 4]);
+            }
+            self.skin_weights.extend(other.skin_weights);
+        }
+        if !other.morph_targets.is_empty() && self.morph_targets.len() == other.morph_targets.len()
+        {
+            for (target, extra) in self.morph_targets.iter_mut().zip(other.morph_targets) {
+                target.extend(extra);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ModelError {
     #[error("input is {0} bytes, over the {1}-byte limit")]
@@ -119,12 +155,18 @@ fn is_one3(v: &[f32; 3]) -> bool {
 fn is_identity_quat(v: &[f32; 4]) -> bool {
     v == &[0.0, 0.0, 0.0, 1.0]
 }
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Mesh {
     pub name: String,
     pub vertices: u32,
     pub indices: u32,
+    /// N279: glTF primitive count merged into `geometry` (0 when not glTF).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub primitives: u32,
     pub material: Option<usize>,
     /// First mesh primitive's POSITION samples, projected to pixel space.
     /// Empty when the accessor bytes are not embedded. Capped at 64 points.
