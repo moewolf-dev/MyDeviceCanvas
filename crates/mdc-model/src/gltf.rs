@@ -234,12 +234,39 @@ impl GltfImporter {
                                             decode_weights_mesh(a, b, MAX_GEOMETRY_VERTICES)
                                         })
                                         .unwrap_or_default();
+                                    // N224: geometry morph targets (POSITION deltas).
+                                    let mut morph_targets = Vec::new();
+                                    if let Some(targets) =
+                                        primitive.get("targets").and_then(Value::as_array)
+                                    {
+                                        for target in targets.iter().take(MAX_MORPH_TARGETS) {
+                                            let Some(index) =
+                                                target.get("POSITION").and_then(Value::as_u64)
+                                            else {
+                                                continue;
+                                            };
+                                            let Some(accessor) = accessors.get(index as usize)
+                                            else {
+                                                continue;
+                                            };
+                                            let bytes = accessor
+                                                .get("bufferView")
+                                                .and_then(Value::as_u64)
+                                                .and_then(&view_bytes);
+                                            morph_targets.push(decode_positions(
+                                                accessor,
+                                                bytes,
+                                                MAX_GEOMETRY_VERTICES,
+                                            ));
+                                        }
+                                    }
                                     geometry = Some(crate::ir::MeshGeometry {
                                         positions,
                                         indices,
                                         uv,
                                         skin_joints,
                                         skin_weights,
+                                        morph_targets,
                                     });
                                 }
                             }
@@ -1663,6 +1690,10 @@ mod tests {
         assert_eq!(mesh.morph_targets.len(), 1);
         assert_eq!(mesh.morph_targets[0][0], [1.0, 0.0, 0.0]);
         assert_eq!(mesh.morph_weights, vec![0.5]);
+        // N224: the same deltas are imported into the full geometry.
+        let geometry = mesh.geometry.as_ref().expect("geometry");
+        assert_eq!(geometry.morph_targets.len(), 1);
+        assert_eq!(geometry.morph_targets[0][0], [1.0, 0.0, 0.0]);
 
         let track = &model.animations[0].tracks[0];
         assert_eq!(track.path, "weights");

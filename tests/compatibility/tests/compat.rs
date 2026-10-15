@@ -626,6 +626,7 @@ fn full_geometry_reaches_the_device_and_renders() {
         uv: Vec::new(),
         skin_joints: Vec::new(),
         skin_weights: Vec::new(),
+        morph_targets: Vec::new(),
     };
     let mesh = mdc_model::Mesh {
         name: "quad".into(),
@@ -719,6 +720,7 @@ fn material_colour_tints_the_package_texture_on_the_device() {
             uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
+            morph_targets: Vec::new(),
         }),
         ..Mesh::default()
     };
@@ -776,6 +778,98 @@ fn material_colour_tints_the_package_texture_on_the_device() {
 }
 
 #[test]
+fn device_renders_a_morph_animated_geometry_package() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_model::{Animation, AnimationTrack, Material, Mesh, MeshGeometry, Model, Node};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "face".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "face".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.5, 0.5, 0.0],
+                    [-0.5, 0.5, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                uv: Vec::new(),
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                morph_targets: vec![vec![
+                    [0.6, 0.0, 0.0],
+                    [0.6, 0.0, 0.0],
+                    [0.6, 0.0, 0.0],
+                    [0.6, 0.0, 0.0],
+                ]],
+            }),
+            morph_weights: vec![0.0],
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "red".into(),
+            texture: None,
+            color: Some([255, 0, 0]),
+        }],
+        animations: vec![Animation {
+            name: "smile".into(),
+            channels: 1,
+            tracks: vec![AnimationTrack {
+                node: 0,
+                path: "weights".into(),
+                interpolation: "LINEAR".into(),
+                times: vec![0.0, 1.0],
+                values: vec![0.0, 1.0],
+            }],
+        }],
+        ..Model::default()
+    };
+    let package = mdc_bake::mesh_package_with_texture(
+        &model,
+        &mdc_model::RendererCapability::full_3d(),
+        None,
+    )
+    .unwrap();
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .install_package(&package.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    session.start_mirror("main", "full-frame", 30).unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    device.clock.advance(0);
+    device.emit_mirror_frame().unwrap();
+    session.poll().unwrap();
+    let neutral = session.take_mirror_frame().expect("first frame").bytes;
+    device.clock.advance(1000);
+    device.emit_mirror_frame().unwrap();
+    session.poll().unwrap();
+    let smiled = session.take_mirror_frame().expect("second frame").bytes;
+    assert_ne!(
+        neutral, smiled,
+        "the geometry morph changed the mirrored frame"
+    );
+}
+
+#[test]
 fn device_renders_an_animated_mesh_package_scene() {
     use mdc_core::{ConnectionState, Session};
     use mdc_model::{Animation, AnimationTrack, Material, Mesh, MeshGeometry, Model, Node};
@@ -797,6 +891,7 @@ fn device_renders_an_animated_mesh_package_scene() {
             uv: Vec::new(),
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
+            morph_targets: Vec::new(),
         }),
         ..Mesh::default()
     };
@@ -899,6 +994,7 @@ fn multi_mesh_scene_bakes_and_reaches_a_device() {
             uv: Vec::new(),
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
+            morph_targets: Vec::new(),
         }),
         ..Mesh::default()
     };
@@ -979,6 +1075,7 @@ fn textured_geometry_package_renders_on_the_device() {
             uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
+            morph_targets: Vec::new(),
         }),
         ..Mesh::default()
     };

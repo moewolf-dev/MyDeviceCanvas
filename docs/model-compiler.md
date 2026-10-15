@@ -63,7 +63,10 @@ A decode bomb is refused before any decode buffer is created.
 - N163: a primitive with embedded bytes also imports bounded **full geometry**
   into `Mesh.geometry` — POSITION/indices/`TEXCOORD_0`/`JOINTS_0`/`WEIGHTS_0`,
   capped at `MAX_GEOMETRY_VERTICES` (4096) and `MAX_GEOMETRY_INDICES` (16384). The
-  preview stays a 64-vertex summary; geometry is the real mesh.
+  preview stays a 64-vertex summary; geometry is the real mesh. N223: the same
+  primitive's morph `targets[].POSITION` deltas become
+  `MeshGeometry.morph_targets` (per-target, bounded by `MAX_MORPH_TARGETS`), so a
+  blend shape deforms the full mesh, not just the preview.
 - N174: `pbrMetallicRoughness.baseColorFactor` becomes `Material.color`
   (8-bit RGB; alpha ignored); `Material::color_rgb565()` packs it. The geometry
   and preview renders prefer this colour over their fallback when no texture is
@@ -159,6 +162,10 @@ Morph targets deform before skinning: `apply_morphs(base, targets, weights)`
 adds `Σ wᵢ · deltaᵢ`; `morph_weights_at(animation, node, time)` samples a
 `weights` channel (component count derived from the value/key ratio). Missing or
 extra weights are handled without guessing — an out-of-range weight is ignored.
+N225/N226: the same path deforms the **full geometry** — `render_geometry_at`,
+`render_scene_at` and `render_package_scene` sample the mesh node's `weights`
+channel and morph `MeshGeometry.positions` before skinning, so a blend shape
+animates the real mesh (and, on a strong device, the mirrored frame).
 
 This is a host-side approximation: only the capped preview vertices are deformed,
 there is no texture lookup, and it is not a full skinned-mesh device renderer.

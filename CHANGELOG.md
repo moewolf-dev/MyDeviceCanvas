@@ -2,6 +2,16 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.35] — Geometry morph targets (N223–N232)
+
+### Added
+
+- `MeshGeometry.morph_targets` + glTF POSITION delta import (N223, N224)
+- `morphed_positions` (base + Σ w·delta) applied by `render_geometry_at`,
+  `render_scene_at` and `render_package_scene` before skinning (N225, N226)
+- `mdc render-mesh` / `mdc package` report `morphTargets` (N227)
+- Geometry morph unit test, a device morph-mirror fixture and a render soak (N228–N230)
+
 ## [0.1.34] — Live2D motion3 curves (N213–N222)
 
 ### Added

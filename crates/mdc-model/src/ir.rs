@@ -51,6 +51,10 @@ pub struct MeshGeometry {
     /// WEIGHTS_0, parallel to `positions` (empty when absent).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skin_weights: Vec<[f32; 4]>,
+    /// N223: per-target POSITION deltas for the full geometry (blend shapes),
+    /// parallel to `positions`. Capped by `MAX_MORPH_TARGETS`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub morph_targets: Vec<Vec<[f32; 3]>>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

@@ -454,6 +454,13 @@ fn cmd_package(
             "nodes": package.package.nodes.len(),
             "meshes": package.package.meshes.len(),
             "animations": package.package.animations.len(),
+            "morphTargets": model
+                .meshes
+                .iter()
+                .filter_map(|m| m.geometry.as_ref())
+                .map(|g| g.morph_targets.len())
+                .max()
+                .unwrap_or(0),
             "package_bytes": bytes.len(),
             "output": out,
         }))?
@@ -854,6 +861,13 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     };
     let textured = texture.is_some() && has_uv;
     let has_geometry = model.meshes.iter().any(|m| m.geometry.is_some());
+    let morph_targets = model
+        .meshes
+        .iter()
+        .filter_map(|m| m.geometry.as_ref())
+        .map(|g| g.morph_targets.len())
+        .max()
+        .unwrap_or(0);
     let texture_arg = if textured { texture.as_ref() } else { None };
     // N186: render every mesh node of the model, or a single mesh with --single.
     let frame = if single {
@@ -889,6 +903,7 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "single": single,
             "textured": textured,
             "geometry": has_geometry,
+            "morphTargets": morph_targets,
             "output": out,
         }))?
     );
@@ -3378,6 +3393,7 @@ mod tests {
                     uv: Vec::new(),
                     skin_joints: Vec::new(),
                     skin_weights: Vec::new(),
+                    morph_targets: Vec::new(),
                 }),
                 ..mdc_model::Mesh::default()
             }],

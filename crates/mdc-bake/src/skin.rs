@@ -441,6 +441,25 @@ fn resolve_skinned(model: &Model, animation_index: usize) -> Result<Skinned<'_>,
     })
 }
 
+/// N225: morph a geometry's positions by the sampled weights (base + Σ w·delta).
+/// Uses the node's `weights` channel when present, else the mesh's default
+/// weights; a geometry with no targets returns its base positions.
+fn morphed_positions(
+    geometry: &mdc_model::MeshGeometry,
+    mesh: &Mesh,
+    animation: Option<&Animation>,
+    node: Option<usize>,
+    time: f32,
+) -> Vec<[f32; 3]> {
+    if geometry.morph_targets.is_empty() {
+        return geometry.positions.clone();
+    }
+    let weights = node
+        .and_then(|node| animation.and_then(|a| morph_weights_at(a, node, time)))
+        .unwrap_or_else(|| mesh.morph_weights.clone());
+    apply_morphs(&geometry.positions, &geometry.morph_targets, &weights)
+}
+
 /// Skinned + morphed preview points at `time`, projected into the sprite.
 fn skinned_points_at(
     model: &Model,
@@ -618,10 +637,18 @@ pub fn render_geometry_at(
     let tint = material_color(model, skinned.mesh);
     let fill = tint.unwrap_or(color);
     let worlds = pose_world_matrices(&model.nodes, skinned.animation, time);
+    // N226: morph the geometry before skinning.
+    let morphed = morphed_positions(
+        geometry,
+        skinned.mesh,
+        Some(skinned.animation),
+        skinned.mesh_node,
+        time,
+    );
     let deformed = skin_arrays(
         &geometry.skin_joints,
         &geometry.skin_weights,
-        &geometry.positions,
+        &morphed,
         skinned.skeleton,
         &worlds,
     );
@@ -755,24 +782,30 @@ pub fn render_scene_at(
         let Some(geometry) = resolve_geometry(mesh) else {
             continue;
         };
+        // N226: morph the geometry before skinning / placement.
+        let morphed = morphed_positions(
+            geometry,
+            mesh,
+            model.animations.get(animation_index),
+            Some(index),
+            time,
+        );
         let deformed: Vec<[f32; 3]> = if !geometry.skin_joints.is_empty() {
             match skeleton {
                 Some(skeleton) => skin_arrays(
                     &geometry.skin_joints,
                     &geometry.skin_weights,
-                    &geometry.positions,
+                    &morphed,
                     skeleton,
                     &worlds,
                 ),
-                None => geometry
-                    .positions
+                None => morphed
                     .iter()
                     .map(|p| transform_point(&worlds[index], *p))
                     .collect(),
             }
         } else {
-            geometry
-                .positions
+            morphed
                 .iter()
                 .map(|p| transform_point(&worlds[index], *p))
                 .collect()
@@ -982,24 +1015,30 @@ pub fn render_package_scene(
         let Some(geometry) = resolve_geometry(mesh) else {
             continue;
         };
+        // N226: morph the geometry before skinning / placement.
+        let morphed = morphed_positions(
+            geometry,
+            mesh,
+            package.animations.first(),
+            Some(index),
+            time,
+        );
         let deformed: Vec<[f32; 3]> = if !geometry.skin_joints.is_empty() {
             match skeleton {
                 Some(skeleton) => skin_arrays(
                     &geometry.skin_joints,
                     &geometry.skin_weights,
-                    &geometry.positions,
+                    &morphed,
                     skeleton,
                     &worlds,
                 ),
-                None => geometry
-                    .positions
+                None => morphed
                     .iter()
                     .map(|p| transform_point(&worlds[index], *p))
                     .collect(),
             }
         } else {
-            geometry
-                .positions
+            morphed
                 .iter()
                 .map(|p| transform_point(&worlds[index], *p))
                 .collect()
@@ -1418,6 +1457,7 @@ mod tests {
             uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
             skin_joints: vec![[1, 0, 0, 0]; 4],
             skin_weights: vec![[1.0, 0.0, 0.0, 0.0]; 4],
+            morph_targets: Vec::new(),
         });
         let frame = render_geometry_at(&model, 0, 0.0, (16, 16), None, 0xF800).unwrap();
         let covered = frame
@@ -1447,6 +1487,7 @@ mod tests {
             uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
+            morph_targets: Vec::new(),
         }
     }
 
@@ -1557,6 +1598,57 @@ mod tests {
         let posed = render_package_scene(&package.package, 1.0, (24, 24)).unwrap();
         assert_eq!((bind.width, bind.height), (24, 24));
         assert_ne!(bind.rgb565, posed.rgb565, "node animation moved a mesh");
+    }
+
+    #[test]
+    fn geometry_morphs_animate_with_the_weights() {
+        let mut geometry = quad_geometry();
+        geometry.morph_targets = vec![vec![
+            [0.5, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
+        ]];
+        let model = Model {
+            source: "test".into(),
+            nodes: vec![Node {
+                name: "root".into(),
+                mesh: Some(0),
+                ..Node::default()
+            }],
+            meshes: vec![mdc_model::Mesh {
+                name: "face".into(),
+                vertices: 4,
+                indices: 6,
+                material: Some(0),
+                geometry: Some(geometry),
+                morph_weights: vec![0.0],
+                ..mdc_model::Mesh::default()
+            }],
+            materials: vec![mdc_model::Material {
+                name: "red".into(),
+                texture: None,
+                color: Some([255, 0, 0]),
+            }],
+            animations: vec![Animation {
+                name: "smile".into(),
+                channels: 1,
+                tracks: vec![AnimationTrack {
+                    node: 0,
+                    path: "weights".into(),
+                    interpolation: "LINEAR".into(),
+                    times: vec![0.0, 1.0],
+                    values: vec![0.0, 1.0],
+                }],
+            }],
+            ..Model::default()
+        };
+        let neutral = render_scene_at(&model, 0, 0.0, (24, 24), None, 0xFFFF).unwrap();
+        let smiled = render_scene_at(&model, 0, 1.0, (24, 24), None, 0xFFFF).unwrap();
+        assert_ne!(
+            neutral.rgb565, smiled.rgb565,
+            "geometry morph moved the quad"
+        );
     }
 
     #[test]

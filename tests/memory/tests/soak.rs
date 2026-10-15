@@ -102,6 +102,73 @@ fn mirror_receiver_soak_is_bounded() {
 }
 
 #[test]
+fn geometry_morph_render_soak_is_bounded() {
+    use mdc_model::{Animation, AnimationTrack, Material, Mesh, MeshGeometry, Model, Node};
+
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "face".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "face".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.5, 0.5, 0.0],
+                    [-0.5, 0.5, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                uv: Vec::new(),
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                morph_targets: vec![vec![
+                    [0.6, 0.0, 0.0],
+                    [0.6, 0.0, 0.0],
+                    [0.6, 0.0, 0.0],
+                    [0.6, 0.0, 0.0],
+                ]],
+            }),
+            morph_weights: vec![0.0],
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "red".into(),
+            texture: None,
+            color: Some([255, 0, 0]),
+        }],
+        animations: vec![Animation {
+            name: "smile".into(),
+            channels: 1,
+            tracks: vec![AnimationTrack {
+                node: 0,
+                path: "weights".into(),
+                interpolation: "LINEAR".into(),
+                times: vec![0.0, 1.0],
+                values: vec![0.0, 1.0],
+            }],
+        }],
+        ..Model::default()
+    };
+    let mut bytes = 0usize;
+    for i in 0..100 {
+        let time = (i % 10) as f32 / 10.0;
+        let frame = mdc_bake::render_scene_at(&model, 0, time, (32, 32), None, 0xFFFF).unwrap();
+        if bytes == 0 {
+            bytes = frame.rgb565.len();
+        }
+        assert_eq!(frame.rgb565.len(), bytes, "frame size is constant");
+    }
+    assert!(bytes > 0);
+}
+
+#[test]
 fn motion_curve_sampling_soak_is_bounded() {
     // A 1s linear ramp sampled 100k times: deterministic, allocation-free.
     let segments = [0.0, 0.0, 1.0, 10.0];
@@ -142,6 +209,7 @@ fn linear_filter_render_soak_is_bounded() {
                 uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
                 skin_joints: Vec::new(),
                 skin_weights: Vec::new(),
+                morph_targets: Vec::new(),
             }),
             ..Mesh::default()
         }],
@@ -189,6 +257,7 @@ fn device_mesh_scene_render_soak_is_bounded() {
             uv: Vec::new(),
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
+            morph_targets: Vec::new(),
         }),
         ..Mesh::default()
     };
@@ -276,6 +345,7 @@ fn multi_mesh_scene_render_soak_is_bounded() {
             uv: Vec::new(),
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
+            morph_targets: Vec::new(),
         }),
         ..Mesh::default()
     };
@@ -353,6 +423,7 @@ fn textured_mesh_package_soak_is_bounded() {
                 uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
                 skin_joints: Vec::new(),
                 skin_weights: Vec::new(),
+                morph_targets: Vec::new(),
             }),
             ..Mesh::default()
         }],
@@ -406,6 +477,7 @@ fn geometry_render_soak_is_bounded() {
             uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
             skin_joints: vec![[1, 0, 0, 0]; 4],
             skin_weights: vec![[1.0, 0.0, 0.0, 0.0]; 4],
+            morph_targets: Vec::new(),
         }),
         ..Mesh::default()
     };
