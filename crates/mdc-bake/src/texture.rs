@@ -81,11 +81,28 @@ pub(crate) fn raster_textured(
     texture: Option<&TextureMap>,
     fallback: u16,
 ) -> Result<Vec<u8>, BakeError> {
+    let indices: Vec<u32> = indices.iter().map(|&i| u32::from(i)).collect();
+    raster_indexed(points, uvs, &indices, width, height, texture, fallback, 64)
+}
+
+/// N165: raster a geometry's triangles (u32 indices) into a fresh framebuffer,
+/// bounded by `max_points` vertices.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn raster_indexed(
+    points: &[(i16, i16)],
+    uvs: Option<&[[f32; 2]]>,
+    indices: &[u32],
+    width: u32,
+    height: u32,
+    texture: Option<&TextureMap>,
+    fallback: u16,
+    max_points: usize,
+) -> Result<Vec<u8>, BakeError> {
     if width == 0 || height == 0 || width > 1024 || height > 1024 {
         return Err(BakeError::Budget(width, height));
     }
-    if points.len() > 64 {
-        return Err(BakeError::FrameCount(64, points.len()));
+    if points.len() > max_points {
+        return Err(BakeError::FrameCount(max_points, points.len()));
     }
     let mut pixels = vec![0u8; (width as usize) * (height as usize) * 2];
     let triangles: Vec<[usize; 3]> = if indices.len() >= 3 {

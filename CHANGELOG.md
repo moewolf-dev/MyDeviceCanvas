@@ -2,6 +2,19 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.29] — Bounded full-mesh geometry (N163–N172)
+
+### Added
+
+- IR `Mesh.geometry` (`MeshGeometry`): POSITION/indices/UV/skin, bounded to 4096
+  vertices / 16384 indices (N163)
+- glTF importer decodes full geometry per primitive (N164)
+- `mdc-bake` `raster_indexed`, `render_geometry_at` (aspect-fit, skinned, textured)
+  and `bake_geometry_frames` / `bake_geometry_to_package` (N165–N167)
+- `mdc render-mesh` prefers full geometry and reports `geometry` (N168)
+- `FakeDevice` projects and renders accepted full geometry (N169)
+- Geometry compat fixture and render soak (N170, N171)
+
 ## [0.1.28] — Animation cross-fade + scene primitives (N153–N162)
 
 ### Added

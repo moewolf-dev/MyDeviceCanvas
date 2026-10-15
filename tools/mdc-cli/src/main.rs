@@ -756,7 +756,8 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         None => None,
     };
     let textured = texture.is_some() && has_uv;
-    let frame = mdc_bake::render_frame_at(
+    let has_geometry = model.meshes.iter().any(|m| m.geometry.is_some());
+    let frame = mdc_bake::render_geometry_at(
         &model,
         animation,
         time,
@@ -776,6 +777,7 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "time": time,
             "sprite": format!("{sprite}x{sprite}"),
             "textured": textured,
+            "geometry": has_geometry,
             "output": out,
         }))?
     );

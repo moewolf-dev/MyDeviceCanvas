@@ -102,6 +102,82 @@ fn mirror_receiver_soak_is_bounded() {
 }
 
 #[test]
+fn geometry_render_soak_is_bounded() {
+    use mdc_model::{Animation, AnimationTrack, Mesh, MeshGeometry, Model, Node, Skeleton};
+
+    let mesh = Mesh {
+        name: "quad".into(),
+        vertices: 4,
+        indices: 6,
+        material: None,
+        skin_joints: vec![[1, 0, 0, 0]; 4],
+        skin_weights: vec![[1.0, 0.0, 0.0, 0.0]; 4],
+        geometry: Some(MeshGeometry {
+            positions: vec![
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            skin_joints: vec![[1, 0, 0, 0]; 4],
+            skin_weights: vec![[1.0, 0.0, 0.0, 0.0]; 4],
+        }),
+        ..Mesh::default()
+    };
+    let identity = [
+        1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![
+            Node {
+                name: "root".into(),
+                children: vec![1],
+                ..Node::default()
+            },
+            Node {
+                name: "j1".into(),
+                mesh: Some(0),
+                ..Node::default()
+            },
+        ],
+        meshes: vec![mesh],
+        skeletons: vec![Skeleton {
+            name: "rig".into(),
+            bones: 2,
+            joint_nodes: vec![0, 1],
+            inverse_bind: vec![identity, identity],
+        }],
+        animations: vec![Animation {
+            name: "spin".into(),
+            channels: 1,
+            tracks: vec![AnimationTrack {
+                node: 1,
+                path: "rotation".into(),
+                interpolation: "LINEAR".into(),
+                times: vec![0.0, 1.0],
+                values: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            }],
+        }],
+        ..Model::default()
+    };
+    let texture = mdc_bake::TextureMap::from_rgb565(2, 1, vec![0x00, 0xF8, 0xE0, 0x07]).unwrap();
+    let mut bytes = 0usize;
+    for i in 0..100 {
+        let time = (i % 10) as f32 / 10.0;
+        let frame = mdc_bake::render_geometry_at(&model, 0, time, (32, 32), Some(&texture), 0x001F)
+            .unwrap();
+        if bytes == 0 {
+            bytes = frame.rgb565.len();
+        }
+        assert_eq!(frame.rgb565.len(), bytes, "frame size is constant");
+    }
+    assert!(bytes > 0);
+}
+
+#[test]
 fn scene_primitive_soak_is_bounded() {
     use mdc_core::Session;
     use mdc_protocol::SceneNode;

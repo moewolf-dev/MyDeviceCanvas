@@ -60,6 +60,10 @@ A decode bomb is refused before any decode buffer is created.
   still imports for a track-less stub.
 - N113: `TEXCOORD_0` (VEC2 f32, or normalized u8/u16) becomes `Mesh.preview_uv`,
   parallel to `preview_positions`. Empty means a solid-colour bake.
+- N163: a primitive with embedded bytes also imports bounded **full geometry**
+  into `Mesh.geometry` — POSITION/indices/`TEXCOORD_0`/`JOINTS_0`/`WEIGHTS_0`,
+  capped at `MAX_GEOMETRY_VERTICES` (4096) and `MAX_GEOMETRY_INDICES` (16384). The
+  preview stays a 64-vertex summary; geometry is the real mesh.
 - N123: a primitive's `targets[].POSITION` morph deltas (capped at
   `MAX_MORPH_TARGETS`, 16 per mesh) become `Mesh.morph_targets`, and
   `mesh.weights` becomes `Mesh.morph_weights`. N124: an animation channel with
@@ -175,6 +179,13 @@ mdc render-package rig.mdcpkg --frame 2 --out frame.ppm
 `render_frame_at(model, animation, time, sprite, texture, color)` poses the model
 at one time (morph → skin → project → raster); `mdc render-mesh` wraps it and
 `mdc render-package` extracts one atlas frame from a sealed `MdcPackage`.
+
+When a mesh carries full geometry, `render_geometry_at` skins `Mesh.geometry`,
+fits the bind-pose XY box into the target (aspect preserved, Y flipped, centered
+so frames do not jitter) and rasterises the real triangle list with UVs.
+`bake_geometry_frames` / `bake_geometry_to_package` do the same across an
+animation. `mdc render-mesh` uses the geometry path automatically when present;
+the device double (`FakeDevice`) projects and draws the accepted geometry too.
 
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a

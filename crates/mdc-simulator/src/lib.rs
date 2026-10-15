@@ -458,6 +458,40 @@ fn draw_line(pixels: &mut [u8], width: u32, height: u32, rect: [u16; 4], color: 
     }
 }
 
+/// N169: aspect-fit model points into a `width × height` framebuffer (Y flipped,
+/// centered) for device-side geometry preview.
+fn fit_preview(points: &[[f32; 3]], width: u32, height: u32) -> Vec<(i16, i16)> {
+    let Some(first) = points.first() else {
+        return Vec::new();
+    };
+    let mut min = [first[0], first[1]];
+    let mut max = [first[0], first[1]];
+    for p in points {
+        min[0] = min[0].min(p[0]);
+        min[1] = min[1].min(p[1]);
+        max[0] = max[0].max(p[0]);
+        max[1] = max[1].max(p[1]);
+    }
+    let w = width.saturating_sub(1) as f32;
+    let h = height.saturating_sub(1) as f32;
+    let extent_x = (max[0] - min[0]).max(1e-4);
+    let extent_y = (max[1] - min[1]).max(1e-4);
+    let scale = (w / extent_x).min(h / extent_y);
+    let offset_x = (w - extent_x * scale) / 2.0;
+    let offset_y = (h - extent_y * scale) / 2.0;
+    points
+        .iter()
+        .map(|p| {
+            let px = offset_x + (p[0] - min[0]) * scale;
+            let py = offset_y + (max[1] - p[1]) * scale;
+            (
+                px.round().clamp(0.0, w) as i16,
+                py.round().clamp(0.0, h) as i16,
+            )
+        })
+        .collect()
+}
+
 /// N80/N138: depth-first scene rasterizer; `rect` nodes fill from their colour,
 /// `group` (or unknown) nodes transform their children.
 fn fill_scene(
@@ -1437,18 +1471,34 @@ impl FakeDevice {
                     self.atlas_sprite = (atlas.sprite_width, atlas.sprite_height);
                 }
                 self.atlas = package.package.atlas.clone();
-                self.preview_xy = package
-                    .package
-                    .meshes
-                    .first()
-                    .map(|mesh| mesh.preview_xy.clone())
-                    .unwrap_or_default();
-                self.preview_indices = package
-                    .package
-                    .meshes
-                    .first()
-                    .map(|mesh| mesh.preview_indices.clone())
-                    .unwrap_or_default();
+                // N169: prefer full geometry when the package carries it; project
+                // it into the framebuffer so the device renders the whole mesh.
+                let mesh = package.package.meshes.first();
+                let geometry_preview = mesh
+                    .and_then(|m| m.geometry.as_ref())
+                    .filter(|g| !g.positions.is_empty())
+                    .map(|geometry| {
+                        let points = fit_preview(
+                            &geometry.positions,
+                            u32::from(self.profile.width),
+                            u32::from(self.profile.height),
+                        );
+                        let indices: Vec<u16> = geometry
+                            .indices
+                            .iter()
+                            .take(usize::from(u16::MAX))
+                            .map(|i| *i as u16)
+                            .collect();
+                        (points, indices)
+                    });
+                if let Some((points, indices)) = geometry_preview {
+                    self.preview_xy = points;
+                    self.preview_indices = indices;
+                } else {
+                    self.preview_xy = mesh.map(|m| m.preview_xy.clone()).unwrap_or_default();
+                    self.preview_indices =
+                        mesh.map(|m| m.preview_indices.clone()).unwrap_or_default();
+                }
                 self.stop_animation();
                 self.metrics.packages_received = self.metrics.packages_received.saturating_add(1);
                 self.ack(packet.request_id, self.current_frame_id, true, false)

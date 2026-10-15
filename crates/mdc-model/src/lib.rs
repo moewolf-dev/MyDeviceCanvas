@@ -23,8 +23,8 @@ pub use backend::{
 };
 pub use gltf::GltfImporter;
 pub use ir::{
-    Animation, AnimationTrack, ImportLimits, Layer, Material, Mesh, Model, ModelError, Node,
-    Skeleton, Sprite, Texture,
+    Animation, AnimationTrack, ImportLimits, Layer, Material, Mesh, MeshGeometry, Model,
+    ModelError, Node, Skeleton, Sprite, Texture, MAX_GEOMETRY_INDICES, MAX_GEOMETRY_VERTICES,
 };
 pub use live2d::{ImportedBundle, Live2DBundle, Live2DImporter, MotionInfo};
 pub use optimizer::{plan as plan_optimization, OptimizerPlan, TexturePlan};

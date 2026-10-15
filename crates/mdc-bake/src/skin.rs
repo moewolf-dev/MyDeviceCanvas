@@ -328,19 +328,37 @@ pub fn skin_points(
     worlds: &[Mat4],
     positions: &[[f32; 3]],
 ) -> Vec<[f32; 3]> {
+    skin_arrays(
+        &mesh.skin_joints,
+        &mesh.skin_weights,
+        positions,
+        skeleton,
+        worlds,
+    )
+}
+
+/// Linear blend skinning with explicit joint/weight arrays (used by the
+/// full-geometry path).
+pub fn skin_arrays(
+    joints: &[[u16; 4]],
+    weights: &[[f32; 4]],
+    positions: &[[f32; 3]],
+    skeleton: &Skeleton,
+    worlds: &[Mat4],
+) -> Vec<[f32; 3]> {
     let mut out = Vec::with_capacity(positions.len());
     for (i, position) in positions.iter().enumerate() {
-        let joints = mesh.skin_joints.get(i);
-        let weights = mesh.skin_weights.get(i);
+        let vertex_joints = joints.get(i);
+        let vertex_weights = weights.get(i);
         let mut acc = [0.0f32; 3];
         let mut total = 0.0f32;
-        if let (Some(joints), Some(weights)) = (joints, weights) {
+        if let (Some(vertex_joints), Some(vertex_weights)) = (vertex_joints, vertex_weights) {
             for k in 0..4 {
-                let weight = weights[k];
+                let weight = vertex_weights[k];
                 if weight == 0.0 {
                     continue;
                 }
-                let joint = joints[k] as usize;
+                let joint = vertex_joints[k] as usize;
                 let Some(&node) = skeleton.joint_nodes.get(joint) else {
                     continue;
                 };
@@ -401,7 +419,9 @@ fn resolve_skinned(model: &Model, animation_index: usize) -> Result<Skinned<'_>,
         .meshes
         .iter()
         .enumerate()
-        .find(|(_, m)| !m.skin_joints.is_empty() && !m.preview_positions.is_empty())
+        .find(|(_, m)| {
+            !m.skin_joints.is_empty() && (!m.preview_positions.is_empty() || m.geometry.is_some())
+        })
         .ok_or_else(|| BakeError::Decode("model has no skinned preview mesh".into()))?;
     let mesh_node = model.nodes.iter().position(|n| n.mesh == Some(mesh_index));
     let skeleton = model
@@ -516,6 +536,154 @@ pub fn render_frame_at(
         height: sprite.1,
         rgb565,
     })
+}
+
+/// N166: the XY bounding box of a point cloud (for `fit_to_box`).
+fn bbox_xy(points: &[[f32; 3]]) -> Option<([f32; 2], [f32; 2])> {
+    let first = points.first()?;
+    let mut min = [first[0], first[1]];
+    let mut max = [first[0], first[1]];
+    for p in points {
+        min[0] = min[0].min(p[0]);
+        min[1] = min[1].min(p[1]);
+        max[0] = max[0].max(p[0]);
+        max[1] = max[1].max(p[1]);
+    }
+    Some((min, max))
+}
+
+/// N166: aspect-fit `points` into a `width × height` box (Y flipped so model-up
+/// is screen-up), centered. Shared by every frame so the animation does not jitter.
+fn fit_to_box(
+    points: &[[f32; 3]],
+    min: [f32; 2],
+    max: [f32; 2],
+    width: u32,
+    height: u32,
+) -> Vec<(i16, i16)> {
+    let w = width.saturating_sub(1) as f32;
+    let h = height.saturating_sub(1) as f32;
+    let extent_x = (max[0] - min[0]).max(1e-4);
+    let extent_y = (max[1] - min[1]).max(1e-4);
+    let scale = (w / extent_x).min(h / extent_y);
+    let offset_x = (w - extent_x * scale) / 2.0;
+    let offset_y = (h - extent_y * scale) / 2.0;
+    points
+        .iter()
+        .map(|p| {
+            let px = offset_x + (p[0] - min[0]) * scale;
+            let py = offset_y + (max[1] - p[1]) * scale;
+            (
+                px.round().clamp(0.0, w) as i16,
+                py.round().clamp(0.0, h) as i16,
+            )
+        })
+        .collect()
+}
+
+/// N165/N166: the geometry used for a render, or `None` when the mesh only has
+/// a preview. The geometry's own skin arrays are used when present.
+fn resolve_geometry(mesh: &Mesh) -> Option<&mdc_model::MeshGeometry> {
+    mesh.geometry.as_ref().filter(|g| !g.positions.is_empty())
+}
+
+/// N166: render one posed frame of the mesh's full geometry into `size` pixels.
+/// Falls back to the preview render when the mesh carries no geometry.
+pub fn render_geometry_at(
+    model: &Model,
+    animation_index: usize,
+    time: f32,
+    size: (u32, u32),
+    texture: Option<&crate::TextureMap>,
+    color: u16,
+) -> Result<BakedTexture, BakeError> {
+    if size.0 == 0 || size.1 == 0 || size.0 > 1024 || size.1 > 1024 {
+        return Err(BakeError::Budget(size.0, size.1));
+    }
+    let skinned = resolve_skinned(model, animation_index)?;
+    let Some(geometry) = resolve_geometry(skinned.mesh) else {
+        return render_frame_at(model, animation_index, time, size, texture, color);
+    };
+    let worlds = pose_world_matrices(&model.nodes, skinned.animation, time);
+    let deformed = skin_arrays(
+        &geometry.skin_joints,
+        &geometry.skin_weights,
+        &geometry.positions,
+        skinned.skeleton,
+        &worlds,
+    );
+    // Fit against the bind-pose box so the whole animation shares one frame.
+    let Some((min, max)) = bbox_xy(&geometry.positions) else {
+        return Err(BakeError::Decode("geometry has no positions".into()));
+    };
+    let points = fit_to_box(&deformed, min, max, size.0, size.1);
+    let uvs: Option<&[[f32; 2]]> =
+        if geometry.uv.len() >= geometry.positions.len() && !geometry.uv.is_empty() {
+            Some(&geometry.uv)
+        } else {
+            None
+        };
+    let rgb565 = crate::texture::raster_indexed(
+        &points,
+        uvs,
+        &geometry.indices,
+        size.0,
+        size.1,
+        texture,
+        color,
+        mdc_model::MAX_GEOMETRY_VERTICES,
+    )?;
+    Ok(BakedTexture {
+        width: size.0,
+        height: size.1,
+        rgb565,
+    })
+}
+
+/// N167: bake `frames` full-geometry poses into an atlas + runtime package.
+pub fn bake_geometry_frames(
+    model: &Model,
+    animation_index: usize,
+    frames: u32,
+    size: (u32, u32),
+    texture: Option<&crate::TextureMap>,
+    color: u16,
+) -> Result<Vec<BakedTexture>, BakeError> {
+    if frames == 0 || frames > 64 {
+        return Err(BakeError::FrameCount(frames as usize, 64));
+    }
+    let skinned = resolve_skinned(model, animation_index)?;
+    let (start, end) = animation_span(skinned.animation);
+    let mut out = Vec::with_capacity(frames as usize);
+    for frame in 0..frames {
+        let time = if frames > 1 {
+            start + (end - start) * (frame as f32) / ((frames - 1) as f32)
+        } else {
+            start
+        };
+        out.push(render_geometry_at(
+            model,
+            animation_index,
+            time,
+            size,
+            texture,
+            color,
+        )?);
+    }
+    Ok(out)
+}
+
+/// N167: bake full-geometry poses straight into a `BakedSprites` package.
+pub fn bake_geometry_to_package(
+    model: &Model,
+    animation_index: usize,
+    frames: u32,
+    size: (u32, u32),
+    texture: Option<&crate::TextureMap>,
+    color: u16,
+) -> Result<mdc_model::MdcPackage, BakeError> {
+    let baked = bake_geometry_frames(model, animation_index, frames, size, texture, color)?;
+    frames_to_package(baked, frames, size)
 }
 
 /// N111: bake `frames` poses of the first skinned mesh in `model`, sampled from
@@ -880,6 +1048,38 @@ mod tests {
         let texture = crate::TextureMap::from_rgb565(2, 1, vec![0x00, 0xF8, 0xE0, 0x07]).unwrap();
         let textured = render_frame_at(&model, 0, 0.0, (16, 16), Some(&texture), 0x001F).unwrap();
         assert!(textured.rgb565.chunks_exact(2).any(|px| px == [0x00, 0xF8]));
+    }
+
+    #[test]
+    fn geometry_render_draws_the_full_mesh() {
+        use mdc_model::MeshGeometry;
+        let mut model = skinned_model();
+        model.meshes[0].geometry = Some(MeshGeometry {
+            positions: vec![
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            skin_joints: vec![[1, 0, 0, 0]; 4],
+            skin_weights: vec![[1.0, 0.0, 0.0, 0.0]; 4],
+        });
+        let frame = render_geometry_at(&model, 0, 0.0, (16, 16), None, 0xF800).unwrap();
+        let covered = frame
+            .rgb565
+            .chunks_exact(2)
+            .filter(|px| px.iter().any(|b| *b != 0))
+            .count();
+        // A fitted quad at 16×16 covers many pixels, far more than one triangle.
+        assert!(covered > 40, "quad area covered {covered}");
+        assert_eq!((frame.width, frame.height), (16, 16));
+
+        let package = bake_geometry_to_package(&model, 0, 3, (16, 16), None, 0xF800).unwrap();
+        assert_eq!(package.manifest.mode, mdc_model::PackageMode::BakedSprites);
+        let bytes = package.to_bytes().unwrap();
+        assert_eq!(mdc_model::MdcPackage::from_bytes(&bytes).unwrap(), package);
     }
 
     #[test]

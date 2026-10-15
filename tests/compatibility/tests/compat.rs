@@ -608,6 +608,77 @@ fn textured_bake_refuses_an_over_budget_texture() {
 }
 
 #[test]
+fn full_geometry_reaches_the_device_and_renders() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_model::{MeshGeometry, Node};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let geometry = MeshGeometry {
+        positions: vec![
+            [-0.5, -0.5, 0.0],
+            [0.5, -0.5, 0.0],
+            [0.5, 0.5, 0.0],
+            [-0.5, 0.5, 0.0],
+        ],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        uv: Vec::new(),
+        skin_joints: Vec::new(),
+        skin_weights: Vec::new(),
+    };
+    let mesh = mdc_model::Mesh {
+        name: "quad".into(),
+        vertices: 4,
+        indices: 6,
+        material: None,
+        geometry: Some(geometry),
+        ..mdc_model::Mesh::default()
+    };
+    let package = mdc_model::DevicePackage {
+        target: "linux-mesh".into(),
+        mode: mdc_model::PackageMode::Mesh,
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![mesh],
+        textures: Vec::new(),
+        materials: Vec::new(),
+        skeletons: Vec::new(),
+        animations: Vec::new(),
+        sprites: Vec::new(),
+        layers: Vec::new(),
+        estimated_bytes: 48,
+        atlas: None,
+    };
+    let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 16,
+        height: 16,
+        renderer_mesh2d: true,
+        renderer_max_vertices: 4096,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .install_package(&sealed.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.package_ready());
+    assert!(device.render_preview());
+    let covered = (0u16..16)
+        .flat_map(|y| (0u16..16).map(move |x| (x, y)))
+        .filter(|(x, y)| device.pixel_rgb565(*x, *y).unwrap_or(0) != 0)
+        .count();
+    assert!(covered > 40, "device drew the full quad ({covered} px)");
+}
+
+#[test]
 fn scene_circle_and_line_edge_cases_do_not_panic() {
     use mdc_core::{ConnectionState, Session};
     use mdc_protocol::SceneNode;

@@ -5,6 +5,7 @@
 //! buffer is allocated.
 use crate::ir::{
     Animation, ImportLimits, Layer, Material, Mesh, Model, ModelError, Node, Skeleton, Texture,
+    MAX_GEOMETRY_INDICES, MAX_GEOMETRY_VERTICES,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -162,6 +163,7 @@ impl GltfImporter {
             let mut skin_weights: Vec<[f32; 4]> = Vec::new();
             let mut preview_uv: Vec<[f32; 2]> = Vec::new();
             let mut morph_targets: Vec<Vec<[f32; 3]>> = Vec::new();
+            let mut geometry: Option<crate::ir::MeshGeometry> = None;
             if let Some(primitives) = mesh.get("primitives").and_then(Value::as_array) {
                 for primitive in primitives {
                     let attributes = primitive.get("attributes");
@@ -178,6 +180,55 @@ impl GltfImporter {
                                     .and_then(&view_bytes);
                                 preview_positions = decode_preview_positions(accessor, bytes);
                                 preview_xy = preview_positions.iter().map(project_xy).collect();
+                            }
+                        }
+                        // N164: bounded full geometry from the same primitive.
+                        if geometry.is_none() {
+                            if let Some(accessor) = accessors.get(position as usize) {
+                                let bytes = accessor
+                                    .get("bufferView")
+                                    .and_then(Value::as_u64)
+                                    .and_then(&view_bytes);
+                                let positions =
+                                    decode_positions(accessor, bytes, MAX_GEOMETRY_VERTICES);
+                                if !positions.is_empty() {
+                                    let pair = |source: &Value, key: &str| -> Option<(&Value, Option<&[u8]>)> {
+                                        let index = source.get(key).and_then(Value::as_u64)?;
+                                        let accessor = accessors.get(index as usize)?;
+                                        let bytes = accessor
+                                            .get("bufferView")
+                                            .and_then(Value::as_u64)
+                                            .and_then(&view_bytes);
+                                        Some((accessor, bytes))
+                                    };
+                                    let attributes_value =
+                                        attributes.cloned().unwrap_or(Value::Null);
+                                    let indices = pair(primitive, "indices")
+                                        .map(|(a, b)| {
+                                            decode_geometry_indices(a, b, MAX_GEOMETRY_INDICES)
+                                        })
+                                        .unwrap_or_default();
+                                    let uv = pair(&attributes_value, "TEXCOORD_0")
+                                        .map(|(a, b)| decode_uv_mesh(a, b, MAX_GEOMETRY_VERTICES))
+                                        .unwrap_or_default();
+                                    let skin_joints = pair(&attributes_value, "JOINTS_0")
+                                        .map(|(a, b)| {
+                                            decode_joints_mesh(a, b, MAX_GEOMETRY_VERTICES)
+                                        })
+                                        .unwrap_or_default();
+                                    let skin_weights = pair(&attributes_value, "WEIGHTS_0")
+                                        .map(|(a, b)| {
+                                            decode_weights_mesh(a, b, MAX_GEOMETRY_VERTICES)
+                                        })
+                                        .unwrap_or_default();
+                                    geometry = Some(crate::ir::MeshGeometry {
+                                        positions,
+                                        indices,
+                                        uv,
+                                        skin_joints,
+                                        skin_weights,
+                                    });
+                                }
                             }
                         }
                     }
@@ -288,6 +339,7 @@ impl GltfImporter {
                 preview_uv,
                 morph_targets,
                 morph_weights,
+                geometry,
             });
         }
         if meshes.iter().map(|m| u64::from(m.vertices)).sum::<u64>() > limits.max_vertices {
@@ -628,6 +680,11 @@ fn decode_preview_indices(accessor: &Value, bytes: Option<&[u8]>) -> Vec<u16> {
 /// N89/N109: read up to 64 VEC3 float positions in local space. `project_xy`
 /// turns them into the pixel preview; a skinned bake deforms them first.
 fn decode_preview_positions(accessor: &Value, bytes: Option<&[u8]>) -> Vec<[f32; 3]> {
+    decode_positions(accessor, bytes, 64)
+}
+
+/// N163: read up to `max` VEC3 float positions (the full-mesh variant).
+fn decode_positions(accessor: &Value, bytes: Option<&[u8]>, max: usize) -> Vec<[f32; 3]> {
     if accessor.get("componentType").and_then(Value::as_u64) != Some(5126) {
         return Vec::new();
     }
@@ -639,12 +696,193 @@ fn decode_preview_positions(accessor: &Value, bytes: Option<&[u8]>) -> Vec<[f32;
     };
     let mut out = Vec::new();
     let mut offset = 0usize;
-    while offset + 12 <= bytes.len() && out.len() < 64 {
+    while offset + 12 <= bytes.len() && out.len() < max {
         let x = f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap_or([0; 4]));
         let y = f32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap_or([0; 4]));
         let z = f32::from_le_bytes(bytes[offset + 8..offset + 12].try_into().unwrap_or([0; 4]));
         out.push([x, y, z]);
         offset += 12;
+    }
+    out
+}
+
+/// N163: triangle-list indices into the full geometry (u16 or u32).
+fn decode_geometry_indices(accessor: &Value, bytes: Option<&[u8]>, max: usize) -> Vec<u32> {
+    let component = accessor.get("componentType").and_then(Value::as_u64);
+    let Some(bytes) = bytes else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    match component {
+        Some(5123) => {
+            let mut offset = 0usize;
+            while offset + 2 <= bytes.len() && out.len() < max {
+                out.push(u32::from(u16::from_le_bytes([
+                    bytes[offset],
+                    bytes[offset + 1],
+                ])));
+                offset += 2;
+            }
+        }
+        Some(5125) => {
+            let mut offset = 0usize;
+            while offset + 4 <= bytes.len() && out.len() < max {
+                out.push(u32::from_le_bytes(
+                    bytes[offset..offset + 4].try_into().unwrap_or([0; 4]),
+                ));
+                offset += 4;
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// N163: a full-mesh UV list up to `max` elements.
+fn decode_uv_mesh(accessor: &Value, bytes: Option<&[u8]>, max: usize) -> Vec<[f32; 2]> {
+    if accessor.get("type").and_then(Value::as_str) != Some("VEC2") {
+        return Vec::new();
+    }
+    let component = accessor.get("componentType").and_then(Value::as_u64);
+    let normalized = accessor
+        .get("normalized")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let Some(bytes) = bytes else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    match component {
+        Some(5126) => {
+            let mut offset = 0usize;
+            while offset + 8 <= bytes.len() && out.len() < max {
+                let u = f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap_or([0; 4]));
+                let v =
+                    f32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap_or([0; 4]));
+                out.push([u, v]);
+                offset += 8;
+            }
+        }
+        Some(5121) if normalized => {
+            let mut offset = 0usize;
+            while offset + 2 <= bytes.len() && out.len() < max {
+                out.push([
+                    f32::from(bytes[offset]) / 255.0,
+                    f32::from(bytes[offset + 1]) / 255.0,
+                ]);
+                offset += 2;
+            }
+        }
+        Some(5123) if normalized => {
+            let mut offset = 0usize;
+            while offset + 4 <= bytes.len() && out.len() < max {
+                let u = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+                let v = u16::from_le_bytes([bytes[offset + 2], bytes[offset + 3]]);
+                out.push([f32::from(u) / 65535.0, f32::from(v) / 65535.0]);
+                offset += 4;
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// N163: a full-mesh JOINTS_0 list up to `max` elements.
+fn decode_joints_mesh(accessor: &Value, bytes: Option<&[u8]>, max: usize) -> Vec<[u16; 4]> {
+    if accessor.get("type").and_then(Value::as_str) != Some("VEC4") {
+        return Vec::new();
+    }
+    let component = accessor.get("componentType").and_then(Value::as_u64);
+    let Some(bytes) = bytes else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    match component {
+        Some(5121) => {
+            let mut offset = 0usize;
+            while offset + 4 <= bytes.len() && out.len() < max {
+                out.push([
+                    u16::from(bytes[offset]),
+                    u16::from(bytes[offset + 1]),
+                    u16::from(bytes[offset + 2]),
+                    u16::from(bytes[offset + 3]),
+                ]);
+                offset += 4;
+            }
+        }
+        Some(5123) => {
+            let mut offset = 0usize;
+            while offset + 8 <= bytes.len() && out.len() < max {
+                let mut joints = [0u16; 4];
+                for (k, joint) in joints.iter_mut().enumerate() {
+                    *joint = u16::from_le_bytes([bytes[offset + k * 2], bytes[offset + k * 2 + 1]]);
+                }
+                out.push(joints);
+                offset += 8;
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// N163: a full-mesh WEIGHTS_0 list up to `max` elements.
+fn decode_weights_mesh(accessor: &Value, bytes: Option<&[u8]>, max: usize) -> Vec<[f32; 4]> {
+    if accessor.get("type").and_then(Value::as_str) != Some("VEC4") {
+        return Vec::new();
+    }
+    let component = accessor.get("componentType").and_then(Value::as_u64);
+    let normalized = accessor
+        .get("normalized")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let Some(bytes) = bytes else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    match component {
+        Some(5126) => {
+            let mut offset = 0usize;
+            while offset + 16 <= bytes.len() && out.len() < max {
+                let mut weights = [0f32; 4];
+                for (k, weight) in weights.iter_mut().enumerate() {
+                    *weight = f32::from_le_bytes(
+                        bytes[offset + k * 4..offset + k * 4 + 4]
+                            .try_into()
+                            .unwrap_or([0; 4]),
+                    );
+                }
+                out.push(weights);
+                offset += 16;
+            }
+        }
+        Some(5121) if normalized => {
+            let mut offset = 0usize;
+            while offset + 4 <= bytes.len() && out.len() < max {
+                out.push([
+                    f32::from(bytes[offset]) / 255.0,
+                    f32::from(bytes[offset + 1]) / 255.0,
+                    f32::from(bytes[offset + 2]) / 255.0,
+                    f32::from(bytes[offset + 3]) / 255.0,
+                ]);
+                offset += 4;
+            }
+        }
+        Some(5123) if normalized => {
+            let mut offset = 0usize;
+            while offset + 8 <= bytes.len() && out.len() < max {
+                let mut weights = [0f32; 4];
+                for (k, weight) in weights.iter_mut().enumerate() {
+                    *weight = f32::from(u16::from_le_bytes([
+                        bytes[offset + k * 2],
+                        bytes[offset + k * 2 + 1],
+                    ])) / 65535.0;
+                }
+                out.push(weights);
+                offset += 8;
+            }
+        }
+        _ => {}
     }
     out
 }
@@ -1418,6 +1656,53 @@ mod tests {
         assert_eq!(track.node, 0);
         assert_eq!(track.times, vec![0.0, 1.0]);
         assert_eq!(track.values, vec![0.0, 1.0]);
+    }
+
+    #[test]
+    fn full_mesh_geometry_is_imported() {
+        let mut bin = Vec::new();
+        // 4 POSITION (VEC3 f32).
+        for (x, y) in [(0.0f32, 0.0f32), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
+            for v in [x, y, 0.0] {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        // 6 u16 indices (two triangles).
+        for i in [0u16, 1, 2, 0, 2, 3] {
+            bin.extend_from_slice(&i.to_le_bytes());
+        }
+        // 4 UV (VEC2 f32).
+        for (u, v) in [(0.0f32, 0.0f32), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
+            bin.extend_from_slice(&u.to_le_bytes());
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": bin.len()}],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": 48},
+                {"buffer": 0, "byteOffset": 48, "byteLength": 12},
+                {"buffer": 0, "byteOffset": 60, "byteLength": 32}
+            ],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3"},
+                {"bufferView": 1, "componentType": 5123, "count": 6, "type": "SCALAR"},
+                {"bufferView": 2, "componentType": 5126, "count": 4, "type": "VEC2"}
+            ],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "TEXCOORD_0": 2}, "indices": 1}]}],
+            "nodes": [{"mesh": 0}]
+        });
+        let model = GltfImporter
+            .import(
+                &glb(&serde_json::to_vec(&doc).unwrap(), &bin),
+                &ImportLimits::default(),
+            )
+            .unwrap();
+        let geometry = model.meshes[0].geometry.as_ref().expect("geometry");
+        assert_eq!(geometry.positions.len(), 4);
+        assert_eq!(geometry.indices, vec![0, 1, 2, 0, 2, 3]);
+        assert_eq!(geometry.uv.len(), 4);
+        assert_eq!(geometry.uv[2], [1.0, 1.0]);
     }
 
     #[test]

@@ -26,6 +26,33 @@ impl Default for ImportLimits {
     }
 }
 
+/// N163: the most full-mesh vertices imported into `MeshGeometry`.
+pub const MAX_GEOMETRY_VERTICES: usize = 4096;
+/// N163: the most triangle-list indices imported into `MeshGeometry`.
+pub const MAX_GEOMETRY_INDICES: usize = 16_384;
+
+/// N163: a bounded full-mesh geometry for a strong device or the offline
+/// renderer. Only the first primitive with embedded bytes is imported; the
+/// arrays are parallel where noted. Kept small enough to stay a preview budget,
+/// not a full asset pipeline.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MeshGeometry {
+    /// Local-space POSITION, up to `MAX_GEOMETRY_VERTICES`.
+    pub positions: Vec<[f32; 3]>,
+    /// Triangle-list indices into `positions`, up to `MAX_GEOMETRY_INDICES`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub indices: Vec<u32>,
+    /// TEXCOORD_0, parallel to `positions` (empty when absent).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uv: Vec<[f32; 2]>,
+    /// JOINTS_0, parallel to `positions` (empty when absent).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skin_joints: Vec<[u16; 4]>,
+    /// WEIGHTS_0, parallel to `positions` (empty when absent).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skin_weights: Vec<[f32; 4]>,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ModelError {
     #[error("input is {0} bytes, over the {1}-byte limit")]
@@ -125,6 +152,9 @@ pub struct Mesh {
     /// N123: default morph weights (`mesh.weights`), one per target.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub morph_weights: Vec<f32>,
+    /// N163: bounded full geometry when the primitive bytes are embedded and fit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<MeshGeometry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
