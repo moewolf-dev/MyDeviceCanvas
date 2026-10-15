@@ -623,6 +623,12 @@ fn cmd_bake_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let bytes = std::fs::read(&model_path)?;
     let model = mdc_model::GltfImporter.import(&bytes, &mdc_model::ImportLimits::default())?;
     let has_uv = model.meshes.iter().any(|m| !m.preview_uv.is_empty());
+    let morph_targets = model
+        .meshes
+        .iter()
+        .map(|m| m.morph_targets.len())
+        .max()
+        .unwrap_or(0);
     let texture = match &texture_path {
         Some(path) => {
             let image = std::fs::read(path)?;
@@ -651,6 +657,7 @@ fn cmd_bake_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 "mode": sealed.manifest.mode,
                 "skinned": true,
                 "textured": textured,
+                "morphTargets": morph_targets,
                 "package_path": path,
                 "package_bytes": package_bytes.len(),
             }))?
@@ -683,6 +690,7 @@ fn cmd_bake_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "sprite": format!("{sprite}x{sprite}"),
             "skinned": true,
             "textured": textured,
+            "morphTargets": morph_targets,
             "files": written,
         }))?
     );

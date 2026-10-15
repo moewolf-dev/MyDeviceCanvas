@@ -60,6 +60,12 @@ A decode bomb is refused before any decode buffer is created.
   still imports for a track-less stub.
 - N113: `TEXCOORD_0` (VEC2 f32, or normalized u8/u16) becomes `Mesh.preview_uv`,
   parallel to `preview_positions`. Empty means a solid-colour bake.
+- N123: a primitive's `targets[].POSITION` morph deltas (capped at
+  `MAX_MORPH_TARGETS`, 16 per mesh) become `Mesh.morph_targets`, and
+  `mesh.weights` becomes `Mesh.morph_weights`. N124: an animation channel with
+  path `weights` becomes an `AnimationTrack` whose `values` are a flat
+  `key × target` scalar stream (a channel that is not a clean multiple is
+  skipped).
 
 ### Live2D details
 
@@ -129,8 +135,14 @@ cycling a source image:
   sprite and rasters them (triangle list when `preview_indices` is present, else a
   fan). `bake_skinned_to_package` seals the frames as one `bake-mesh` clip in a
   `BakedSprites` package.
-- `mdc bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--out DIR] [--package OUT.mdcpkg]`
-  writes `mesh_frame_NN.ppm` files or a runtime package.
+- `mdc bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]`
+  writes `mesh_frame_NN.ppm` files or a runtime package, reporting `skinned` /
+  `textured` / `morphTargets`.
+
+Morph targets deform before skinning: `apply_morphs(base, targets, weights)`
+adds `Σ wᵢ · deltaᵢ`; `morph_weights_at(animation, node, time)` samples a
+`weights` channel (component count derived from the value/key ratio). Missing or
+extra weights are handled without guessing — an out-of-range weight is ignored.
 
 This is a host-side approximation: only the capped preview vertices are deformed,
 there is no texture lookup, and it is not a full skinned-mesh device renderer.

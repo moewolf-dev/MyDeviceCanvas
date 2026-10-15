@@ -16,9 +16,10 @@ use thiserror::Error;
 mod skin;
 mod texture;
 pub use skin::{
-    animation_span, bake_skinned_mesh, bake_skinned_to_package, bake_textured_mesh,
-    bake_textured_to_package, mat4_from_trs, mat4_identity, mat4_mul, node_world_matrices,
-    pose_world_matrices, skin_preview, transform_point, Mat4,
+    animation_span, apply_morphs, bake_skinned_mesh, bake_skinned_to_package, bake_textured_mesh,
+    bake_textured_to_package, mat4_from_trs, mat4_identity, mat4_mul, morph_weights_at,
+    node_world_matrices, pose_world_matrices, sample_channel, skin_points, skin_preview,
+    transform_point, Mat4,
 };
 pub use texture::TextureMap;
 

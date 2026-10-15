@@ -177,9 +177,10 @@ pub fn animation_span(animation: &Animation) -> (f32, f32) {
     }
 }
 
-/// Sample one transform channel at `time`. Returns up to four components.
-fn sample_track(track: &mdc_model::AnimationTrack, components: usize, time: f32) -> [f32; 4] {
-    let mut out = [0.0f32; 4];
+/// Sample a channel at `time` into `components` values. `CUBICSPLINE` is read as
+/// `LINEAR` on the key value; rotation-sized (4) channels use slerp.
+pub fn sample_channel(track: &mdc_model::AnimationTrack, components: usize, time: f32) -> Vec<f32> {
+    let mut out = vec![0.0f32; components];
     if components == 4 {
         out[3] = 1.0;
     }
@@ -190,33 +191,20 @@ fn sample_track(track: &mdc_model::AnimationTrack, components: usize, time: f32)
     }
     let value_at = |key: usize| -> Vec<f32> {
         let base = key * stride + if cubic { components } else { 0 };
-        let mut v = Vec::with_capacity(components);
-        for k in 0..components {
-            v.push(track.values.get(base + k).copied().unwrap_or(0.0));
-        }
-        v
+        (0..components)
+            .map(|k| track.values.get(base + k).copied().unwrap_or(0.0))
+            .collect()
     };
     let count = track.times.len();
     if count == 0 || track.values.len() < components {
         return out;
     }
     let last = count - 1;
-    let pick_first = |out: &mut [f32; 4]| {
-        let v = value_at(0);
-        for (slot, value) in out.iter_mut().zip(v.iter()) {
-            *slot = *value;
-        }
-    };
     if time <= track.times[0] {
-        pick_first(&mut out);
-        return out;
+        return value_at(0);
     }
     if time >= track.times[last] {
-        let v = value_at(last);
-        for (slot, value) in out.iter_mut().zip(v.iter()) {
-            *slot = *value;
-        }
-        return out;
+        return value_at(last);
     }
     let mut lower = 0usize;
     for i in 0..last {
@@ -227,10 +215,7 @@ fn sample_track(track: &mdc_model::AnimationTrack, components: usize, time: f32)
     }
     let a = value_at(lower);
     if track.interpolation.eq_ignore_ascii_case("STEP") {
-        for (slot, value) in out.iter_mut().zip(a.iter()) {
-            *slot = *value;
-        }
-        return out;
+        return a;
     }
     let b = value_at(lower + 1);
     let t0 = track.times[lower];
@@ -241,12 +226,21 @@ fn sample_track(track: &mdc_model::AnimationTrack, components: usize, time: f32)
         0.0
     };
     if components == 4 {
-        let q = slerp([a[0], a[1], a[2], a[3]], [b[0], b[1], b[2], b[3]], f);
-        out = q;
+        slerp([a[0], a[1], a[2], a[3]], [b[0], b[1], b[2], b[3]], f).to_vec()
     } else {
-        for k in 0..components {
-            out[k] = a[k] + (b[k] - a[k]) * f;
-        }
+        (0..components).map(|k| a[k] + (b[k] - a[k]) * f).collect()
+    }
+}
+
+/// Sample one transform channel at `time`. Returns up to four components.
+fn sample_track(track: &mdc_model::AnimationTrack, components: usize, time: f32) -> [f32; 4] {
+    let v = sample_channel(track, components, time);
+    let mut out = [0.0f32; 4];
+    if components == 4 {
+        out[3] = 1.0;
+    }
+    for (slot, value) in out.iter_mut().zip(v.iter()).take(4) {
+        *slot = *value;
     }
     out
 }
@@ -286,11 +280,56 @@ fn normalize4(q: [f32; 4]) -> [f32; 4] {
     }
 }
 
-/// Linear blend skinning of `mesh.preview_positions` by `worlds`. Vertices
-/// without weights (or with out-of-range joints) keep their bind position.
-pub fn skin_preview(mesh: &Mesh, skeleton: &Skeleton, worlds: &[Mat4]) -> Vec<[f32; 3]> {
-    let mut out = Vec::with_capacity(mesh.preview_positions.len());
-    for (i, position) in mesh.preview_positions.iter().enumerate() {
+/// Add `Σ weight_i · delta_i` to every base position. `weights` beyond the
+/// target count are ignored; missing weights default to 0.
+pub fn apply_morphs(
+    base: &[[f32; 3]],
+    targets: &[Vec<[f32; 3]>],
+    weights: &[f32],
+) -> Vec<[f32; 3]> {
+    let mut out = base.to_vec();
+    for (target_index, target) in targets.iter().enumerate() {
+        let weight = weights.get(target_index).copied().unwrap_or(0.0);
+        if weight == 0.0 {
+            continue;
+        }
+        for (position, delta) in out.iter_mut().zip(target.iter()) {
+            position[0] += delta[0] * weight;
+            position[1] += delta[1] * weight;
+            position[2] += delta[2] * weight;
+        }
+    }
+    out
+}
+
+/// N125: sample a morph-weight channel for `node` at `time`. The component count
+/// is derived from `values.len() / times.len()`; a channel that is not a clean
+/// multiple returns `None`.
+pub fn morph_weights_at(animation: &Animation, node: usize, time: f32) -> Option<Vec<f32>> {
+    let track = animation
+        .tracks
+        .iter()
+        .find(|t| t.path == "weights" && t.node == node)?;
+    if track.times.is_empty() {
+        return None;
+    }
+    let components = track.values.len() / track.times.len();
+    if components == 0 || track.values.len() % track.times.len() != 0 {
+        return None;
+    }
+    Some(sample_channel(track, components, time))
+}
+
+/// Linear blend skinning of `positions` by `worlds`. Vertices without weights
+/// (or with out-of-range joints) keep their input position.
+pub fn skin_points(
+    mesh: &Mesh,
+    skeleton: &Skeleton,
+    worlds: &[Mat4],
+    positions: &[[f32; 3]],
+) -> Vec<[f32; 3]> {
+    let mut out = Vec::with_capacity(positions.len());
+    for (i, position) in positions.iter().enumerate() {
         let joints = mesh.skin_joints.get(i);
         let weights = mesh.skin_weights.get(i);
         let mut acc = [0.0f32; 3];
@@ -329,6 +368,11 @@ pub fn skin_preview(mesh: &Mesh, skeleton: &Skeleton, worlds: &[Mat4]) -> Vec<[f
     out
 }
 
+/// Linear blend skinning of `mesh.preview_positions` by `worlds`.
+pub fn skin_preview(mesh: &Mesh, skeleton: &Skeleton, worlds: &[Mat4]) -> Vec<[f32; 3]> {
+    skin_points(mesh, skeleton, worlds, &mesh.preview_positions)
+}
+
 /// Project a local point into `[0, width-1] × [0, height-1]`.
 pub(crate) fn project(point: [f32; 3], width: u32, height: u32) -> (i16, i16) {
     let px = ((point[0] + 1.0) * 0.5 * (width.saturating_sub(1)) as f32)
@@ -357,11 +401,13 @@ fn skinned_point_frames(
     if sprite.0 == 0 || sprite.1 == 0 || sprite.0 > 1024 || sprite.1 > 1024 {
         return Err(BakeError::Budget(sprite.0, sprite.1));
     }
-    let mesh = model
+    let (mesh_index, mesh) = model
         .meshes
         .iter()
-        .find(|m| !m.skin_joints.is_empty() && !m.preview_positions.is_empty())
+        .enumerate()
+        .find(|(_, m)| !m.skin_joints.is_empty() && !m.preview_positions.is_empty())
         .ok_or_else(|| BakeError::Decode("model has no skinned preview mesh".into()))?;
+    let mesh_node = model.nodes.iter().position(|n| n.mesh == Some(mesh_index));
     let skeleton = model
         .skeletons
         .iter()
@@ -379,8 +425,19 @@ fn skinned_point_frames(
         } else {
             start
         };
+        // N126: morph targets deform before skinning.
+        let morphed;
+        let positions: &[[f32; 3]] = if mesh.morph_targets.is_empty() {
+            &mesh.preview_positions
+        } else {
+            let weights = mesh_node
+                .and_then(|node| morph_weights_at(animation, node, time))
+                .unwrap_or_else(|| mesh.morph_weights.clone());
+            morphed = apply_morphs(&mesh.preview_positions, &mesh.morph_targets, &weights);
+            &morphed
+        };
         let worlds = pose_world_matrices(&model.nodes, animation, time);
-        let skinned = skin_preview(mesh, skeleton, &worlds);
+        let skinned = skin_points(mesh, skeleton, &worlds, positions);
         out.push(
             skinned
                 .iter()
@@ -693,6 +750,53 @@ mod tests {
         let bytes = package.to_bytes().unwrap();
         let back = mdc_model::MdcPackage::from_bytes(&bytes).unwrap();
         assert_eq!(back, package);
+    }
+
+    fn morph_model() -> Model {
+        let mut model = skinned_model();
+        // The morph channel targets the node that owns the mesh.
+        model.nodes[1].mesh = Some(0);
+        // No joint rotation; only a morph-weight channel drives the pose.
+        model.meshes[0].morph_targets =
+            vec![vec![[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 0.0]]];
+        model.meshes[0].morph_weights = vec![0.0];
+        model.animations[0] = Animation {
+            name: "smile".into(),
+            channels: 1,
+            tracks: vec![AnimationTrack {
+                node: 1,
+                path: "weights".into(),
+                interpolation: "LINEAR".into(),
+                times: vec![0.0, 1.0],
+                values: vec![0.0, 1.0],
+            }],
+        };
+        model
+    }
+
+    #[test]
+    fn apply_morphs_adds_weighted_deltas() {
+        let base = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let targets = vec![vec![[1.0, 0.0, 0.0], [0.0, 2.0, 0.0]]];
+        let out = apply_morphs(&base, &targets, &[0.5]);
+        assert_eq!(out, vec![[0.5, 0.0, 0.0], [1.0, 1.0, 0.0]]);
+    }
+
+    #[test]
+    fn morph_weights_sample_over_time() {
+        let model = morph_model();
+        let animation = &model.animations[0];
+        assert_eq!(morph_weights_at(animation, 1, 0.0).unwrap(), vec![0.0]);
+        assert_eq!(morph_weights_at(animation, 1, 1.0).unwrap(), vec![1.0]);
+        assert!(morph_weights_at(animation, 0, 0.5).is_none());
+    }
+
+    #[test]
+    fn morph_bake_frames_move_with_the_weights() {
+        let model = morph_model();
+        let frames = bake_skinned_mesh(&model, 0, 3, (16, 16), 0xF800).unwrap();
+        assert_eq!(frames.len(), 3);
+        assert_ne!(frames[0].rgb565, frames[2].rgb565, "morph moves the mesh");
     }
 
     #[test]

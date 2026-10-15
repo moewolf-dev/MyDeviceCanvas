@@ -92,28 +92,45 @@ fn glyph_columns(ch: u8) -> Option<[u8; 5]> {
     FONT.get(index).copied()
 }
 
-fn draw_text(pixels: &mut [u8], width: u32, height: u32, x: u16, y: u16, text: &str, color: u16) {
+#[allow(clippy::too_many_arguments)]
+fn draw_text(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    x: u16,
+    y: u16,
+    text: &str,
+    color: u16,
+    scale_x: u32,
+    scale_y: u32,
+) {
+    let scale_x = scale_x.max(1);
+    let scale_y = scale_y.max(1);
     let low = (color & 0xff) as u8;
     let high = (color >> 8) as u8;
     for (index, ch) in text.bytes().enumerate() {
         let Some(columns) = glyph_columns(ch) else {
             continue;
         };
-        let origin_x = u32::from(x) + index as u32 * 6;
+        let origin_x = u32::from(x) + index as u32 * 6 * scale_x;
         for (col, bits) in columns.iter().enumerate() {
             for row in 0..7u32 {
                 if bits & (1 << row) == 0 {
                     continue;
                 }
-                let px = origin_x + col as u32;
-                let py = u32::from(y) + row;
-                if px >= width || py >= height {
-                    continue;
-                }
-                let at = ((py * width + px) * 2) as usize;
-                if at + 1 < pixels.len() {
-                    pixels[at] = low;
-                    pixels[at + 1] = high;
+                for dy in 0..scale_y {
+                    for dx in 0..scale_x {
+                        let px = origin_x + col as u32 * scale_x + dx;
+                        let py = u32::from(y) + row * scale_y + dy;
+                        if px >= width || py >= height {
+                            continue;
+                        }
+                        let at = ((py * width + px) * 2) as usize;
+                        if at + 1 < pixels.len() {
+                            pixels[at] = low;
+                            pixels[at + 1] = high;
+                        }
+                    }
                 }
             }
         }
@@ -305,8 +322,29 @@ fn fill_scene(
             *drew = true;
         }
     } else if node.kind == "text" {
-        if let (Some([x, y, _, _]), Some(text)) = (node.rect, node.value.as_deref()) {
-            draw_text(pixels, width, height, x, y, text, node.color_rgb565());
+        if let (Some([x, y, w, h]), Some(text)) = (node.rect, node.value.as_deref()) {
+            // N128: rect width/height set the integer glyph scale (1..=8).
+            let scale_x = if w >= 6 {
+                u32::from((w / 6).clamp(1, 8))
+            } else {
+                1
+            };
+            let scale_y = if h >= 7 {
+                u32::from((h / 7).clamp(1, 8))
+            } else {
+                1
+            };
+            draw_text(
+                pixels,
+                width,
+                height,
+                x,
+                y,
+                text,
+                node.color_rgb565(),
+                scale_x,
+                scale_y,
+            );
             *drew = true;
         }
     } else if node.kind == "image" {
@@ -1242,6 +1280,21 @@ impl FakeDevice {
     pub fn active_clip(&self) -> Option<&str> {
         self.anim_clip.as_deref()
     }
+    /// N129: completed loops of the running clip (0 when not looping).
+    pub fn animation_loops(&self) -> u32 {
+        let Some(atlas) = self.atlas.as_ref() else {
+            return 0;
+        };
+        let Some(clip) = atlas.clip(self.anim_clip.as_deref().unwrap_or("")) else {
+            return 0;
+        };
+        if !clip.looping || clip.frames == 0 || clip.fps == 0 {
+            return 0;
+        }
+        let elapsed_ms = self.clock.tick.saturating_sub(self.anim_start_tick);
+        let local = elapsed_ms.saturating_mul(u64::from(clip.fps)) / 1000;
+        (local / u64::from(clip.frames)) as u32
+    }
     /// N80: rasterize the accepted scene into the local framebuffer (rect fills,
     /// parent then children so children draw on top; bounds clipped). Returns
     /// true when at least one rect was drawn.
@@ -1883,12 +1936,18 @@ mod tests {
         session.poll().unwrap();
         assert_eq!(device.active_clip(), Some("idle"));
         assert_eq!(device.current_atlas_frame(), Some(0));
+        assert_eq!(device.animation_loops(), 0);
 
         // 40ms at 30fps -> frame 1; 4 frames loop.
         device.clock.advance(40);
         assert_eq!(device.current_atlas_frame(), Some(1));
+        assert_eq!(device.animation_loops(), 0);
         device.clock.advance(4 * 1000);
         assert_eq!(device.current_atlas_frame(), Some(1));
+        assert!(
+            device.animation_loops() >= 1,
+            "the clip wrapped at least once"
+        );
 
         session.set_config("animation", "off").unwrap();
         device.poll().unwrap();
@@ -2061,6 +2120,45 @@ mod tests {
         assert_eq!(glyph_columns(b'a'), glyph_columns(b'A'));
         assert_eq!(glyph_columns(b' '), Some([0, 0, 0, 0, 0]));
         assert!(glyph_columns(b'~').is_none());
+    }
+
+    #[test]
+    fn scene_text_scales_with_the_rect() {
+        use mdc_protocol::SceneNode;
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 24,
+            height: 16,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+        let text = |rect: [u16; 4]| SceneNode {
+            name: "label".into(),
+            kind: "text".into(),
+            rect: Some(rect),
+            value: Some("H".into()),
+            children: Vec::new(),
+        };
+        // rect 0×0 -> scale 1, so (1,1) stays clear on the fresh framebuffer.
+        session.set_scene(text([0, 0, 0, 0])).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        assert_eq!(
+            device.pixel_rgb565(1, 1),
+            Some(0),
+            "scale 1 leaves (1,1) clear"
+        );
+
+        // rect 12×14 -> 2× glyph scale, so the scaled pixel lights up.
+        session.set_scene(text([0, 0, 12, 14])).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        assert_ne!(device.pixel_rgb565(1, 1), Some(0), "scale 2 fills (1,1)");
     }
 
     #[test]

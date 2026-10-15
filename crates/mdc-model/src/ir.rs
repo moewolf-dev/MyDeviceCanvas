@@ -118,6 +118,13 @@ pub struct Mesh {
     /// `preview_positions`. Empty means a solid-colour bake.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preview_uv: Vec<[f32; 2]>,
+    /// N123: morph targets (blend shapes). Each entry is one target's POSITION
+    /// deltas, parallel to `preview_positions`. Capped by the importer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub morph_targets: Vec<Vec<[f32; 3]>>,
+    /// N123: default morph weights (`mesh.weights`), one per target.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub morph_weights: Vec<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

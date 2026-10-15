@@ -2,6 +2,19 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.25] — Morph targets + device polish (N123–N132)
+
+### Added
+
+- glTF morph targets (`targets[].POSITION`) and `mesh.weights` import into
+  `Mesh.morph_targets` / `morph_weights` (N123)
+- Animation `weights` channels import as flat key×target tracks (N124)
+- `mdc-bake` `sample_channel`, `morph_weights_at`, `apply_morphs`; morphs deform
+  before skinning in `bake_skinned_mesh` / `bake_textured_mesh` (N125, N126)
+- CLI `mdc bake-mesh` reports `morphTargets` (N127)
+- Device scene text scales with the node rect (1..=8×, N128)
+- Simulator `animation_loops()` observability (N129)
+
 ## [0.1.24] — Texture-mapped skinned bake (N113–N122)
 
 ### Added

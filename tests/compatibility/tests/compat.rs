@@ -606,3 +606,34 @@ fn textured_bake_refuses_an_over_budget_texture() {
         Err(mdc_bake::BakeError::Budget(_, _))
     ));
 }
+
+#[test]
+fn morph_weight_edge_cases_are_bounded() {
+    use mdc_model::{Animation, AnimationTrack};
+    // A weights channel whose value count is not a multiple of its key count is
+    // refused (no guessing a stride).
+    let ragged = Animation {
+        name: "ragged".into(),
+        channels: 1,
+        tracks: vec![AnimationTrack {
+            node: 0,
+            path: "weights".into(),
+            interpolation: "LINEAR".into(),
+            times: vec![0.0, 1.0],
+            values: vec![0.0, 1.0, 0.5],
+        }],
+    };
+    assert!(mdc_bake::morph_weights_at(&ragged, 0, 0.5).is_none());
+
+    // Extra weights beyond the target count are ignored, missing ones are zero.
+    let base = [[0.0, 0.0, 0.0]];
+    let targets = vec![vec![[1.0, 0.0, 0.0]]];
+    assert_eq!(
+        mdc_bake::apply_morphs(&base, &targets, &[1.0, 9.0]),
+        vec![[1.0, 0.0, 0.0]]
+    );
+    assert_eq!(
+        mdc_bake::apply_morphs(&base, &targets, &[]),
+        vec![[0.0, 0.0, 0.0]]
+    );
+}

@@ -15,6 +15,8 @@ pub struct GltfImporter;
 const GLB_CHUNK_JSON: u32 = 0x4E4F_534A;
 /// BIN chunk magic in a GLB container ("BIN\0").
 const GLB_CHUNK_BIN: u32 = 0x004E_4942;
+/// N123: most morph targets imported per mesh (a preview budget, not a promise).
+pub const MAX_MORPH_TARGETS: usize = 16;
 
 #[derive(Debug, Clone, Copy)]
 struct BufferView {
@@ -159,6 +161,7 @@ impl GltfImporter {
             let mut skin_joints: Vec<[u16; 4]> = Vec::new();
             let mut skin_weights: Vec<[f32; 4]> = Vec::new();
             let mut preview_uv: Vec<[f32; 2]> = Vec::new();
+            let mut morph_targets: Vec<Vec<[f32; 3]>> = Vec::new();
             if let Some(primitives) = mesh.get("primitives").and_then(Value::as_array) {
                 for primitive in primitives {
                     let attributes = primitive.get("attributes");
@@ -239,8 +242,39 @@ impl GltfImporter {
                     if let Some(mat) = primitive.get("material").and_then(Value::as_u64) {
                         material = Some(mat as usize);
                     }
+                    // N123: morph targets (POSITION deltas), first primitive only.
+                    if morph_targets.is_empty() {
+                        if let Some(targets) = primitive.get("targets").and_then(Value::as_array) {
+                            for target in targets.iter().take(MAX_MORPH_TARGETS) {
+                                let Some(accessor_index) =
+                                    target.get("POSITION").and_then(Value::as_u64)
+                                else {
+                                    continue;
+                                };
+                                let Some(accessor) = accessors.get(accessor_index as usize) else {
+                                    continue;
+                                };
+                                let bytes = accessor
+                                    .get("bufferView")
+                                    .and_then(Value::as_u64)
+                                    .and_then(&view_bytes);
+                                morph_targets.push(decode_preview_positions(accessor, bytes));
+                            }
+                        }
+                    }
                 }
             }
+            // N123: default morph weights (`mesh.weights`), capped to the targets.
+            let morph_weights: Vec<f32> = mesh
+                .get("weights")
+                .and_then(Value::as_array)
+                .map(|list| {
+                    list.iter()
+                        .take(morph_targets.len().max(MAX_MORPH_TARGETS))
+                        .map(|w| w.as_f64().unwrap_or(0.0) as f32)
+                        .collect()
+                })
+                .unwrap_or_default();
             meshes.push(Mesh {
                 name: json_name(mesh, &format!("mesh{i}")),
                 vertices: vertices.min(u64::from(u32::MAX)) as u32,
@@ -252,6 +286,8 @@ impl GltfImporter {
                 skin_joints,
                 skin_weights,
                 preview_uv,
+                morph_targets,
+                morph_weights,
             });
         }
         if meshes.iter().map(|m| u64::from(m.vertices)).sum::<u64>() > limits.max_vertices {
@@ -330,6 +366,9 @@ impl GltfImporter {
                                 let components = match path {
                                     "rotation" => 4usize,
                                     "translation" | "scale" => 3usize,
+                                    // N124: morph-target weights; component count
+                                    // is derived from the flat output below.
+                                    "weights" => 1usize,
                                     _ => continue,
                                 };
                                 let sampler_index = channel
@@ -352,16 +391,24 @@ impl GltfImporter {
                                         .get("bufferView")
                                         .and_then(Value::as_u64)
                                         .and_then(&view_bytes);
-                                    decode_float_accessor(
-                                        accessor,
-                                        bytes,
-                                        components,
-                                        limits.max_nodes,
-                                    )
+                                    let cap = limits.max_nodes.saturating_mul(MAX_MORPH_TARGETS);
+                                    decode_float_accessor(accessor, bytes, components, cap)
                                 };
                                 let times = read("input", 1);
-                                let values = read("output", components);
-                                if times.is_empty() || values.len() < components {
+                                if times.is_empty() {
+                                    continue;
+                                }
+                                // For "weights" the output is a flat scalar stream:
+                                // one value per (key, target).
+                                let values = if path == "weights" {
+                                    read("output", 1)
+                                } else {
+                                    read("output", components)
+                                };
+                                if values.len() < components {
+                                    continue;
+                                }
+                                if path == "weights" && values.len() % times.len() != 0 {
                                     continue;
                                 }
                                 let interpolation = sampler
@@ -1303,6 +1350,74 @@ mod tests {
         assert_eq!(model.meshes[0].preview_uv.len(), 3);
         assert_eq!(model.meshes[0].preview_uv[1], [1.0, 0.0]);
         assert_eq!(model.meshes[0].preview_uv[2], [0.0, 1.0]);
+    }
+
+    #[test]
+    fn morph_targets_and_weights_are_imported() {
+        let mut bin = Vec::new();
+        for (x, y) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0)] {
+            for v in [x, y, 0.0] {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        // Morph delta POSITION: a +1 shift on X for each vertex.
+        for _ in 0..3 {
+            for v in [1.0f32, 0.0, 0.0] {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        for t in [0.0f32, 1.0] {
+            bin.extend_from_slice(&t.to_le_bytes());
+        }
+        for w in [0.0f32, 1.0] {
+            bin.extend_from_slice(&w.to_le_bytes());
+        }
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": bin.len()}],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+                {"buffer": 0, "byteOffset": 36, "byteLength": 36},
+                {"buffer": 0, "byteOffset": 72, "byteLength": 8},
+                {"buffer": 0, "byteOffset": 80, "byteLength": 8}
+            ],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 2, "componentType": 5126, "count": 2, "type": "SCALAR"},
+                {"bufferView": 3, "componentType": 5126, "count": 2, "type": "SCALAR"}
+            ],
+            "meshes": [{
+                "name": "face",
+                "weights": [0.5],
+                "primitives": [{
+                    "attributes": {"POSITION": 0},
+                    "targets": [{"POSITION": 1}]
+                }]
+            }],
+            "nodes": [{"mesh": 0}],
+            "animations": [{
+                "name": "smile",
+                "channels": [{"sampler": 0, "target": {"node": 0, "path": "weights"}}],
+                "samplers": [{"input": 2, "output": 3, "interpolation": "LINEAR"}]
+            }]
+        });
+        let model = GltfImporter
+            .import(
+                &glb(&serde_json::to_vec(&doc).unwrap(), &bin),
+                &ImportLimits::default(),
+            )
+            .unwrap();
+        let mesh = &model.meshes[0];
+        assert_eq!(mesh.morph_targets.len(), 1);
+        assert_eq!(mesh.morph_targets[0][0], [1.0, 0.0, 0.0]);
+        assert_eq!(mesh.morph_weights, vec![0.5]);
+
+        let track = &model.animations[0].tracks[0];
+        assert_eq!(track.path, "weights");
+        assert_eq!(track.node, 0);
+        assert_eq!(track.times, vec![0.0, 1.0]);
+        assert_eq!(track.values, vec![0.0, 1.0]);
     }
 
     #[test]
