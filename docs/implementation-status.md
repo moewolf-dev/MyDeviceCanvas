@@ -35,6 +35,8 @@ Do not mark physical verification from host-only or simulator tests.
 | 25 | N89–N98: glTF preview pixels, triangle raster, scene text/image blit | sim-verified |
 | 26 | N99–N108: mesh preview blit, scene sprite, atlas fade-in | sim-verified |
 | 27 | Indexed mesh preview, fade-out, 5×7 A–Z font | sim-verified |
+| 28 | `bake_displaced_mesh`: per-frame triangle motion, not a cycled image | sim-verified |
+| 29 | N109–N112: glTF skin/TRS/animation import + `mdc-bake` linear blend skinning bake + `mdc bake-mesh` | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 

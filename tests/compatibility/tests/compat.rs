@@ -453,7 +453,7 @@ fn non_rect_scene_kinds_are_recorded_but_not_rasterized() {
     session
         .set_scene(SceneNode {
             name: "label".into(),
-            kind: "text".into(),
+            kind: "custom".into(),
             rect: Some([0, 0, 4, 4]),
             children: Vec::new(),
             value: Some("hi".into()),
@@ -462,7 +462,7 @@ fn non_rect_scene_kinds_are_recorded_but_not_rasterized() {
     device.poll().unwrap();
     session.poll().unwrap();
     assert!(device.has_scene());
-    assert!(!device.render_scene(), "text is not rasterized");
+    assert!(!device.render_scene(), "an unknown kind is not rasterized");
     assert_eq!(
         device.pixel_rgb565(0, 0),
         Some(0x0000),

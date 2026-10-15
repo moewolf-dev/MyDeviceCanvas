@@ -109,7 +109,7 @@ impl AtlasBlob {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DevicePackage {
     pub target: String,
     pub mode: PackageMode,

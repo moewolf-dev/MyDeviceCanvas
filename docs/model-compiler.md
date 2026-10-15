@@ -23,7 +23,7 @@ Source model (glTF / GLB / Live2D model3.json)
 
 | Importer | Input | Reads | Does **not** read |
 |---|---|---|---|
-| `GltfImporter` | glTF 2.0 `.gltf` (JSON) and `.glb` (binary container) | nodes, meshes, accessors, materials, textures, animations, `skins`, VRM humanoid; buffer/bufferView/accessor bounds; embedded PNG/JPEG header for real pixel size | pixels (no image decode), external buffer files, morph targets, VRM meta/spring bones |
+| `GltfImporter` | glTF 2.0 `.gltf` (JSON) and `.glb` (binary container) | nodes (+ TRS/matrix), meshes, accessors, materials, textures, animations (+ timed channels), `skins` (+ joint nodes, inverse bind matrices), `JOINTS_0`/`WEIGHTS_0`, VRM humanoid; buffer/bufferView/accessor bounds; embedded PNG/JPEG header for real pixel size | pixels (no image decode), external buffer files, morph targets, VRM spring bones |
 | `Live2DImporter` | Cubism `model3.json` (Version 2–5) and `motion3.json` bundle | textures, motion groups, expressions, moc reference; motion curve count + `Meta` (duration/fps/loop/fade) | `.moc3` binary (mesh / deformer / parameter data), motion keyframes |
 
 Both importers check `ImportLimits` **before allocating**: `max_input_bytes`
@@ -48,6 +48,16 @@ A decode bomb is refused before any decode buffer is created.
 - `skins` become IR skeletons (joints count); an out-of-range joint index is
   rejected. A VRM humanoid extension (`VRM.humanoid.humanBones` array or
   `VRMC_vrm.humanoid.humanBones` map) adds one `vrm-humanoid` skeleton.
+- N109: a node's local transform is read from `translation`/`rotation`/`scale`
+  (defaults identity) or decomposed from a `matrix`. `skins[].joints` becomes
+  `Skeleton.joint_nodes`; `inverseBindMatrices` (MAT4 f32, column-major) becomes
+  `Skeleton.inverse_bind`. A mesh primitive's `JOINTS_0` (u8/u16 VEC4) and
+  `WEIGHTS_0` (f32 or normalized u8/u16 VEC4) become `Mesh.skin_joints` /
+  `skin_weights`, parallel to the raw `Mesh.preview_positions`.
+- N110: each animation channel becomes an `AnimationTrack` (node, path,
+  interpolation, `times` + flat `values`, f32 only). Missing or non-f32 sampler
+  data is skipped rather than guessed; animation metadata (`channels` count)
+  still imports for a track-less stub.
 
 ### Live2D details
 
@@ -100,6 +110,29 @@ writes `atlas.ppm` (P6) and `atlas.json`. `bake_to_package` seals the atlas into
 a `BakedSprites` device package for the `PACKAGE` upload path (see
 [baked-sprites.md](baked-sprites.md)).
 
+## Skeletal skinning bake (N109–N112)
+
+Once a glTF skin is present, `mdc-bake` deforms the preview mesh instead of
+cycling a source image:
+
+- `pose_world_matrices(nodes, animation, time)` samples each transform channel
+  (`STEP`, `LINEAR`, slerp for rotation; `CUBICSPLINE` sampled as `LINEAR` on the
+  key value) into per-node local matrices and composes them through the node
+  hierarchy (`world = parent_world × local`; a cycle cannot loop forever).
+- `skin_preview(mesh, skeleton, worlds)` runs linear blend skinning: each preview
+  vertex is `Σ wᵢ · (world(jointᵢ) × inverseBindᵢ) · position`, normalized by the
+  weight sum. A vertex with no usable weight keeps its bind position.
+- `bake_skinned_mesh(model, animation, frames, sprite, color)` samples the
+  animation's time span into `frames` poses, projects the deformed points into the
+  sprite and rasters them (triangle list when `preview_indices` is present, else a
+  fan). `bake_skinned_to_package` seals the frames as one `bake-mesh` clip in a
+  `BakedSprites` package.
+- `mdc bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--out DIR] [--package OUT.mdcpkg]`
+  writes `mesh_frame_NN.ppm` files or a runtime package.
+
+This is a host-side approximation: only the capped preview vertices are deformed,
+there is no texture lookup, and it is not a full skinned-mesh device renderer.
+
 ## Optimizer
 
 `plan_optimization(model, caps)` produces an `OptimizerPlan`: per-texture
@@ -140,8 +173,12 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
 
 ## Tests
 
-`cargo test -p mdc-model` covers: glTF JSON + GLB import, PNG/JPEG header
+`cargo test -p mdc-model` covers: glTF JSON + GLB import, node TRS/skin
+(joints, weights, inverse bind) import, timed animation tracks, PNG/JPEG header
 probing, accessor/bufferView overrun rejection, malformed GLB rejection, a
 decode-bomb refusal, Live2D manifest import, version/moc rejection, part budget,
 weak→sprite / strong→mesh degradation, capability auto-selection, and JSON
-round-trip of both packages. All are host logic; no physical claim.
+round-trip of both packages. `cargo test -p mdc-bake` adds the skinning math
+(TRS composition, posed joints), `skin_preview`, `bake_skinned_mesh` frame
+distinctness and the `bake_skinned_to_package` round trip. All are host logic; no
+physical claim.

@@ -134,6 +134,7 @@ impl Live2DImporter {
                 name: name.clone(),
                 mesh: None,
                 children: Vec::new(),
+                ..Node::default()
             });
             sprites.push(Sprite {
                 name,
@@ -151,6 +152,7 @@ impl Live2DImporter {
                 animations.push(Animation {
                     name: group.clone(),
                     channels: files.as_array().map(|f| f.len() as u32).unwrap_or(0),
+                    ..Animation::default()
                 });
             }
         }
@@ -163,6 +165,7 @@ impl Live2DImporter {
             animations.push(Animation {
                 name: format!("expression:{label}"),
                 channels: 1,
+                ..Animation::default()
             });
         }
 
@@ -262,6 +265,7 @@ impl Live2DImporter {
             model.animations.push(Animation {
                 name: info.name.clone(),
                 channels: info.channels,
+                ..Animation::default()
             });
             motions.push(info);
         }

@@ -13,6 +13,12 @@ pub use mdc_model::AtlasPlan;
 use std::io::Cursor;
 use thiserror::Error;
 
+mod skin;
+pub use skin::{
+    animation_span, bake_skinned_mesh, bake_skinned_to_package, mat4_from_trs, mat4_identity,
+    mat4_mul, node_world_matrices, pose_world_matrices, skin_preview, transform_point, Mat4,
+};
+
 /// Largest source file accepted (8 MiB) before decoding.
 pub const MAX_BAKE_INPUT_BYTES: usize = 8 * 1024 * 1024;
 
@@ -133,10 +139,93 @@ pub fn raster_triangle_fan(
     if points.len() >= 3 {
         let origin = points[0];
         for window in points[1..].windows(2) {
-            fill_triangle(&mut pixels, width, height, origin, window[0], window[1], color);
+            fill_triangle(
+                &mut pixels,
+                width,
+                height,
+                origin,
+                window[0],
+                window[1],
+                color,
+            );
         }
     }
     Ok(pixels)
+}
+
+/// Draw `points` into a fresh RGB565 framebuffer, either as the triangle list
+/// `indices` names or, when `indices` is empty, as a triangle fan.
+pub(crate) fn raster_points(
+    points: &[(i16, i16)],
+    indices: &[u16],
+    width: u32,
+    height: u32,
+    color: u16,
+) -> Result<Vec<u8>, BakeError> {
+    if width == 0 || height == 0 || width > 1024 || height > 1024 {
+        return Err(BakeError::Budget(width, height));
+    }
+    if points.len() > 64 {
+        return Err(BakeError::FrameCount(64, points.len()));
+    }
+    let mut pixels = vec![0u8; (width as usize) * (height as usize) * 2];
+    if indices.len() >= 3 {
+        for triangle in indices.chunks_exact(3) {
+            let (Some(a), Some(b), Some(c)) = (
+                points.get(triangle[0] as usize).copied(),
+                points.get(triangle[1] as usize).copied(),
+                points.get(triangle[2] as usize).copied(),
+            ) else {
+                continue;
+            };
+            fill_triangle(&mut pixels, width, height, a, b, c, color);
+        }
+    } else if points.len() >= 3 {
+        let origin = points[0];
+        for window in points[1..].windows(2) {
+            fill_triangle(
+                &mut pixels,
+                width,
+                height,
+                origin,
+                window[0],
+                window[1],
+                color,
+            );
+        }
+    }
+    Ok(pixels)
+}
+
+/// Sample one rigid motion of a mesh preview. Frame `i` shifts the triangle by
+/// `i` pixels on X, so consecutive frames are not copies of one source image.
+/// This is not skeletal skinning; see [`bake_skinned_mesh`]. At most 64 frames.
+pub fn bake_displaced_mesh(
+    points: &[(i16, i16)],
+    frame_count: u32,
+    sprite: (u32, u32),
+    color: u16,
+) -> Result<Vec<BakedTexture>, BakeError> {
+    if frame_count == 0 || frame_count > 64 {
+        return Err(BakeError::FrameCount(frame_count as usize, 64));
+    }
+    if points.len() < 3 {
+        return Err(BakeError::Decode("mesh preview needs three points".into()));
+    }
+    let mut frames = Vec::with_capacity(frame_count as usize);
+    for index in 0..frame_count {
+        let shifted: Vec<(i16, i16)> = points
+            .iter()
+            .map(|(x, y)| (x.saturating_add(index as i16), *y))
+            .collect();
+        let rgb565 = raster_triangle_fan(&shifted, sprite.0, sprite.1, color)?;
+        frames.push(BakedTexture {
+            width: sprite.0,
+            height: sprite.1,
+            rgb565,
+        });
+    }
+    Ok(frames)
 }
 
 fn fill_triangle(
@@ -589,10 +678,18 @@ mod tests {
     }
 
     #[test]
+    fn displaced_mesh_frames_are_not_copies() {
+        let frames = bake_displaced_mesh(&[(1, 1), (4, 1), (1, 4)], 3, (8, 8), 0xF800).unwrap();
+        assert_eq!(frames.len(), 3);
+        assert_ne!(frames[0].rgb565, frames[1].rgb565);
+        assert_eq!(&frames[0].rgb565[18..][..2], &[0x00, 0xF8]);
+        assert_eq!(&frames[1].rgb565[18..][..2], &[0, 0]);
+    }
+
     #[test]
     fn triangle_fan_covers_the_origin_pixel() {
         let pixels = raster_triangle_fan(&[(1, 1), (6, 1), (1, 6)], 8, 8, 0xF800).unwrap();
-        assert_eq!(&pixels[2 * (1 * 8 + 1)..][..2], &[0x00, 0xF8]);
+        assert_eq!(&pixels[18..][..2], &[0x00, 0xF8]);
         assert_eq!(&pixels[0..2], &[0, 0]);
     }
 
@@ -605,6 +702,7 @@ mod tests {
         assert!(mixed != 0x07E0);
     }
 
+    #[test]
     fn bake_sprites_requires_a_source() {
         assert!(matches!(
             bake_sprites(

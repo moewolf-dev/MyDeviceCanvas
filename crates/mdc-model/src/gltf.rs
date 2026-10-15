@@ -155,21 +155,56 @@ impl GltfImporter {
             let mut material = None;
             let mut preview_xy = Vec::new();
             let mut preview_indices = Vec::new();
+            let mut preview_positions: Vec<[f32; 3]> = Vec::new();
+            let mut skin_joints: Vec<[u16; 4]> = Vec::new();
+            let mut skin_weights: Vec<[f32; 4]> = Vec::new();
             if let Some(primitives) = mesh.get("primitives").and_then(Value::as_array) {
                 for primitive in primitives {
-                    if let Some(position) = primitive
-                        .get("attributes")
+                    let attributes = primitive.get("attributes");
+                    if let Some(position) = attributes
                         .and_then(|a| a.get("POSITION"))
                         .and_then(Value::as_u64)
                     {
                         vertices = vertices.saturating_add(accessor_count(position)?);
-                        if preview_xy.is_empty() {
+                        if preview_positions.is_empty() {
                             if let Some(accessor) = accessors.get(position as usize) {
                                 let bytes = accessor
                                     .get("bufferView")
                                     .and_then(Value::as_u64)
                                     .and_then(&view_bytes);
-                                preview_xy = decode_preview_xy(accessor, bytes);
+                                preview_positions = decode_preview_positions(accessor, bytes);
+                                preview_xy = preview_positions.iter().map(project_xy).collect();
+                            }
+                        }
+                    }
+                    if let (Some(joint_accessor), Some(weight_accessor)) = (
+                        attributes
+                            .and_then(|a| a.get("JOINTS_0"))
+                            .and_then(Value::as_u64),
+                        attributes
+                            .and_then(|a| a.get("WEIGHTS_0"))
+                            .and_then(Value::as_u64),
+                    ) {
+                        if skin_joints.is_empty() {
+                            let joints = accessors.get(joint_accessor as usize).map(|a| {
+                                let bytes = a
+                                    .get("bufferView")
+                                    .and_then(Value::as_u64)
+                                    .and_then(&view_bytes);
+                                decode_joints(a, bytes)
+                            });
+                            let weights = accessors.get(weight_accessor as usize).map(|a| {
+                                let bytes = a
+                                    .get("bufferView")
+                                    .and_then(Value::as_u64)
+                                    .and_then(&view_bytes);
+                                decode_weights(a, bytes)
+                            });
+                            if let (Some(joints), Some(weights)) = (joints, weights) {
+                                if !joints.is_empty() && joints.len() == weights.len() {
+                                    skin_joints = joints;
+                                    skin_weights = weights;
+                                }
                             }
                         }
                     }
@@ -198,6 +233,9 @@ impl GltfImporter {
                 material,
                 preview_xy,
                 preview_indices,
+                preview_positions,
+                skin_joints,
+                skin_weights,
             });
         }
         if meshes.iter().map(|m| u64::from(m.vertices)).sum::<u64>() > limits.max_vertices {
@@ -224,10 +262,23 @@ impl GltfImporter {
                         .collect()
                 })
                 .unwrap_or_default();
+            // N109: read the node's local transform (TRS or matrix).
+            let (translation, rotation, scale) = match node.get("matrix").and_then(Value::as_array)
+            {
+                Some(m) if m.len() == 16 => decompose_matrix(m),
+                _ => (
+                    read_f32_3(node.get("translation"), [0.0, 0.0, 0.0]),
+                    read_f32_4(node.get("rotation"), [0.0, 0.0, 0.0, 1.0]),
+                    read_f32_3(node.get("scale"), [1.0, 1.0, 1.0]),
+                ),
+            };
             nodes.push(Node {
                 name: json_name(node, &format!("node{i}")),
                 mesh: node.get("mesh").and_then(Value::as_u64).map(|v| v as usize),
                 children,
+                translation,
+                rotation,
+                scale,
             });
         }
 
@@ -237,13 +288,85 @@ impl GltfImporter {
             .map(|list| {
                 list.iter()
                     .enumerate()
-                    .map(|(i, animation)| Animation {
-                        name: json_name(animation, &format!("animation{i}")),
-                        channels: animation
+                    .map(|(i, animation)| {
+                        let channels = animation
                             .get("channels")
                             .and_then(Value::as_array)
                             .map(|c| c.len() as u32)
-                            .unwrap_or(0),
+                            .unwrap_or(0);
+                        let mut tracks = Vec::new();
+                        if let Some(channel_list) =
+                            animation.get("channels").and_then(Value::as_array)
+                        {
+                            let samplers = animation.get("samplers").and_then(Value::as_array);
+                            for channel in channel_list {
+                                let target = channel.get("target");
+                                let node =
+                                    target.and_then(|t| t.get("node")).and_then(Value::as_u64);
+                                let Some(node) = node else { continue };
+                                if node as usize >= nodes_json.len() {
+                                    continue;
+                                }
+                                let path = target
+                                    .and_then(|t| t.get("path"))
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("");
+                                let components = match path {
+                                    "rotation" => 4usize,
+                                    "translation" | "scale" => 3usize,
+                                    _ => continue,
+                                };
+                                let sampler_index = channel
+                                    .get("sampler")
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or(u64::MAX);
+                                let sampler = samplers
+                                    .and_then(|s| s.get(sampler_index as usize))
+                                    .cloned()
+                                    .unwrap_or(Value::Null);
+                                let read = |key: &str, components: usize| -> Vec<f32> {
+                                    let Some(index) = sampler.get(key).and_then(Value::as_u64)
+                                    else {
+                                        return Vec::new();
+                                    };
+                                    let Some(accessor) = accessors.get(index as usize) else {
+                                        return Vec::new();
+                                    };
+                                    let bytes = accessor
+                                        .get("bufferView")
+                                        .and_then(Value::as_u64)
+                                        .and_then(&view_bytes);
+                                    decode_float_accessor(
+                                        accessor,
+                                        bytes,
+                                        components,
+                                        limits.max_nodes,
+                                    )
+                                };
+                                let times = read("input", 1);
+                                let values = read("output", components);
+                                if times.is_empty() || values.len() < components {
+                                    continue;
+                                }
+                                let interpolation = sampler
+                                    .get("interpolation")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("LINEAR")
+                                    .to_string();
+                                tracks.push(crate::ir::AnimationTrack {
+                                    node: node as usize,
+                                    path: path.to_string(),
+                                    interpolation,
+                                    times,
+                                    values,
+                                });
+                            }
+                        }
+                        Animation {
+                            name: json_name(animation, &format!("animation{i}")),
+                            channels,
+                            tracks,
+                        }
                     })
                     .collect()
             })
@@ -265,7 +388,7 @@ impl GltfImporter {
             meshes,
             textures,
             materials,
-            skeletons: read_skeletons(&doc, nodes_json.len())?,
+            skeletons: read_skeletons(&doc, nodes_json.len(), accessors, &buffer_views, &buffers)?,
             animations,
             sprites: Vec::new(),
             layers: vec![layer],
@@ -425,7 +548,8 @@ fn decode_preview_indices(accessor: &Value, bytes: Option<&[u8]>) -> Vec<u16> {
         Some(5125) => {
             let mut offset = 0;
             while offset + 4 <= bytes.len() && out.len() < 192 {
-                let value = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap_or([0; 4]));
+                let value =
+                    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap_or([0; 4]));
                 if value > u32::from(u16::MAX) {
                     break;
                 }
@@ -438,7 +562,9 @@ fn decode_preview_indices(accessor: &Value, bytes: Option<&[u8]>) -> Vec<u16> {
     out
 }
 
-fn decode_preview_xy(accessor: &Value, bytes: Option<&[u8]>) -> Vec<(i16, i16)> {
+/// N89/N109: read up to 64 VEC3 float positions in local space. `project_xy`
+/// turns them into the pixel preview; a skinned bake deforms them first.
+fn decode_preview_positions(accessor: &Value, bytes: Option<&[u8]>) -> Vec<[f32; 3]> {
     if accessor.get("componentType").and_then(Value::as_u64) != Some(5126) {
         return Vec::new();
     }
@@ -453,12 +579,220 @@ fn decode_preview_xy(accessor: &Value, bytes: Option<&[u8]>) -> Vec<(i16, i16)> 
     while offset + 12 <= bytes.len() && out.len() < 64 {
         let x = f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap_or([0; 4]));
         let y = f32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap_or([0; 4]));
-        let px = ((x + 1.0) * 16.0).round().clamp(0.0, 31.0) as i16;
-        let py = ((1.0 - y) * 16.0).round().clamp(0.0, 31.0) as i16;
-        out.push((px, py));
+        let z = f32::from_le_bytes(bytes[offset + 8..offset + 12].try_into().unwrap_or([0; 4]));
+        out.push([x, y, z]);
         offset += 12;
     }
     out
+}
+
+/// Map a local-space point from roughly [-1, 1] into a 32×32 pixel cell.
+fn project_xy(point: &[f32; 3]) -> (i16, i16) {
+    let px = ((point[0] + 1.0) * 16.0).round().clamp(0.0, 31.0) as i16;
+    let py = ((1.0 - point[1]) * 16.0).round().clamp(0.0, 31.0) as i16;
+    (px, py)
+}
+
+/// N109: JOINTS_0 (VEC4 u8/u16) per preview vertex.
+fn decode_joints(accessor: &Value, bytes: Option<&[u8]>) -> Vec<[u16; 4]> {
+    if accessor.get("type").and_then(Value::as_str) != Some("VEC4") {
+        return Vec::new();
+    }
+    let component = accessor.get("componentType").and_then(Value::as_u64);
+    let Some(bytes) = bytes else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    match component {
+        Some(5121) => {
+            let mut offset = 0usize;
+            while offset + 4 <= bytes.len() && out.len() < 64 {
+                out.push([
+                    u16::from(bytes[offset]),
+                    u16::from(bytes[offset + 1]),
+                    u16::from(bytes[offset + 2]),
+                    u16::from(bytes[offset + 3]),
+                ]);
+                offset += 4;
+            }
+        }
+        Some(5123) => {
+            let mut offset = 0usize;
+            while offset + 8 <= bytes.len() && out.len() < 64 {
+                let mut joints = [0u16; 4];
+                for (k, joint) in joints.iter_mut().enumerate() {
+                    *joint = u16::from_le_bytes([bytes[offset + k * 2], bytes[offset + k * 2 + 1]]);
+                }
+                out.push(joints);
+                offset += 8;
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// N109: WEIGHTS_0 (VEC4 f32, or normalized u8/u16) per preview vertex.
+fn decode_weights(accessor: &Value, bytes: Option<&[u8]>) -> Vec<[f32; 4]> {
+    if accessor.get("type").and_then(Value::as_str) != Some("VEC4") {
+        return Vec::new();
+    }
+    let component = accessor.get("componentType").and_then(Value::as_u64);
+    let normalized = accessor
+        .get("normalized")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let Some(bytes) = bytes else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    match component {
+        Some(5126) => {
+            let mut offset = 0usize;
+            while offset + 16 <= bytes.len() && out.len() < 64 {
+                let mut weights = [0f32; 4];
+                for (k, weight) in weights.iter_mut().enumerate() {
+                    *weight = f32::from_le_bytes(
+                        bytes[offset + k * 4..offset + k * 4 + 4]
+                            .try_into()
+                            .unwrap_or([0; 4]),
+                    );
+                }
+                out.push(weights);
+                offset += 16;
+            }
+        }
+        Some(5121) if normalized => {
+            let mut offset = 0usize;
+            while offset + 4 <= bytes.len() && out.len() < 64 {
+                out.push([
+                    f32::from(bytes[offset]) / 255.0,
+                    f32::from(bytes[offset + 1]) / 255.0,
+                    f32::from(bytes[offset + 2]) / 255.0,
+                    f32::from(bytes[offset + 3]) / 255.0,
+                ]);
+                offset += 4;
+            }
+        }
+        Some(5123) if normalized => {
+            let mut offset = 0usize;
+            while offset + 8 <= bytes.len() && out.len() < 64 {
+                let mut weights = [0f32; 4];
+                for (k, weight) in weights.iter_mut().enumerate() {
+                    *weight = f32::from(u16::from_le_bytes([
+                        bytes[offset + k * 2],
+                        bytes[offset + k * 2 + 1],
+                    ])) / 65535.0;
+                }
+                out.push(weights);
+                offset += 8;
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// N109/N110: decode an f32 accessor into a flat list, `components` per element,
+/// capped at `max_count` elements. Non-f32 accessors return empty.
+fn decode_float_accessor(
+    accessor: &Value,
+    bytes: Option<&[u8]>,
+    components: usize,
+    max_count: usize,
+) -> Vec<f32> {
+    if accessor.get("componentType").and_then(Value::as_u64) != Some(5126) {
+        return Vec::new();
+    }
+    let Some(bytes) = bytes else {
+        return Vec::new();
+    };
+    let stride = components * 4;
+    if stride == 0 {
+        return Vec::new();
+    }
+    let cap = max_count.max(1);
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    while offset + stride <= bytes.len() && out.len() / components < cap {
+        for k in 0..components {
+            out.push(f32::from_le_bytes(
+                bytes[offset + k * 4..offset + k * 4 + 4]
+                    .try_into()
+                    .unwrap_or([0; 4]),
+            ));
+        }
+        offset += stride;
+    }
+    out
+}
+
+fn read_f32_3(value: Option<&Value>, default: [f32; 3]) -> [f32; 3] {
+    let Some(list) = value.and_then(Value::as_array) else {
+        return default;
+    };
+    let mut out = default;
+    for (slot, item) in out.iter_mut().zip(list.iter()) {
+        if let Some(v) = item.as_f64() {
+            *slot = v as f32;
+        }
+    }
+    out
+}
+
+fn read_f32_4(value: Option<&Value>, default: [f32; 4]) -> [f32; 4] {
+    let Some(list) = value.and_then(Value::as_array) else {
+        return default;
+    };
+    let mut out = default;
+    for (slot, item) in out.iter_mut().zip(list.iter()) {
+        if let Some(v) = item.as_f64() {
+            *slot = v as f32;
+        }
+    }
+    out
+}
+
+/// N109: decompose a column-major glTF `matrix` into translation, quaternion and
+/// scale. Negative scale is not handled (it would need a mirror decision).
+fn decompose_matrix(m: &[Value]) -> ([f32; 3], [f32; 4], [f32; 3]) {
+    let f = |i: usize| m.get(i).and_then(Value::as_f64).unwrap_or(0.0) as f32;
+    let translation = [f(12), f(13), f(14)];
+    let col0 = [f(0), f(1), f(2)];
+    let col1 = [f(4), f(5), f(6)];
+    let col2 = [f(8), f(9), f(10)];
+    let sx = norm3(col0).max(f32::EPSILON);
+    let sy = norm3(col1).max(f32::EPSILON);
+    let sz = norm3(col2).max(f32::EPSILON);
+    let scale = [sx, sy, sz];
+    let r00 = col0[0] / sx;
+    let r10 = col0[1] / sx;
+    let r20 = col0[2] / sx;
+    let r01 = col1[0] / sy;
+    let r11 = col1[1] / sy;
+    let r21 = col1[2] / sy;
+    let r02 = col2[0] / sz;
+    let r12 = col2[1] / sz;
+    let r22 = col2[2] / sz;
+    let trace = r00 + r11 + r22;
+    let quat = if trace > 0.0 {
+        let s = (trace + 1.0).sqrt() * 2.0;
+        [(r21 - r12) / s, (r02 - r20) / s, (r10 - r01) / s, 0.25 * s]
+    } else if r00 > r11 && r00 > r22 {
+        let s = (1.0 + r00 - r11 - r22).sqrt() * 2.0;
+        [0.25 * s, (r01 + r10) / s, (r02 + r20) / s, (r21 - r12) / s]
+    } else if r11 > r22 {
+        let s = (1.0 + r11 - r00 - r22).sqrt() * 2.0;
+        [(r01 + r10) / s, 0.25 * s, (r12 + r21) / s, (r02 - r20) / s]
+    } else {
+        let s = (1.0 + r22 - r00 - r11).sqrt() * 2.0;
+        [(r02 + r20) / s, (r12 + r21) / s, 0.25 * s, (r10 - r01) / s]
+    };
+    (translation, quat, scale)
+}
+
+fn norm3(v: [f32; 3]) -> f32 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
 fn view_has_valid_data(view: &BufferView, buffers: &[Buffer]) -> bool {
@@ -623,8 +957,26 @@ fn read_be_u16(bytes: &[u8], offset: usize) -> Option<u16> {
 
 /// Read glTF `skins` and any VRM humanoid extension into IR skeletons. Joint
 /// indices are validated against the node array; an out-of-range joint is
-/// rejected rather than silently imported.
-fn read_skeletons(doc: &Value, node_count: usize) -> Result<Vec<Skeleton>, ModelError> {
+/// rejected rather than silently imported. N109 also carries the joint node
+/// indices and the inverse bind matrices so a bake can deform the mesh.
+fn read_skeletons(
+    doc: &Value,
+    node_count: usize,
+    accessors: &[Value],
+    views: &[BufferView],
+    buffers: &[Buffer],
+) -> Result<Vec<Skeleton>, ModelError> {
+    let view_bytes = |index: u64| -> Option<&[u8]> {
+        let view = views.get(index as usize)?;
+        if !view_has_valid_data(view, buffers) {
+            return None;
+        }
+        let buffer = buffers.get(view.buffer as usize)?;
+        let data = buffer.data.as_ref()?;
+        let start = usize::try_from(view.byte_offset).ok()?;
+        let len = usize::try_from(view.byte_length).ok()?;
+        data.get(start..start.checked_add(len)?)
+    };
     let mut out = Vec::new();
     let empty = Vec::new();
     if let Some(skins) = doc.get("skins").and_then(Value::as_array) {
@@ -633,6 +985,7 @@ fn read_skeletons(doc: &Value, node_count: usize) -> Result<Vec<Skeleton>, Model
                 .get("joints")
                 .and_then(Value::as_array)
                 .unwrap_or(&empty);
+            let mut joint_nodes = Vec::with_capacity(joints.len());
             for joint in joints {
                 let index = joint.as_u64().unwrap_or(u64::MAX);
                 if index as usize >= node_count {
@@ -640,10 +993,30 @@ fn read_skeletons(doc: &Value, node_count: usize) -> Result<Vec<Skeleton>, Model
                         "skin {i} joint {index} out of range ({node_count} nodes)"
                     )));
                 }
+                joint_nodes.push(index as usize);
+            }
+            // N109: inverse bind matrices (MAT4 f32, column-major).
+            let mut inverse_bind = Vec::new();
+            if let Some(index) = skin.get("inverseBindMatrices").and_then(Value::as_u64) {
+                if let Some(accessor) = accessors.get(index as usize) {
+                    let bytes = accessor
+                        .get("bufferView")
+                        .and_then(Value::as_u64)
+                        .and_then(&view_bytes);
+                    let floats =
+                        decode_float_accessor(accessor, bytes, 16, joint_nodes.len().max(1));
+                    for chunk in floats.chunks_exact(16) {
+                        let mut matrix = [0.0f32; 16];
+                        matrix.copy_from_slice(chunk);
+                        inverse_bind.push(matrix);
+                    }
+                }
             }
             out.push(Skeleton {
                 name: json_name(skin, &format!("skin{i}")),
                 bones: joints.len().min(u32::MAX as usize) as u32,
+                joint_nodes,
+                inverse_bind,
             });
         }
     }
@@ -664,6 +1037,8 @@ fn read_skeletons(doc: &Value, node_count: usize) -> Result<Vec<Skeleton>, Model
                 out.push(Skeleton {
                     name: "vrm-humanoid".into(),
                     bones: count.min(u32::MAX as usize) as u32,
+                    joint_nodes: Vec::new(),
+                    inverse_bind: Vec::new(),
                 });
                 break;
             }
@@ -696,6 +1071,7 @@ fn read_vrm(doc: &Value) -> (BTreeMap<String, String>, Vec<Animation>) {
                 animations.push(Animation {
                     name: format!("vrm-expression:{}", json_name(group, "expression")),
                     channels: 1,
+                    ..Animation::default()
                 });
             }
         }
@@ -720,6 +1096,7 @@ fn read_vrm(doc: &Value) -> (BTreeMap<String, String>, Vec<Animation>) {
                 animations.push(Animation {
                     name: format!("vrm-expression:{name}"),
                     channels: 1,
+                    ..Animation::default()
                 });
             }
         }
@@ -816,7 +1193,10 @@ mod tests {
             "nodes": [{"mesh": 0}]
         });
         let model = GltfImporter
-            .import(&glb(&serde_json::to_vec(&doc).unwrap(), &bin), &ImportLimits::default())
+            .import(
+                &glb(&serde_json::to_vec(&doc).unwrap(), &bin),
+                &ImportLimits::default(),
+            )
             .unwrap();
         assert_eq!(model.meshes[0].preview_xy.len(), 3);
         assert_eq!(model.meshes[0].preview_xy[0], (0, 31));
@@ -1069,6 +1449,128 @@ mod tests {
         assert_eq!(model.meta.get("vrm.title").unwrap(), "Aria");
         assert_eq!(model.meta.get("vrm.author").unwrap(), "Dev");
         assert_eq!(model.meta.get("vrm.expressions").unwrap(), "2");
+    }
+
+    /// Build a GLB with a node transform, a skin, JOINTS_0/WEIGHTS_0 and an
+    /// animation sampler.
+    fn skinned_glb() -> Vec<u8> {
+        let mut bin = Vec::new();
+        // POSITION (3 × VEC3 f32) at 0.
+        for (x, y, z) in [(0.0f32, 0.0f32, 0.0f32), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)] {
+            for v in [x, y, z] {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        let position_len = bin.len();
+        // JOINTS_0 (3 × VEC4 u16).
+        for joints in [[0u16, 0, 0, 0], [1, 0, 0, 0], [0, 0, 0, 0]] {
+            for j in joints {
+                bin.extend_from_slice(&j.to_le_bytes());
+            }
+        }
+        let joints_len = bin.len() - position_len;
+        // WEIGHTS_0 (3 × VEC4 f32).
+        for weights in [
+            [1.0f32, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+        ] {
+            for w in weights {
+                bin.extend_from_slice(&w.to_le_bytes());
+            }
+        }
+        let weights_len = bin.len() - position_len - joints_len;
+        // inverseBindMatrices (2 × MAT4 f32, identity).
+        let identity = [
+            1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        for _ in 0..2 {
+            for v in identity {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        let bind_len = 128;
+        // Animation input (2 × SCALAR f32) and output (2 × VEC4 f32).
+        for t in [0.0f32, 1.0] {
+            bin.extend_from_slice(&t.to_le_bytes());
+        }
+        for _ in 0..2 {
+            for v in [0.0f32, 0.0, 0.0, 1.0] {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        let bind_offset = position_len + joints_len + weights_len;
+        let anim_input_offset = bind_offset + bind_len;
+        let anim_output_offset = anim_input_offset + 8;
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": bin.len()}],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": position_len},
+                {"buffer": 0, "byteOffset": position_len, "byteLength": joints_len},
+                {"buffer": 0, "byteOffset": position_len + joints_len, "byteLength": weights_len},
+                {"buffer": 0, "byteOffset": bind_offset, "byteLength": bind_len},
+                {"buffer": 0, "byteOffset": anim_input_offset, "byteLength": 8},
+                {"buffer": 0, "byteOffset": anim_output_offset, "byteLength": 32}
+            ],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 1, "componentType": 5123, "count": 3, "type": "VEC4"},
+                {"bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC4"},
+                {"bufferView": 3, "componentType": 5126, "count": 2, "type": "MAT4"},
+                {"bufferView": 4, "componentType": 5126, "count": 2, "type": "SCALAR"},
+                {"bufferView": 5, "componentType": 5126, "count": 2, "type": "VEC4"}
+            ],
+            "meshes": [{"name": "body", "primitives": [{"attributes": {"POSITION": 0, "JOINTS_0": 1, "WEIGHTS_0": 2}}]}],
+            "nodes": [
+                {"name": "root", "mesh": 0, "translation": [1.0, 2.0, 3.0], "children": [1]},
+                {"name": "joint"}
+            ],
+            "skins": [{"name": "rig", "joints": [0, 1], "inverseBindMatrices": 3}],
+            "animations": [{
+                "name": "wave",
+                "channels": [{"sampler": 0, "target": {"node": 1, "path": "rotation"}}],
+                "samplers": [{"input": 4, "output": 5, "interpolation": "LINEAR"}]
+            }]
+        });
+        glb(&serde_json::to_vec(&doc).unwrap(), &bin)
+    }
+
+    #[test]
+    fn node_transforms_and_skin_weights_are_imported() {
+        let model = GltfImporter
+            .import(&skinned_glb(), &ImportLimits::default())
+            .unwrap();
+        assert_eq!(model.nodes[0].translation, [1.0, 2.0, 3.0]);
+        assert_eq!(model.nodes[0].rotation, [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(model.nodes[1].scale, [1.0, 1.0, 1.0]);
+
+        let mesh = &model.meshes[0];
+        assert_eq!(mesh.preview_positions.len(), 3);
+        assert_eq!(mesh.preview_positions[1], [1.0, 0.0, 0.0]);
+        assert_eq!(mesh.skin_joints.len(), 3);
+        assert_eq!(mesh.skin_joints[1], [1, 0, 0, 0]);
+        assert_eq!(mesh.skin_weights[0], [1.0, 0.0, 0.0, 0.0]);
+
+        let skeleton = &model.skeletons[0];
+        assert_eq!(skeleton.bones, 2);
+        assert_eq!(skeleton.joint_nodes, vec![0, 1]);
+        assert_eq!(skeleton.inverse_bind.len(), 2);
+        assert_eq!(skeleton.inverse_bind[0][0], 1.0);
+    }
+
+    #[test]
+    fn animation_channels_import_timed_tracks() {
+        let model = GltfImporter
+            .import(&skinned_glb(), &ImportLimits::default())
+            .unwrap();
+        let track = &model.animations[0].tracks[0];
+        assert_eq!(model.animations[0].name, "wave");
+        assert_eq!(track.node, 1);
+        assert_eq!(track.path, "rotation");
+        assert_eq!(track.interpolation, "LINEAR");
+        assert_eq!(track.times, vec![0.0, 1.0]);
+        assert_eq!(track.values, vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
     }
 
     #[test]

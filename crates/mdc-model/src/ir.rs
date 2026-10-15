@@ -38,14 +38,58 @@ pub enum ModelError {
     Json(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Node local transform. glTF applies `T * R * S` to the node's children and
+/// mesh. Values are the file's defaults (identity) when the node omits them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Node {
     pub name: String,
     pub mesh: Option<usize>,
     pub children: Vec<usize>,
+    #[serde(default = "identity_translation", skip_serializing_if = "is_zero3")]
+    pub translation: [f32; 3],
+    /// Quaternion in glTF order `[x, y, z, w]`.
+    #[serde(
+        default = "identity_rotation",
+        skip_serializing_if = "is_identity_quat"
+    )]
+    pub rotation: [f32; 4],
+    #[serde(default = "identity_scale", skip_serializing_if = "is_one3")]
+    pub scale: [f32; 3],
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+impl Default for Node {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            mesh: None,
+            children: Vec::new(),
+            translation: identity_translation(),
+            rotation: identity_rotation(),
+            scale: identity_scale(),
+        }
+    }
+}
+
+pub(crate) fn identity_translation() -> [f32; 3] {
+    [0.0, 0.0, 0.0]
+}
+pub(crate) fn identity_rotation() -> [f32; 4] {
+    [0.0, 0.0, 0.0, 1.0]
+}
+pub(crate) fn identity_scale() -> [f32; 3] {
+    [1.0, 1.0, 1.0]
+}
+fn is_zero3(v: &[f32; 3]) -> bool {
+    v == &[0.0, 0.0, 0.0]
+}
+fn is_one3(v: &[f32; 3]) -> bool {
+    v == &[1.0, 1.0, 1.0]
+}
+fn is_identity_quat(v: &[f32; 4]) -> bool {
+    v == &[0.0, 0.0, 0.0, 1.0]
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Mesh {
     pub name: String,
     pub vertices: u32,
@@ -58,6 +102,18 @@ pub struct Mesh {
     /// Triangle list into `preview_xy`. Empty means draw a fan.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preview_indices: Vec<u16>,
+    /// N109: raw local-space preview positions (VEC3, file units) parallel to
+    /// `preview_xy`, so a skinned bake can deform them before projection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preview_positions: Vec<[f32; 3]>,
+    /// N109: per-preview-vertex joint indices (JOINTS_0), parallel to
+    /// `preview_positions`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skin_joints: Vec<[u16; 4]>,
+    /// N109: per-preview-vertex joint weights (WEIGHTS_0), parallel to
+    /// `preview_positions`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skin_weights: Vec<[f32; 4]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,16 +131,40 @@ pub struct Material {
     pub texture: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Skeleton {
     pub name: String,
     pub bones: u32,
+    /// N109: node index per joint; parallel to `inverse_bind`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub joint_nodes: Vec<usize>,
+    /// N109: inverse bind matrix per joint, column-major (glTF MAT4), 16 floats.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inverse_bind: Vec<[f32; 16]>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Animation {
     pub name: String,
     pub channels: u32,
+    /// N110: sampled channels (translation/rotation/scale per node). Empty for a
+    /// metadata-only animation (e.g. a Live2D expression stub).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tracks: Vec<AnimationTrack>,
+}
+
+/// N110: one glTF animation channel: a node, a transform path and the sampler
+/// keyframes. `values` is flat (3 floats per key for translation/scale, 4 for a
+/// quaternion rotation).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnimationTrack {
+    pub node: usize,
+    /// `translation` | `rotation` | `scale`.
+    pub path: String,
+    /// `LINEAR` | `STEP` | `CUBICSPLINE`.
+    pub interpolation: String,
+    pub times: Vec<f32>,
+    pub values: Vec<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,7 +182,7 @@ pub struct Layer {
 }
 
 /// The single intermediate representation every importer produces.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Model {
     pub source: String,
     pub nodes: Vec<Node>,

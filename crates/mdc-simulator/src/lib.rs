@@ -90,6 +90,7 @@ fn draw_text(pixels: &mut [u8], width: u32, height: u32, x: u16, y: u16, text: &
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn blit_hex_rgb565(
     pixels: &mut [u8],
     width: u32,
@@ -127,6 +128,7 @@ fn blit_hex_rgb565(
     drew
 }
 
+#[allow(clippy::too_many_arguments)]
 fn blit_sprite(
     pixels: &mut [u8],
     width: u32,
@@ -1301,7 +1303,8 @@ impl FakeDevice {
         if let Some(clip) = atlas.clip(self.anim_clip.as_deref().unwrap_or("")) {
             let elapsed = self.clock.tick.saturating_sub(self.anim_start_tick);
             if clip.fade_in_ms > 0 && elapsed < u64::from(clip.fade_in_ms) {
-                let quarters = ((elapsed.saturating_mul(4) / u64::from(clip.fade_in_ms)) as u8).min(3);
+                let quarters =
+                    ((elapsed.saturating_mul(4) / u64::from(clip.fade_in_ms)) as u8).min(3);
                 fade_toward_black(&mut self.pixels, quarters);
             }
             if !clip.looping && clip.fade_out_ms > 0 && clip.fps > 0 && clip.frames > 0 {
@@ -2104,6 +2107,7 @@ mod tests {
                 material: None,
                 preview_xy: vec![(1, 1), (6, 1), (1, 6)],
                 preview_indices: Vec::new(),
+                ..mdc_model::Mesh::default()
             }],
             textures: Vec::new(),
             materials: Vec::new(),
@@ -2115,7 +2119,9 @@ mod tests {
             atlas: None,
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
-        session.install_package(&sealed.to_bytes().unwrap()).unwrap();
+        session
+            .install_package(&sealed.to_bytes().unwrap())
+            .unwrap();
         device.poll().unwrap();
         session.poll().unwrap();
         assert!(device.render_preview());
@@ -2146,6 +2152,7 @@ mod tests {
                 material: None,
                 preview_xy: vec![(0, 0), (4, 0), (0, 4), (7, 7)],
                 preview_indices: vec![0, 1, 2],
+                ..mdc_model::Mesh::default()
             }],
             textures: Vec::new(),
             materials: Vec::new(),
@@ -2157,7 +2164,9 @@ mod tests {
             atlas: None,
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
-        session.install_package(&sealed.to_bytes().unwrap()).unwrap();
+        session
+            .install_package(&sealed.to_bytes().unwrap())
+            .unwrap();
         device.poll().unwrap();
         session.poll().unwrap();
         assert!(device.render_preview());
@@ -2200,7 +2209,9 @@ mod tests {
             }),
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
-        session.install_package(&sealed.to_bytes().unwrap()).unwrap();
+        session
+            .install_package(&sealed.to_bytes().unwrap())
+            .unwrap();
         device.poll().unwrap();
         session.poll().unwrap();
         session
@@ -2260,7 +2271,9 @@ mod tests {
             }),
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
-        session.install_package(&sealed.to_bytes().unwrap()).unwrap();
+        session
+            .install_package(&sealed.to_bytes().unwrap())
+            .unwrap();
         device.poll().unwrap();
         session.poll().unwrap();
         session.set_config("animation", "idle").unwrap();
@@ -2315,7 +2328,9 @@ mod tests {
             }),
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
-        session.install_package(&sealed.to_bytes().unwrap()).unwrap();
+        session
+            .install_package(&sealed.to_bytes().unwrap())
+            .unwrap();
         device.poll().unwrap();
         session.poll().unwrap();
         session.set_config("animation", "once").unwrap();

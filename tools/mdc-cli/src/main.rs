@@ -591,6 +591,74 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// N112: bake a skinned model's poses into sprite frames (or a runtime package)
+/// using linear blend skinning from the model's skin + animation.
+fn cmd_bake_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut model_path: Option<String> = None;
+    let mut frames: u32 = 8;
+    let mut sprite: u32 = 64;
+    let mut animation: usize = 0;
+    let mut out_dir = String::from(".");
+    let mut package_path: Option<String> = None;
+    let mut iter = args.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--frames" => frames = iter.next().and_then(|v| v.parse().ok()).unwrap_or(frames),
+            "--sprite" => sprite = iter.next().and_then(|v| v.parse().ok()).unwrap_or(sprite),
+            "--animation" => {
+                animation = iter
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(animation)
+            }
+            "--out" => out_dir = iter.next().cloned().unwrap_or(out_dir),
+            "--package" => package_path = iter.next().cloned(),
+            other => model_path = Some(other.to_string()),
+        }
+    }
+    let model_path = model_path.ok_or("bake-mesh requires a .gltf/.glb model")?;
+    let bytes = std::fs::read(&model_path)?;
+    let model = mdc_model::GltfImporter.import(&bytes, &mdc_model::ImportLimits::default())?;
+    if let Some(path) = &package_path {
+        let sealed =
+            mdc_bake::bake_skinned_to_package(&model, animation, frames, (sprite, sprite), 0xF800)?;
+        let package_bytes = sealed.to_bytes().map_err(|e| format!("package: {e}"))?;
+        std::fs::write(path, &package_bytes)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "source": model_path,
+                "frames": frames,
+                "mode": sealed.manifest.mode,
+                "package_path": path,
+                "package_bytes": package_bytes.len(),
+            }))?
+        );
+        return Ok(());
+    }
+    let baked = mdc_bake::bake_skinned_mesh(&model, animation, frames, (sprite, sprite), 0xF800)?;
+    std::fs::create_dir_all(&out_dir)?;
+    let mut written = Vec::new();
+    for (index, frame) in baked.iter().enumerate() {
+        let path = Path::new(&out_dir).join(format!("mesh_frame_{index:02}.ppm"));
+        std::fs::write(
+            &path,
+            rgb565_frame_to_ppm(frame.width, frame.height, &frame.rgb565),
+        )?;
+        written.push(path.display().to_string());
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "source": model_path,
+            "frames": baked.len(),
+            "sprite": format!("{sprite}x{sprite}"),
+            "files": written,
+        }))?
+    );
+    Ok(())
+}
+
 /// Encode a baked RGB565 atlas as a binary PPM (P6).
 fn rgb565_to_ppm(atlas: &mdc_bake::BakedAtlas) -> Vec<u8> {
     rgb565_frame_to_ppm(atlas.width, atlas.height, &atlas.rgb565)
@@ -1997,6 +2065,7 @@ flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <t
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--serve ADDR]|\
 package <model.gltf> [out.mdcpkg]|install-package <file.mdcpkg>|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
+bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--out DIR] [--package OUT.mdcpkg]|\
 scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|raster-demo|preview-mesh|inspect [--watch --count N --interval MS]"
     );
 }
@@ -2139,6 +2208,7 @@ fn main() {
         }
         Some("raster-demo") => cmd_raster_demo(),
         Some("preview-mesh") => cmd_preview_mesh(),
+        Some("bake-mesh") => cmd_bake_mesh(&args[1..]),
         Some("switch-demo") => {
             let mut o = opts.clone();
             o.sim = true;
@@ -2904,6 +2974,136 @@ mod tests {
         cmd_bake(&args).unwrap();
         assert!(package_path.exists());
 
+        let opts = GlobalOpts {
+            sim: true,
+            address: None,
+            port: None,
+            board: "esp32-jc3248w535-sim".into(),
+        };
+        cmd_install_package(&opts, package_path.to_str().unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn skinned_glb() -> Vec<u8> {
+        fn pad4(data: &mut Vec<u8>, byte: u8) {
+            while (data.len() & 3) != 0 {
+                data.push(byte);
+            }
+        }
+        let mut bin = Vec::new();
+        for (x, y, z) in [(0.0f32, 0.0f32, 0.0f32), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)] {
+            for v in [x, y, z] {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        for joints in [[0u16, 0, 0, 0], [1, 0, 0, 0], [0, 0, 0, 0]] {
+            for j in joints {
+                bin.extend_from_slice(&j.to_le_bytes());
+            }
+        }
+        for _ in 0..3 {
+            for w in [1.0f32, 0.0, 0.0, 0.0] {
+                bin.extend_from_slice(&w.to_le_bytes());
+            }
+        }
+        let identity = [
+            1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        for _ in 0..2 {
+            for v in identity {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        for t in [0.0f32, 1.0] {
+            bin.extend_from_slice(&t.to_le_bytes());
+        }
+        let quarter = std::f32::consts::FRAC_1_SQRT_2;
+        for v in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, quarter, quarter] {
+            bin.extend_from_slice(&v.to_le_bytes());
+        }
+        let doc = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": bin.len()}],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+                {"buffer": 0, "byteOffset": 36, "byteLength": 24},
+                {"buffer": 0, "byteOffset": 60, "byteLength": 48},
+                {"buffer": 0, "byteOffset": 108, "byteLength": 128},
+                {"buffer": 0, "byteOffset": 236, "byteLength": 8},
+                {"buffer": 0, "byteOffset": 244, "byteLength": 32}
+            ],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 1, "componentType": 5123, "count": 3, "type": "VEC4"},
+                {"bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC4"},
+                {"bufferView": 3, "componentType": 5126, "count": 2, "type": "MAT4"},
+                {"bufferView": 4, "componentType": 5126, "count": 2, "type": "SCALAR"},
+                {"bufferView": 5, "componentType": 5126, "count": 2, "type": "VEC4"}
+            ],
+            "meshes": [{"name": "body", "primitives": [{"attributes": {"POSITION": 0, "JOINTS_0": 1, "WEIGHTS_0": 2}}]}],
+            "nodes": [
+                {"name": "root", "mesh": 0, "children": [1]},
+                {"name": "joint"}
+            ],
+            "skins": [{"name": "rig", "joints": [0, 1], "inverseBindMatrices": 3}],
+            "animations": [{
+                "name": "spin",
+                "channels": [{"sampler": 0, "target": {"node": 1, "path": "rotation"}}],
+                "samplers": [{"input": 4, "output": 5, "interpolation": "LINEAR"}]
+            }]
+        });
+        let mut json = serde_json::to_vec(&doc).unwrap();
+        pad4(&mut json, 0x20);
+        pad4(&mut bin, 0x00);
+        let total = 12 + 8 + json.len() + 8 + bin.len();
+        let mut out = Vec::with_capacity(total);
+        out.extend_from_slice(b"glTF");
+        out.extend_from_slice(&2u32.to_le_bytes());
+        out.extend_from_slice(&(total as u32).to_le_bytes());
+        out.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0x4E4F_534Au32.to_le_bytes());
+        out.extend_from_slice(&json);
+        out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0x004E_4942u32.to_le_bytes());
+        out.extend_from_slice(&bin);
+        out
+    }
+
+    #[test]
+    fn bake_mesh_writes_skinned_frames_and_packages() {
+        let dir = std::env::temp_dir().join(format!("mdc-cli-bakemesh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let model_path = dir.join("rig.glb");
+        std::fs::write(&model_path, skinned_glb()).unwrap();
+
+        let out_dir = dir.join("frames");
+        cmd_bake_mesh(&[
+            model_path.to_string_lossy().into_owned(),
+            "--frames".to_string(),
+            "4".to_string(),
+            "--sprite".to_string(),
+            "16".to_string(),
+            "--out".to_string(),
+            out_dir.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        let first = std::fs::read(out_dir.join("mesh_frame_00.ppm")).unwrap();
+        let last = std::fs::read(out_dir.join("mesh_frame_03.ppm")).unwrap();
+        assert!(first.starts_with(b"P6\n16 16\n255\n"));
+        assert_ne!(first, last, "the pose changes across frames");
+
+        let package_path = dir.join("rig.mdcpkg");
+        cmd_bake_mesh(&[
+            model_path.to_string_lossy().into_owned(),
+            "--frames".to_string(),
+            "4".to_string(),
+            "--sprite".to_string(),
+            "16".to_string(),
+            "--package".to_string(),
+            package_path.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
         let opts = GlobalOpts {
             sim: true,
             address: None,

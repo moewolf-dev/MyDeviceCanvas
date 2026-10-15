@@ -2,6 +2,23 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.23] — Skeletal skinning bake (N109–N112)
+
+### Added
+
+- glTF node TRS/matrix, `JOINTS_0`/`WEIGHTS_0`, `skins[].inverseBindMatrices` and
+  timed animation channels import into the IR (N109, N110)
+- `mdc-bake` linear blend skinning: `pose_world_matrices`, `skin_preview`,
+  `bake_skinned_mesh`, `bake_skinned_to_package` (N111)
+- CLI `mdc bake-mesh <model.gltf>` writes skinned pose frames or a runtime package
+  (N112)
+
+## [0.1.22] — Distinct mesh bake frames
+
+### Added
+
+- `bake_displaced_mesh` shifts a preview triangle per frame so the atlas is not a cycled source image
+
 ## [0.1.21] — Indexed preview and fade-out
 
 ### Added
