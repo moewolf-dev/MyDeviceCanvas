@@ -579,6 +579,7 @@ pub fn render_frame_at(
     let skinned = resolve_skinned(model, animation_index)?;
     let points = skinned_points_at(model, &skinned, time, sprite);
     let tint = material_color(model, skinned.mesh);
+    let mask = material_masked(model, skinned.mesh);
     let fill = tint.unwrap_or(color);
     let uvs: Option<&[[f32; 2]]> = if skinned.mesh.preview_uv.len()
         >= skinned.mesh.preview_positions.len()
@@ -596,6 +597,7 @@ pub fn render_frame_at(
         sprite.1,
         texture,
         tint,
+        mask,
         fill,
     )?;
     Ok(BakedTexture {
@@ -655,10 +657,18 @@ fn resolve_geometry(mesh: &Mesh) -> Option<&mdc_model::MeshGeometry> {
 }
 
 /// N175: the mesh's material base colour as RGB565, when the model sets one.
+fn material_of<'a>(model: &'a Model, mesh: &Mesh) -> Option<&'a mdc_model::Material> {
+    mesh.material.and_then(|index| model.materials.get(index))
+}
+
+/// N175: the mesh's material base colour as RGB565, when the model sets one.
 fn material_color(model: &Model, mesh: &Mesh) -> Option<u16> {
-    mesh.material
-        .and_then(|index| model.materials.get(index))
-        .and_then(|material| material.color_rgb565())
+    material_of(model, mesh).and_then(|material| material.color_rgb565())
+}
+
+/// N287: whether the mesh's material cuts out transparent texels.
+fn material_masked(model: &Model, mesh: &Mesh) -> bool {
+    material_of(model, mesh).is_some_and(|material| material.is_masked())
 }
 
 /// N166: render one posed frame of the mesh's full geometry into `size` pixels.
@@ -680,6 +690,7 @@ pub fn render_geometry_at(
         return render_frame_at(model, animation_index, time, size, texture, color);
     };
     let tint = material_color(model, skinned.mesh);
+    let mask = material_masked(model, skinned.mesh);
     let fill = tint.unwrap_or(color);
     let worlds = pose_world_matrices(&model.nodes, skinned.animation, time);
     // N226: morph the geometry before skinning.
@@ -716,6 +727,7 @@ pub fn render_geometry_at(
         size.1,
         texture,
         tint,
+        mask,
         fill,
         mdc_model::MAX_GEOMETRY_VERTICES,
     )?;
@@ -863,6 +875,7 @@ pub fn render_scene_at(
                 None
             };
         let tint = material_color(model, mesh);
+        let mask = material_masked(model, mesh);
         let fill = tint.unwrap_or(fallback);
         crate::texture::draw_indexed(
             &mut pixels,
@@ -873,6 +886,7 @@ pub fn render_scene_at(
             size.1,
             texture,
             tint,
+            mask,
             fill,
             mdc_model::MAX_GEOMETRY_VERTICES,
         )?;
@@ -985,6 +999,10 @@ pub fn render_package_mesh(
             .material
             .and_then(|mi| package.materials.get(mi))
             .and_then(|material| material.color_rgb565());
+        let mask = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .is_some_and(|material| material.is_masked());
         let fill = tint.unwrap_or(0xF800);
         crate::texture::draw_indexed(
             &mut pixels,
@@ -995,6 +1013,7 @@ pub fn render_package_mesh(
             size.1,
             texture.as_ref(),
             tint,
+            mask,
             fill,
             mdc_model::MAX_GEOMETRY_VERTICES,
         )?;
@@ -1099,6 +1118,10 @@ pub fn render_package_scene(
             .material
             .and_then(|mi| package.materials.get(mi))
             .and_then(|material| material.color_rgb565());
+        let mask = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .is_some_and(|material| material.is_masked());
         let fill = tint.unwrap_or(0xF800);
         crate::texture::draw_indexed(
             &mut pixels,
@@ -1109,6 +1132,7 @@ pub fn render_package_scene(
             size.1,
             texture.as_ref(),
             tint,
+            mask,
             fill,
             mdc_model::MAX_GEOMETRY_VERTICES,
         )?;
@@ -1161,6 +1185,7 @@ pub fn bake_textured_mesh(
         };
     let mut baked = Vec::with_capacity(per_frame.len());
     let tint = material_color(model, mesh);
+    let mask = material_masked(model, mesh);
     for points in per_frame {
         let rgb565 = crate::texture::raster_textured(
             &points,
@@ -1170,6 +1195,7 @@ pub fn bake_textured_mesh(
             sprite.1,
             texture,
             tint,
+            mask,
             color,
         )?;
         baked.push(BakedTexture {
@@ -1572,11 +1598,13 @@ mod tests {
                     name: "red".into(),
                     texture: None,
                     color: Some([255, 0, 0]),
+                    ..mdc_model::Material::default()
                 },
                 mdc_model::Material {
                     name: "green".into(),
                     texture: None,
                     color: Some([0, 255, 0]),
+                    ..mdc_model::Material::default()
                 },
             ],
             ..Model::default()
@@ -1674,6 +1702,7 @@ mod tests {
                 name: "red".into(),
                 texture: None,
                 color: Some([255, 0, 0]),
+                ..mdc_model::Material::default()
             }],
             animations: vec![Animation {
                 name: "smile".into(),

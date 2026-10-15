@@ -212,7 +212,7 @@ pub struct Texture {
     pub bytes: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Material {
     pub name: String,
     pub texture: Option<usize>,
@@ -220,6 +220,25 @@ pub struct Material {
     /// the factor was absent (renderers use their own default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<[u8; 3]>,
+    /// N283: glTF `alphaMode` (`OPAQUE` | `MASK` | `BLEND`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alpha_mode: Option<String>,
+    /// N283: glTF `alphaCutoff` (used by `MASK`; default 0.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alpha_cutoff: Option<f32>,
+}
+
+impl Material {
+    /// N283: whether this material cuts out texels below its cutoff.
+    pub fn is_masked(&self) -> bool {
+        self.alpha_mode
+            .as_deref()
+            .is_some_and(|mode| mode.eq_ignore_ascii_case("MASK"))
+    }
+    /// N283: the cutoff in 0..1 (default 0.5).
+    pub fn cutoff(&self) -> f32 {
+        self.alpha_cutoff.unwrap_or(0.5).clamp(0.0, 1.0)
+    }
 }
 
 impl Material {

@@ -739,6 +739,7 @@ fn material_colour_tints_the_package_texture_on_the_device() {
             texture: None,
             // Half-intensity red: the texture is a full red, so the result halves.
             color: Some([128, 0, 0]),
+            ..Default::default()
         }],
         skeletons: Vec::new(),
         animations: Vec::new(),
@@ -775,6 +776,62 @@ fn material_colour_tints_the_package_texture_on_the_device() {
     // Tinted: red ~128 -> the red channel is roughly half, not full.
     let r = (centre >> 11) & 0x1f;
     assert!((10..=22).contains(&r), "tinted red channel {r}");
+}
+
+#[test]
+fn masked_material_cuts_out_transparent_texels() {
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};
+
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.5, 0.5, 0.0],
+                    [-0.5, 0.5, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                morph_targets: Vec::new(),
+            }),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "cut".into(),
+            texture: Some(0),
+            color: Some([255, 255, 255]),
+            alpha_mode: Some("MASK".into()),
+            alpha_cutoff: Some(0.5),
+        }],
+        ..Model::default()
+    };
+    // 2×1 texture: left red opaque, right green transparent.
+    let texture = mdc_bake::TextureMap::from_rgb565(2, 1, vec![0x00, 0xF8, 0xE0, 0x07])
+        .unwrap()
+        .with_alpha(vec![0b01]);
+    let frame =
+        mdc_bake::render_scene_at(&model, 0, 0.0, (16, 16), Some(&texture), 0x001F).unwrap();
+    let at = |x: usize, y: usize| {
+        u16::from_le_bytes([
+            frame.rgb565[(y * 16 + x) * 2],
+            frame.rgb565[(y * 16 + x) * 2 + 1],
+        ])
+    };
+    assert_eq!(at(2, 8), 0xF800, "opaque left drawn");
+    assert_eq!(at(13, 8), 0, "transparent right left clear");
 }
 
 #[test]
@@ -815,6 +872,7 @@ fn merged_multi_primitive_geometry_renders_every_triangle() {
             name: "red".into(),
             texture: None,
             color: Some([255, 0, 0]),
+            ..Default::default()
         }],
         ..Model::default()
     };
@@ -913,6 +971,7 @@ fn device_renders_a_morph_animated_geometry_package() {
             name: "red".into(),
             texture: None,
             color: Some([255, 0, 0]),
+            ..Default::default()
         }],
         animations: vec![Animation {
             name: "smile".into(),
@@ -1008,6 +1067,7 @@ fn device_renders_an_animated_mesh_package_scene() {
             name: "red".into(),
             texture: None,
             color: Some([255, 0, 0]),
+            ..Default::default()
         }],
         animations: vec![Animation {
             name: "slide".into(),
@@ -1118,11 +1178,13 @@ fn multi_mesh_scene_bakes_and_reaches_a_device() {
                 name: "red".into(),
                 texture: None,
                 color: Some([255, 0, 0]),
+                ..Default::default()
             },
             Material {
                 name: "green".into(),
                 texture: None,
                 color: Some([0, 255, 0]),
+                ..Default::default()
             },
         ],
         ..Model::default()
@@ -1193,6 +1255,7 @@ fn textured_geometry_package_renders_on_the_device() {
             texture: None,
             // White base colour: the tint is the identity, so the texture shows.
             color: Some([255, 255, 255]),
+            ..Default::default()
         }],
         skeletons: Vec::new(),
         animations: Vec::new(),

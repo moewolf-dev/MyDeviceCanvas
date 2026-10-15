@@ -2,6 +2,19 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.41] — Texture alpha cutout (N283–N292)
+
+### Added
+
+- `Material.alpha_mode` / `alpha_cutoff` from glTF `alphaMode`/`alphaCutoff`
+  (`is_masked()`, `cutoff()`) (N283)
+- `decode_rgba_native` + `texture_map_with_alpha`: a 1-bit alpha mask on
+  `TextureMap` (N284, N285)
+- Masked rasterisation: transparent texels are skipped when the material is
+  `MASK` (N286, N287)
+- `mdc render-mesh` / `bake-mesh` decode PNG alpha; masked/pixel unit tests,
+  a compat fixture and docs (N288–N291)
+
 ## [0.1.40] — Multi-primitive mesh merge (N273–N282)
 
 ### Added

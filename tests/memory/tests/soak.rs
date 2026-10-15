@@ -139,6 +139,7 @@ fn multi_primitive_geometry_soak_is_bounded() {
             name: "red".into(),
             texture: None,
             color: Some([255, 0, 0]),
+            ..Default::default()
         }],
         ..Model::default()
     };
@@ -265,6 +266,7 @@ fn geometry_morph_render_soak_is_bounded() {
             name: "red".into(),
             texture: None,
             color: Some([255, 0, 0]),
+            ..Default::default()
         }],
         animations: vec![Animation {
             name: "smile".into(),
@@ -340,6 +342,7 @@ fn linear_filter_render_soak_is_bounded() {
             name: "skin".into(),
             texture: None,
             color: Some([255, 255, 255]),
+            ..Default::default()
         }],
         ..Model::default()
     };
@@ -403,6 +406,7 @@ fn device_mesh_scene_render_soak_is_bounded() {
             name: "red".into(),
             texture: None,
             color: Some([255, 0, 0]),
+            ..Default::default()
         }],
         animations: vec![Animation {
             name: "slide".into(),
@@ -499,11 +503,13 @@ fn multi_mesh_scene_render_soak_is_bounded() {
                 name: "red".into(),
                 texture: None,
                 color: Some([255, 0, 0]),
+                ..Default::default()
             },
             Material {
                 name: "green".into(),
                 texture: None,
                 color: Some([0, 255, 0]),
+                ..Default::default()
             },
         ],
         ..Model::default()
@@ -554,6 +560,7 @@ fn textured_mesh_package_soak_is_bounded() {
             name: "skin".into(),
             texture: None,
             color: Some([10, 20, 30]),
+            ..Default::default()
         }],
         ..Model::default()
     };

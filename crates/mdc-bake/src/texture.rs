@@ -36,6 +36,8 @@ pub struct TextureMap {
     pub rgb565: Vec<u8>,
     /// N203: sampling filter (defaults to nearest).
     pub filter: Filter,
+    /// N285: optional bit-packed alpha mask (1 = opaque). `None` = fully opaque.
+    pub alpha: Option<Vec<u8>>,
 }
 
 impl TextureMap {
@@ -53,6 +55,7 @@ impl TextureMap {
             height,
             rgb565,
             filter: Filter::Nearest,
+            alpha: None,
         })
     }
 
@@ -65,6 +68,29 @@ impl TextureMap {
     pub fn with_filter(mut self, filter: Filter) -> Self {
         self.filter = filter;
         self
+    }
+
+    /// N285: attach a bit-packed alpha mask (1 = opaque).
+    pub fn with_alpha(mut self, alpha: Vec<u8>) -> Self {
+        self.alpha = Some(alpha);
+        self
+    }
+
+    /// N285: whether the texel at `uv` is opaque (`true` when no mask).
+    pub fn alpha_at(&self, u: f32, v: f32) -> bool {
+        let Some(alpha) = &self.alpha else {
+            return true;
+        };
+        if self.width == 0 || self.height == 0 {
+            return true;
+        }
+        let x = wrap(u * self.width as f32, self.width);
+        let y = wrap(v * self.height as f32, self.height);
+        let index = y as usize * self.width as usize + x as usize;
+        match alpha.get(index / 8) {
+            Some(byte) => byte & (1 << (index % 8)) != 0,
+            None => true,
+        }
     }
 
     /// The texel at integer `(x, y)`, wrapping.
@@ -154,11 +180,12 @@ pub(crate) fn raster_textured(
     height: u32,
     texture: Option<&TextureMap>,
     tint: Option<u16>,
+    mask: bool,
     fallback: u16,
 ) -> Result<Vec<u8>, BakeError> {
     let indices: Vec<u32> = indices.iter().map(|&i| u32::from(i)).collect();
     raster_indexed(
-        points, uvs, &indices, width, height, texture, tint, fallback, 64,
+        points, uvs, &indices, width, height, texture, tint, mask, fallback, 64,
     )
 }
 
@@ -173,6 +200,7 @@ pub(crate) fn raster_indexed(
     height: u32,
     texture: Option<&TextureMap>,
     tint: Option<u16>,
+    mask: bool,
     fallback: u16,
     max_points: usize,
 ) -> Result<Vec<u8>, BakeError> {
@@ -189,6 +217,7 @@ pub(crate) fn raster_indexed(
         height,
         texture,
         tint,
+        mask,
         fallback,
         max_points,
     )?;
@@ -207,6 +236,7 @@ pub(crate) fn draw_indexed(
     height: u32,
     texture: Option<&TextureMap>,
     tint: Option<u16>,
+    mask: bool,
     fallback: u16,
     max_points: usize,
 ) -> Result<(), BakeError> {
@@ -245,6 +275,7 @@ pub(crate) fn draw_indexed(
                 (c, uvs[triangle[2]]),
                 texture,
                 tint,
+                mask,
             ),
             _ => crate::fill_triangle(pixels, width, height, a, b, c, fallback),
         }
@@ -262,6 +293,7 @@ fn fill_textured_triangle(
     c: ((i16, i16), [f32; 2]),
     texture: &TextureMap,
     tint: Option<u16>,
+    mask: bool,
 ) {
     let area = edge(a.0, b.0, c.0);
     if area == 0 {
@@ -293,6 +325,9 @@ fn fill_textured_triangle(
             let w2 = e2 as f32 / area_f;
             let u = w0 * a.1[0] + w1 * b.1[0] + w2 * c.1[0];
             let v = w0 * a.1[1] + w1 * b.1[1] + w2 * c.1[1];
+            if mask && !texture.alpha_at(u, v) {
+                continue;
+            }
             let mut value = texture.sample(u, v);
             if let Some(tint) = tint {
                 value = rgb565_mul(value, tint);
@@ -340,8 +375,18 @@ mod tests {
         let points = [(0i16, 0i16), (8, 0), (8, 8), (0, 8)];
         let uvs = [[0.0f32, 0.0f32], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
         let indices = [0u16, 1, 2, 0, 2, 3];
-        let pixels =
-            raster_textured(&points, Some(&uvs), &indices, 8, 8, Some(&texture), None, 0).unwrap();
+        let pixels = raster_textured(
+            &points,
+            Some(&uvs),
+            &indices,
+            8,
+            8,
+            Some(&texture),
+            None,
+            false,
+            0,
+        )
+        .unwrap();
         let at = |x: usize, y: usize| {
             u16::from_le_bytes([pixels[(y * 8 + x) * 2], pixels[(y * 8 + x) * 2 + 1]])
         };
@@ -389,6 +434,7 @@ mod tests {
             4,
             Some(&texture),
             Some(0x8000),
+            false,
             0,
         )
         .unwrap();
@@ -396,14 +442,55 @@ mod tests {
     }
 
     #[test]
+    fn alpha_mask_cuts_out_transparent_texels() {
+        // 2×1 texture: left red (opaque), right green (transparent).
+        let texture = TextureMap::from_rgb565(2, 1, vec![0x00, 0xF8, 0xE0, 0x07])
+            .unwrap()
+            .with_alpha(vec![0b01]);
+        assert!(texture.alpha_at(0.1, 0.5));
+        assert!(!texture.alpha_at(0.6, 0.5));
+
+        let points = [(0i16, 0i16), (8, 0), (8, 8), (0, 8)];
+        let uvs = [[0.0f32, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let indices = [0u16, 1, 2, 0, 2, 3];
+        let pixels = raster_textured(
+            &points,
+            Some(&uvs),
+            &indices,
+            8,
+            8,
+            Some(&texture),
+            None,
+            true,
+            0x001F,
+        )
+        .unwrap();
+        let at = |x: usize, y: usize| {
+            u16::from_le_bytes([pixels[(y * 8 + x) * 2], pixels[(y * 8 + x) * 2 + 1]])
+        };
+        assert_eq!(at(1, 4), 0xF800, "opaque half drawn");
+        assert_eq!(at(6, 4), 0, "transparent half left clear");
+    }
+
+    #[test]
     fn missing_texture_or_uv_falls_back_to_solid() {
         let points = [(0i16, 0i16), (4, 0), (0, 4)];
-        let pixels = raster_textured(&points, None, &[], 8, 8, None, None, 0xF800).unwrap();
+        let pixels = raster_textured(&points, None, &[], 8, 8, None, None, false, 0xF800).unwrap();
         assert_eq!(&pixels[0..2], &[0x00, 0xF8]);
         // A texture but no UVs also falls back.
         let texture = solid(2, 2, 0x07E0);
-        let pixels =
-            raster_textured(&points, None, &[], 8, 8, Some(&texture), None, 0xF800).unwrap();
+        let pixels = raster_textured(
+            &points,
+            None,
+            &[],
+            8,
+            8,
+            Some(&texture),
+            None,
+            false,
+            0xF800,
+        )
+        .unwrap();
         assert_eq!(&pixels[0..2], &[0x00, 0xF8]);
     }
 }

@@ -251,6 +251,8 @@ impl Live2DImporter {
                 name: name.clone(),
                 texture: Some(i),
                 color: None,
+                alpha_mode: None,
+                alpha_cutoff: None,
             });
             nodes.push(Node {
                 name: name.clone(),

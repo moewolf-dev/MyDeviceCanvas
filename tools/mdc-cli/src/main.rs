@@ -664,8 +664,10 @@ fn cmd_bake_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let texture = match &texture_path {
         Some(path) => {
             let image = std::fs::read(path)?;
-            let baked = mdc_bake::decode_rgb565_native(&image, &mdc_bake::BakeLimits::default())?;
-            Some(mdc_bake::TextureMap::from_baked(&baked)?)
+            Some(mdc_bake::texture_map_with_alpha(
+                &image,
+                &mdc_bake::BakeLimits::default(),
+            )?)
         }
         None => None,
     };
@@ -855,8 +857,10 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let texture = match &texture_path {
         Some(path) => {
             let image = std::fs::read(path)?;
-            let baked = mdc_bake::decode_rgb565_native(&image, &mdc_bake::BakeLimits::default())?;
-            Some(mdc_bake::TextureMap::from_baked(&baked)?.with_filter(filter))
+            Some(
+                mdc_bake::texture_map_with_alpha(&image, &mdc_bake::BakeLimits::default())?
+                    .with_filter(filter),
+            )
         }
         None => None,
     };
@@ -3404,6 +3408,7 @@ mod tests {
                 name: "red".into(),
                 texture: None,
                 color: Some([255, 0, 0]),
+                ..mdc_model::Material::default()
             }],
             ..mdc_model::Model::default()
         };

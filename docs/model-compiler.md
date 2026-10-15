@@ -71,7 +71,13 @@ A decode bomb is refused before any decode buffer is created.
   rebases indices by the running vertex count), so a multi-material mesh keeps its
   full silhouette; `Mesh.primitives` records how many were merged.
 - N174: `pbrMetallicRoughness.baseColorFactor` becomes `Material.color`
-  (8-bit RGB; alpha ignored); `Material::color_rgb565()` packs it. The geometry
+  (8-bit RGB; alpha ignored); `Material::color_rgb565()` packs it. N283:
+  `alphaMode` / `alphaCutoff` become `Material.alpha_mode` / `alpha_cutoff`
+  (`is_masked()`, `cutoff()`). N284/N285: a decoded texture can carry a 1-bit
+  alpha mask (`TextureMap::with_alpha`); a mesh whose material is `MASK` skips
+  texels whose bit is clear (cutout) — the cutoff is applied at decode time
+  (threshold 128), not per-material. `mdc render-mesh` / `mdc bake-mesh` decode
+  the PNG alpha this way. The geometry
   and preview renders prefer this colour over their fallback when no texture is
   sampled. N177: a mesh package may also carry a `TextureBlob` (RGB565 + dims),
   built by `bake_texture_blob` / `mesh_package_with_texture` and sampled by a

@@ -157,6 +157,14 @@ impl GltfImporter {
                 name: json_name(material, &format!("material{i}")),
                 texture,
                 color,
+                alpha_mode: material
+                    .get("alphaMode")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                alpha_cutoff: material
+                    .get("alphaCutoff")
+                    .and_then(Value::as_f64)
+                    .map(|v| v as f32),
             });
         }
 
@@ -1826,6 +1834,28 @@ mod tests {
         assert_eq!(geometry.positions[3], [2.0, 0.0, 0.0]);
         // The second primitive's indices are rebased by +3.
         assert_eq!(geometry.indices, vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn material_alpha_mode_and_cutoff_import() {
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "nodes": [{"mesh": 0}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "material": 0}]}],
+            "accessors": [{"count": 3, "type": "VEC3"}],
+            "materials": [
+                {"name": "cut", "alphaMode": "MASK", "alphaCutoff": 0.25,
+                 "pbrMetallicRoughness": {"baseColorFactor": [1.0, 1.0, 1.0, 1.0]}},
+                {"name": "opaque"}
+            ]
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        assert!(model.materials[0].is_masked());
+        assert_eq!(model.materials[0].alpha_mode.as_deref(), Some("MASK"));
+        assert_eq!(model.materials[0].cutoff(), 0.25);
+        assert!(!model.materials[1].is_masked());
     }
 
     #[test]

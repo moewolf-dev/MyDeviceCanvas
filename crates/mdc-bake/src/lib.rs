@@ -139,6 +139,66 @@ pub fn decode_rgb565_native(bytes: &[u8], limits: &BakeLimits) -> Result<BakedTe
     decode_resize_rgb565(bytes, (width, height), limits)
 }
 
+/// N284: decode a PNG/JPEG with alpha at native size, returning RGB565 rows and
+/// a bit-packed alpha mask (1 = opaque). Reads the header first (bomb guard).
+pub fn decode_rgba_native(
+    bytes: &[u8],
+    limits: &BakeLimits,
+) -> Result<(BakedTexture, Vec<u8>), BakeError> {
+    if bytes.len() > limits.max_input_bytes {
+        return Err(BakeError::InputTooLarge(
+            bytes.len(),
+            limits.max_input_bytes,
+        ));
+    }
+    let reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| BakeError::Decode(e.to_string()))?;
+    let (width, height) = reader
+        .into_dimensions()
+        .map_err(|e| BakeError::Decode(e.to_string()))?;
+    let limit = limits.max_source_dimension;
+    if width > limit || height > limit {
+        return Err(BakeError::Dimensions(width, height, limit));
+    }
+    let output_bytes = u64::from(width)
+        .saturating_mul(u64::from(height))
+        .saturating_mul(2);
+    if width == 0 || height == 0 || output_bytes > limits.max_output_bytes {
+        return Err(BakeError::Budget(width, height));
+    }
+    let image = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| BakeError::Decode(e.to_string()))?
+        .decode()
+        .map_err(|e| BakeError::Decode(e.to_string()))?;
+    let rgba = image.to_rgba8();
+    let mut rgb565 = Vec::with_capacity(output_bytes as usize);
+    let mut alpha = vec![0u8; (width as usize * height as usize).div_ceil(8)];
+    for (index, pixel) in rgba.pixels().enumerate() {
+        let value = rgb565_of(pixel[0], pixel[1], pixel[2]);
+        rgb565.push((value & 0xff) as u8);
+        rgb565.push((value >> 8) as u8);
+        if pixel[3] >= 128 {
+            alpha[index / 8] |= 1 << (index % 8);
+        }
+    }
+    Ok((
+        BakedTexture {
+            width,
+            height,
+            rgb565,
+        },
+        alpha,
+    ))
+}
+
+/// N284: build a `TextureMap` (with a 1-bit alpha mask) from an image.
+pub fn texture_map_with_alpha(bytes: &[u8], limits: &BakeLimits) -> Result<TextureMap, BakeError> {
+    let (baked, alpha) = decode_rgba_native(bytes, limits)?;
+    Ok(TextureMap::from_baked(&baked)?.with_alpha(alpha))
+}
+
 /// Pack one RGB888 pixel into RGB565.
 pub fn rgb565_of(r: u8, g: u8, b: u8) -> u16 {
     (u16::from(r >> 3) << 11) | (u16::from(g >> 2) << 5) | u16::from(b >> 3)
