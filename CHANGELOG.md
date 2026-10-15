@@ -2,6 +2,16 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.28] — Animation cross-fade + scene primitives (N153–N162)
+
+### Added
+
+- Device animation cross-fade: switching clips blends the frozen previous frame
+  over the new clip's `fade_in_ms` (capped 2 s) (N153, N154)
+- `FakeDevice::stop_animation` clears clip and cross-fade state (N155)
+- Scene `circle` (inscribed ellipse) and `line` (Bresenham) primitives (N156, N157)
+- Scene-primitive compat fixtures and soak (N157, N158)
+
 ## [0.1.27] — HTTP mirror for OBS (N143–N152)
 
 ### Added

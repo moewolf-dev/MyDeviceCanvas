@@ -285,6 +285,55 @@ fn fade_toward_black(pixels: &mut [u8], quarters: u8) {
     }
 }
 
+/// N153: mix one atlas frame over `pixels` by `quarters`/4 (0 keeps the pixels,
+/// 4 replaces them with the frame). Used by the animation cross-fade.
+fn mix_atlas_frame(
+    pixels: &mut [u8],
+    atlas: &mdc_model::AtlasBlob,
+    index: u32,
+    quarters: u8,
+    dst_row_bytes: usize,
+) {
+    let q = u32::from(quarters.min(4));
+    let keep = 4 - q;
+    if q == 0 || dst_row_bytes == 0 {
+        return;
+    }
+    let Some(offset) = atlas.frame_offset(index) else {
+        return;
+    };
+    let sprite_w = atlas.sprite_width as usize;
+    let sprite_h = atlas.sprite_height as usize;
+    let row_bytes = sprite_w * 2;
+    if sprite_w == 0 || row_bytes == 0 || row_bytes > dst_row_bytes {
+        return;
+    }
+    let atlas_row = (atlas.columns as usize) * sprite_w * 2;
+    let rows = sprite_h.min(pixels.len() / dst_row_bytes);
+    for y in 0..rows {
+        let src = offset + y * atlas_row;
+        let dst = y * dst_row_bytes;
+        if src + row_bytes > atlas.rgb565.len() || dst + row_bytes > pixels.len() {
+            break;
+        }
+        for x in 0..sprite_w {
+            let d = &mut pixels[dst + x * 2..dst + x * 2 + 2];
+            let s = &atlas.rgb565[src + x * 2..src + x * 2 + 2];
+            let dv = u16::from_le_bytes([d[0], d[1]]);
+            let sv = u16::from_le_bytes([s[0], s[1]]);
+            let channel = |shift: u32, mask: u16| {
+                let a = u32::from((dv >> shift) & mask);
+                let b = u32::from((sv >> shift) & mask);
+                (((a * keep + b * q) / 4) as u16) << shift
+            };
+            let mixed = channel(11, 0x1f) | channel(5, 0x3f) | channel(0, 0x1f);
+            let bytes = mixed.to_le_bytes();
+            d[0] = bytes[0];
+            d[1] = bytes[1];
+        }
+    }
+}
+
 fn fan_edge(a: (i16, i16), b: (i16, i16), p: (i16, i16)) -> i32 {
     (i32::from(p.0) - i32::from(a.0)) * (i32::from(b.1) - i32::from(a.1))
         - (i32::from(p.1) - i32::from(a.1)) * (i32::from(b.0) - i32::from(a.0))
@@ -342,6 +391,73 @@ impl SceneTransform {
     }
 }
 
+/// N156: fill the ellipse inscribed in `rect` with `color`.
+fn fill_circle(pixels: &mut [u8], width: u32, height: u32, rect: [u16; 4], color: u16) {
+    let [x, y, w, h] = rect;
+    if w == 0 || h == 0 {
+        return;
+    }
+    let low = (color & 0xff) as u8;
+    let high = (color >> 8) as u8;
+    let cx = f32::from(x) + (f32::from(w) - 1.0) / 2.0;
+    let cy = f32::from(y) + (f32::from(h) - 1.0) / 2.0;
+    let rx = f32::from(w) / 2.0;
+    let ry = f32::from(h) / 2.0;
+    for yy in y..y.saturating_add(h) {
+        if u32::from(yy) >= height {
+            break;
+        }
+        for xx in x..x.saturating_add(w) {
+            if u32::from(xx) >= width {
+                break;
+            }
+            let dx = (f32::from(xx) - cx) / rx;
+            let dy = (f32::from(yy) - cy) / ry;
+            if dx * dx + dy * dy <= 1.0 {
+                let index = ((u32::from(yy) * width + u32::from(xx)) * 2) as usize;
+                if index + 1 < pixels.len() {
+                    pixels[index] = low;
+                    pixels[index + 1] = high;
+                }
+            }
+        }
+    }
+}
+
+/// N157: Bresenham line from `rect[0..2]` to `rect[2..4]`, clipped to bounds.
+fn draw_line(pixels: &mut [u8], width: u32, height: u32, rect: [u16; 4], color: u16) {
+    let low = (color & 0xff) as u8;
+    let high = (color >> 8) as u8;
+    let (mut x0, mut y0) = (i64::from(rect[0]), i64::from(rect[1]));
+    let (x1, y1) = (i64::from(rect[2]), i64::from(rect[3]));
+    let dx = (x1 - x0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let dy = -(y1 - y0).abs();
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+    loop {
+        if x0 >= 0 && y0 >= 0 && (x0 as u32) < width && (y0 as u32) < height {
+            let index = ((y0 as u32 * width + x0 as u32) * 2) as usize;
+            if index + 1 < pixels.len() {
+                pixels[index] = low;
+                pixels[index + 1] = high;
+            }
+        }
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            x0 += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
+
 /// N80/N138: depth-first scene rasterizer; `rect` nodes fill from their colour,
 /// `group` (or unknown) nodes transform their children.
 fn fill_scene(
@@ -353,7 +469,10 @@ fn fill_scene(
     transform: SceneTransform,
     drew: &mut bool,
 ) {
-    let drawable = matches!(node.kind.as_str(), "rect" | "text" | "image" | "sprite");
+    let drawable = matches!(
+        node.kind.as_str(),
+        "rect" | "text" | "image" | "sprite" | "circle" | "line"
+    );
     if node.kind == "rect" {
         if let Some(rect) = node.rect {
             let [x, y, w, h] = transform.apply(rect);
@@ -421,6 +540,28 @@ fn fill_scene(
             if blit_sprite(pixels, width, height, atlas, index, x, y, w, h) {
                 *drew = true;
             }
+        }
+    } else if node.kind == "circle" {
+        if let Some(rect) = node.rect {
+            fill_circle(
+                pixels,
+                width,
+                height,
+                transform.apply(rect),
+                node.color_rgb565(),
+            );
+            *drew = true;
+        }
+    } else if node.kind == "line" {
+        if let Some(rect) = node.rect {
+            draw_line(
+                pixels,
+                width,
+                height,
+                transform.apply(rect),
+                node.color_rgb565(),
+            );
+            *drew = true;
         }
     }
     // A non-drawable node (group) offsets and scales its children.
@@ -739,6 +880,10 @@ pub struct FakeDevice {
     atlas: Option<mdc_model::AtlasBlob>,
     anim_clip: Option<String>,
     anim_start_tick: u64,
+    /// N154: the frame frozen when the clip last changed, cross-faded out.
+    anim_prev_frame: Option<u32>,
+    anim_crossfade_ms: u32,
+    anim_blend_start: u64,
     /// First accepted mesh preview, in framebuffer pixels.
     preview_xy: Vec<(i16, i16)>,
     preview_indices: Vec<u16>,
@@ -790,6 +935,9 @@ impl FakeDevice {
             atlas: None,
             anim_clip: None,
             anim_start_tick: 0,
+            anim_prev_frame: None,
+            anim_crossfade_ms: 0,
+            anim_blend_start: 0,
             preview_xy: Vec::new(),
             preview_indices: Vec::new(),
         }
@@ -1301,7 +1449,7 @@ impl FakeDevice {
                     .first()
                     .map(|mesh| mesh.preview_indices.clone())
                     .unwrap_or_default();
-                self.anim_clip = None;
+                self.stop_animation();
                 self.metrics.packages_received = self.metrics.packages_received.saturating_add(1);
                 self.ack(packet.request_id, self.current_frame_id, true, false)
             }
@@ -1471,6 +1619,19 @@ impl FakeDevice {
                 }
             }
         }
+        // N154: cross-fade the frozen previous frame out over the new clip.
+        if self.anim_crossfade_ms > 0 {
+            let blend_elapsed = self.clock.tick.saturating_sub(self.anim_blend_start);
+            if blend_elapsed >= u64::from(self.anim_crossfade_ms) {
+                self.anim_prev_frame = None;
+                self.anim_crossfade_ms = 0;
+            } else if let Some(previous) = self.anim_prev_frame {
+                let progress = (blend_elapsed.saturating_mul(4) / u64::from(self.anim_crossfade_ms))
+                    .min(4) as u8;
+                let quarters = 4u8.saturating_sub(progress);
+                mix_atlas_frame(&mut self.pixels, &atlas, previous, quarters, dst_row_bytes);
+            }
+        }
         true
     }
     /// N54: accept a vector scene within the advertised limits.
@@ -1497,7 +1658,7 @@ impl FakeDevice {
                 self.scene_present = true;
                 self.scene = Some(scene);
                 // N83: setting a scene takes over rendering (last-wins).
-                self.anim_clip = None;
+                self.stop_animation();
                 self.ack(packet.request_id, self.current_frame_id, true, false)
             }
             other => self.reply_error(
@@ -1576,20 +1737,38 @@ impl FakeDevice {
                 self.reply_config("animation", true, Some(value), None)
             }
             "set" => {
-                let Some(atlas) = self.atlas.as_ref() else {
+                if self.atlas.is_none() {
                     return self.reply_error(
                         packet.request_id,
                         "E_UNSUPPORTED",
                         "no baked atlas installed",
                     );
-                };
+                }
                 let value = command.value.clone().unwrap_or_default();
+                let crossfade_ms = self
+                    .atlas
+                    .as_ref()
+                    .and_then(|atlas| atlas.clip(&value))
+                    .map(|clip| clip.fade_in_ms)
+                    .unwrap_or(0);
+                let has_clip = self
+                    .atlas
+                    .as_ref()
+                    .map(|atlas| atlas.clip(&value).is_some())
+                    .unwrap_or(false);
                 if value.is_empty() || value == "off" {
-                    self.anim_clip = None;
+                    self.stop_animation();
                     return self.reply_config("animation", true, Some("off".into()), None);
                 }
-                if atlas.clip(&value).is_none() {
+                if !has_clip {
                     return self.reply_config("animation", false, None, Some("E_VALUE"));
+                }
+                // N154: cross-fade from the frame frozen when the clip changes.
+                let previous = self.current_atlas_frame();
+                if self.anim_clip.as_deref() != Some(value.as_str()) {
+                    self.anim_prev_frame = previous;
+                    self.anim_crossfade_ms = crossfade_ms.min(2000);
+                    self.anim_blend_start = self.clock.tick;
                 }
                 self.anim_clip = Some(value.clone());
                 self.anim_start_tick = self.clock.tick;
@@ -1597,6 +1776,12 @@ impl FakeDevice {
             }
             _ => self.reply_config("animation", false, None, Some("E_ACTION")),
         }
+    }
+    /// N154: stop the running clip and clear any cross-fade state.
+    pub fn stop_animation(&mut self) {
+        self.anim_clip = None;
+        self.anim_prev_frame = None;
+        self.anim_crossfade_ms = 0;
     }
     /// Form B: true once a host MirrorCtrl start has been accepted.
     pub fn mirror_active(&self) -> bool {
@@ -2027,6 +2212,95 @@ mod tests {
     }
 
     #[test]
+    fn animation_crossfades_between_clips() {
+        let (host, mut device) = FakeDevice::pair(BoardProfile::default());
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+        // A 2-frame atlas: frame 0 red, frame 1 green. "wave" cross-fades in 1s.
+        let atlas = mdc_model::AtlasBlob {
+            sprite_width: 1,
+            sprite_height: 1,
+            frames: 2,
+            columns: 2,
+            rows: 1,
+            rgb565: vec![0x00, 0xF8, 0xE0, 0x07],
+            clips: vec![
+                mdc_model::AtlasClip {
+                    name: "idle".into(),
+                    start: 0,
+                    frames: 1,
+                    fps: 1,
+                    looping: true,
+                    fade_in_ms: 0,
+                    fade_out_ms: 0,
+                },
+                mdc_model::AtlasClip {
+                    name: "wave".into(),
+                    start: 1,
+                    frames: 1,
+                    fps: 1,
+                    looping: true,
+                    fade_in_ms: 1000,
+                    fade_out_ms: 0,
+                },
+            ],
+        };
+        let package = mdc_model::DevicePackage {
+            target: "esp32-plane".into(),
+            mode: mdc_model::PackageMode::BakedSprites,
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            textures: Vec::new(),
+            materials: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 8,
+            atlas: Some(atlas),
+        };
+        session
+            .install_package(
+                &mdc_model::MdcPackage::seal(package)
+                    .unwrap()
+                    .to_bytes()
+                    .unwrap(),
+            )
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+
+        session.set_config("animation", "idle").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_atlas_frame());
+        assert_eq!(device.pixel_rgb565(0, 0), Some(0xF800), "idle is red");
+
+        // Switching to wave: at t=0 the frozen idle frame still wins.
+        session.set_config("animation", "wave").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_atlas_frame());
+        assert_eq!(
+            device.pixel_rgb565(0, 0),
+            Some(0xF800),
+            "old frame covers at t=0"
+        );
+
+        // After the 1s window the cross-fade has finished: pure green.
+        device.clock.advance(1000);
+        assert!(device.render_atlas_frame());
+        assert_eq!(
+            device.pixel_rgb565(0, 0),
+            Some(0x07E0),
+            "new frame after blend"
+        );
+    }
+
+    #[test]
     fn device_renders_the_running_atlas_frame_into_the_mirror() {
         let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
         let mut session = Session::new(host);
@@ -2230,6 +2504,48 @@ mod tests {
         session.poll().unwrap();
         assert!(device.render_scene());
         assert_ne!(device.pixel_rgb565(1, 1), Some(0), "scale 2 fills (1,1)");
+    }
+
+    #[test]
+    fn scene_draws_circles_and_lines() {
+        use mdc_protocol::SceneNode;
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 16,
+            height: 16,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        let node = |name: &str, kind: &str, rect: [u16; 4], value: &str| SceneNode {
+            name: name.into(),
+            kind: kind.into(),
+            rect: Some(rect),
+            children: Vec::new(),
+            value: Some(value.into()),
+        };
+        let scene = SceneNode {
+            name: "root".into(),
+            kind: "group".into(),
+            rect: None,
+            value: None,
+            children: vec![
+                node("disc", "circle", [0, 0, 8, 8], "#FF0000"),
+                node("diag", "line", [0, 15, 15, 0], "#00FF00"),
+            ],
+        };
+        session.set_scene(scene).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(4, 4), Some(0xF800), "circle centre");
+        assert_eq!(
+            device.pixel_rgb565(0, 0),
+            Some(0),
+            "ellipse corner is clear"
+        );
+        assert_eq!(device.pixel_rgb565(8, 7), Some(0x07E0), "line pixel");
     }
 
     #[test]

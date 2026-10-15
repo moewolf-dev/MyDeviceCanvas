@@ -102,6 +102,53 @@ fn mirror_receiver_soak_is_bounded() {
 }
 
 #[test]
+fn scene_primitive_soak_is_bounded() {
+    use mdc_core::Session;
+    use mdc_protocol::SceneNode;
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    let scene = SceneNode {
+        name: "root".into(),
+        kind: "group".into(),
+        rect: None,
+        value: None,
+        children: vec![
+            SceneNode {
+                name: "disc".into(),
+                kind: "circle".into(),
+                rect: Some([10, 10, 200, 200]),
+                children: Vec::new(),
+                value: Some("#FF0000".into()),
+            },
+            SceneNode {
+                name: "diag".into(),
+                kind: "line".into(),
+                rect: Some([0, 0, 800, 480]),
+                children: Vec::new(),
+                value: Some("#00FF00".into()),
+            },
+        ],
+    };
+    session.set_scene(scene).unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    let bytes = device.framebuffer().len();
+    for _ in 0..100 {
+        assert!(device.render_scene());
+        assert_eq!(
+            device.framebuffer().len(),
+            bytes,
+            "framebuffer stays bounded"
+        );
+    }
+}
+
+#[test]
 fn http_mirror_publish_soak_is_bounded() {
     let mut http = mdc_mirror::HttpMirrorServer::bind("127.0.0.1:0").unwrap();
     let width = 480u16;

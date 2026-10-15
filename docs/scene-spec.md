@@ -22,10 +22,10 @@ SceneCommand:
 
 SceneNode:
   name:     string
-  kind:     "group" | "rect" | "text" | "sprite" | "image"
+  kind:     "group" | "rect" | "text" | "sprite" | "image" | "circle" | "line"
   rect:     [x, y, w, h]?     # geometry for kinds that rasterize (N79); a group's transform (N138)
   children: [SceneNode]?      # optional, ordered back-to-front
-  value:    string?           # rect: "#RRGGBB"/"#RGB"/name; text: glyphs; image: packed RGB565 hex
+  value:    string?           # rect/circle/line: "#RRGGBB"/"#RGB"/name; text: glyphs; image: packed RGB565 hex
 ```
 
 Canonical bytes: `protocol/vectors/scene_command.json` (no geometry) and
@@ -50,6 +50,10 @@ A device that accepts a scene rasterizes it locally:
   each, little-endian on the framebuffer). A short or malformed string draws nothing.
 - `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour.
   A missing atlas or index draws nothing.
+- `circle` fills the ellipse inscribed in `rect` with the `value` colour; a
+  zero width or height draws nothing.
+- `line` draws a Bresenham segment from `rect[0..2]` to `rect[2..4]`. A degenerate
+  segment draws a single pixel; endpoints outside the framebuffer are clipped.
 - `group` (and any node whose kind does not rasterize) does not draw; its `rect`
   is a transform for its children: `x`/`y` become a pixel offset and `w`/`h` a
   scale in permille (1000 = 1×; `0` leaves an axis unscaled). Nested groups
@@ -57,6 +61,9 @@ A device that accepts a scene rasterizes it locally:
 - `render_scene` clears the framebuffer first (N137), so repeated renders are
   deterministic rather than accumulating.
 - A clip `fade_in_ms` darkens the atlas frame until that many virtual milliseconds pass.
+- N154: switching clips cross-fades from the frame frozen at the switch over the
+  new clip's `fade_in_ms` (capped at 2 s); a device that renders no clip clears
+  the frozen frame when a scene is set.
 - When the device mirrors, the rasterized scene is emitted as a `MIRRORFRAME`.
   Setting a scene clears any running animation clip (last-wins).
 

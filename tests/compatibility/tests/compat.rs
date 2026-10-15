@@ -608,6 +608,58 @@ fn textured_bake_refuses_an_over_budget_texture() {
 }
 
 #[test]
+fn scene_circle_and_line_edge_cases_do_not_panic() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_protocol::SceneNode;
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 8,
+        height: 8,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+    let node = |name: &str, kind: &str, rect: [u16; 4]| SceneNode {
+        name: name.into(),
+        kind: kind.into(),
+        rect: Some(rect),
+        children: Vec::new(),
+        value: Some("#00FF00".into()),
+    };
+    // Zero-size circle and a degenerate (single-point) line must not panic and
+    // must not draw outside the framebuffer.
+    let scene = SceneNode {
+        name: "root".into(),
+        kind: "group".into(),
+        rect: None,
+        value: None,
+        children: vec![
+            node("empty", "circle", [0, 0, 0, 0]),
+            node("dot", "line", [3, 3, 3, 3]),
+            node("far", "line", [100, 100, 200, 200]),
+        ],
+    };
+    session.set_scene(scene).unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.render_scene());
+    assert_eq!(
+        device.pixel_rgb565(3, 3),
+        Some(0x07E0),
+        "single-point line drawn"
+    );
+    assert_eq!(
+        device.pixel_rgb565(0, 0),
+        Some(0),
+        "empty circle draws nothing"
+    );
+}
+
+#[test]
 fn http_mirror_serves_a_device_frame_to_a_loopback_client() {
     use mdc_core::{ConnectionState, Session};
     use mdc_simulator::{BoardProfile, FakeDevice};

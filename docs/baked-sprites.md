@@ -58,11 +58,17 @@ mdc --board linux-virt config set animation off     # stop
 While a clip runs, the device indexes the current frame from its clock
 (`current_atlas_frame`), renders it into the local framebuffer, and — when
 mirroring — emits it as a `MIRRORFRAME` so the host/OBS sees the device-rendered
-result. An unknown clip or a device with no atlas is refused.
+result. An unknown clip or a device with no atlas is refused. `animation_loops()`
+reports how many times a looping clip has wrapped.
+
+N154: switching from one clip to another cross-fades the frame frozen at the
+switch over the new clip's `fade_in_ms` (capped at 2 s), so a transition does not
+snap. A zero `fade_in_ms` switches immediately; `config set animation off` clears
+the frozen frame.
 
 ## Non-goals
 
 - No on-device image decode (the atlas arrives as RGB565).
-- No animation player on the device yet; the device records the grid, it does not
-  yet index frames against a clock.
+- No skeletal/morph playback on the device: the host bakes poses to frames and the
+  device indexes them (strong devices receive a mesh package instead).
 - No physical device required; D05/G03 remain open.
