@@ -2,6 +2,20 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.26] — Offline render + scene expression (N133–N142)
+
+### Added
+
+- `mdc-bake` `render_frame_at`: single posed frame (morph → skin → textured raster) (N133)
+- CLI `mdc render-mesh <model.gltf>` and `mdc render-package <pkg>` to PPM (N134, N135)
+- Scene `rect` colour accepts `#RGB`, bare hex and named colours (N136)
+- Scene `group` nodes offset and scale children via their `rect` (N138)
+
+### Changed
+
+- `render_scene` clears the framebuffer first, so repeated renders are
+  deterministic (N137)
+
 ## [0.1.25] — Morph targets + device polish (N123–N132)
 
 ### Added

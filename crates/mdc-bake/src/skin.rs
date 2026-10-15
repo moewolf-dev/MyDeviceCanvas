@@ -387,20 +387,16 @@ pub(crate) fn project(point: [f32; 3], width: u32, height: u32) -> (i16, i16) {
 /// Projected preview points, one list per frame.
 type PointFrames = Vec<Vec<(i16, i16)>>;
 
-/// Resolve the skinned mesh, its skeleton and an animation, then project each
-/// preview vertex once per frame. Shared by the solid and textured bakers.
-fn skinned_point_frames(
-    model: &Model,
-    animation_index: usize,
-    frames: u32,
-    sprite: (u32, u32),
-) -> Result<(PointFrames, &Mesh), BakeError> {
-    if frames == 0 || frames > 64 {
-        return Err(BakeError::FrameCount(frames as usize, 64));
-    }
-    if sprite.0 == 0 || sprite.1 == 0 || sprite.0 > 1024 || sprite.1 > 1024 {
-        return Err(BakeError::Budget(sprite.0, sprite.1));
-    }
+/// The resolved inputs for a skinning render: the first skinned mesh, the node
+/// that owns it, its skeleton and one animation.
+struct Skinned<'a> {
+    mesh: &'a Mesh,
+    mesh_node: Option<usize>,
+    skeleton: &'a Skeleton,
+    animation: &'a Animation,
+}
+
+fn resolve_skinned(model: &Model, animation_index: usize) -> Result<Skinned<'_>, BakeError> {
     let (mesh_index, mesh) = model
         .meshes
         .iter()
@@ -417,7 +413,60 @@ fn skinned_point_frames(
         .animations
         .get(animation_index)
         .ok_or_else(|| BakeError::Decode(format!("animation {animation_index} missing")))?;
-    let (start, end) = animation_span(animation);
+    Ok(Skinned {
+        mesh,
+        mesh_node,
+        skeleton,
+        animation,
+    })
+}
+
+/// Skinned + morphed preview points at `time`, projected into the sprite.
+fn skinned_points_at(
+    model: &Model,
+    skinned: &Skinned<'_>,
+    time: f32,
+    sprite: (u32, u32),
+) -> Vec<(i16, i16)> {
+    // N126: morph targets deform before skinning.
+    let morphed;
+    let positions: &[[f32; 3]] = if skinned.mesh.morph_targets.is_empty() {
+        &skinned.mesh.preview_positions
+    } else {
+        let weights = skinned
+            .mesh_node
+            .and_then(|node| morph_weights_at(skinned.animation, node, time))
+            .unwrap_or_else(|| skinned.mesh.morph_weights.clone());
+        morphed = apply_morphs(
+            &skinned.mesh.preview_positions,
+            &skinned.mesh.morph_targets,
+            &weights,
+        );
+        &morphed
+    };
+    let worlds = pose_world_matrices(&model.nodes, skinned.animation, time);
+    skin_points(skinned.mesh, skinned.skeleton, &worlds, positions)
+        .iter()
+        .map(|p| project(*p, sprite.0, sprite.1))
+        .collect()
+}
+
+/// Resolve the skinned mesh, its skeleton and an animation, then project each
+/// preview vertex once per frame. Shared by the solid and textured bakers.
+fn skinned_point_frames(
+    model: &Model,
+    animation_index: usize,
+    frames: u32,
+    sprite: (u32, u32),
+) -> Result<(PointFrames, &Mesh), BakeError> {
+    if frames == 0 || frames > 64 {
+        return Err(BakeError::FrameCount(frames as usize, 64));
+    }
+    if sprite.0 == 0 || sprite.1 == 0 || sprite.0 > 1024 || sprite.1 > 1024 {
+        return Err(BakeError::Budget(sprite.0, sprite.1));
+    }
+    let skinned = resolve_skinned(model, animation_index)?;
+    let (start, end) = animation_span(skinned.animation);
     let mut out = Vec::with_capacity(frames as usize);
     for frame in 0..frames {
         let time = if frames > 1 {
@@ -425,27 +474,48 @@ fn skinned_point_frames(
         } else {
             start
         };
-        // N126: morph targets deform before skinning.
-        let morphed;
-        let positions: &[[f32; 3]] = if mesh.morph_targets.is_empty() {
-            &mesh.preview_positions
-        } else {
-            let weights = mesh_node
-                .and_then(|node| morph_weights_at(animation, node, time))
-                .unwrap_or_else(|| mesh.morph_weights.clone());
-            morphed = apply_morphs(&mesh.preview_positions, &mesh.morph_targets, &weights);
-            &morphed
-        };
-        let worlds = pose_world_matrices(&model.nodes, animation, time);
-        let skinned = skin_points(mesh, skeleton, &worlds, positions);
-        out.push(
-            skinned
-                .iter()
-                .map(|p| project(*p, sprite.0, sprite.1))
-                .collect(),
-        );
+        out.push(skinned_points_at(model, &skinned, time, sprite));
     }
-    Ok((out, mesh))
+    Ok((out, skinned.mesh))
+}
+
+/// N133: render one posed frame at `time` (seconds), sampling `texture` through
+/// the mesh UVs when present. Used by the offline render CLIs.
+pub fn render_frame_at(
+    model: &Model,
+    animation_index: usize,
+    time: f32,
+    sprite: (u32, u32),
+    texture: Option<&crate::TextureMap>,
+    color: u16,
+) -> Result<BakedTexture, BakeError> {
+    if sprite.0 == 0 || sprite.1 == 0 || sprite.0 > 1024 || sprite.1 > 1024 {
+        return Err(BakeError::Budget(sprite.0, sprite.1));
+    }
+    let skinned = resolve_skinned(model, animation_index)?;
+    let points = skinned_points_at(model, &skinned, time, sprite);
+    let uvs: Option<&[[f32; 2]]> = if skinned.mesh.preview_uv.len()
+        >= skinned.mesh.preview_positions.len()
+        && !skinned.mesh.preview_uv.is_empty()
+    {
+        Some(&skinned.mesh.preview_uv)
+    } else {
+        None
+    };
+    let rgb565 = crate::texture::raster_textured(
+        &points,
+        uvs,
+        &skinned.mesh.preview_indices,
+        sprite.0,
+        sprite.1,
+        texture,
+        color,
+    )?;
+    Ok(BakedTexture {
+        width: sprite.0,
+        height: sprite.1,
+        rgb565,
+    })
 }
 
 /// N111: bake `frames` poses of the first skinned mesh in `model`, sampled from
@@ -797,6 +867,19 @@ mod tests {
         let frames = bake_skinned_mesh(&model, 0, 3, (16, 16), 0xF800).unwrap();
         assert_eq!(frames.len(), 3);
         assert_ne!(frames[0].rgb565, frames[2].rgb565, "morph moves the mesh");
+    }
+
+    #[test]
+    fn render_frame_at_poses_a_single_frame() {
+        let model = skinned_model();
+        let bind = render_frame_at(&model, 0, 0.0, (16, 16), None, 0xF800).unwrap();
+        let posed = render_frame_at(&model, 0, 1.0, (16, 16), None, 0xF800).unwrap();
+        assert_eq!((bind.width, bind.height), (16, 16));
+        assert_ne!(bind.rgb565, posed.rgb565);
+
+        let texture = crate::TextureMap::from_rgb565(2, 1, vec![0x00, 0xF8, 0xE0, 0x07]).unwrap();
+        let textured = render_frame_at(&model, 0, 0.0, (16, 16), Some(&texture), 0x001F).unwrap();
+        assert!(textured.rgb565.chunks_exact(2).any(|px| px == [0x00, 0xF8]));
     }
 
     #[test]

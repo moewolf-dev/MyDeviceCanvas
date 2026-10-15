@@ -165,6 +165,17 @@ silently samples texel 0.
 mdc bake-mesh rig.glb --frames 8 --sprite 64 --texture skin.png --package rig.mdcpkg
 ```
 
+Offline single-frame rendering (no device):
+
+```text
+mdc render-mesh rig.glb --texture skin.png --time 0.5 --sprite 64 --out frame.ppm
+mdc render-package rig.mdcpkg --frame 2 --out frame.ppm
+```
+
+`render_frame_at(model, animation, time, sprite, texture, color)` poses the model
+at one time (morph → skin → project → raster); `mdc render-mesh` wraps it and
+`mdc render-package` extracts one atlas frame from a sealed `MdcPackage`.
+
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a
 mis-sized pixel buffer is still rejected.

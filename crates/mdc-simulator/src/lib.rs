@@ -290,17 +290,73 @@ fn fan_edge(a: (i16, i16), b: (i16, i16), p: (i16, i16)) -> i32 {
         - (i32::from(p.1) - i32::from(a.1)) * (i32::from(b.0) - i32::from(a.0))
 }
 
-/// N80: depth-first scene rasterizer; `rect` nodes fill from their colour.
+/// N138: an accumulated scene transform. Offsets are pixels; scales are
+/// permille (1000 = 1×).
+#[derive(Clone, Copy)]
+struct SceneTransform {
+    ox: i32,
+    oy: i32,
+    sx: i32,
+    sy: i32,
+}
+
+impl SceneTransform {
+    fn identity() -> Self {
+        Self {
+            ox: 0,
+            oy: 0,
+            sx: 1000,
+            sy: 1000,
+        }
+    }
+
+    /// Apply the transform to a geometry rect (clamped to `u16`).
+    fn apply(&self, rect: [u16; 4]) -> [u16; 4] {
+        let scale = |value: u16, permille: i32| {
+            (i32::from(value) * permille / 1000).clamp(0, i32::from(u16::MAX)) as u16
+        };
+        [
+            (self.ox + i32::from(rect[0]) * self.sx / 1000).clamp(0, i32::from(u16::MAX)) as u16,
+            (self.oy + i32::from(rect[1]) * self.sy / 1000).clamp(0, i32::from(u16::MAX)) as u16,
+            scale(rect[2], self.sx),
+            scale(rect[3], self.sy),
+        ]
+    }
+
+    /// N138: a `group` node's rect is a child offset + scale. A zero width or
+    /// height means "do not scale that axis".
+    fn child(self, rect: [u16; 4]) -> Self {
+        let scale = |value: u16, permille: i32| {
+            if value == 0 {
+                permille
+            } else {
+                permille * i32::from(value) / 1000
+            }
+        };
+        Self {
+            ox: self.ox + i32::from(rect[0]) * self.sx / 1000,
+            oy: self.oy + i32::from(rect[1]) * self.sy / 1000,
+            sx: scale(rect[2], self.sx),
+            sy: scale(rect[3], self.sy),
+        }
+    }
+}
+
+/// N80/N138: depth-first scene rasterizer; `rect` nodes fill from their colour,
+/// `group` (or unknown) nodes transform their children.
 fn fill_scene(
     node: &mdc_protocol::SceneNode,
     pixels: &mut [u8],
     width: u32,
     height: u32,
     atlas: Option<&mdc_model::AtlasBlob>,
+    transform: SceneTransform,
     drew: &mut bool,
 ) {
+    let drawable = matches!(node.kind.as_str(), "rect" | "text" | "image" | "sprite");
     if node.kind == "rect" {
-        if let Some([x, y, w, h]) = node.rect {
+        if let Some(rect) = node.rect {
+            let [x, y, w, h] = transform.apply(rect);
             let color = node.color_rgb565();
             let low = (color & 0xff) as u8;
             let high = (color >> 8) as u8;
@@ -322,7 +378,8 @@ fn fill_scene(
             *drew = true;
         }
     } else if node.kind == "text" {
-        if let (Some([x, y, w, h]), Some(text)) = (node.rect, node.value.as_deref()) {
+        if let (Some(rect), Some(text)) = (node.rect, node.value.as_deref()) {
+            let [x, y, w, h] = transform.apply(rect);
             // N128: rect width/height set the integer glyph scale (1..=8).
             let scale_x = if w >= 6 {
                 u32::from((w / 6).clamp(1, 8))
@@ -348,24 +405,35 @@ fn fill_scene(
             *drew = true;
         }
     } else if node.kind == "image" {
-        if let (Some([x, y, w, h]), Some(hex)) = (node.rect, node.value.as_deref()) {
+        if let (Some(rect), Some(hex)) = (node.rect, node.value.as_deref()) {
+            let [x, y, w, h] = transform.apply(rect);
             if blit_hex_rgb565(pixels, width, height, x, y, w, h, hex) {
                 *drew = true;
             }
         }
     } else if node.kind == "sprite" {
-        if let (Some(atlas), Some([x, y, w, h]), Some(index)) = (
+        if let (Some(atlas), Some(rect), Some(index)) = (
             atlas,
             node.rect,
             node.value.as_deref().and_then(|v| v.parse::<u32>().ok()),
         ) {
+            let [x, y, w, h] = transform.apply(rect);
             if blit_sprite(pixels, width, height, atlas, index, x, y, w, h) {
                 *drew = true;
             }
         }
     }
+    // A non-drawable node (group) offsets and scales its children.
+    let child_transform = if drawable {
+        transform
+    } else {
+        match node.rect {
+            Some(rect) => transform.child(rect),
+            None => transform,
+        }
+    };
     for child in &node.children {
-        fill_scene(child, pixels, width, height, atlas, drew);
+        fill_scene(child, pixels, width, height, atlas, child_transform, drew);
     }
 }
 
@@ -1296,14 +1364,16 @@ impl FakeDevice {
         (local / u64::from(clip.frames)) as u32
     }
     /// N80: rasterize the accepted scene into the local framebuffer (rect fills,
-    /// parent then children so children draw on top; bounds clipped). Returns
-    /// true when at least one rect was drawn.
+    /// parent then children so children draw on top; bounds clipped). N137: the
+    /// framebuffer is cleared first so repeated renders are deterministic.
+    /// Returns true when at least one primitive was drawn.
     pub fn render_scene(&mut self) -> bool {
         let Some(scene) = self.scene.clone() else {
             return false;
         };
         let width = u32::from(self.profile.width);
         let height = u32::from(self.profile.height);
+        self.pixels.fill(0);
         let mut drew = false;
         fill_scene(
             &scene,
@@ -1311,6 +1381,7 @@ impl FakeDevice {
             width,
             height,
             self.atlas.as_ref(),
+            SceneTransform::identity(),
             &mut drew,
         );
         drew
@@ -2159,6 +2230,43 @@ mod tests {
         session.poll().unwrap();
         assert!(device.render_scene());
         assert_ne!(device.pixel_rgb565(1, 1), Some(0), "scale 2 fills (1,1)");
+    }
+
+    #[test]
+    fn scene_group_offsets_and_scales_children() {
+        use mdc_protocol::SceneNode;
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 16,
+            height: 16,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+        let rect = |name: &str, geometry: [u16; 4], color: &str| SceneNode {
+            name: name.into(),
+            kind: "rect".into(),
+            rect: Some(geometry),
+            children: Vec::new(),
+            value: Some(color.into()),
+        };
+        // Group offset (4, 2) and 2× scale: [0,0,2,2] red -> [4,2,4,4].
+        let scene = SceneNode {
+            name: "root".into(),
+            kind: "group".into(),
+            rect: Some([4, 2, 2000, 2000]),
+            children: vec![rect("bg", [0, 0, 2, 2], "#FF0000")],
+            value: None,
+        };
+        session.set_scene(scene).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(4, 2), Some(0xF800), "offset applied");
+        assert_eq!(device.pixel_rgb565(7, 5), Some(0xF800), "2x scale applied");
+        assert_eq!(device.pixel_rgb565(0, 0), Some(0), "outside the group");
     }
 
     #[test]

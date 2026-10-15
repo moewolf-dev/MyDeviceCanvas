@@ -718,6 +718,125 @@ fn rgb565_frame_to_ppm(width: u32, height: u32, rgb565: &[u8]) -> Vec<u8> {
     out
 }
 
+/// N134: render one posed frame of a model (optionally textured) to a PPM.
+fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut model_path: Option<String> = None;
+    let mut texture_path: Option<String> = None;
+    let mut out: Option<String> = None;
+    let mut animation: usize = 0;
+    let mut time: f32 = 0.0;
+    let mut sprite: u32 = 64;
+    let mut iter = args.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--texture" => texture_path = iter.next().cloned(),
+            "--out" => out = iter.next().cloned(),
+            "--animation" => {
+                animation = iter
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(animation)
+            }
+            "--time" => time = iter.next().and_then(|v| v.parse().ok()).unwrap_or(time),
+            "--sprite" => sprite = iter.next().and_then(|v| v.parse().ok()).unwrap_or(sprite),
+            other => model_path = Some(other.to_string()),
+        }
+    }
+    let model_path = model_path.ok_or("render-mesh requires a .gltf/.glb model")?;
+    let out = out.ok_or("render-mesh requires --out <file.ppm>")?;
+    let bytes = std::fs::read(&model_path)?;
+    let model = mdc_model::GltfImporter.import(&bytes, &mdc_model::ImportLimits::default())?;
+    let has_uv = model.meshes.iter().any(|m| !m.preview_uv.is_empty());
+    let texture = match &texture_path {
+        Some(path) => {
+            let image = std::fs::read(path)?;
+            let baked = mdc_bake::decode_rgb565_native(&image, &mdc_bake::BakeLimits::default())?;
+            Some(mdc_bake::TextureMap::from_baked(&baked)?)
+        }
+        None => None,
+    };
+    let textured = texture.is_some() && has_uv;
+    let frame = mdc_bake::render_frame_at(
+        &model,
+        animation,
+        time,
+        (sprite, sprite),
+        if textured { texture.as_ref() } else { None },
+        0xF800,
+    )?;
+    std::fs::write(
+        &out,
+        rgb565_frame_to_ppm(frame.width, frame.height, &frame.rgb565),
+    )?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "source": model_path,
+            "animation": animation,
+            "time": time,
+            "sprite": format!("{sprite}x{sprite}"),
+            "textured": textured,
+            "output": out,
+        }))?
+    );
+    Ok(())
+}
+
+/// N135: export one frame of a baked runtime package's atlas as a PPM.
+fn cmd_render_package(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut file: Option<String> = None;
+    let mut out: Option<String> = None;
+    let mut frame: u32 = 0;
+    let mut iter = args.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--out" => out = iter.next().cloned(),
+            "--frame" => frame = iter.next().and_then(|v| v.parse().ok()).unwrap_or(frame),
+            other => file = Some(other.to_string()),
+        }
+    }
+    let file = file.ok_or("render-package requires a .mdcpkg file")?;
+    let out = out.ok_or("render-package requires --out <file.ppm>")?;
+    let bytes = std::fs::read(&file)?;
+    let package = mdc_model::MdcPackage::from_bytes(&bytes)?;
+    let atlas = package
+        .package
+        .atlas
+        .as_ref()
+        .ok_or("package has no baked atlas to render")?;
+    let offset = atlas
+        .frame_offset(frame)
+        .ok_or_else(|| format!("frame {frame} out of range ({} frames)", atlas.frames))?;
+    let sprite_w = atlas.sprite_width as usize;
+    let sprite_h = atlas.sprite_height as usize;
+    let atlas_row = (atlas.columns as usize) * sprite_w * 2;
+    let mut frame_pixels = vec![0u8; sprite_w * sprite_h * 2];
+    for y in 0..sprite_h {
+        let src = offset + y * atlas_row;
+        let dst = y * sprite_w * 2;
+        if src + sprite_w * 2 > atlas.rgb565.len() {
+            break;
+        }
+        frame_pixels[dst..dst + sprite_w * 2]
+            .copy_from_slice(&atlas.rgb565[src..src + sprite_w * 2]);
+    }
+    std::fs::write(
+        &out,
+        rgb565_frame_to_ppm(atlas.sprite_width, atlas.sprite_height, &frame_pixels),
+    )?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "package": file,
+            "frame": frame,
+            "frames": atlas.frames,
+            "sprite": format!("{}x{}", atlas.sprite_width, atlas.sprite_height),
+            "output": out,
+        }))?
+    );
+    Ok(())
+}
+
 /// N82: render a scene on a simulator device and export the framebuffer as PPM.
 fn cmd_scene_render(opts: &GlobalOpts, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut file: Option<String> = None;
@@ -2104,6 +2223,8 @@ authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--wr
 package <model.gltf> [out.mdcpkg]|install-package <file.mdcpkg>|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
+render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] --out f.ppm|\
+render-package <file.mdcpkg> [--frame N] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|raster-demo|preview-mesh|inspect [--watch --count N --interval MS]"
     );
 }
@@ -2247,6 +2368,8 @@ fn main() {
         Some("raster-demo") => cmd_raster_demo(),
         Some("preview-mesh") => cmd_preview_mesh(),
         Some("bake-mesh") => cmd_bake_mesh(&args[1..]),
+        Some("render-mesh") => cmd_render_mesh(&args[1..]),
+        Some("render-package") => cmd_render_package(&args[1..]),
         Some("switch-demo") => {
             let mut o = opts.clone();
             o.sim = true;
@@ -3019,6 +3142,55 @@ mod tests {
             board: "esp32-jc3248w535-sim".into(),
         };
         cmd_install_package(&opts, package_path.to_str().unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn render_mesh_and_package_write_ppms() {
+        let dir = std::env::temp_dir().join(format!("mdc-cli-render-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let model_path = dir.join("rig.glb");
+        std::fs::write(&model_path, skinned_glb()).unwrap();
+
+        let mesh_out = dir.join("frame.ppm");
+        cmd_render_mesh(&[
+            model_path.to_string_lossy().into_owned(),
+            "--time".to_string(),
+            "0.5".to_string(),
+            "--sprite".to_string(),
+            "16".to_string(),
+            "--out".to_string(),
+            mesh_out.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        assert!(std::fs::read(&mesh_out)
+            .unwrap()
+            .starts_with(b"P6\n16 16\n255\n"));
+
+        let package_path = dir.join("rig.mdcpkg");
+        cmd_bake_mesh(&[
+            model_path.to_string_lossy().into_owned(),
+            "--frames".to_string(),
+            "4".to_string(),
+            "--sprite".to_string(),
+            "16".to_string(),
+            "--package".to_string(),
+            package_path.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        let pkg_out = dir.join("pkg_frame.ppm");
+        cmd_render_package(&[
+            package_path.to_string_lossy().into_owned(),
+            "--frame".to_string(),
+            "2".to_string(),
+            "--out".to_string(),
+            pkg_out.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        assert!(std::fs::read(&pkg_out)
+            .unwrap()
+            .starts_with(b"P6\n16 16\n255\n"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

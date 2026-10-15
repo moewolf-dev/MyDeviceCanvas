@@ -102,6 +102,76 @@ fn mirror_receiver_soak_is_bounded() {
 }
 
 #[test]
+fn render_frame_soak_is_bounded() {
+    use mdc_model::{Animation, AnimationTrack, Mesh, Model, Node, Skeleton};
+
+    let mesh = Mesh {
+        name: "tri".into(),
+        vertices: 3,
+        indices: 0,
+        material: None,
+        preview_positions: vec![[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [0.0, 0.5, 0.0]],
+        skin_joints: vec![[1, 0, 0, 0], [1, 0, 0, 0], [1, 0, 0, 0]],
+        skin_weights: vec![
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+        ],
+        preview_uv: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+        ..Mesh::default()
+    };
+    let identity = [
+        1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![
+            Node {
+                name: "root".into(),
+                children: vec![1],
+                ..Node::default()
+            },
+            Node {
+                name: "j1".into(),
+                mesh: Some(0),
+                ..Node::default()
+            },
+        ],
+        meshes: vec![mesh],
+        skeletons: vec![Skeleton {
+            name: "rig".into(),
+            bones: 2,
+            joint_nodes: vec![0, 1],
+            inverse_bind: vec![identity, identity],
+        }],
+        animations: vec![Animation {
+            name: "spin".into(),
+            channels: 1,
+            tracks: vec![AnimationTrack {
+                node: 1,
+                path: "rotation".into(),
+                interpolation: "LINEAR".into(),
+                times: vec![0.0, 1.0],
+                values: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            }],
+        }],
+        ..Model::default()
+    };
+    let texture = mdc_bake::TextureMap::from_rgb565(2, 1, vec![0x00, 0xF8, 0xE0, 0x07]).unwrap();
+    let mut bytes = 0usize;
+    for i in 0..100 {
+        let time = (i % 10) as f32 / 10.0;
+        let frame =
+            mdc_bake::render_frame_at(&model, 0, time, (8, 8), Some(&texture), 0x001F).unwrap();
+        if bytes == 0 {
+            bytes = frame.rgb565.len();
+        }
+        assert_eq!(frame.rgb565.len(), bytes, "frame size is constant");
+    }
+    assert!(bytes > 0);
+}
+
+#[test]
 fn morph_bake_soak_is_bounded() {
     use mdc_model::{Animation, AnimationTrack, Mesh, Model, Node, Skeleton};
 

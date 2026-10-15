@@ -446,24 +446,67 @@ impl SceneNode {
             .unwrap_or(0)
             + 1
     }
-    /// N79: the fill colour for a `rect`, parsed from `value` as `#RRGGBB` /
-    /// `RRGGBB`. Missing or malformed values use opaque white.
+    /// N79/N136: the fill colour for a `rect`, parsed from `value` as
+    /// `#RRGGBB`, `#RGB`, or a named colour. Missing or malformed values use
+    /// opaque white.
     pub fn color_rgb565(&self) -> u16 {
         let Some(value) = self.value.as_deref() else {
             return 0xFFFF;
         };
-        let hex = value.strip_prefix('#').unwrap_or(value);
-        if hex.len() != 6 {
-            return 0xFFFF;
+        if let Some(rgb) = parse_hex_color(value) {
+            return rgb565_from(rgb.0, rgb.1, rgb.2);
         }
-        let Ok(rgb) = u32::from_str_radix(hex, 16) else {
+        let Some(rgb) = named_color(value) else {
             return 0xFFFF;
         };
-        let r = ((rgb >> 16) & 0xff) as u16;
-        let g = ((rgb >> 8) & 0xff) as u16;
-        let b = (rgb & 0xff) as u16;
-        ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+        rgb565_from(rgb.0, rgb.1, rgb.2)
     }
+}
+
+/// Parse `#RRGGBB` or `#RGB` (the `#` optional) into 8-bit channels.
+fn parse_hex_color(value: &str) -> Option<(u8, u8, u8)> {
+    let hex = value.strip_prefix('#').unwrap_or(value);
+    match hex.len() {
+        6 => {
+            let rgb = u32::from_str_radix(hex, 16).ok()?;
+            Some((
+                ((rgb >> 16) & 0xff) as u8,
+                ((rgb >> 8) & 0xff) as u8,
+                (rgb & 0xff) as u8,
+            ))
+        }
+        3 => {
+            let mut channels = [0u8; 3];
+            for (i, ch) in hex.bytes().enumerate() {
+                let nibble = (ch as char).to_digit(16)? as u8;
+                channels[i] = nibble * 17;
+            }
+            Some((channels[0], channels[1], channels[2]))
+        }
+        _ => None,
+    }
+}
+
+/// A small set of CSS-style colour names, case-insensitive.
+fn named_color(value: &str) -> Option<(u8, u8, u8)> {
+    match value.to_ascii_lowercase().as_str() {
+        "black" => Some((0, 0, 0)),
+        "white" => Some((255, 255, 255)),
+        "red" => Some((255, 0, 0)),
+        "green" => Some((0, 128, 0)),
+        "lime" => Some((0, 255, 0)),
+        "blue" => Some((0, 0, 255)),
+        "yellow" => Some((255, 255, 0)),
+        "cyan" | "aqua" => Some((0, 255, 255)),
+        "magenta" | "fuchsia" => Some((255, 0, 255)),
+        "orange" => Some((255, 165, 0)),
+        "gray" | "grey" => Some((128, 128, 128)),
+        _ => None,
+    }
+}
+
+fn rgb565_from(r: u8, g: u8, b: u8) -> u16 {
+    ((u16::from(r) >> 3) << 11) | ((u16::from(g) >> 2) << 5) | (u16::from(b) >> 3)
 }
 
 /// Host -> device scene command (CBOR for MessageType::Scene).
@@ -1579,6 +1622,26 @@ mod tests {
                 value: None,
             }),
         }
+    }
+
+    #[test]
+    fn scene_colour_parses_short_hex_and_names() {
+        let coloured = |value: &str| SceneNode {
+            name: "n".into(),
+            kind: "rect".into(),
+            rect: None,
+            children: Vec::new(),
+            value: Some(value.into()),
+        };
+        // #RGB expands each nibble.
+        assert_eq!(coloured("#F00").color_rgb565(), 0xF800);
+        assert_eq!(coloured("#0f0").color_rgb565(), 0x07E0);
+        // Names are case-insensitive.
+        assert_eq!(coloured("Red").color_rgb565(), 0xF800);
+        assert_eq!(coloured("BLUE").color_rgb565(), 0x001F);
+        // Unknown names / malformed hex fall back to white.
+        assert_eq!(coloured("chartreuse").color_rgb565(), 0xFFFF);
+        assert_eq!(coloured("#12").color_rgb565(), 0xFFFF);
     }
 
     #[test]

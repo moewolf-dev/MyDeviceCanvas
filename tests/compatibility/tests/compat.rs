@@ -608,6 +608,47 @@ fn textured_bake_refuses_an_over_budget_texture() {
 }
 
 #[test]
+fn scene_group_geometry_and_named_colour_reach_the_device() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_protocol::SceneNode;
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 16,
+        height: 16,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+    let scene = SceneNode {
+        name: "root".into(),
+        kind: "group".into(),
+        rect: Some([2, 2, 0, 0]),
+        children: vec![SceneNode {
+            name: "bg".into(),
+            kind: "rect".into(),
+            rect: Some([0, 0, 4, 4]),
+            children: Vec::new(),
+            value: Some("red".into()),
+        }],
+        value: None,
+    };
+    session.set_scene(scene).unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.render_scene());
+    assert_eq!(
+        device.pixel_rgb565(2, 2),
+        Some(0xF800),
+        "group offset + named colour"
+    );
+    assert_eq!(device.pixel_rgb565(0, 0), Some(0));
+}
+
+#[test]
 fn morph_weight_edge_cases_are_bounded() {
     use mdc_model::{Animation, AnimationTrack};
     // A weights channel whose value count is not a multiple of its key count is
