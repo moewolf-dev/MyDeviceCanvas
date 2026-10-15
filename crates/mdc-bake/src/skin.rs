@@ -514,7 +514,8 @@ pub fn render_frame_at(
     }
     let skinned = resolve_skinned(model, animation_index)?;
     let points = skinned_points_at(model, &skinned, time, sprite);
-    let fill = material_color(model, skinned.mesh).unwrap_or(color);
+    let tint = material_color(model, skinned.mesh);
+    let fill = tint.unwrap_or(color);
     let uvs: Option<&[[f32; 2]]> = if skinned.mesh.preview_uv.len()
         >= skinned.mesh.preview_positions.len()
         && !skinned.mesh.preview_uv.is_empty()
@@ -530,6 +531,7 @@ pub fn render_frame_at(
         sprite.0,
         sprite.1,
         texture,
+        tint,
         fill,
     )?;
     Ok(BakedTexture {
@@ -613,7 +615,8 @@ pub fn render_geometry_at(
     let Some(geometry) = resolve_geometry(skinned.mesh) else {
         return render_frame_at(model, animation_index, time, size, texture, color);
     };
-    let fill = material_color(model, skinned.mesh).unwrap_or(color);
+    let tint = material_color(model, skinned.mesh);
+    let fill = tint.unwrap_or(color);
     let worlds = pose_world_matrices(&model.nodes, skinned.animation, time);
     let deformed = skin_arrays(
         &geometry.skin_joints,
@@ -640,6 +643,7 @@ pub fn render_geometry_at(
         size.0,
         size.1,
         texture,
+        tint,
         fill,
         mdc_model::MAX_GEOMETRY_VERTICES,
     )?;
@@ -780,7 +784,8 @@ pub fn render_scene_at(
             } else {
                 None
             };
-        let fill = material_color(model, mesh).unwrap_or(fallback);
+        let tint = material_color(model, mesh);
+        let fill = tint.unwrap_or(fallback);
         crate::texture::draw_indexed(
             &mut pixels,
             &points,
@@ -789,6 +794,7 @@ pub fn render_scene_at(
             size.0,
             size.1,
             texture,
+            tint,
             fill,
             mdc_model::MAX_GEOMETRY_VERTICES,
         )?;
@@ -897,11 +903,11 @@ pub fn render_package_mesh(
             } else {
                 None
             };
-        let fill = mesh
+        let tint = mesh
             .material
             .and_then(|mi| package.materials.get(mi))
-            .and_then(|material| material.color_rgb565())
-            .unwrap_or(0xF800);
+            .and_then(|material| material.color_rgb565());
+        let fill = tint.unwrap_or(0xF800);
         crate::texture::draw_indexed(
             &mut pixels,
             &projected,
@@ -910,6 +916,7 @@ pub fn render_package_mesh(
             size.0,
             size.1,
             texture.as_ref(),
+            tint,
             fill,
             mdc_model::MAX_GEOMETRY_VERTICES,
         )?;
@@ -1004,11 +1011,11 @@ pub fn render_package_scene(
             } else {
                 None
             };
-        let fill = mesh
+        let tint = mesh
             .material
             .and_then(|mi| package.materials.get(mi))
-            .and_then(|material| material.color_rgb565())
-            .unwrap_or(0xF800);
+            .and_then(|material| material.color_rgb565());
+        let fill = tint.unwrap_or(0xF800);
         crate::texture::draw_indexed(
             &mut pixels,
             &points,
@@ -1017,6 +1024,7 @@ pub fn render_package_scene(
             size.0,
             size.1,
             texture.as_ref(),
+            tint,
             fill,
             mdc_model::MAX_GEOMETRY_VERTICES,
         )?;
@@ -1068,6 +1076,7 @@ pub fn bake_textured_mesh(
             None
         };
     let mut baked = Vec::with_capacity(per_frame.len());
+    let tint = material_color(model, mesh);
     for points in per_frame {
         let rgb565 = crate::texture::raster_textured(
             &points,
@@ -1076,6 +1085,7 @@ pub fn bake_textured_mesh(
             sprite.0,
             sprite.1,
             texture,
+            tint,
             color,
         )?;
         baked.push(BakedTexture {

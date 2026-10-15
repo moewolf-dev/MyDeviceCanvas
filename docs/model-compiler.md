@@ -159,11 +159,13 @@ there is no texture lookup, and it is not a full skinned-mesh device renderer.
 
 ## Textured bake (N113–N117)
 
-`TextureMap` holds RGB565 pixels and samples UVs with a wrapping nearest-
-neighbour lookup. `raster_textured` draws the mesh triangles, interpolating UVs
-barycentrically and sampling the texture per pixel; a mesh with no UVs (or no
-texture) fills a solid fallback colour instead — the UV-missing path never
-silently samples texel 0.
+`TextureMap` holds RGB565 pixels and samples UVs with a wrapping lookup:
+nearest by default, or bilinear via `Filter::Linear` / `with_filter` (N203).
+`raster_textured` draws the mesh triangles, interpolating UVs barycentrically and
+sampling the texture per pixel, multiplied by an optional tint (N204, the glTF
+`baseColorFactor`) — a white tint is the identity, so a plain texture shows
+through unchanged; a mesh with no UVs (or no texture) fills a solid fallback
+colour instead and never silently samples texel 0.
 
 - `bake_textured_mesh(model, animation, frames, sprite, texture, color)` runs the
   skinning bake and samples the texture through `Mesh.preview_uv`.

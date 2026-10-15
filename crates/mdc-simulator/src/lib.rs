@@ -271,6 +271,7 @@ fn fill_triangle(
 }
 
 /// N178: fill a triangle with `texture` sampled through interpolated UVs.
+/// N206: the material colour (`tint`) multiplies the sampled texel.
 #[allow(clippy::too_many_arguments)]
 fn fill_textured_triangle(
     pixels: &mut [u8],
@@ -283,6 +284,7 @@ fn fill_textured_triangle(
     c: (i16, i16),
     uvc: [f32; 2],
     texture: &mdc_model::TextureBlob,
+    tint: u16,
 ) {
     let min_x = a.0.min(b.0).min(c.0).max(0) as u32;
     let max_x = (a.0.max(b.0).max(c.0).max(0) as u32).min(width.saturating_sub(1));
@@ -312,7 +314,7 @@ fn fill_textured_triangle(
             let w2 = e2 as f32 / area_f;
             let u = w0 * uva[0] + w1 * uvb[0] + w2 * uvc[0];
             let v = w0 * uva[1] + w1 * uvb[1] + w2 * uvc[1];
-            let bytes = texture.sample(u, v).to_le_bytes();
+            let bytes = rgb565_mul(texture.sample(u, v), tint).to_le_bytes();
             let index = ((y * width + x) * 2) as usize;
             if index + 1 < pixels.len() {
                 pixels[index] = bytes[0];
@@ -320,6 +322,16 @@ fn fill_textured_triangle(
             }
         }
     }
+}
+
+/// N206: multiply two RGB565 colours channel-wise (0xFFFF is the identity).
+fn rgb565_mul(a: u16, b: u16) -> u16 {
+    let channel = |shift: u32, mask: u32| {
+        let av = u32::from((a >> shift) & mask as u16);
+        let bv = u32::from((b >> shift) & mask as u16);
+        (((av * bv + mask / 2) / mask) as u16 & mask as u16) << shift
+    };
+    channel(11, 0x1f) | channel(5, 0x3f) | channel(0, 0x1f)
 }
 
 fn fade_toward_black(pixels: &mut [u8], quarters: u8) {
@@ -1711,6 +1723,7 @@ impl FakeDevice {
                         c,
                         self.preview_uv[tri[2] as usize],
                         texture,
+                        color,
                     ),
                     _ => fill_triangle(&mut self.pixels, width, height, a, b, c, color),
                 }

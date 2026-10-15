@@ -750,6 +750,7 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut time: f32 = 0.0;
     let mut sprite: u32 = 64;
     let mut single = false;
+    let mut filter = mdc_bake::Filter::Nearest;
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -764,6 +765,12 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "--time" => time = iter.next().and_then(|v| v.parse().ok()).unwrap_or(time),
             "--sprite" => sprite = iter.next().and_then(|v| v.parse().ok()).unwrap_or(sprite),
             "--single" => single = true,
+            "--filter" => {
+                filter = match iter.next().map(String::as_str) {
+                    Some("linear") => mdc_bake::Filter::Linear,
+                    _ => mdc_bake::Filter::Nearest,
+                }
+            }
             other => model_path = Some(other.to_string()),
         }
     }
@@ -776,7 +783,7 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         Some(path) => {
             let image = std::fs::read(path)?;
             let baked = mdc_bake::decode_rgb565_native(&image, &mdc_bake::BakeLimits::default())?;
-            Some(mdc_bake::TextureMap::from_baked(&baked)?)
+            Some(mdc_bake::TextureMap::from_baked(&baked)?.with_filter(filter))
         }
         None => None,
     };

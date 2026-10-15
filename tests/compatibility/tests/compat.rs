@@ -682,6 +682,84 @@ fn full_geometry_reaches_the_device_and_renders() {
 }
 
 #[test]
+fn material_colour_tints_the_package_texture_on_the_device() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_model::{DevicePackage, Material, Mesh, MeshGeometry, Node, PackageMode, TextureBlob};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let mesh = Mesh {
+        name: "quad".into(),
+        vertices: 4,
+        indices: 6,
+        material: Some(0),
+        geometry: Some(MeshGeometry {
+            positions: vec![
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            skin_joints: Vec::new(),
+            skin_weights: Vec::new(),
+        }),
+        ..Mesh::default()
+    };
+    let package = DevicePackage {
+        target: "linux-mesh".into(),
+        mode: PackageMode::Mesh,
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![mesh],
+        textures: Vec::new(),
+        materials: vec![Material {
+            name: "skin".into(),
+            texture: None,
+            // Half-intensity red: the texture is a full red, so the result halves.
+            color: Some([128, 0, 0]),
+        }],
+        skeletons: Vec::new(),
+        animations: Vec::new(),
+        sprites: Vec::new(),
+        layers: Vec::new(),
+        estimated_bytes: 48,
+        atlas: None,
+        texture: Some(TextureBlob {
+            width: 1,
+            height: 1,
+            rgb565: vec![0x00, 0xF8], // 1×1 red
+        }),
+    };
+    let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 16,
+        height: 16,
+        renderer_mesh2d: true,
+        renderer_max_vertices: 4096,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .install_package(&sealed.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.render_preview());
+    let centre = device.pixel_rgb565(8, 8).unwrap();
+    // Tinted: red ~128 -> the red channel is roughly half, not full.
+    let r = (centre >> 11) & 0x1f;
+    assert!((10..=22).contains(&r), "tinted red channel {r}");
+}
+
+#[test]
 fn device_renders_an_animated_mesh_package_scene() {
     use mdc_core::{ConnectionState, Session};
     use mdc_model::{Animation, AnimationTrack, Material, Mesh, MeshGeometry, Model, Node};
@@ -907,7 +985,8 @@ fn textured_geometry_package_renders_on_the_device() {
         materials: vec![Material {
             name: "skin".into(),
             texture: None,
-            color: Some([0, 0, 255]),
+            // White base colour: the tint is the identity, so the texture shows.
+            color: Some([255, 255, 255]),
         }],
         skeletons: Vec::new(),
         animations: Vec::new(),

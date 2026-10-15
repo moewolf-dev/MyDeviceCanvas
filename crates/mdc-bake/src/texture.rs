@@ -1,12 +1,32 @@
-//! N114/N115: nearest-neighbour texture sampling and textured triangle
-//! rasterisation for the skinning bake.
+//! N114/N115: texture sampling and textured triangle rasterisation for the
+//! skinning bake.
 //!
 //! A [`TextureMap`] holds RGB565 little-endian pixels. Sampling wraps UVs
-//! outside `[0, 1]` (glTF `REPEAT`) and reads the texel whose centre the UV
-//! falls in. A textured triangle interpolates UV barycentrically and samples the
-//! texel per pixel; when no texture is supplied the triangle is filled with a
+//! outside `[0, 1]` (glTF `REPEAT`) with either nearest or bilinear filtering
+//! (N203). A textured triangle interpolates UVs barycentrically and samples the
+//! texel per pixel, multiplying it by an optional tint (N204, the glTF
+//! baseColorFactor); when no texture is supplied the triangle is filled with a
 //! solid fallback colour.
 use crate::BakeError;
+
+/// N203: texture magnification filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Filter {
+    #[default]
+    Nearest,
+    Linear,
+}
+
+/// N204: multiply two RGB565 colours channel-wise (each channel scaled to 8 bits
+/// and back, so `0xFFFF` is the identity).
+pub fn rgb565_mul(a: u16, b: u16) -> u16 {
+    let channel = |shift: u32, mask: u32| {
+        let av = u32::from((a >> shift) & mask as u16);
+        let bv = u32::from((b >> shift) & mask as u16);
+        (((av * bv + mask / 2) / mask) as u16 & mask as u16) << shift
+    };
+    channel(11, 0x1f) | channel(5, 0x3f) | channel(0, 0x1f)
+}
 
 /// An RGB565 little-endian texture.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,6 +34,8 @@ pub struct TextureMap {
     pub width: u32,
     pub height: u32,
     pub rgb565: Vec<u8>,
+    /// N203: sampling filter (defaults to nearest).
+    pub filter: Filter,
 }
 
 impl TextureMap {
@@ -30,6 +52,7 @@ impl TextureMap {
             width,
             height,
             rgb565,
+            filter: Filter::Nearest,
         })
     }
 
@@ -38,20 +61,70 @@ impl TextureMap {
         Self::from_rgb565(baked.width, baked.height, baked.rgb565.clone())
     }
 
-    /// Nearest texel for `uv`, wrapping outside `[0, 1]`.
-    pub fn sample(&self, u: f32, v: f32) -> u16 {
-        if self.width == 0 || self.height == 0 {
-            return 0;
-        }
-        let x = (u * self.width as f32).floor();
-        let y = (v * self.height as f32).floor();
-        let x = wrap(x, self.width) as usize;
-        let y = wrap(y, self.height) as usize;
+    /// N203: set the sampling filter.
+    pub fn with_filter(mut self, filter: Filter) -> Self {
+        self.filter = filter;
+        self
+    }
+
+    /// The texel at integer `(x, y)`, wrapping.
+    fn texel(&self, x: u32, y: u32) -> u16 {
+        let x = (x % self.width.max(1)) as usize;
+        let y = (y % self.height.max(1)) as usize;
         let index = (y * self.width as usize + x) * 2;
         match self.rgb565.get(index..index + 2) {
             Some(bytes) => u16::from_le_bytes([bytes[0], bytes[1]]),
             None => 0,
         }
+    }
+
+    /// Sample `uv` with the configured filter, wrapping outside `[0, 1]`.
+    pub fn sample(&self, u: f32, v: f32) -> u16 {
+        match self.filter {
+            Filter::Nearest => self.sample_nearest(u, v),
+            Filter::Linear => self.sample_linear(u, v),
+        }
+    }
+
+    /// Nearest texel for `uv`, wrapping outside `[0, 1]`.
+    pub fn sample_nearest(&self, u: f32, v: f32) -> u16 {
+        if self.width == 0 || self.height == 0 {
+            return 0;
+        }
+        let x = wrap(u * self.width as f32, self.width);
+        let y = wrap(v * self.height as f32, self.height);
+        self.texel(x, y)
+    }
+
+    /// N203: bilinear sample for `uv`, wrapping outside `[0, 1]`.
+    pub fn sample_linear(&self, u: f32, v: f32) -> u16 {
+        if self.width == 0 || self.height == 0 {
+            return 0;
+        }
+        let fx = u * self.width as f32 - 0.5;
+        let fy = v * self.height as f32 - 0.5;
+        let x0 = fx.floor();
+        let y0 = fy.floor();
+        let tx = fx - x0;
+        let ty = fy - y0;
+        let x0 = wrap(x0, self.width);
+        let y0 = wrap(y0, self.height);
+        let x1 = (x0 + 1) % self.width;
+        let y1 = (y0 + 1) % self.height;
+        let samples = [
+            (self.texel(x0, y0), (1.0 - tx) * (1.0 - ty)),
+            (self.texel(x1, y0), tx * (1.0 - ty)),
+            (self.texel(x0, y1), (1.0 - tx) * ty),
+            (self.texel(x1, y1), tx * ty),
+        ];
+        let channel = |shift: u32, mask: u32| {
+            let acc: f32 = samples
+                .iter()
+                .map(|(value, weight)| f32::from((value >> shift) & mask as u16) * weight)
+                .sum();
+            ((acc.round() as u32).min(mask) as u16) << shift
+        };
+        channel(11, 0x1f) | channel(5, 0x3f) | channel(0, 0x1f)
     }
 }
 
@@ -72,6 +145,7 @@ fn edge(a: (i16, i16), b: (i16, i16), p: (i16, i16)) -> i32 {
 
 /// Draw `points` into a fresh framebuffer, sampling `texture` through `uvs`
 /// (barycentric). With no texture or no UVs, fills `fallback` colour instead.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn raster_textured(
     points: &[(i16, i16)],
     uvs: Option<&[[f32; 2]]>,
@@ -79,10 +153,13 @@ pub(crate) fn raster_textured(
     width: u32,
     height: u32,
     texture: Option<&TextureMap>,
+    tint: Option<u16>,
     fallback: u16,
 ) -> Result<Vec<u8>, BakeError> {
     let indices: Vec<u32> = indices.iter().map(|&i| u32::from(i)).collect();
-    raster_indexed(points, uvs, &indices, width, height, texture, fallback, 64)
+    raster_indexed(
+        points, uvs, &indices, width, height, texture, tint, fallback, 64,
+    )
 }
 
 /// N165: raster a geometry's triangles (u32 indices) into a fresh framebuffer,
@@ -95,6 +172,7 @@ pub(crate) fn raster_indexed(
     width: u32,
     height: u32,
     texture: Option<&TextureMap>,
+    tint: Option<u16>,
     fallback: u16,
     max_points: usize,
 ) -> Result<Vec<u8>, BakeError> {
@@ -110,6 +188,7 @@ pub(crate) fn raster_indexed(
         width,
         height,
         texture,
+        tint,
         fallback,
         max_points,
     )?;
@@ -127,6 +206,7 @@ pub(crate) fn draw_indexed(
     width: u32,
     height: u32,
     texture: Option<&TextureMap>,
+    tint: Option<u16>,
     fallback: u16,
     max_points: usize,
 ) -> Result<(), BakeError> {
@@ -164,6 +244,7 @@ pub(crate) fn draw_indexed(
                 (b, uvs[triangle[1]]),
                 (c, uvs[triangle[2]]),
                 texture,
+                tint,
             ),
             _ => crate::fill_triangle(pixels, width, height, a, b, c, fallback),
         }
@@ -180,6 +261,7 @@ fn fill_textured_triangle(
     b: ((i16, i16), [f32; 2]),
     c: ((i16, i16), [f32; 2]),
     texture: &TextureMap,
+    tint: Option<u16>,
 ) {
     let area = edge(a.0, b.0, c.0);
     if area == 0 {
@@ -211,7 +293,11 @@ fn fill_textured_triangle(
             let w2 = e2 as f32 / area_f;
             let u = w0 * a.1[0] + w1 * b.1[0] + w2 * c.1[0];
             let v = w0 * a.1[1] + w1 * b.1[1] + w2 * c.1[1];
-            let color = texture.sample(u, v).to_le_bytes();
+            let mut value = texture.sample(u, v);
+            if let Some(tint) = tint {
+                value = rgb565_mul(value, tint);
+            }
+            let color = value.to_le_bytes();
             let index = ((y * width + x) * 2) as usize;
             if index + 1 < pixels.len() {
                 pixels[index] = color[0];
@@ -255,7 +341,7 @@ mod tests {
         let uvs = [[0.0f32, 0.0f32], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
         let indices = [0u16, 1, 2, 0, 2, 3];
         let pixels =
-            raster_textured(&points, Some(&uvs), &indices, 8, 8, Some(&texture), 0).unwrap();
+            raster_textured(&points, Some(&uvs), &indices, 8, 8, Some(&texture), None, 0).unwrap();
         let at = |x: usize, y: usize| {
             u16::from_le_bytes([pixels[(y * 8 + x) * 2], pixels[(y * 8 + x) * 2 + 1]])
         };
@@ -264,13 +350,60 @@ mod tests {
     }
 
     #[test]
+    fn bilinear_samples_blend_neighbouring_texels() {
+        // 2×1 texture: left red, right green.
+        let texture = TextureMap::from_rgb565(2, 1, vec![0x00, 0xF8, 0xE0, 0x07]).unwrap();
+        assert_eq!(
+            texture.sample_nearest(0.5, 0.5),
+            0x07E0,
+            "0.5 rounds to the right texel"
+        );
+        let mid = texture.sample_linear(0.5, 0.5);
+        let linear = texture.with_filter(Filter::Linear);
+        assert_eq!(linear.sample(0.5, 0.5), mid);
+        let r = (mid >> 11) & 0x1f;
+        let g = (mid >> 5) & 0x3f;
+        assert!((10..=22).contains(&r), "red channel ~half ({r})");
+        assert!((20..=44).contains(&g), "green channel ~half ({g})");
+    }
+
+    #[test]
+    fn tint_multiplies_channels_and_identity_is_white() {
+        assert_eq!(rgb565_mul(0xF800, 0xFFFF), 0xF800);
+        assert_eq!(rgb565_mul(0x8410, 0xFFFF), 0x8410);
+        // Half-intensity red stays red at half value; red × green is black.
+        assert_eq!(rgb565_mul(0xF800, 0x8000), 0x8000);
+        assert_eq!(rgb565_mul(0xF800, 0x07E0), 0x0000);
+    }
+
+    #[test]
+    fn textured_raster_applies_the_tint() {
+        let texture = TextureMap::from_rgb565(1, 1, vec![0x00, 0xF8]).unwrap(); // 1×1 red
+        let points = [(0i16, 0i16), (4, 0), (0, 4)];
+        let uvs = [[0.5f32, 0.5], [0.5, 0.5], [0.5, 0.5]];
+        let pixels = raster_textured(
+            &points,
+            Some(&uvs),
+            &[],
+            4,
+            4,
+            Some(&texture),
+            Some(0x8000),
+            0,
+        )
+        .unwrap();
+        assert_eq!(&pixels[0..2], &[0x00, 0x80], "red halved by the tint");
+    }
+
+    #[test]
     fn missing_texture_or_uv_falls_back_to_solid() {
         let points = [(0i16, 0i16), (4, 0), (0, 4)];
-        let pixels = raster_textured(&points, None, &[], 8, 8, None, 0xF800).unwrap();
+        let pixels = raster_textured(&points, None, &[], 8, 8, None, None, 0xF800).unwrap();
         assert_eq!(&pixels[0..2], &[0x00, 0xF8]);
         // A texture but no UVs also falls back.
         let texture = solid(2, 2, 0x07E0);
-        let pixels = raster_textured(&points, None, &[], 8, 8, Some(&texture), 0xF800).unwrap();
+        let pixels =
+            raster_textured(&points, None, &[], 8, 8, Some(&texture), None, 0xF800).unwrap();
         assert_eq!(&pixels[0..2], &[0x00, 0xF8]);
     }
 }

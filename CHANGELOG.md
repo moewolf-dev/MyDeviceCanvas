@@ -2,6 +2,18 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.33] — Texture filtering and material tint (N203–N212)
+
+### Added
+
+- `TextureMap` nearest/bilinear `Filter` + `with_filter` (N203)
+- `rgb565_mul` and a per-draw `tint` (material colour × texture) in the textured
+  rasteriser (N204)
+- Geometry/scene/package renders tint the texture by the mesh material colour (N205)
+- The device tints its textured geometry by the material colour too (N206)
+- `mdc render-mesh --filter nearest|linear` (N207)
+- Bilinear/tint unit tests, a tinted-package fixture and a linear-filter soak (N208–N210)
+
 ## [0.1.32] — Device mesh scene rendering (N193–N202)
 
 ### Added

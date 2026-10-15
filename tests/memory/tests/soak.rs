@@ -102,6 +102,58 @@ fn mirror_receiver_soak_is_bounded() {
 }
 
 #[test]
+fn linear_filter_render_soak_is_bounded() {
+    use mdc_model::{Mesh, MeshGeometry, Model, Node};
+
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.5, 0.5, 0.0],
+                    [-0.5, 0.5, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+            }),
+            ..Mesh::default()
+        }],
+        materials: vec![mdc_model::Material {
+            name: "skin".into(),
+            texture: None,
+            color: Some([255, 255, 255]),
+        }],
+        ..Model::default()
+    };
+    let texture = mdc_bake::TextureMap::from_rgb565(2, 2, vec![0u8; 2 * 2 * 2])
+        .unwrap()
+        .with_filter(mdc_bake::Filter::Linear);
+    let mut bytes = 0usize;
+    for _ in 0..100 {
+        let frame =
+            mdc_bake::render_scene_at(&model, 0, 0.0, (32, 32), Some(&texture), 0xFFFF).unwrap();
+        if bytes == 0 {
+            bytes = frame.rgb565.len();
+        }
+        assert_eq!(frame.rgb565.len(), bytes, "frame size is constant");
+    }
+    assert!(bytes > 0);
+}
+
+#[test]
 fn device_mesh_scene_render_soak_is_bounded() {
     use mdc_core::{ConnectionState, Session};
     use mdc_model::{Animation, AnimationTrack, Material, Mesh, MeshGeometry, Model, Node};

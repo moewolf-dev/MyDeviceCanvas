@@ -23,7 +23,7 @@ pub use skin::{
     render_geometry_at, render_package_mesh, render_package_scene, render_scene_at, sample_channel,
     skin_arrays, skin_points, skin_preview, transform_point, Mat4,
 };
-pub use texture::TextureMap;
+pub use texture::{Filter, TextureMap};
 
 /// Largest source file accepted (8 MiB) before decoding.
 pub const MAX_BAKE_INPUT_BYTES: usize = 8 * 1024 * 1024;
