@@ -134,8 +134,21 @@ Failure/fallback:
 - Device stops advertising mirror after an upgrade → host falls back to Form A
   and surfaces a diagnosable event; no unconditional downgrade.
 
-## 5. Mode selection and defaults
+### 4.1 Device-side mesh rendering (simulator, N193+)
 
+The Form B "device renderer" is exercised by `mdc-simulator`: on `PACKAGE`
+commit it keeps the whole `DevicePackage`. When that package carries mesh
+geometry, `render_preview` / `emit_mirror_frame` call
+`mdc_bake::render_package_scene(package, time, size)` at the device clock — every
+mesh node is skinned (or placed by its node world transform), posed by the
+package's first animation, and drawn with its material colour / the package
+texture, against a bind-pose box so the mirror does not jitter. This is a host
+test double of a strong (mesh-capable) device, not the ESP32 path (weak devices
+still receive a baked sprite atlas, Form A). It reuses `mdc-bake` and so is not a
+separate renderer implementation; a real device would implement the same math in
+its own runtime.
+
+## 5. Mode selection and defaults
 - Default mode is decided by capability intersection, not by board family.
 - `full-frame` is the safe default for 3D/Live2D/mesh deformation because
   computing dirty regions costs more than sending the frame on those pipelines.

@@ -921,6 +921,113 @@ pub fn render_package_mesh(
     })
 }
 
+/// N194: the bind-pose XY box of every mesh node in a package.
+fn package_bind_bbox(package: &mdc_model::DevicePackage) -> Option<([f32; 2], [f32; 2])> {
+    let worlds = node_world_matrices(&package.nodes);
+    let mut points = Vec::new();
+    for (index, node) in package.nodes.iter().enumerate() {
+        let Some(mesh) = node.mesh.and_then(|mi| package.meshes.get(mi)) else {
+            continue;
+        };
+        let Some(geometry) = resolve_geometry(mesh) else {
+            continue;
+        };
+        for position in &geometry.positions {
+            points.push(transform_point(&worlds[index], *position));
+        }
+    }
+    bbox_xy(&points)
+}
+
+/// N193: render a package's whole mesh scene at `time` (seconds). Nodes with a
+/// mesh node open into the package's first animation; a skeleton-capable mesh is
+/// skinned. The package's own texture blob and material colours are used, and the
+/// bind-pose box keeps frames from jittering. This is the Form B device renderer.
+pub fn render_package_scene(
+    package: &mdc_model::DevicePackage,
+    time: f32,
+    size: (u32, u32),
+) -> Result<BakedTexture, BakeError> {
+    if size.0 == 0 || size.1 == 0 || size.0 > 1024 || size.1 > 1024 {
+        return Err(BakeError::Budget(size.0, size.1));
+    }
+    let Some((min, max)) = package_bind_bbox(package) else {
+        return Err(BakeError::Decode("package has no mesh geometry".into()));
+    };
+    let texture = match package.texture.as_ref().filter(|t| t.validate()) {
+        Some(blob) => Some(crate::TextureMap::from_rgb565(
+            blob.width,
+            blob.height,
+            blob.rgb565.clone(),
+        )?),
+        None => None,
+    };
+    let worlds = match package.animations.first() {
+        Some(animation) => pose_world_matrices(&package.nodes, animation, time),
+        None => node_world_matrices(&package.nodes),
+    };
+    let skeleton = package.skeletons.iter().find(|s| !s.joint_nodes.is_empty());
+    let mut pixels = vec![0u8; (size.0 as usize) * (size.1 as usize) * 2];
+    for (index, node) in package.nodes.iter().enumerate() {
+        let Some(mesh) = node.mesh.and_then(|mi| package.meshes.get(mi)) else {
+            continue;
+        };
+        let Some(geometry) = resolve_geometry(mesh) else {
+            continue;
+        };
+        let deformed: Vec<[f32; 3]> = if !geometry.skin_joints.is_empty() {
+            match skeleton {
+                Some(skeleton) => skin_arrays(
+                    &geometry.skin_joints,
+                    &geometry.skin_weights,
+                    &geometry.positions,
+                    skeleton,
+                    &worlds,
+                ),
+                None => geometry
+                    .positions
+                    .iter()
+                    .map(|p| transform_point(&worlds[index], *p))
+                    .collect(),
+            }
+        } else {
+            geometry
+                .positions
+                .iter()
+                .map(|p| transform_point(&worlds[index], *p))
+                .collect()
+        };
+        let points = fit_to_box(&deformed, min, max, size.0, size.1);
+        let uvs: Option<&[[f32; 2]]> =
+            if geometry.uv.len() >= geometry.positions.len() && !geometry.uv.is_empty() {
+                Some(&geometry.uv)
+            } else {
+                None
+            };
+        let fill = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .and_then(|material| material.color_rgb565())
+            .unwrap_or(0xF800);
+        crate::texture::draw_indexed(
+            &mut pixels,
+            &points,
+            uvs,
+            &geometry.indices,
+            size.0,
+            size.1,
+            texture.as_ref(),
+            fill,
+            mdc_model::MAX_GEOMETRY_VERTICES,
+        )?;
+    }
+    Ok(BakedTexture {
+        width: size.0,
+        height: size.1,
+        rgb565: pixels,
+    })
+}
+
 /// N111: bake `frames` poses of the first skinned mesh in `model`, sampled from
 /// `animation_index` across its time span. At most 64 frames. Solid colour.
 pub fn bake_skinned_mesh(
@@ -1414,6 +1521,32 @@ mod tests {
             .rgb565
             .chunks_exact(2)
             .any(|px| px.iter().any(|b| *b != 0)));
+    }
+
+    #[test]
+    fn package_scene_render_animates_node_transforms() {
+        let mut model = two_mesh_model();
+        model.animations = vec![Animation {
+            name: "slide".into(),
+            channels: 1,
+            tracks: vec![AnimationTrack {
+                node: 1,
+                path: "translation".into(),
+                interpolation: "LINEAR".into(),
+                times: vec![0.0, 1.0],
+                values: vec![-0.6, 0.0, 0.0, 0.6, 0.0, 0.0],
+            }],
+        }];
+        let package = crate::mesh_package_with_texture(
+            &model,
+            &mdc_model::RendererCapability::full_3d(),
+            None,
+        )
+        .unwrap();
+        let bind = render_package_scene(&package.package, 0.0, (24, 24)).unwrap();
+        let posed = render_package_scene(&package.package, 1.0, (24, 24)).unwrap();
+        assert_eq!((bind.width, bind.height), (24, 24));
+        assert_ne!(bind.rgb565, posed.rgb565, "node animation moved a mesh");
     }
 
     #[test]

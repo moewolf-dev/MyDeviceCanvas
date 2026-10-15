@@ -2,6 +2,17 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.32] — Device mesh scene rendering (N193–N202)
+
+### Added
+
+- `mdc-bake::render_package_scene` renders a `DevicePackage`'s whole mesh scene
+  at a time (node animation, skinning, material colour/texture) (N193, N194)
+- `FakeDevice` keeps the accepted package and renders it as a multi-mesh scene at
+  its clock, so `MIRRORFRAME` carries a device-rendered animated mesh (N195, N196)
+- `mdc package` reports node/mesh/animation counts (N197)
+- Animated mesh-package mirror fixture and device mesh render soak (N198, N199)
+
 ## [0.1.31] — Multi-mesh scene render (N183–N192)
 
 ### Added

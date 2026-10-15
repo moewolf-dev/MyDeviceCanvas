@@ -966,6 +966,8 @@ pub struct FakeDevice {
     atlas: Option<mdc_model::AtlasBlob>,
     /// N178: the accepted mesh package's RGB565 texture, if any.
     texture: Option<mdc_model::TextureBlob>,
+    /// N195: the accepted mesh package, rendered as a multi-mesh scene.
+    mesh_scene: Option<mdc_model::DevicePackage>,
     /// N178: UVs for the accepted geometry preview, parallel to `preview_xy`.
     preview_uv: Vec<[f32; 2]>,
     /// N176/N178: fill colour for the preview when no texture is sampled.
@@ -1026,6 +1028,7 @@ impl FakeDevice {
             atlas_sprite: (0, 0),
             atlas: None,
             texture: None,
+            mesh_scene: None,
             preview_uv: Vec::new(),
             preview_color: 0xF800,
             anim_clip: None,
@@ -1533,6 +1536,8 @@ impl FakeDevice {
                 }
                 self.atlas = package.package.atlas.clone();
                 self.texture = package.package.texture.clone();
+                // N195: keep the whole package for multi-mesh device rendering.
+                self.mesh_scene = Some(package.package.clone());
                 // N169: prefer full geometry when the package carries it; project
                 // it into the framebuffer so the device renders the whole mesh.
                 let mesh = package.package.meshes.first();
@@ -1659,11 +1664,23 @@ impl FakeDevice {
     /// Draw the accepted mesh preview as a red triangle fan. Returns true when
     /// at least three points were available.
     pub fn render_preview(&mut self) -> bool {
+        let width = u32::from(self.profile.width);
+        let height = u32::from(self.profile.height);
+        // N196: a mesh package is rendered as a whole scene at the device clock.
+        if let Some(scene) = self.mesh_scene.clone() {
+            if scene.meshes.iter().any(|m| m.geometry.is_some()) {
+                let seconds = self.clock.tick as f32 / 1000.0;
+                if let Ok(frame) = mdc_bake::render_package_scene(&scene, seconds, (width, height))
+                {
+                    let len = frame.rgb565.len().min(self.pixels.len());
+                    self.pixels[..len].copy_from_slice(&frame.rgb565[..len]);
+                    return true;
+                }
+            }
+        }
         if self.preview_xy.len() < 3 {
             return false;
         }
-        let width = u32::from(self.profile.width);
-        let height = u32::from(self.profile.height);
         let points = self.preview_xy.clone();
         let indices = self.preview_indices.clone();
         // N178: sample the package texture when the geometry carries UVs.
@@ -1933,8 +1950,14 @@ impl FakeDevice {
         if !self.profile.mirror {
             return Err(SimError::Protocol("mirror capability disabled".into()));
         }
-        // N72/N81: when a clip runs, render it; otherwise render the scene.
-        if self.anim_clip.is_some() {
+        // N196: a mesh package renders as a scene; else the clip; else the scene.
+        if self
+            .mesh_scene
+            .as_ref()
+            .is_some_and(|s| s.meshes.iter().any(|m| m.geometry.is_some()))
+        {
+            let _ = self.render_preview();
+        } else if self.anim_clip.is_some() {
             let _ = self.render_atlas_frame();
         } else if self.scene.is_some() {
             let _ = self.render_scene();

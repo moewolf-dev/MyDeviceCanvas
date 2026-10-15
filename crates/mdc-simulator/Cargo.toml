@@ -10,5 +10,6 @@ mdc-protocol = { path = "../mdc-protocol" }
 mdc-transport = { path = "../mdc-transport" }
 mdc-core = { path = "../mdc-core" }
 mdc-model = { path = "../mdc-model" }
+mdc-bake = { path = "../mdc-bake" }
 thiserror.workspace = true
 serde.workspace = true

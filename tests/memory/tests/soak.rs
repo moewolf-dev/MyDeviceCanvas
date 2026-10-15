@@ -102,6 +102,95 @@ fn mirror_receiver_soak_is_bounded() {
 }
 
 #[test]
+fn device_mesh_scene_render_soak_is_bounded() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_model::{Animation, AnimationTrack, Material, Mesh, MeshGeometry, Model, Node};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let mesh = Mesh {
+        name: "quad".into(),
+        vertices: 4,
+        indices: 6,
+        material: Some(0),
+        geometry: Some(MeshGeometry {
+            positions: vec![
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uv: Vec::new(),
+            skin_joints: Vec::new(),
+            skin_weights: Vec::new(),
+        }),
+        ..Mesh::default()
+    };
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![
+            Node {
+                name: "root".into(),
+                children: vec![1],
+                ..Node::default()
+            },
+            Node {
+                name: "body".into(),
+                mesh: Some(0),
+                ..Node::default()
+            },
+        ],
+        meshes: vec![mesh],
+        materials: vec![Material {
+            name: "red".into(),
+            texture: None,
+            color: Some([255, 0, 0]),
+        }],
+        animations: vec![Animation {
+            name: "slide".into(),
+            channels: 1,
+            tracks: vec![AnimationTrack {
+                node: 1,
+                path: "translation".into(),
+                interpolation: "LINEAR".into(),
+                times: vec![0.0, 1.0],
+                values: vec![-0.6, 0.0, 0.0, 0.6, 0.0, 0.0],
+            }],
+        }],
+        ..Model::default()
+    };
+    let package = mdc_bake::mesh_package_with_texture(
+        &model,
+        &mdc_model::RendererCapability::full_3d(),
+        None,
+    )
+    .unwrap();
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .install_package(&package.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    let bytes = device.framebuffer().len();
+    for _ in 0..100 {
+        device.clock.advance(50);
+        device.emit_mirror_frame().unwrap();
+        session.poll().unwrap();
+        let _ = session.take_mirror_frame();
+        assert_eq!(
+            device.framebuffer().len(),
+            bytes,
+            "framebuffer stays bounded"
+        );
+    }
+}
+
+#[test]
 fn multi_mesh_scene_render_soak_is_bounded() {
     use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};
 

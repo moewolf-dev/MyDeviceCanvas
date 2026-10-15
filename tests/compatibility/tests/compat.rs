@@ -682,6 +682,108 @@ fn full_geometry_reaches_the_device_and_renders() {
 }
 
 #[test]
+fn device_renders_an_animated_mesh_package_scene() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_model::{Animation, AnimationTrack, Material, Mesh, MeshGeometry, Model, Node};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let quad = |name: &str, material: usize| Mesh {
+        name: name.into(),
+        vertices: 4,
+        indices: 6,
+        material: Some(material),
+        geometry: Some(MeshGeometry {
+            positions: vec![
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uv: Vec::new(),
+            skin_joints: Vec::new(),
+            skin_weights: Vec::new(),
+        }),
+        ..Mesh::default()
+    };
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![
+            Node {
+                name: "root".into(),
+                children: vec![1],
+                ..Node::default()
+            },
+            Node {
+                name: "body".into(),
+                mesh: Some(0),
+                translation: [-0.6, 0.0, 0.0],
+                ..Node::default()
+            },
+        ],
+        meshes: vec![quad("body", 0)],
+        materials: vec![Material {
+            name: "red".into(),
+            texture: None,
+            color: Some([255, 0, 0]),
+        }],
+        animations: vec![Animation {
+            name: "slide".into(),
+            channels: 1,
+            tracks: vec![AnimationTrack {
+                node: 1,
+                path: "translation".into(),
+                interpolation: "LINEAR".into(),
+                times: vec![0.0, 1.0],
+                values: vec![-0.6, 0.0, 0.0, 0.6, 0.0, 0.0],
+            }],
+        }],
+        ..Model::default()
+    };
+    let package = mdc_bake::mesh_package_with_texture(
+        &model,
+        &mdc_model::RendererCapability::full_3d(),
+        None,
+    )
+    .unwrap();
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .install_package(&package.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.package_ready());
+    session.start_mirror("main", "full-frame", 30).unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    device.clock.advance(0);
+    device.emit_mirror_frame().unwrap();
+    session.poll().unwrap();
+    let first = session
+        .take_mirror_frame()
+        .expect("first mirror frame")
+        .bytes;
+    device.clock.advance(1000);
+    device.emit_mirror_frame().unwrap();
+    session.poll().unwrap();
+    let second = session
+        .take_mirror_frame()
+        .expect("second mirror frame")
+        .bytes;
+    assert_ne!(
+        first, second,
+        "the node animation moved the mesh between frames"
+    );
+    assert!(first.iter().any(|b| *b != 0), "the device drew something");
+}
+
+#[test]
 fn multi_mesh_scene_bakes_and_reaches_a_device() {
     use mdc_core::{ConnectionState, Session};
     use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};

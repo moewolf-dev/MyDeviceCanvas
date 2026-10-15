@@ -451,6 +451,9 @@ fn cmd_package(
             "target": package.manifest.target,
             "mode": package.manifest.mode,
             "textured": textured,
+            "nodes": package.package.nodes.len(),
+            "meshes": package.package.meshes.len(),
+            "animations": package.package.animations.len(),
             "package_bytes": bytes.len(),
             "output": out,
         }))?

@@ -508,6 +508,7 @@ dependencies = [
 name = "mdc-simulator"
 version = "0.1.0"
 dependencies = [
+ "mdc-bake",
  "mdc-core",
  "mdc-model",
  "mdc-protocol",

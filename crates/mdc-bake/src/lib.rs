@@ -20,8 +20,8 @@ pub use skin::{
     bake_scene_frames, bake_scene_to_package, bake_skinned_mesh, bake_skinned_to_package,
     bake_textured_mesh, bake_textured_to_package, mat4_from_trs, mat4_identity, mat4_mul,
     morph_weights_at, node_world_matrices, pose_world_matrices, render_frame_at,
-    render_geometry_at, render_package_mesh, render_scene_at, sample_channel, skin_arrays,
-    skin_points, skin_preview, transform_point, Mat4,
+    render_geometry_at, render_package_mesh, render_package_scene, render_scene_at, sample_channel,
+    skin_arrays, skin_points, skin_preview, transform_point, Mat4,
 };
 pub use texture::TextureMap;
 
