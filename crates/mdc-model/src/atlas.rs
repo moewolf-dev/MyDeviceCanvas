@@ -135,6 +135,7 @@ mod tests {
             fade_in_sec: 0.0,
             fade_out_sec: 0.0,
             looping: true,
+            curves: Vec::new(),
         }
     }
 

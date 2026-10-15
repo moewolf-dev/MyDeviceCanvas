@@ -565,6 +565,7 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         fade_in_sec: 0.0,
         fade_out_sec: 0.0,
         looping: true,
+        curves: Vec::new(),
     }];
     let package = mdc_bake::bake_sprites(
         &sources,
@@ -717,6 +718,70 @@ fn cmd_bake_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "files": written,
         }))?
     );
+    Ok(())
+}
+
+/// N217: parse a Live2D `motion3.json` and sample its parameter curves.
+fn cmd_motion(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut file: Option<String> = None;
+    let mut param: Option<String> = None;
+    let mut samples: u32 = 8;
+    let mut iter = args.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--param" => param = iter.next().cloned(),
+            "--samples" => samples = iter.next().and_then(|v| v.parse().ok()).unwrap_or(samples),
+            other => file = Some(other.to_string()),
+        }
+    }
+    let file = file.ok_or("motion requires a motion3.json file")?;
+    let bytes = std::fs::read(&file)?;
+    let info = mdc_model::Live2DImporter.import_motion(
+        &file,
+        &bytes,
+        &mdc_model::ImportLimits::default(),
+    )?;
+    let output = match &param {
+        Some(id) => {
+            let curve = info
+                .curves
+                .iter()
+                .find(|c| &c.id == id)
+                .ok_or_else(|| format!("motion has no curve {id}"))?;
+            let duration = info.duration_sec.max(0.0) as f32;
+            let values: Vec<f32> = (0..samples.max(1))
+                .map(|i| {
+                    let t = if samples > 1 {
+                        duration * (i as f32) / ((samples - 1) as f32)
+                    } else {
+                        0.0
+                    };
+                    curve.sample(t)
+                })
+                .collect();
+            serde_json::json!({
+                "file": file,
+                "name": info.name,
+                "param": id,
+                "duration": info.duration_sec,
+                "fps": info.fps,
+                "samples": values,
+            })
+        }
+        None => serde_json::json!({
+            "file": file,
+            "name": info.name,
+            "duration": info.duration_sec,
+            "fps": info.fps,
+            "looping": info.looping,
+            "curves": info.curves.iter().map(|c| serde_json::json!({
+                "id": c.id,
+                "target": c.target,
+                "segments": c.segments.len(),
+            })).collect::<Vec<_>>(),
+        }),
+    };
+    println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
@@ -2312,7 +2377,8 @@ authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--wr
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg]|install-package <file.mdcpkg>|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
-render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] --out f.ppm|\
+render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] --out f.ppm|\
+motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|raster-demo|preview-mesh|inspect [--watch --count N --interval MS]"
     );
@@ -2457,6 +2523,7 @@ fn main() {
         Some("raster-demo") => cmd_raster_demo(),
         Some("preview-mesh") => cmd_preview_mesh(),
         Some("bake-mesh") => cmd_bake_mesh(&args[1..]),
+        Some("motion") => cmd_motion(&args[1..]),
         Some("render-mesh") => cmd_render_mesh(&args[1..]),
         Some("render-package") => cmd_render_package(&args[1..]),
         Some("switch-demo") => {
@@ -3341,6 +3408,36 @@ mod tests {
         assert!(std::fs::read(&out)
             .unwrap()
             .starts_with(b"P6\n16 16\n255\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn motion_command_samples_a_curve() {
+        let dir = std::env::temp_dir().join(format!("mdc-cli-motion-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("m1.motion3.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "Version": 3,
+                "Meta": {"Duration": 1.0, "Fps": 30.0},
+                "Curves": [
+                    {"Target": "Parameter", "Id": "ParamAngleX",
+                     "Segments": [0.0, 0.0, 1.0, 10.0]}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        cmd_motion(&[
+            path.to_string_lossy().into_owned(),
+            "--param".to_string(),
+            "ParamAngleX".to_string(),
+            "--samples".to_string(),
+            "3".to_string(),
+        ])
+        .unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

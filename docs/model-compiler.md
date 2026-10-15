@@ -83,10 +83,16 @@ A decode bomb is refused before any decode buffer is created.
   become animations and expressions become `expression:<Name>` animations.
 - The `.moc3` is not decoded, so atlas geometry (sprite sizes) is 0 and a weak
   backend simply plays the author sprites.
-- `import_motion` reads one `motion3.json` (`Meta` duration/fps/loop/fade + curve
-  count) into `MotionInfo`; `import_bundle` compiles the manifest together with
-  the supplied motions, replacing the per-group stubs with one animation per
+- `import_motion` reads one `motion3.json` (`Meta` duration/fps/loop/fade +
+  curve count) into `MotionInfo`; `import_bundle` compiles the manifest together
+  with the supplied motions, replacing the per-group stubs with one animation per
   motion carrying its real curve count. Motion keyframes are not expanded.
+- N213: `import_motion` also parses each `Curves[].Segments` stream (bounded to
+  `MAX_MOTION_SEGMENTS`) into `MotionInfo.curves`. `MotionCurve::sample(t)`
+  evaluates linear/step/inverse-step/bezier segments and `MotionInfo::value_at`
+  looks a parameter up by id — see [live2d-motion.md](live2d-motion.md). The
+  `.moc3` binary is still not decoded, so this is a scalar parameter value, not a
+  mesh deformation.
 
 ## Target backends
 

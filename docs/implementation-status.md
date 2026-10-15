@@ -47,6 +47,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 37 | N183–N192: multi-mesh scene render, `bake_scene_*`, `render_package_mesh`, CLI whole-scene render, fixtures + soak | sim-verified |
 | 38 | N193–N202: `render_package_scene`, device renders an animated mesh package scene through the mirror, fixtures + soak | sim-verified |
 | 39 | N203–N212: texture `Filter` (nearest/bilinear), material-colour tint (bake + device), `render-mesh --filter`, fixtures + soak | sim-verified |
+| 40 | N213–N222: Live2D `motion3.json` curve parse + sample, `mdc motion`, docs, fixtures + soak | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 

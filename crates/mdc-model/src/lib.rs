@@ -26,7 +26,10 @@ pub use ir::{
     Animation, AnimationTrack, ImportLimits, Layer, Material, Mesh, MeshGeometry, Model,
     ModelError, Node, Skeleton, Sprite, Texture, MAX_GEOMETRY_INDICES, MAX_GEOMETRY_VERTICES,
 };
-pub use live2d::{ImportedBundle, Live2DBundle, Live2DImporter, MotionInfo};
+pub use live2d::{
+    sample_segments, ImportedBundle, Live2DBundle, Live2DImporter, MotionCurve, MotionInfo,
+    MAX_MOTION_SEGMENTS,
+};
 pub use optimizer::{plan as plan_optimization, OptimizerPlan, TexturePlan};
 pub use package::{
     compile_to_package, fnv1a, MdcPackage, PackageAssembler, PackageManifest, MAX_PACKAGE_BYTES,

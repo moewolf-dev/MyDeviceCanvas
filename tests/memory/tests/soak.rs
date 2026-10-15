@@ -102,6 +102,20 @@ fn mirror_receiver_soak_is_bounded() {
 }
 
 #[test]
+fn motion_curve_sampling_soak_is_bounded() {
+    // A 1s linear ramp sampled 100k times: deterministic, allocation-free.
+    let segments = [0.0, 0.0, 1.0, 10.0];
+    for i in 0..100_000u32 {
+        let t = (i % 1001) as f32 / 1000.0;
+        let v = mdc_model::sample_segments(&segments, t);
+        assert!((0.0..=10.0).contains(&v), "sample in range ({v})");
+        if t >= 1.0 {
+            assert_eq!(v, 10.0, "endpoint held");
+        }
+    }
+}
+
+#[test]
 fn linear_filter_render_soak_is_bounded() {
     use mdc_model::{Mesh, MeshGeometry, Model, Node};
 
@@ -747,6 +761,7 @@ fn bake_soak_stays_bounded() {
         fade_in_sec: 0.0,
         fade_out_sec: 0.0,
         looping: true,
+        curves: Vec::new(),
     };
     let mut bytes = 0usize;
     for _ in 0..200 {
@@ -789,6 +804,7 @@ fn baked_package_soak_is_bounded() {
         fade_in_sec: 0.0,
         fade_out_sec: 0.0,
         looping: true,
+        curves: Vec::new(),
     };
     let mut size = 0usize;
     for _ in 0..100 {

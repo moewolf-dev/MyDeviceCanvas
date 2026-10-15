@@ -35,6 +35,127 @@ pub struct MotionInfo {
     pub fade_in_sec: f64,
     pub fade_out_sec: f64,
     pub looping: bool,
+    /// N213: the parsed `Curves` (parameter/part animation). Empty for a
+    /// metadata-only motion.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub curves: Vec<MotionCurve>,
+}
+
+/// N213: one Live2D `motion3.json` curve. `segments` is the raw Cubism stream:
+/// a start value followed by typed segments (0 linear, 1 bezier, 2 step,
+/// 3 inverse-step). The binary `.moc3` parameter-to-deformer binding is out of
+/// scope; the curve is sampled as a scalar parameter value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MotionCurve {
+    /// `Parameter` or `Model`.
+    pub target: String,
+    /// Parameter id (e.g. `ParamAngleX`).
+    pub id: String,
+    pub segments: Vec<f32>,
+}
+
+/// N213: the most segments kept per curve (a bounded preview, not an asset).
+pub const MAX_MOTION_SEGMENTS: usize = 4096;
+
+impl MotionCurve {
+    /// N214: sample the curve at `time` (seconds).
+    pub fn sample(&self, time: f32) -> f32 {
+        sample_segments(&self.segments, time)
+    }
+}
+
+/// N214: evaluate a Cubism segment stream. `LINEAR` interpolates, `STEP` holds
+/// the previous value, `INV_STEP` jumps to the next, and `BEZIER` solves the
+/// cubic in time by bisection then evaluates it. Past the last segment the final
+/// value is held.
+pub fn sample_segments(segments: &[f32], time: f32) -> f32 {
+    let mut value = *segments.first().unwrap_or(&0.0);
+    if segments.len() < 3 || time <= 0.0 {
+        return value;
+    }
+    let mut start_time = 0.0f32;
+    let mut pos = 1usize;
+    while pos < segments.len() {
+        let kind = segments[pos] as i32;
+        pos += 1;
+        let (c1t, c1v, c2t, c2v, end_time, end_value) = match kind {
+            0 | 2 | 3 => {
+                let (Some(t), Some(v)) = (segments.get(pos), segments.get(pos + 1)) else {
+                    break;
+                };
+                pos += 2;
+                (0.0, 0.0, 0.0, 0.0, *t, *v)
+            }
+            1 => {
+                let (Some(a), Some(b), Some(c), Some(d), Some(t), Some(v)) = (
+                    segments.get(pos),
+                    segments.get(pos + 1),
+                    segments.get(pos + 2),
+                    segments.get(pos + 3),
+                    segments.get(pos + 4),
+                    segments.get(pos + 5),
+                ) else {
+                    break;
+                };
+                pos += 6;
+                (*a, *b, *c, *d, *t, *v)
+            }
+            _ => break,
+        };
+        if time <= end_time {
+            let span = end_time - start_time;
+            return match kind {
+                0 if span > 0.0 => value + (end_value - value) * (time - start_time) / span,
+                1 => sample_bezier(
+                    start_time, value, c1t, c1v, c2t, c2v, end_time, end_value, time,
+                ),
+                3 => end_value,
+                _ => value,
+            };
+        }
+        value = end_value;
+        start_time = end_time;
+    }
+    value
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sample_bezier(
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    x3: f32,
+    y3: f32,
+    time: f32,
+) -> f32 {
+    let cubic = |a: f32, b: f32, c: f32, d: f32, s: f32| {
+        let u = 1.0 - s;
+        u * u * u * a + 3.0 * u * u * s * b + 3.0 * u * s * s * c + s * s * s * d
+    };
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..24 {
+        let mid = (lo + hi) / 2.0;
+        if cubic(x0, x1, x2, x3, mid) < time {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let s = (lo + hi) / 2.0;
+    cubic(y0, y1, y2, y3, s)
+}
+
+impl MotionInfo {
+    /// N215: sample the named parameter/part curve, if present.
+    pub fn value_at(&self, id: &str, time: f32) -> Option<f32> {
+        self.curves
+            .iter()
+            .find(|curve| curve.id == id)
+            .map(|curve| curve.sample(time))
+    }
 }
 
 impl MotionInfo {
@@ -222,6 +343,33 @@ impl Live2DImporter {
                 limits.max_nodes
             )));
         }
+        // N213: parse the segment streams (bounded).
+        let mut parsed = Vec::with_capacity(curves.len());
+        for curve in curves {
+            let segments: Vec<f32> = curve
+                .get("Segments")
+                .and_then(Value::as_array)
+                .map(|list| {
+                    list.iter()
+                        .take(MAX_MOTION_SEGMENTS)
+                        .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+                        .collect()
+                })
+                .unwrap_or_default();
+            parsed.push(MotionCurve {
+                target: curve
+                    .get("Target")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Parameter")
+                    .to_string(),
+                id: curve
+                    .get("Id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                segments,
+            });
+        }
         let meta = doc.get("Meta");
         let number = |key: &str| meta.and_then(|m| m.get(key)).and_then(Value::as_f64);
         let duration_sec = number("Duration").unwrap_or(0.0);
@@ -245,6 +393,7 @@ impl Live2DImporter {
                 .and_then(|m| m.get("Loop"))
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            curves: parsed,
         })
     }
 
@@ -524,5 +673,48 @@ mod tests {
             .unwrap();
         assert_eq!(imported.model.meta.get("physics.settings").unwrap(), "2");
         assert_eq!(imported.model.meta.get("pose.groups").unwrap(), "1");
+    }
+
+    #[test]
+    fn motion_curves_parse_and_sample() {
+        let motion = serde_json::to_vec(&json!({
+            "Version": 3,
+            "Meta": {"Duration": 1.0, "Fps": 30.0, "Loop": true},
+            "Curves": [
+                {"Target": "Parameter", "Id": "ParamAngleX", "Segments": [0.0, 0.0, 1.0, 10.0]},
+                {"Target": "Parameter", "Id": "ParamEyeLOpen", "Segments": [0.0, 2.0, 1.0, 1.0]}
+            ]
+        }))
+        .unwrap();
+        let info = Live2DImporter
+            .import_motion("m1", &motion, &ImportLimits::default())
+            .unwrap();
+        assert_eq!(info.curves.len(), 2);
+        assert_eq!(info.curves[0].id, "ParamAngleX");
+
+        assert_eq!(info.value_at("ParamAngleX", 0.5), Some(5.0));
+        assert_eq!(info.value_at("ParamAngleX", -1.0), Some(0.0));
+        assert_eq!(info.value_at("ParamAngleX", 2.0), Some(10.0));
+        // A STEP segment holds the previous value until its end.
+        assert_eq!(info.value_at("ParamEyeLOpen", 0.5), Some(0.0));
+        assert_eq!(info.value_at("ParamEyeLOpen", 1.5), Some(1.0));
+        assert_eq!(info.value_at("nope", 0.0), None);
+    }
+
+    #[test]
+    fn segment_sampling_handles_linear_step_and_bezier() {
+        // Linear 0 -> 10 over one second.
+        assert_eq!(sample_segments(&[0.0, 0.0, 1.0, 10.0], 0.5), 5.0);
+        // Step holds, inverse-step jumps.
+        assert_eq!(sample_segments(&[0.0, 2.0, 1.0, 7.0], 0.5), 0.0);
+        assert_eq!(sample_segments(&[0.0, 2.0, 1.0, 7.0], 1.5), 7.0);
+        assert_eq!(sample_segments(&[0.0, 3.0, 1.0, 7.0], 0.5), 7.0);
+        // Bezier: hits both endpoints and is monotonic in between.
+        let bezier = [0.0, 1.0, 0.25, 0.0, 0.75, 10.0, 1.0, 10.0];
+        assert_eq!(sample_segments(&bezier, 0.0), 0.0);
+        assert_eq!(sample_segments(&bezier, 1.0), 10.0);
+        let mid = sample_segments(&bezier, 0.5);
+        assert!(mid > 0.0 && mid < 10.0, "bezier mid {mid}");
+        assert!(mid <= sample_segments(&bezier, 0.75));
     }
 }

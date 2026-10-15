@@ -682,6 +682,22 @@ fn full_geometry_reaches_the_device_and_renders() {
 }
 
 #[test]
+fn live2d_motion_curve_sampling_is_deterministic() {
+    use mdc_model::sample_segments;
+    // Malformed / empty streams never panic and never allocate unboundedly.
+    assert_eq!(sample_segments(&[], 0.5), 0.0);
+    assert_eq!(sample_segments(&[3.0], 0.5), 3.0);
+    // A truncated bezier falls back to the running value.
+    let truncated = [0.0, 1.0, 0.25, 0.0];
+    assert_eq!(sample_segments(&truncated, 0.5), 0.0);
+    // Two linear segments chain: 0 -> 10 over 1s, then hold 10.
+    let chained = [0.0, 0.0, 0.5, 10.0, 0.0, 1.0, 10.0];
+    assert_eq!(sample_segments(&chained, 0.25), 5.0);
+    assert_eq!(sample_segments(&chained, 0.75), 10.0);
+    assert_eq!(sample_segments(&chained, 5.0), 10.0);
+}
+
+#[test]
 fn material_colour_tints_the_package_texture_on_the_device() {
     use mdc_core::{ConnectionState, Session};
     use mdc_model::{DevicePackage, Material, Mesh, MeshGeometry, Node, PackageMode, TextureBlob};

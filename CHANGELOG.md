@@ -2,6 +2,17 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.34] — Live2D motion3 curves (N213–N222)
+
+### Added
+
+- `motion3.json` `Curves[].Segments` parse into `MotionInfo.curves`
+  (`MotionCurve`, bounded to `MAX_MOTION_SEGMENTS`) (N213)
+- `MotionCurve::sample` evaluates linear/step/inverse-step/bezier segments;
+  `MotionInfo::value_at(id, time)` (N214, N215)
+- `mdc motion <motion3.json> [--param ID] [--samples N]` (N217)
+- `docs/live2d-motion.md`; curve unit tests, a compat fixture and a sampling soak (N218–N221)
+
 ## [0.1.33] — Texture filtering and material tint (N203–N212)
 
 ### Added
