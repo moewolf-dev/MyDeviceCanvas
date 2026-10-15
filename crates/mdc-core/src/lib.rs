@@ -323,6 +323,15 @@ impl FrameAssembler {
             Err(TransactionNack::Incomplete)
         }
     }
+    /// N264: the received byte ranges (for a dirty-region patch).
+    pub fn ranges(&self) -> &[(usize, usize)] {
+        &self.ranges
+    }
+    /// N264: the received ranges and the staging buffer without requiring full
+    /// coverage. Returns the bitmap of received ranges plus the staging bytes.
+    pub fn into_ranges(self) -> (Vec<(usize, usize)>, Vec<u8>) {
+        (self.ranges, self.staging)
+    }
 }
 pub fn validate_tile_base(tile: &Tile, current_frame_id: u64) -> Result<(), TransactionNack> {
     if tile.base_frame_id == current_frame_id {
@@ -679,6 +688,10 @@ pub struct Session<T: Transport> {
     mirror_inbox: Option<MirrorFrame>,
     /// In-progress chunked mirror frame: (surface, w, h, assembler).
     mirror_assembler: Option<(String, u16, u16, FrameAssembler)>,
+    /// N264: the negotiated mirror mode ("full-frame" | "dirty-region").
+    mirror_mode: String,
+    /// N264: the last complete mirror frame, patched by dirty-region updates.
+    mirror_last: Option<(String, u16, u16, Vec<u8>)>,
     mirror_frames: u64,
     mirror_dropped: u64,
     mirror_last_frame_id: u64,
@@ -728,6 +741,8 @@ impl<T: Transport> Session<T> {
             manager: None,
             mirror_inbox: None,
             mirror_assembler: None,
+            mirror_mode: String::new(),
+            mirror_last: None,
             mirror_frames: 0,
             mirror_dropped: 0,
             mirror_last_frame_id: 0,
@@ -1286,6 +1301,9 @@ impl<T: Transport> Session<T> {
             negotiate_mirror(&device.capabilities, surface_id, mode, max_fps, "RGB565")
                 .ok_or(CoreError::Unsupported)?
         };
+        // N264: remember the negotiated mode so dirty-region frames are patched.
+        self.mirror_mode = command.mode.clone();
+        self.mirror_last = None;
         let payload = encode_control(&command).map_err(|e| CoreError::Protocol(e.to_string()))?;
         self.write_packet(MessageType::MirrorCtrl, payload)
     }
@@ -1306,6 +1324,8 @@ impl<T: Transport> Session<T> {
             format: "RGB565".into(),
         };
         let payload = encode_control(&command).map_err(|e| CoreError::Protocol(e.to_string()))?;
+        self.mirror_mode.clear();
+        self.mirror_last = None;
         self.write_packet(MessageType::MirrorCtrl, payload)
     }
     /// Form B: upload a compiled runtime package to the device (N23). The bytes
@@ -1503,20 +1523,53 @@ impl<T: Transport> Session<T> {
                 }
             }
             FramePayload::Commit { frame_id } => {
-                let finished = match self.mirror_assembler.take() {
+                let taken = match self.mirror_assembler.take() {
                     Some((surface_id, width, height, assembler))
                         if assembler.frame_id == frame_id =>
                     {
-                        assembler
-                            .commit()
-                            .ok()
-                            .map(|bytes| (surface_id, width, height, bytes))
+                        Some((surface_id, width, height, assembler))
                     }
                     _ => None,
                 };
-                match finished {
-                    Some((surface_id, width, height, bytes)) => {
-                        self.store_mirror_frame(surface_id, frame_id, width, height, bytes)?;
+                match taken {
+                    Some((surface_id, width, height, assembler)) => {
+                        let expected = assembler.expected_len;
+                        let (ranges, staging) = assembler.into_ranges();
+                        let complete = ranges.len() == 1 && ranges[0] == (0, expected);
+                        if self.mirror_mode == "dirty-region" {
+                            let base = self.mirror_last.as_ref().filter(|(s, lw, lh, last)| {
+                                *s == surface_id
+                                    && *lw == width
+                                    && *lh == height
+                                    && last.len() == expected
+                            });
+                            match base {
+                                Some((_, _, _, last)) => {
+                                    let mut buffer = last.clone();
+                                    for (start, end) in &ranges {
+                                        if *end <= buffer.len() && *end <= staging.len() {
+                                            buffer[*start..*end]
+                                                .copy_from_slice(&staging[*start..*end]);
+                                        }
+                                    }
+                                    self.store_mirror_frame(
+                                        surface_id, frame_id, width, height, buffer,
+                                    )?;
+                                }
+                                None if complete => {
+                                    self.store_mirror_frame(
+                                        surface_id, frame_id, width, height, staging,
+                                    )?;
+                                }
+                                None => {
+                                    self.mirror_dropped = self.mirror_dropped.saturating_add(1);
+                                }
+                            }
+                        } else if complete {
+                            self.store_mirror_frame(surface_id, frame_id, width, height, staging)?;
+                        } else {
+                            self.mirror_dropped = self.mirror_dropped.saturating_add(1);
+                        }
                     }
                     None => {
                         self.mirror_dropped = self.mirror_dropped.saturating_add(1);
@@ -1562,6 +1615,8 @@ impl<T: Transport> Session<T> {
         }
         self.mirror_frames = self.mirror_frames.saturating_add(1);
         self.mirror_last_frame_id = frame_id;
+        // N264: keep the frame so a later dirty-region update can patch it.
+        self.mirror_last = Some((surface_id.clone(), width, height, bytes.clone()));
         let notify_surface = surface_id.clone();
         self.mirror_inbox = Some(MirrorFrame {
             surface_id,
@@ -3742,6 +3797,59 @@ mod tests {
         );
         assert_eq!(session.stop_mirror("main"), Err(CoreError::Unsupported));
         assert!(dev.read().unwrap().is_none());
+    }
+
+    #[test]
+    fn dirty_region_mirror_patches_the_last_frame() {
+        let (host, mut dev) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        let hello = Packet::decode(&dev.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        let mut caps = mirror_caps();
+        caps.mirror.mode.push("dirty-region".into());
+        write_caps(&mut dev, hello.request_id, &caps);
+        session.poll().unwrap();
+        session.start_mirror("main", "dirty-region", 30).unwrap();
+        let ctrl = Packet::decode(&dev.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        let cmd: mdc_protocol::MirrorCommand = mdc_protocol::decode_control(&ctrl.payload).unwrap();
+        assert_eq!(cmd.mode, "dirty-region");
+
+        // Full base frame (2x2, all 0x11).
+        dev.write(&mirror_packet(
+            MessageType::MirrorFrame,
+            encode_frame_payload("main", 1, 2, 2, &[0x11; 8]).unwrap(),
+        ))
+        .unwrap();
+        session.poll().unwrap();
+        assert_eq!(session.take_mirror_frame().unwrap().bytes, vec![0x11; 8]);
+
+        // Dirty update: only the first row (offsets 0..4) changes to 0x22.
+        dev.write(&mirror_packet(
+            MessageType::MirrorFrame,
+            mdc_protocol::encode_frame_begin("main", 2, 2, 2, 8).unwrap(),
+        ))
+        .unwrap();
+        dev.write(&mirror_packet(
+            MessageType::MirrorFrame,
+            mdc_protocol::encode_frame_chunk(2, 0, &[0x22; 4]),
+        ))
+        .unwrap();
+        dev.write(&mirror_packet(
+            MessageType::MirrorFrame,
+            mdc_protocol::encode_frame_commit(2),
+        ))
+        .unwrap();
+        session.poll().unwrap();
+        let patched = session.take_mirror_frame().expect("patched frame");
+        assert_eq!(
+            patched.bytes,
+            vec![0x22, 0x22, 0x22, 0x22, 0x11, 0x11, 0x11, 0x11]
+        );
+        assert_eq!(session.mirror_frames_received(), 2);
     }
 
     #[test]

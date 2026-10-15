@@ -102,6 +102,59 @@ fn mirror_receiver_soak_is_bounded() {
 }
 
 #[test]
+fn dirty_region_mirror_soak_is_bounded() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_protocol::SceneNode;
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .set_scene(SceneNode {
+            name: "bg".into(),
+            kind: "rect".into(),
+            rect: Some([0, 0, 4, 4]),
+            children: Vec::new(),
+            value: Some("#000000".into()),
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    session.start_mirror("main", "dirty-region", 10).unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    let bytes = device.framebuffer().len();
+    for i in 0..100 {
+        let color = if i % 2 == 0 { "#FF0000" } else { "#000000" };
+        session
+            .set_scene(SceneNode {
+                name: "bg".into(),
+                kind: "rect".into(),
+                rect: Some([0, 0, 4, 4]),
+                children: Vec::new(),
+                value: Some(color.into()),
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        device.emit_mirror_frame().unwrap();
+        session.poll().unwrap();
+        assert_eq!(
+            device.framebuffer().len(),
+            bytes,
+            "framebuffer stays bounded"
+        );
+        if let Some(frame) = session.take_mirror_frame() {
+            assert_eq!(frame.bytes.len(), bytes, "mirror frame stays bounded");
+        }
+    }
+}
+
+#[test]
 fn cubicspline_sampling_soak_is_bounded() {
     use mdc_model::AnimationTrack;
     let track = AnimationTrack {

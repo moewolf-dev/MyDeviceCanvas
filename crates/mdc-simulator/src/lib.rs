@@ -556,6 +556,35 @@ fn fit_preview(points: &[[f32; 3]], width: u32, height: u32) -> Vec<(i16, i16)> 
         .collect()
 }
 
+/// N264: byte ranges where `current` differs from `previous`, coalescing gaps
+/// smaller than `max_gap` bytes. Bounded by the frame length.
+fn changed_ranges(previous: &[u8], current: &[u8], max_gap: usize) -> Vec<(usize, usize)> {
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let len = previous.len().min(current.len());
+    let mut index = 0usize;
+    while index < len {
+        if previous[index] == current[index] {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        let mut last_diff = index;
+        let mut scan = index;
+        while scan < len {
+            if previous[scan] != current[scan] {
+                last_diff = scan;
+            } else if scan - last_diff > max_gap {
+                break;
+            }
+            scan += 1;
+        }
+        let end = last_diff + 1;
+        ranges.push((start, end));
+        index = end;
+    }
+    ranges
+}
+
 /// N80/N138: depth-first scene rasterizer; `rect` nodes fill from their colour,
 /// `group` (or unknown) nodes transform their children.
 fn fill_scene(
@@ -792,6 +821,8 @@ pub struct BoardProfile {
     /// Form B: device renders locally and mirrors frames back to the host.
     pub mirror: bool,
     pub mirror_fps: u16,
+    /// N263: advertise `dirty-region` mirroring (a weak device may prefer it).
+    pub mirror_dirty_region: bool,
     pub local_display_fps: u16,
     /// N27: local renderer capability advertised on the wire (not inferred from
     /// `mirror`). Drives the model-compiler target backend.
@@ -819,6 +850,7 @@ impl Default for BoardProfile {
             // ESP32-S3 class: Form A only; no GPU to render + mirror at once.
             mirror: false,
             mirror_fps: 0,
+            mirror_dirty_region: false,
             local_display_fps: 30,
             // MCU class: sprites only.
             renderer_sprite: true,
@@ -854,6 +886,7 @@ impl BoardProfile {
                 // Form B: a Linux board with a GPU renders and mirrors.
                 mirror: true,
                 mirror_fps: 10,
+                mirror_dirty_region: true,
                 renderer_mesh2d: true,
                 renderer_mesh3d: true,
                 renderer_skeleton: true,
@@ -870,6 +903,7 @@ impl BoardProfile {
                 color_fps: true,
                 mirror: true,
                 mirror_fps: 15,
+                mirror_dirty_region: true,
                 renderer_mesh2d: true,
                 renderer_mesh3d: true,
                 renderer_skeleton: true,
@@ -960,6 +994,10 @@ pub struct FakeDevice {
     busy_until: u64,
     /// Form B: set by a host MirrorCtrl start; emit_mirror_frame is the device side.
     mirror_active: bool,
+    /// N263: negotiated mirror mode ("full-frame" | "dirty-region").
+    mirror_mode: String,
+    /// N264: the previous mirrored frame, for dirty-region diffing (bounded).
+    mirror_prev: Vec<u8>,
     /// N23: runtime package being assembled from PACKAGE chunks.
     package_assembler: Option<mdc_model::PackageAssembler>,
     /// N23: true once a rendered-ready package was accepted.
@@ -1030,6 +1068,8 @@ impl FakeDevice {
             active_pointers: BTreeMap::new(),
             busy_until: 0,
             mirror_active: false,
+            mirror_mode: String::new(),
+            mirror_prev: Vec::new(),
             package_assembler: None,
             package_ready: false,
             config: default_config(),
@@ -1233,11 +1273,15 @@ impl FakeDevice {
             max_in_flight: 1,
             max_fps: if self.profile.color_fps { 30 } else { 0 },
             mirror: if self.profile.mirror {
-                mdc_protocol::MirrorCapability::full_frame(
+                let mut mirror = mdc_protocol::MirrorCapability::full_frame(
                     self.profile.width,
                     self.profile.height,
                     self.profile.mirror_fps,
-                )
+                );
+                if self.profile.mirror_dirty_region {
+                    mirror.mode.push("dirty-region".into());
+                }
+                mirror
             } else {
                 mdc_protocol::MirrorCapability::disabled()
             },
@@ -1494,10 +1538,14 @@ impl FakeDevice {
         match cmd.action.as_str() {
             "start" => {
                 self.mirror_active = true;
+                self.mirror_mode = cmd.mode.clone();
+                self.mirror_prev.clear();
                 self.ack(packet.request_id, self.current_frame_id, true, false)
             }
             "stop" => {
                 self.mirror_active = false;
+                self.mirror_mode.clear();
+                self.mirror_prev.clear();
                 self.ack(packet.request_id, self.current_frame_id, true, false)
             }
             other => self.reply_error(
@@ -1958,7 +2006,12 @@ impl FakeDevice {
     pub fn mirror_active(&self) -> bool {
         self.mirror_active
     }
+    /// N263: the negotiated mirror mode ("full-frame" | "dirty-region").
+    pub fn mirror_mode(&self) -> &str {
+        &self.mirror_mode
+    }
     /// Form B: device pushes the current rendered `main` pixels back to the host.
+    /// N264: in `dirty-region` mode only the changed byte ranges are chunked.
     pub fn emit_mirror_frame(&mut self) -> Result<(), SimError> {
         if !self.profile.mirror {
             return Err(SimError::Protocol("mirror capability disabled".into()));
@@ -1975,16 +2028,48 @@ impl FakeDevice {
         } else if self.scene.is_some() {
             let _ = self.render_scene();
         }
-        let payload = mdc_protocol::encode_frame_payload(
-            "main",
-            self.current_frame_id,
-            self.profile.width,
-            self.profile.height,
-            &self.pixels,
-        )
-        .map_err(|e| SimError::Protocol(e.to_string()))?;
         self.metrics.mirror_frames = self.metrics.mirror_frames.saturating_add(1);
-        self.write_packet(MessageType::MirrorFrame, 0, payload)
+        let frame_id = self.current_frame_id;
+        if self.mirror_mode == "dirty-region" && self.mirror_prev.len() == self.pixels.len() {
+            let ranges = changed_ranges(&self.mirror_prev, &self.pixels, 16);
+            let begin = mdc_protocol::encode_frame_begin(
+                "main",
+                frame_id,
+                self.profile.width,
+                self.profile.height,
+                self.pixels.len() as u32,
+            )
+            .map_err(|e| SimError::Protocol(e.to_string()))?;
+            self.write_packet(MessageType::MirrorFrame, 0, begin)?;
+            for (offset, end) in ranges {
+                let mut start = offset;
+                while start < end {
+                    let stop = (start + self.max_chunk).min(end);
+                    let chunk = mdc_protocol::encode_frame_chunk(
+                        frame_id,
+                        start as u32,
+                        &self.pixels[start..stop],
+                    );
+                    self.write_packet(MessageType::MirrorFrame, 0, chunk)?;
+                    start = stop;
+                }
+            }
+            let commit = mdc_protocol::encode_frame_commit(frame_id);
+            self.write_packet(MessageType::MirrorFrame, 0, commit)?;
+        } else {
+            let payload = mdc_protocol::encode_frame_payload(
+                "main",
+                frame_id,
+                self.profile.width,
+                self.profile.height,
+                &self.pixels,
+            )
+            .map_err(|e| SimError::Protocol(e.to_string()))?;
+            self.write_packet(MessageType::MirrorFrame, 0, payload)?;
+        }
+        self.mirror_prev.clear();
+        self.mirror_prev.extend_from_slice(&self.pixels);
+        Ok(())
     }
     fn note_refresh(&mut self) {
         if self.profile.color_fps {
@@ -3365,6 +3450,57 @@ mod tests {
         device.poll().unwrap();
         session.poll().unwrap();
         assert!(!device.mirror_active());
+    }
+
+    #[test]
+    fn dirty_region_mirror_sends_only_changed_ranges() {
+        use mdc_protocol::SceneNode;
+        let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        assert!(device.capabilities().mirror.supports_mode("dirty-region"));
+
+        session
+            .set_scene(SceneNode {
+                name: "bg".into(),
+                kind: "rect".into(),
+                rect: Some([0, 0, 4, 4]),
+                children: Vec::new(),
+                value: Some("#000000".into()),
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session.start_mirror("main", "dirty-region", 10).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.mirror_mode(), "dirty-region");
+
+        // First frame: no previous, sent in full.
+        device.emit_mirror_frame().unwrap();
+        session.poll().unwrap();
+        let first = session.take_mirror_frame().expect("first frame");
+        assert_eq!((first.width, first.height), (800, 480));
+
+        // Change one small rect; the device chunks only the changed rows.
+        session
+            .set_scene(SceneNode {
+                name: "bg".into(),
+                kind: "rect".into(),
+                rect: Some([0, 0, 4, 4]),
+                children: Vec::new(),
+                value: Some("#FF0000".into()),
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        device.emit_mirror_frame().unwrap();
+        session.poll().unwrap();
+        let second = session.take_mirror_frame().expect("patched frame");
+        assert_eq!((second.width, second.height), (800, 480));
+        assert_ne!(second.bytes, first.bytes, "the patch changed pixels");
     }
 
     #[test]

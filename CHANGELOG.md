@@ -2,6 +2,18 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.39] — Device dirty-region mirror (N263–N272)
+
+### Added
+
+- `BoardProfile.mirror_dirty_region` + device advertises `dirty-region` and
+  stores the negotiated mode (N263)
+- `FakeDevice` emits only changed byte ranges (`Begin + chunks + Commit`) in
+  dirty-region mode (N264)
+- `Session` patches dirty-region updates onto the last complete frame (N264)
+- Dirty-region device/core tests, a compat fixture and a soak (N265–N269)
+- `docs/render-topology-decision.md` §4.2
+
 ## [0.1.38] — CUBICSPLINE animation sampling (N253–N262)
 
 ### Added

@@ -148,6 +148,17 @@ still receive a baked sprite atlas, Form A). It reuses `mdc-bake` and so is not 
 separate renderer implementation; a real device would implement the same math in
 its own runtime.
 
+### 4.2 Dirty-region emission (device → host, N263/N264)
+
+When a device advertises `mirror.mode` containing `dirty-region` and the host
+negotiates it, the device compares the rendered frame to the last one it sent and
+emits `MIRRORFRAME` as `Begin + Chunk(range)… + Commit`, chunking only changed
+byte ranges (coalescing small gaps). The host `Session` keeps the last complete
+frame and patches the received ranges onto it (a dirty update with no base frame
+falls back to requiring a full frame). A `full-frame`-only host still receives
+full frames; `dirty-region` never replaces the full-frame contract. The simulator
+models this with `BoardProfile.mirror_dirty_region` (`linux-virt` / `pi4-hdmi`).
+
 ## 5. Mode selection and defaults
 - Default mode is decided by capability intersection, not by board family.
 - `full-frame` is the safe default for 3D/Live2D/mesh deformation because
