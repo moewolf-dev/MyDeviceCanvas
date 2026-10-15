@@ -55,6 +55,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 45 | N263–N272: device dirty-region mirror emission + `Session` patch, capability/mode plumbing, fixtures + soak | sim-verified |
 | 46 | N273–N282: multi-primitive geometry merge (`MeshGeometry::merge`), `Mesh.primitives`, fixtures + soak | sim-verified |
 | 47 | N283–N292: `alphaMode`/`alphaCutoff` import, 1-bit texture alpha, masked raster cutout, CLI decode, fixtures + docs | sim-verified |
+| 48 | N293–N302: `TextureBlob.alpha` + device/packaged texture cutout, `bake_texture_blob` alpha, fixtures | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 

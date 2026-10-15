@@ -77,7 +77,9 @@ A decode bomb is refused before any decode buffer is created.
   alpha mask (`TextureMap::with_alpha`); a mesh whose material is `MASK` skips
   texels whose bit is clear (cutout) — the cutoff is applied at decode time
   (threshold 128), not per-material. `mdc render-mesh` / `mdc bake-mesh` decode
-  the PNG alpha this way. The geometry
+  the PNG alpha this way. N293/N294: a `TextureBlob` also carries the mask
+  (`alpha_at`), and `render_package_scene` attaches it to the texture, so the
+  device double cuts out transparent texels of a mesh package too. The geometry
   and preview renders prefer this colour over their fallback when no texture is
   sampled. N177: a mesh package may also carry a `TextureBlob` (RGB565 + dims),
   built by `bake_texture_blob` / `mesh_package_with_texture` and sampled by a

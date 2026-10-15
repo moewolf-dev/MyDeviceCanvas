@@ -533,16 +533,19 @@ pub fn bake_sprites(
     Ok(BakedSpritePackage { atlas, manifest })
 }
 
-/// N177: decode an image at native size into a device texture blob.
+/// N177/N294: decode an image at native size into a device texture blob, with its
+/// 1-bit alpha mask when the source has transparency.
 pub fn bake_texture_blob(
     bytes: &[u8],
     limits: &BakeLimits,
 ) -> Result<mdc_model::TextureBlob, BakeError> {
-    let baked = decode_rgb565_native(bytes, limits)?;
+    let (baked, alpha) = decode_rgba_native(bytes, limits)?;
+    let has_transparency = alpha.iter().any(|byte| *byte != 0xff);
     Ok(mdc_model::TextureBlob {
         width: baked.width,
         height: baked.height,
         rgb565: baked.rgb565,
+        alpha: if has_transparency { alpha } else { Vec::new() },
     })
 }
 

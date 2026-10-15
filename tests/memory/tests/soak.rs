@@ -568,6 +568,7 @@ fn textured_mesh_package_soak_is_bounded() {
         width: 2,
         height: 1,
         rgb565: vec![0x00, 0xF8, 0xE0, 0x07],
+        alpha: Vec::new(),
     };
     let caps = mdc_model::RendererCapability::full_3d();
     let mut size = 0usize;

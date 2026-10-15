@@ -2,6 +2,17 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.42] — Device-side texture cutout (N293–N302)
+
+### Added
+
+- `TextureBlob.alpha` (bit-packed mask) + `validate`/`alpha_at` (N293)
+- `bake_texture_blob` emits the mask when the source has transparency (N294)
+- `render_package_scene`/`render_package_mesh` attach the blob mask so a packaged
+  mesh cuts out transparent texels (N295)
+- `FakeDevice` masks transparent texels of an accepted mesh package (N296, N297)
+- Device masked-render unit test and a packaged-cutout compat fixture (N299, N300)
+
 ## [0.1.41] — Texture alpha cutout (N283–N292)
 
 ### Added

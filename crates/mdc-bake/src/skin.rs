@@ -958,11 +958,14 @@ pub fn render_package_mesh(
         return Err(BakeError::Budget(size.0, size.1));
     }
     let texture = match package.texture.as_ref().filter(|t| t.validate()) {
-        Some(blob) => Some(crate::TextureMap::from_rgb565(
-            blob.width,
-            blob.height,
-            blob.rgb565.clone(),
-        )?),
+        Some(blob) => {
+            let map = crate::TextureMap::from_rgb565(blob.width, blob.height, blob.rgb565.clone())?;
+            Some(if blob.alpha.is_empty() {
+                map
+            } else {
+                map.with_alpha(blob.alpha.clone())
+            })
+        }
         None => None,
     };
     let mut points = Vec::new();
@@ -1059,11 +1062,14 @@ pub fn render_package_scene(
         return Err(BakeError::Decode("package has no mesh geometry".into()));
     };
     let texture = match package.texture.as_ref().filter(|t| t.validate()) {
-        Some(blob) => Some(crate::TextureMap::from_rgb565(
-            blob.width,
-            blob.height,
-            blob.rgb565.clone(),
-        )?),
+        Some(blob) => {
+            let map = crate::TextureMap::from_rgb565(blob.width, blob.height, blob.rgb565.clone())?;
+            Some(if blob.alpha.is_empty() {
+                map
+            } else {
+                map.with_alpha(blob.alpha.clone())
+            })
+        }
         None => None,
     };
     let worlds = match package.animations.first() {

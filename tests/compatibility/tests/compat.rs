@@ -751,6 +751,7 @@ fn material_colour_tints_the_package_texture_on_the_device() {
             width: 1,
             height: 1,
             rgb565: vec![0x00, 0xF8], // 1×1 red
+            alpha: Vec::new(),
         }),
     };
     let sealed = mdc_model::MdcPackage::seal(package).unwrap();
@@ -776,6 +777,71 @@ fn material_colour_tints_the_package_texture_on_the_device() {
     // Tinted: red ~128 -> the red channel is roughly half, not full.
     let r = (centre >> 11) & 0x1f;
     assert!((10..=22).contains(&r), "tinted red channel {r}");
+}
+
+#[test]
+fn packaged_masked_texture_cuts_out_on_render() {
+    use mdc_model::{DevicePackage, Material, Mesh, MeshGeometry, Node, PackageMode, TextureBlob};
+
+    let mesh = Mesh {
+        name: "quad".into(),
+        vertices: 4,
+        indices: 6,
+        material: Some(0),
+        geometry: Some(MeshGeometry {
+            positions: vec![
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            skin_joints: Vec::new(),
+            skin_weights: Vec::new(),
+            morph_targets: Vec::new(),
+        }),
+        ..Mesh::default()
+    };
+    let package = DevicePackage {
+        target: "linux-mesh".into(),
+        mode: PackageMode::Mesh,
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![mesh],
+        textures: Vec::new(),
+        materials: vec![Material {
+            name: "cut".into(),
+            texture: None,
+            color: Some([255, 255, 255]),
+            alpha_mode: Some("MASK".into()),
+            alpha_cutoff: Some(0.5),
+        }],
+        skeletons: Vec::new(),
+        animations: Vec::new(),
+        sprites: Vec::new(),
+        layers: Vec::new(),
+        estimated_bytes: 48,
+        atlas: None,
+        texture: Some(TextureBlob {
+            width: 2,
+            height: 1,
+            rgb565: vec![0x00, 0xF8, 0xE0, 0x07],
+            alpha: vec![0b01],
+        }),
+    };
+    let frame = mdc_bake::render_package_scene(&package, 0.0, (16, 16)).unwrap();
+    let at = |x: usize, y: usize| {
+        u16::from_le_bytes([
+            frame.rgb565[(y * 16 + x) * 2],
+            frame.rgb565[(y * 16 + x) * 2 + 1],
+        ])
+    };
+    assert_eq!(at(2, 8), 0xF800, "opaque half drawn");
+    assert_eq!(at(13, 8), 0, "transparent half clear");
 }
 
 #[test]
@@ -1239,6 +1305,7 @@ fn textured_geometry_package_renders_on_the_device() {
         width: 2,
         height: 1,
         rgb565: vec![0x00, 0xF8, 0xE0, 0x07],
+        alpha: Vec::new(),
     };
     let package = DevicePackage {
         target: "linux-mesh".into(),

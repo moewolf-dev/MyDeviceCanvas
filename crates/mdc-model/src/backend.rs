@@ -116,17 +116,23 @@ pub struct TextureBlob {
     pub height: u32,
     /// RGB565 little-endian, `width * height * 2` bytes.
     pub rgb565: Vec<u8>,
+    /// N293: optional bit-packed alpha mask (1 = opaque), `ceil(w*h/8)` bytes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alpha: Vec<u8>,
 }
 
 impl TextureBlob {
-    /// Validate the pixel buffer against the declared geometry.
+    /// Validate the pixel buffer against the declared geometry (and the alpha
+    /// mask length when present).
     pub fn validate(&self) -> bool {
-        self.width > 0
-            && self.height > 0
-            && self.rgb565.len() as u64
-                == u64::from(self.width)
-                    .saturating_mul(u64::from(self.height))
-                    .saturating_mul(2)
+        let pixels = u64::from(self.width).saturating_mul(u64::from(self.height));
+        if self.width == 0
+            || self.height == 0
+            || self.rgb565.len() as u64 != pixels.saturating_mul(2)
+        {
+            return false;
+        }
+        self.alpha.is_empty() || self.alpha.len() as u64 == pixels.div_ceil(8)
     }
 
     /// N178: nearest texel with wrapping UVs, as RGB565.
@@ -146,6 +152,26 @@ impl TextureBlob {
         match self.rgb565.get(index..index + 2) {
             Some(bytes) => u16::from_le_bytes([bytes[0], bytes[1]]),
             None => 0,
+        }
+    }
+
+    /// N293: whether the texel at `uv` is opaque (`true` when no mask).
+    pub fn alpha_at(&self, u: f32, v: f32) -> bool {
+        if self.alpha.is_empty() || self.width == 0 || self.height == 0 {
+            return true;
+        }
+        let wrap = |value: f32, dimension: u32| {
+            if !value.is_finite() {
+                return 0;
+            }
+            (value.floor() as i64).rem_euclid(i64::from(dimension)) as u32
+        };
+        let x = wrap(u * self.width as f32, self.width) as usize;
+        let y = wrap(v * self.height as f32, self.height) as usize;
+        let index = y * self.width as usize + x;
+        match self.alpha.get(index / 8) {
+            Some(byte) => byte & (1 << (index % 8)) != 0,
+            None => true,
         }
     }
 }

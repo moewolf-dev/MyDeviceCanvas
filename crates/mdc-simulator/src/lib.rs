@@ -272,6 +272,7 @@ fn fill_triangle(
 
 /// N178: fill a triangle with `texture` sampled through interpolated UVs.
 /// N206: the material colour (`tint`) multiplies the sampled texel.
+/// N296: when `mask`, transparent texels are skipped (MASK cutout).
 #[allow(clippy::too_many_arguments)]
 fn fill_textured_triangle(
     pixels: &mut [u8],
@@ -285,6 +286,7 @@ fn fill_textured_triangle(
     uvc: [f32; 2],
     texture: &mdc_model::TextureBlob,
     tint: u16,
+    mask: bool,
 ) {
     let min_x = a.0.min(b.0).min(c.0).max(0) as u32;
     let max_x = (a.0.max(b.0).max(c.0).max(0) as u32).min(width.saturating_sub(1));
@@ -314,6 +316,9 @@ fn fill_textured_triangle(
             let w2 = e2 as f32 / area_f;
             let u = w0 * uva[0] + w1 * uvb[0] + w2 * uvc[0];
             let v = w0 * uva[1] + w1 * uvb[1] + w2 * uvc[1];
+            if mask && !texture.alpha_at(u, v) {
+                continue;
+            }
             let bytes = rgb565_mul(texture.sample(u, v), tint).to_le_bytes();
             let index = ((y * width + x) * 2) as usize;
             if index + 1 < pixels.len() {
@@ -1022,6 +1027,8 @@ pub struct FakeDevice {
     preview_uv: Vec<[f32; 2]>,
     /// N176/N178: fill colour for the preview when no texture is sampled.
     preview_color: u16,
+    /// N297: whether the accepted material cuts out transparent texels.
+    preview_masked: bool,
     anim_clip: Option<String>,
     anim_start_tick: u64,
     /// N154: the frame frozen when the clip last changed, cross-faded out.
@@ -1083,6 +1090,7 @@ impl FakeDevice {
             mesh_scene: None,
             preview_uv: Vec::new(),
             preview_color: 0xF800,
+            preview_masked: false,
             anim_clip: None,
             anim_start_tick: 0,
             anim_prev_frame: None,
@@ -1606,6 +1614,10 @@ impl FakeDevice {
                     .and_then(|mi| package.package.materials.get(mi))
                     .and_then(|material| material.color_rgb565())
                     .unwrap_or(0xF800);
+                self.preview_masked = mesh
+                    .and_then(|m| m.material)
+                    .and_then(|mi| package.package.materials.get(mi))
+                    .is_some_and(|material| material.is_masked());
                 self.preview_uv = mesh
                     .and_then(|m| m.geometry.as_ref())
                     .filter(|g| g.uv.len() >= g.positions.len() && !g.positions.is_empty())
@@ -1772,6 +1784,7 @@ impl FakeDevice {
                         self.preview_uv[tri[2] as usize],
                         texture,
                         color,
+                        self.preview_masked,
                     ),
                     _ => fill_triangle(&mut self.pixels, width, height, a, b, c, color),
                 }
@@ -3450,6 +3463,89 @@ mod tests {
         device.poll().unwrap();
         session.poll().unwrap();
         assert!(!device.mirror_active());
+    }
+
+    #[test]
+    fn device_masks_transparent_texels() {
+        use mdc_model::{Material, Mesh, MeshGeometry, Node, TextureBlob};
+        let mesh = Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.5, 0.5, 0.0],
+                    [-0.5, 0.5, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                morph_targets: Vec::new(),
+            }),
+            ..Mesh::default()
+        };
+        let package = mdc_model::DevicePackage {
+            target: "linux-mesh".into(),
+            mode: mdc_model::PackageMode::Mesh,
+            nodes: vec![Node {
+                name: "root".into(),
+                mesh: Some(0),
+                ..Node::default()
+            }],
+            meshes: vec![mesh],
+            textures: Vec::new(),
+            materials: vec![Material {
+                name: "cut".into(),
+                texture: None,
+                color: Some([255, 255, 255]),
+                alpha_mode: Some("MASK".into()),
+                alpha_cutoff: Some(0.5),
+            }],
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 48,
+            atlas: None,
+            texture: Some(TextureBlob {
+                width: 2,
+                height: 1,
+                rgb565: vec![0x00, 0xF8, 0xE0, 0x07],
+                alpha: vec![0b01],
+            }),
+        };
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 16,
+            height: 16,
+            renderer_mesh2d: true,
+            renderer_max_vertices: 4096,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        session
+            .install_package(
+                &mdc_model::MdcPackage::seal(package)
+                    .unwrap()
+                    .to_bytes()
+                    .unwrap(),
+            )
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_preview());
+        assert_eq!(device.pixel_rgb565(2, 8), Some(0xF800), "opaque left drawn");
+        assert_eq!(
+            device.pixel_rgb565(13, 8),
+            Some(0),
+            "transparent right clear"
+        );
     }
 
     #[test]
