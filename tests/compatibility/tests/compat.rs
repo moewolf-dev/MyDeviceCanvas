@@ -299,6 +299,7 @@ fn baked_package(frames: u32, pixels: usize) -> mdc_model::MdcPackage {
         layers: Vec::new(),
         estimated_bytes: pixels as u64,
         atlas: Some(atlas),
+        texture: None,
     };
     mdc_model::MdcPackage::seal(package).unwrap()
 }
@@ -413,6 +414,7 @@ fn animation_requires_a_baked_atlas_and_a_known_clip() {
         layers: Vec::new(),
         estimated_bytes: 16,
         atlas: Some(atlas),
+        texture: None,
     };
     let sealed = mdc_model::MdcPackage::seal(package).unwrap();
     session
@@ -650,6 +652,7 @@ fn full_geometry_reaches_the_device_and_renders() {
         layers: Vec::new(),
         estimated_bytes: 48,
         atlas: None,
+        texture: None,
     };
     let sealed = mdc_model::MdcPackage::seal(package).unwrap();
 
@@ -676,6 +679,84 @@ fn full_geometry_reaches_the_device_and_renders() {
         .filter(|(x, y)| device.pixel_rgb565(*x, *y).unwrap_or(0) != 0)
         .count();
     assert!(covered > 40, "device drew the full quad ({covered} px)");
+}
+
+#[test]
+fn textured_geometry_package_renders_on_the_device() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_model::{DevicePackage, Material, Mesh, MeshGeometry, Node, PackageMode, TextureBlob};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let mesh = Mesh {
+        name: "quad".into(),
+        vertices: 4,
+        indices: 6,
+        material: Some(0),
+        geometry: Some(MeshGeometry {
+            positions: vec![
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            skin_joints: Vec::new(),
+            skin_weights: Vec::new(),
+        }),
+        ..Mesh::default()
+    };
+    // 2x1 texture: left red, right green.
+    let texture = TextureBlob {
+        width: 2,
+        height: 1,
+        rgb565: vec![0x00, 0xF8, 0xE0, 0x07],
+    };
+    let package = DevicePackage {
+        target: "linux-mesh".into(),
+        mode: PackageMode::Mesh,
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![mesh],
+        textures: Vec::new(),
+        materials: vec![Material {
+            name: "skin".into(),
+            texture: None,
+            color: Some([0, 0, 255]),
+        }],
+        skeletons: Vec::new(),
+        animations: Vec::new(),
+        sprites: Vec::new(),
+        layers: Vec::new(),
+        estimated_bytes: 48,
+        atlas: None,
+        texture: Some(texture),
+    };
+    let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 16,
+        height: 16,
+        renderer_mesh2d: true,
+        renderer_max_vertices: 4096,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .install_package(&sealed.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.render_preview());
+    // The texture (not the blue material colour) is sampled across the quad.
+    assert_eq!(device.pixel_rgb565(2, 8), Some(0xF800), "left half red");
+    assert_eq!(device.pixel_rgb565(13, 8), Some(0x07E0), "right half green");
 }
 
 #[test]

@@ -514,6 +514,7 @@ pub fn render_frame_at(
     }
     let skinned = resolve_skinned(model, animation_index)?;
     let points = skinned_points_at(model, &skinned, time, sprite);
+    let fill = material_color(model, skinned.mesh).unwrap_or(color);
     let uvs: Option<&[[f32; 2]]> = if skinned.mesh.preview_uv.len()
         >= skinned.mesh.preview_positions.len()
         && !skinned.mesh.preview_uv.is_empty()
@@ -529,7 +530,7 @@ pub fn render_frame_at(
         sprite.0,
         sprite.1,
         texture,
-        color,
+        fill,
     )?;
     Ok(BakedTexture {
         width: sprite.0,
@@ -587,8 +588,16 @@ fn resolve_geometry(mesh: &Mesh) -> Option<&mdc_model::MeshGeometry> {
     mesh.geometry.as_ref().filter(|g| !g.positions.is_empty())
 }
 
+/// N175: the mesh's material base colour as RGB565, when the model sets one.
+fn material_color(model: &Model, mesh: &Mesh) -> Option<u16> {
+    mesh.material
+        .and_then(|index| model.materials.get(index))
+        .and_then(|material| material.color_rgb565())
+}
+
 /// N166: render one posed frame of the mesh's full geometry into `size` pixels.
-/// Falls back to the preview render when the mesh carries no geometry.
+/// Falls back to the preview render when the mesh carries no geometry. N175: the
+/// mesh's material colour is preferred over `color` when no texture is sampled.
 pub fn render_geometry_at(
     model: &Model,
     animation_index: usize,
@@ -604,6 +613,7 @@ pub fn render_geometry_at(
     let Some(geometry) = resolve_geometry(skinned.mesh) else {
         return render_frame_at(model, animation_index, time, size, texture, color);
     };
+    let fill = material_color(model, skinned.mesh).unwrap_or(color);
     let worlds = pose_world_matrices(&model.nodes, skinned.animation, time);
     let deformed = skin_arrays(
         &geometry.skin_joints,
@@ -630,7 +640,7 @@ pub fn render_geometry_at(
         size.0,
         size.1,
         texture,
-        color,
+        fill,
         mdc_model::MAX_GEOMETRY_VERTICES,
     )?;
     Ok(BakedTexture {
@@ -796,6 +806,7 @@ fn frames_to_package(
         layers: Vec::new(),
         estimated_bytes: atlas.rgb565.len() as u64,
         atlas: Some(atlas),
+        texture: None,
     };
     mdc_model::MdcPackage::seal(package).map_err(|e| BakeError::Package(e.to_string()))
 }

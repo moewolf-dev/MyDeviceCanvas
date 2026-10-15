@@ -109,6 +109,47 @@ impl AtlasBlob {
     }
 }
 
+/// N176: an RGB565 texture carried by a mesh package for a strong device.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextureBlob {
+    pub width: u32,
+    pub height: u32,
+    /// RGB565 little-endian, `width * height * 2` bytes.
+    pub rgb565: Vec<u8>,
+}
+
+impl TextureBlob {
+    /// Validate the pixel buffer against the declared geometry.
+    pub fn validate(&self) -> bool {
+        self.width > 0
+            && self.height > 0
+            && self.rgb565.len() as u64
+                == u64::from(self.width)
+                    .saturating_mul(u64::from(self.height))
+                    .saturating_mul(2)
+    }
+
+    /// N178: nearest texel with wrapping UVs, as RGB565.
+    pub fn sample(&self, u: f32, v: f32) -> u16 {
+        if self.width == 0 || self.height == 0 {
+            return 0;
+        }
+        let wrap = |value: f32, dimension: u32| {
+            if !value.is_finite() {
+                return 0;
+            }
+            (value.floor() as i64).rem_euclid(i64::from(dimension)) as u32
+        };
+        let x = wrap(u * self.width as f32, self.width) as usize;
+        let y = wrap(v * self.height as f32, self.height) as usize;
+        let index = (y * self.width as usize + x) * 2;
+        match self.rgb565.get(index..index + 2) {
+            Some(bytes) => u16::from_le_bytes([bytes[0], bytes[1]]),
+            None => 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DevicePackage {
     pub target: String,
@@ -125,6 +166,9 @@ pub struct DevicePackage {
     /// N59: present only for `BakedSprites` packages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub atlas: Option<AtlasBlob>,
+    /// N176: present when a mesh package carries a texture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture: Option<TextureBlob>,
 }
 
 /// A compiler that turns MDC IR into a device package for one target family.
@@ -217,6 +261,7 @@ impl TargetBackend for Esp32PlaneBackend {
                 layers: model.layers.clone(),
                 estimated_bytes: model.texture_bytes(),
                 atlas: None,
+                texture: None,
             });
         }
 
@@ -239,6 +284,7 @@ impl TargetBackend for Esp32PlaneBackend {
             layers: model.layers.clone(),
             estimated_bytes,
             atlas: None,
+            texture: None,
         })
     }
 }
@@ -287,6 +333,7 @@ impl TargetBackend for LinuxMeshBackend {
                 layers: model.layers.clone(),
                 estimated_bytes,
                 atlas: None,
+                texture: None,
             });
         }
         // Estimated package size: textures plus 12 bytes per vertex (3×f32).
@@ -308,6 +355,7 @@ impl TargetBackend for LinuxMeshBackend {
             layers: model.layers.clone(),
             estimated_bytes,
             atlas: None,
+            texture: None,
         })
     }
 }

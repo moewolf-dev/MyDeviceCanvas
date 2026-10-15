@@ -102,6 +102,64 @@ fn mirror_receiver_soak_is_bounded() {
 }
 
 #[test]
+fn textured_mesh_package_soak_is_bounded() {
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node, TextureBlob};
+
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.5, 0.5, 0.0],
+                    [-0.5, 0.5, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+            }),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "skin".into(),
+            texture: None,
+            color: Some([10, 20, 30]),
+        }],
+        ..Model::default()
+    };
+    let texture = TextureBlob {
+        width: 2,
+        height: 1,
+        rgb565: vec![0x00, 0xF8, 0xE0, 0x07],
+    };
+    let caps = mdc_model::RendererCapability::full_3d();
+    let mut size = 0usize;
+    for _ in 0..100 {
+        let package =
+            mdc_bake::mesh_package_with_texture(&model, &caps, Some(texture.clone())).unwrap();
+        let bytes = package.to_bytes().unwrap();
+        if size == 0 {
+            size = bytes.len();
+            let back = mdc_model::MdcPackage::from_bytes(&bytes).unwrap();
+            assert_eq!(back, package);
+        }
+        assert_eq!(bytes.len(), size, "package size is constant");
+    }
+    assert!(size > 0);
+}
+
+#[test]
 fn geometry_render_soak_is_bounded() {
     use mdc_model::{Animation, AnimationTrack, Mesh, MeshGeometry, Model, Node, Skeleton};
 
@@ -584,6 +642,7 @@ fn atlas_animation_soak_is_bounded() {
         layers: Vec::new(),
         estimated_bytes: atlas.rgb565.len() as u64,
         atlas: Some(atlas),
+        texture: None,
     };
     let sealed = mdc_model::MdcPackage::seal(package).unwrap();
     session

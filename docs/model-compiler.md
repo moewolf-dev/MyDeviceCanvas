@@ -64,6 +64,12 @@ A decode bomb is refused before any decode buffer is created.
   into `Mesh.geometry` — POSITION/indices/`TEXCOORD_0`/`JOINTS_0`/`WEIGHTS_0`,
   capped at `MAX_GEOMETRY_VERTICES` (4096) and `MAX_GEOMETRY_INDICES` (16384). The
   preview stays a 64-vertex summary; geometry is the real mesh.
+- N174: `pbrMetallicRoughness.baseColorFactor` becomes `Material.color`
+  (8-bit RGB; alpha ignored); `Material::color_rgb565()` packs it. The geometry
+  and preview renders prefer this colour over their fallback when no texture is
+  sampled. N177: a mesh package may also carry a `TextureBlob` (RGB565 + dims),
+  built by `bake_texture_blob` / `mesh_package_with_texture` and sampled by a
+  strong device through the geometry UVs (`mdc package --texture tex.png`).
 - N123: a primitive's `targets[].POSITION` morph deltas (capped at
   `MAX_MORPH_TARGETS`, 16 per mesh) become `Mesh.morph_targets`, and
   `mesh.weights` becomes `Mesh.morph_weights`. N124: an animation channel with

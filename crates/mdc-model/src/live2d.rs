@@ -129,6 +129,7 @@ impl Live2DImporter {
             materials.push(Material {
                 name: name.clone(),
                 texture: Some(i),
+                color: None,
             });
             nodes.push(Node {
                 name: name.clone(),

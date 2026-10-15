@@ -472,6 +472,39 @@ pub fn bake_sprites(
     Ok(BakedSpritePackage { atlas, manifest })
 }
 
+/// N177: decode an image at native size into a device texture blob.
+pub fn bake_texture_blob(
+    bytes: &[u8],
+    limits: &BakeLimits,
+) -> Result<mdc_model::TextureBlob, BakeError> {
+    let baked = decode_rgb565_native(bytes, limits)?;
+    Ok(mdc_model::TextureBlob {
+        width: baked.width,
+        height: baked.height,
+        rgb565: baked.rgb565,
+    })
+}
+
+/// N177: compile a model with the capability-selected backend and attach an
+/// optional RGB565 texture for a mesh-capable device.
+pub fn mesh_package_with_texture(
+    model: &mdc_model::Model,
+    caps: &mdc_model::RendererCapability,
+    texture: Option<mdc_model::TextureBlob>,
+) -> Result<mdc_model::MdcPackage, BakeError> {
+    let mut package =
+        mdc_model::compile_auto(model, caps).map_err(|e| BakeError::Package(e.to_string()))?;
+    if let Some(blob) = texture {
+        if !blob.validate() {
+            return Err(BakeError::Package(
+                "texture pixel size does not match its dimensions".into(),
+            ));
+        }
+        package.texture = Some(blob);
+    }
+    mdc_model::MdcPackage::seal(package).map_err(|e| BakeError::Package(e.to_string()))
+}
+
 /// N60: bake a sprite set straight into a sealed runtime package the device can
 /// receive over the `PACKAGE` path.
 #[allow(clippy::too_many_arguments)]
@@ -506,6 +539,7 @@ pub fn bake_to_package(
         layers: Vec::new(),
         estimated_bytes,
         atlas: Some(atlas),
+        texture: None,
     };
     mdc_model::MdcPackage::seal(package).map_err(|e| BakeError::Package(e.to_string()))
 }

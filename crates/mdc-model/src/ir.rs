@@ -166,10 +166,23 @@ pub struct Texture {
     pub bytes: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Material {
     pub name: String,
     pub texture: Option<usize>,
+    /// N173: `pbrMetallicRoughness.baseColorFactor` as 8-bit RGB. `None` means
+    /// the factor was absent (renderers use their own default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<[u8; 3]>,
+}
+
+impl Material {
+    /// N173: the base colour as RGB565, or `None` when unset.
+    pub fn color_rgb565(&self) -> Option<u16> {
+        self.color.map(|[r, g, b]| {
+            ((u16::from(r) >> 3) << 11) | ((u16::from(g) >> 2) << 5) | (u16::from(b) >> 3)
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

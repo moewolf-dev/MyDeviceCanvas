@@ -135,15 +135,28 @@ impl GltfImporter {
             .unwrap_or(&empty);
         let mut materials = Vec::with_capacity(materials_json.len());
         for (i, material) in materials_json.iter().enumerate() {
-            let texture = material
-                .get("pbrMetallicRoughness")
+            let pbr = material.get("pbrMetallicRoughness");
+            let texture = pbr
                 .and_then(|p| p.get("baseColorTexture"))
                 .and_then(|b| b.get("index"))
                 .and_then(Value::as_u64)
                 .and_then(resolve_texture);
+            // N174: baseColorFactor -> 8-bit RGB (alpha ignored).
+            let color = pbr
+                .and_then(|p| p.get("baseColorFactor"))
+                .and_then(Value::as_array)
+                .and_then(|list| {
+                    let channel = |k: usize| {
+                        list.get(k)
+                            .and_then(Value::as_f64)
+                            .map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+                    };
+                    Some([channel(0)?, channel(1)?, channel(2)?])
+                });
             materials.push(Material {
                 name: json_name(material, &format!("material{i}")),
                 texture,
+                color,
             });
         }
 
@@ -1703,6 +1716,27 @@ mod tests {
         assert_eq!(geometry.indices, vec![0, 1, 2, 0, 2, 3]);
         assert_eq!(geometry.uv.len(), 4);
         assert_eq!(geometry.uv[2], [1.0, 1.0]);
+    }
+
+    #[test]
+    fn material_base_colour_factor_imports() {
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "nodes": [{"mesh": 0}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "material": 0}]}],
+            "accessors": [{"count": 3, "type": "VEC3"}],
+            "materials": [
+                {"name": "red", "pbrMetallicRoughness": {"baseColorFactor": [1.0, 0.0, 0.0, 1.0]}},
+                {"name": "plain"}
+            ]
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        assert_eq!(model.materials[0].color, Some([255, 0, 0]));
+        assert_eq!(model.materials[0].color_rgb565(), Some(0xF800));
+        assert_eq!(model.materials[1].color, None);
+        assert_eq!(model.materials[1].color_rgb565(), None);
     }
 
     #[test]

@@ -270,6 +270,58 @@ fn fill_triangle(
     }
 }
 
+/// N178: fill a triangle with `texture` sampled through interpolated UVs.
+#[allow(clippy::too_many_arguments)]
+fn fill_textured_triangle(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    a: (i16, i16),
+    uva: [f32; 2],
+    b: (i16, i16),
+    uvb: [f32; 2],
+    c: (i16, i16),
+    uvc: [f32; 2],
+    texture: &mdc_model::TextureBlob,
+) {
+    let min_x = a.0.min(b.0).min(c.0).max(0) as u32;
+    let max_x = (a.0.max(b.0).max(c.0).max(0) as u32).min(width.saturating_sub(1));
+    let min_y = a.1.min(b.1).min(c.1).max(0) as u32;
+    let max_y = (a.1.max(b.1).max(c.1).max(0) as u32).min(height.saturating_sub(1));
+    let area = fan_edge(a, b, c);
+    if area == 0 {
+        return;
+    }
+    let area_f = area as f32;
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let p = (x as i16, y as i16);
+            let e0 = fan_edge(b, c, p);
+            let e1 = fan_edge(c, a, p);
+            let e2 = fan_edge(a, b, p);
+            let inside = if area > 0 {
+                e0 >= 0 && e1 >= 0 && e2 >= 0
+            } else {
+                e0 <= 0 && e1 <= 0 && e2 <= 0
+            };
+            if !inside {
+                continue;
+            }
+            let w0 = e0 as f32 / area_f;
+            let w1 = e1 as f32 / area_f;
+            let w2 = e2 as f32 / area_f;
+            let u = w0 * uva[0] + w1 * uvb[0] + w2 * uvc[0];
+            let v = w0 * uva[1] + w1 * uvb[1] + w2 * uvc[1];
+            let bytes = texture.sample(u, v).to_le_bytes();
+            let index = ((y * width + x) * 2) as usize;
+            if index + 1 < pixels.len() {
+                pixels[index] = bytes[0];
+                pixels[index + 1] = bytes[1];
+            }
+        }
+    }
+}
+
 fn fade_toward_black(pixels: &mut [u8], quarters: u8) {
     let keep = u32::from(quarters.min(3));
     for chunk in pixels.chunks_exact_mut(2) {
@@ -912,6 +964,12 @@ pub struct FakeDevice {
     atlas_sprite: (u32, u32),
     /// N71: the accepted baked atlas + running clip.
     atlas: Option<mdc_model::AtlasBlob>,
+    /// N178: the accepted mesh package's RGB565 texture, if any.
+    texture: Option<mdc_model::TextureBlob>,
+    /// N178: UVs for the accepted geometry preview, parallel to `preview_xy`.
+    preview_uv: Vec<[f32; 2]>,
+    /// N176/N178: fill colour for the preview when no texture is sampled.
+    preview_color: u16,
     anim_clip: Option<String>,
     anim_start_tick: u64,
     /// N154: the frame frozen when the clip last changed, cross-faded out.
@@ -967,6 +1025,9 @@ impl FakeDevice {
             atlas_frames: 0,
             atlas_sprite: (0, 0),
             atlas: None,
+            texture: None,
+            preview_uv: Vec::new(),
+            preview_color: 0xF800,
             anim_clip: None,
             anim_start_tick: 0,
             anim_prev_frame: None,
@@ -1471,9 +1532,20 @@ impl FakeDevice {
                     self.atlas_sprite = (atlas.sprite_width, atlas.sprite_height);
                 }
                 self.atlas = package.package.atlas.clone();
+                self.texture = package.package.texture.clone();
                 // N169: prefer full geometry when the package carries it; project
                 // it into the framebuffer so the device renders the whole mesh.
                 let mesh = package.package.meshes.first();
+                self.preview_color = mesh
+                    .and_then(|m| m.material)
+                    .and_then(|mi| package.package.materials.get(mi))
+                    .and_then(|material| material.color_rgb565())
+                    .unwrap_or(0xF800);
+                self.preview_uv = mesh
+                    .and_then(|m| m.geometry.as_ref())
+                    .filter(|g| g.uv.len() >= g.positions.len() && !g.positions.is_empty())
+                    .map(|g| g.uv.clone())
+                    .unwrap_or_default();
                 let geometry_preview = mesh
                     .and_then(|m| m.geometry.as_ref())
                     .filter(|g| !g.positions.is_empty())
@@ -1594,21 +1666,40 @@ impl FakeDevice {
         let height = u32::from(self.profile.height);
         let points = self.preview_xy.clone();
         let indices = self.preview_indices.clone();
+        // N178: sample the package texture when the geometry carries UVs.
+        let textured = self
+            .texture
+            .clone()
+            .filter(|t| t.validate() && self.preview_uv.len() >= points.len());
+        let color = self.preview_color;
         if indices.len() >= 3 {
             for tri in indices.chunks_exact(3) {
-                let Some(a) = points.get(tri[0] as usize).copied() else {
+                let three = (
+                    points.get(tri[0] as usize).copied(),
+                    points.get(tri[1] as usize).copied(),
+                    points.get(tri[2] as usize).copied(),
+                );
+                let (Some(a), Some(b), Some(c)) = three else {
                     continue;
                 };
-                let Some(b) = points.get(tri[1] as usize).copied() else {
-                    continue;
-                };
-                let Some(c) = points.get(tri[2] as usize).copied() else {
-                    continue;
-                };
-                fill_triangle(&mut self.pixels, width, height, a, b, c, 0xF800);
+                match (&textured, self.preview_uv.len() >= points.len()) {
+                    (Some(texture), true) => fill_textured_triangle(
+                        &mut self.pixels,
+                        width,
+                        height,
+                        a,
+                        self.preview_uv[tri[0] as usize],
+                        b,
+                        self.preview_uv[tri[1] as usize],
+                        c,
+                        self.preview_uv[tri[2] as usize],
+                        texture,
+                    ),
+                    _ => fill_triangle(&mut self.pixels, width, height, a, b, c, color),
+                }
             }
         } else {
-            fill_fan(&mut self.pixels, width, height, &points, 0xF800);
+            fill_fan(&mut self.pixels, width, height, &points, color);
         }
         true
     }
@@ -2176,6 +2267,7 @@ mod tests {
             layers: Vec::new(),
             estimated_bytes: 16,
             atlas: Some(atlas),
+            texture: None,
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
         session
@@ -2227,6 +2319,7 @@ mod tests {
             layers: Vec::new(),
             estimated_bytes: atlas.rgb565.len() as u64,
             atlas: Some(atlas),
+            texture: None,
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
         session
@@ -2311,6 +2404,7 @@ mod tests {
             layers: Vec::new(),
             estimated_bytes: 8,
             atlas: Some(atlas),
+            texture: None,
         };
         session
             .install_package(
@@ -2396,6 +2490,7 @@ mod tests {
             layers: Vec::new(),
             estimated_bytes: atlas.rgb565.len() as u64,
             atlas: Some(atlas),
+            texture: None,
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
         session
@@ -2675,6 +2770,7 @@ mod tests {
             layers: Vec::new(),
             estimated_bytes: 16,
             atlas: Some(atlas),
+            texture: None,
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
         session
@@ -2730,6 +2826,7 @@ mod tests {
             layers: Vec::new(),
             estimated_bytes: 36,
             atlas: None,
+            texture: None,
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
         session
@@ -2775,6 +2872,7 @@ mod tests {
             layers: Vec::new(),
             estimated_bytes: 48,
             atlas: None,
+            texture: None,
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
         session
@@ -2820,6 +2918,7 @@ mod tests {
                 rgb565: vec![0x00, 0xF8],
                 clips: Vec::new(),
             }),
+            texture: None,
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
         session
@@ -2882,6 +2981,7 @@ mod tests {
                     fade_out_ms: 0,
                 }],
             }),
+            texture: None,
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
         session
@@ -2939,6 +3039,7 @@ mod tests {
                     fade_out_ms: 400,
                 }],
             }),
+            texture: None,
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
         session

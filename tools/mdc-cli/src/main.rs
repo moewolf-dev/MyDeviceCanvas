@@ -404,8 +404,18 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
 fn cmd_package(
     opts: &GlobalOpts,
     model_path: &str,
-    out: Option<String>,
+    extra: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut out: Option<String> = None;
+    let mut texture_path: Option<String> = None;
+    let mut iter = extra.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--texture" => texture_path = iter.next().cloned(),
+            "--out" => out = iter.next().cloned(),
+            other => out = Some(other.to_string()),
+        }
+    }
     let bytes = std::fs::read(model_path)?;
     let model = if model_path.to_ascii_lowercase().ends_with(".json") {
         mdc_model::Live2DImporter.import(&bytes, &mdc_model::ImportLimits::default())?
@@ -420,7 +430,16 @@ fn cmd_package(
         max_texture: profile.renderer_max_texture,
         max_vertices: profile.renderer_max_vertices,
     };
-    let package = mdc_model::compile_to_package(&model, &caps)?;
+    // N179: an optional texture rides along for a mesh-capable device.
+    let texture = match &texture_path {
+        Some(path) => Some(mdc_bake::bake_texture_blob(
+            &std::fs::read(path)?,
+            &mdc_bake::BakeLimits::default(),
+        )?),
+        None => None,
+    };
+    let textured = texture.is_some();
+    let package = mdc_bake::mesh_package_with_texture(&model, &caps, texture)?;
     let bytes = package.to_bytes()?;
     let out = out.unwrap_or_else(|| format!("{model_path}.mdcpkg"));
     std::fs::write(&out, &bytes)?;
@@ -431,6 +450,7 @@ fn cmd_package(
             "source": model_path,
             "target": package.manifest.target,
             "mode": package.manifest.mode,
+            "textured": textured,
             "package_bytes": bytes.len(),
             "output": out,
         }))?
@@ -2247,7 +2267,7 @@ fn usage() {
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp] [--serve ADDR] [--http ADDR]|\
-package <model.gltf> [out.mdcpkg]|install-package <file.mdcpkg>|\
+package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg]|install-package <file.mdcpkg>|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] --out f.ppm|\
@@ -2329,7 +2349,7 @@ fn main() {
                 eprintln!("package requires a model path");
                 std::process::exit(2);
             }
-            cmd_package(&opts, &path, args.get(2).cloned())
+            cmd_package(&opts, &path, &args[2..])
         }
         Some("install-package") => {
             let path = args.get(1).cloned().unwrap_or_default();
@@ -3026,7 +3046,7 @@ mod tests {
         cmd_package(
             &opts,
             model.to_str().unwrap(),
-            Some(out.to_string_lossy().into_owned()),
+            &["--out".to_string(), out.to_string_lossy().into_owned()],
         )
         .unwrap();
         assert!(out.exists());

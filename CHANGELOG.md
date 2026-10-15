@@ -2,6 +2,18 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.30] — Material colours + package textures (N173–N182)
+
+### Added
+
+- `Material.color` from glTF `baseColorFactor` + `color_rgb565()` (N173, N174)
+- Geometry and preview renders prefer the mesh's material colour (N175)
+- `DevicePackage.texture: Option<TextureBlob>` (RGB565) with `TextureBlob::sample` (N176)
+- `mdc-bake` `bake_texture_blob` / `mesh_package_with_texture` (N177)
+- `FakeDevice` samples the package texture through the geometry UVs (N178)
+- `mdc package --texture tex.png` writes a textured mesh package (N179)
+- Material/texture compat fixture and package soak (N180, N181)
+
 ## [0.1.29] — Bounded full-mesh geometry (N163–N172)
 
 ### Added

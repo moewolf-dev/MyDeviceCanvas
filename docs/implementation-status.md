@@ -43,6 +43,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 33 | N143–N152: BMP encoder + `HttpMirrorServer` (OBS browser source), `mdc mirror --http/--format`, obs-bridge docs, HTTP compat + soak | sim-verified |
 | 34 | N153–N162: animation cross-fade between clips, `stop_animation`, scene `circle`/`line` primitives, fixtures + soak + docs | sim-verified |
 | 35 | N163–N172: bounded full-mesh geometry (IR + glTF), skinned aspect-fit geometry render, device geometry preview, fixtures + soak | sim-verified |
+| 36 | N173–N182: material `baseColorFactor` colours, `DevicePackage.texture` blob, `mdc package --texture`, device textured geometry render, fixtures + soak | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 

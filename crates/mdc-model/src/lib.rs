@@ -19,7 +19,7 @@ mod package;
 pub use atlas::{AtlasBaker, AtlasPlan, MotionFrames};
 pub use backend::{
     compile, compile_auto, compile_with, AtlasBlob, AtlasClip, DevicePackage, Esp32PlaneBackend,
-    LinuxMeshBackend, PackageMode, RendererCapability, TargetBackend,
+    LinuxMeshBackend, PackageMode, RendererCapability, TargetBackend, TextureBlob,
 };
 pub use gltf::GltfImporter;
 pub use ir::{
