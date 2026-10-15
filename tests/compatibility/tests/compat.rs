@@ -682,6 +682,86 @@ fn full_geometry_reaches_the_device_and_renders() {
 }
 
 #[test]
+fn multi_mesh_scene_bakes_and_reaches_a_device() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let quad = |name: &str, material: usize| Mesh {
+        name: name.into(),
+        vertices: 4,
+        indices: 6,
+        material: Some(material),
+        geometry: Some(MeshGeometry {
+            positions: vec![
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uv: Vec::new(),
+            skin_joints: Vec::new(),
+            skin_weights: Vec::new(),
+        }),
+        ..Mesh::default()
+    };
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![
+            Node {
+                name: "root".into(),
+                children: vec![1, 2],
+                ..Node::default()
+            },
+            Node {
+                name: "left".into(),
+                mesh: Some(0),
+                translation: [-0.6, 0.0, 0.0],
+                ..Node::default()
+            },
+            Node {
+                name: "right".into(),
+                mesh: Some(1),
+                translation: [0.6, 0.0, 0.0],
+                ..Node::default()
+            },
+        ],
+        meshes: vec![quad("left", 0), quad("right", 1)],
+        materials: vec![
+            Material {
+                name: "red".into(),
+                texture: None,
+                color: Some([255, 0, 0]),
+            },
+            Material {
+                name: "green".into(),
+                texture: None,
+                color: Some([0, 255, 0]),
+            },
+        ],
+        ..Model::default()
+    };
+    let package = mdc_bake::bake_scene_to_package(&model, 0, 3, (32, 16), None, 0xFFFF).unwrap();
+    assert!(package
+        .accepted_by(&mdc_model::RendererCapability::sprite_only())
+        .is_ok());
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::default());
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .install_package(&package.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.package_ready());
+    assert_eq!(device.atlas_frames(), 3);
+}
+
+#[test]
 fn textured_geometry_package_renders_on_the_device() {
     use mdc_core::{ConnectionState, Session};
     use mdc_model::{DevicePackage, Material, Mesh, MeshGeometry, Node, PackageMode, TextureBlob};

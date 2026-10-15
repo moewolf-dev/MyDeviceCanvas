@@ -102,6 +102,76 @@ fn mirror_receiver_soak_is_bounded() {
 }
 
 #[test]
+fn multi_mesh_scene_render_soak_is_bounded() {
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};
+
+    let quad = |name: &str, material: usize| Mesh {
+        name: name.into(),
+        vertices: 4,
+        indices: 6,
+        material: Some(material),
+        geometry: Some(MeshGeometry {
+            positions: vec![
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uv: Vec::new(),
+            skin_joints: Vec::new(),
+            skin_weights: Vec::new(),
+        }),
+        ..Mesh::default()
+    };
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![
+            Node {
+                name: "root".into(),
+                children: vec![1, 2],
+                ..Node::default()
+            },
+            Node {
+                name: "left".into(),
+                mesh: Some(0),
+                translation: [-0.6, 0.0, 0.0],
+                ..Node::default()
+            },
+            Node {
+                name: "right".into(),
+                mesh: Some(1),
+                translation: [0.6, 0.0, 0.0],
+                ..Node::default()
+            },
+        ],
+        meshes: vec![quad("left", 0), quad("right", 1)],
+        materials: vec![
+            Material {
+                name: "red".into(),
+                texture: None,
+                color: Some([255, 0, 0]),
+            },
+            Material {
+                name: "green".into(),
+                texture: None,
+                color: Some([0, 255, 0]),
+            },
+        ],
+        ..Model::default()
+    };
+    let mut bytes = 0usize;
+    for _ in 0..100 {
+        let frame = mdc_bake::render_scene_at(&model, 0, 0.0, (32, 16), None, 0xFFFF).unwrap();
+        if bytes == 0 {
+            bytes = frame.rgb565.len();
+        }
+        assert_eq!(frame.rgb565.len(), bytes, "frame size is constant");
+    }
+    assert!(bytes > 0);
+}
+
+#[test]
 fn textured_mesh_package_soak_is_bounded() {
     use mdc_model::{Material, Mesh, MeshGeometry, Model, Node, TextureBlob};
 

@@ -101,10 +101,41 @@ pub(crate) fn raster_indexed(
     if width == 0 || height == 0 || width > 1024 || height > 1024 {
         return Err(BakeError::Budget(width, height));
     }
+    let mut pixels = vec![0u8; (width as usize) * (height as usize) * 2];
+    draw_indexed(
+        &mut pixels,
+        points,
+        uvs,
+        indices,
+        width,
+        height,
+        texture,
+        fallback,
+        max_points,
+    )?;
+    Ok(pixels)
+}
+
+/// N183: draw a geometry's triangles into an existing framebuffer (so a scene of
+/// several meshes can share one target). Bounded by `max_points` vertices.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_indexed(
+    pixels: &mut [u8],
+    points: &[(i16, i16)],
+    uvs: Option<&[[f32; 2]]>,
+    indices: &[u32],
+    width: u32,
+    height: u32,
+    texture: Option<&TextureMap>,
+    fallback: u16,
+    max_points: usize,
+) -> Result<(), BakeError> {
+    if width == 0 || height == 0 || width > 1024 || height > 1024 {
+        return Err(BakeError::Budget(width, height));
+    }
     if points.len() > max_points {
         return Err(BakeError::FrameCount(max_points, points.len()));
     }
-    let mut pixels = vec![0u8; (width as usize) * (height as usize) * 2];
     let triangles: Vec<[usize; 3]> = if indices.len() >= 3 {
         indices
             .chunks_exact(3)
@@ -126,7 +157,7 @@ pub(crate) fn raster_indexed(
         let uvs = uvs.filter(|u| u.len() >= points.len());
         match (texture, uvs) {
             (Some(texture), Some(uvs)) => fill_textured_triangle(
-                &mut pixels,
+                pixels,
                 width,
                 height,
                 (a, uvs[triangle[0]]),
@@ -134,10 +165,10 @@ pub(crate) fn raster_indexed(
                 (c, uvs[triangle[2]]),
                 texture,
             ),
-            _ => crate::fill_triangle(&mut pixels, width, height, a, b, c, fallback),
+            _ => crate::fill_triangle(pixels, width, height, a, b, c, fallback),
         }
     }
-    Ok(pixels)
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

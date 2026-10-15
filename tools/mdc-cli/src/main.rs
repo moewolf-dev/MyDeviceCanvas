@@ -746,6 +746,7 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut animation: usize = 0;
     let mut time: f32 = 0.0;
     let mut sprite: u32 = 64;
+    let mut single = false;
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -759,6 +760,7 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             }
             "--time" => time = iter.next().and_then(|v| v.parse().ok()).unwrap_or(time),
             "--sprite" => sprite = iter.next().and_then(|v| v.parse().ok()).unwrap_or(sprite),
+            "--single" => single = true,
             other => model_path = Some(other.to_string()),
         }
     }
@@ -777,14 +779,27 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     };
     let textured = texture.is_some() && has_uv;
     let has_geometry = model.meshes.iter().any(|m| m.geometry.is_some());
-    let frame = mdc_bake::render_geometry_at(
-        &model,
-        animation,
-        time,
-        (sprite, sprite),
-        if textured { texture.as_ref() } else { None },
-        0xF800,
-    )?;
+    let texture_arg = if textured { texture.as_ref() } else { None };
+    // N186: render every mesh node of the model, or a single mesh with --single.
+    let frame = if single {
+        mdc_bake::render_geometry_at(
+            &model,
+            animation,
+            time,
+            (sprite, sprite),
+            texture_arg,
+            0xF800,
+        )?
+    } else {
+        mdc_bake::render_scene_at(
+            &model,
+            animation,
+            time,
+            (sprite, sprite),
+            texture_arg,
+            0xF800,
+        )?
+    };
     std::fs::write(
         &out,
         rgb565_frame_to_ppm(frame.width, frame.height, &frame.rgb565),
@@ -796,6 +811,7 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "animation": animation,
             "time": time,
             "sprite": format!("{sprite}x{sprite}"),
+            "single": single,
             "textured": textured,
             "geometry": has_geometry,
             "output": out,
@@ -809,11 +825,13 @@ fn cmd_render_package(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
     let mut file: Option<String> = None;
     let mut out: Option<String> = None;
     let mut frame: u32 = 0;
+    let mut sprite: u32 = 64;
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "--out" => out = iter.next().cloned(),
             "--frame" => frame = iter.next().and_then(|v| v.parse().ok()).unwrap_or(frame),
+            "--sprite" => sprite = iter.next().and_then(|v| v.parse().ok()).unwrap_or(sprite),
             other => file = Some(other.to_string()),
         }
     }
@@ -821,11 +839,25 @@ fn cmd_render_package(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
     let out = out.ok_or("render-package requires --out <file.ppm>")?;
     let bytes = std::fs::read(&file)?;
     let package = mdc_model::MdcPackage::from_bytes(&bytes)?;
-    let atlas = package
-        .package
-        .atlas
-        .as_ref()
-        .ok_or("package has no baked atlas to render")?;
+    // N187: a mesh package renders its geometry (with its texture) instead.
+    if package.package.atlas.is_none() {
+        let frame = mdc_bake::render_package_mesh(&package.package, (sprite, sprite))?;
+        std::fs::write(
+            &out,
+            rgb565_frame_to_ppm(frame.width, frame.height, &frame.rgb565),
+        )?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "package": file,
+                "mode": package.manifest.mode,
+                "sprite": format!("{}x{}", frame.width, frame.height),
+                "output": out,
+            }))?
+        );
+        return Ok(());
+    }
+    let atlas = package.package.atlas.as_ref().expect("atlas checked");
     let offset = atlas
         .frame_offset(frame)
         .ok_or_else(|| format!("frame {frame} out of range ({} frames)", atlas.frames))?;
@@ -3236,6 +3268,67 @@ mod tests {
         ])
         .unwrap();
         assert!(std::fs::read(&pkg_out)
+            .unwrap()
+            .starts_with(b"P6\n16 16\n255\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn render_package_handles_a_mesh_package() {
+        let dir = std::env::temp_dir().join(format!("mdc-cli-meshpkg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = mdc_model::Model {
+            source: "test".into(),
+            nodes: vec![mdc_model::Node {
+                name: "root".into(),
+                mesh: Some(0),
+                ..mdc_model::Node::default()
+            }],
+            meshes: vec![mdc_model::Mesh {
+                name: "quad".into(),
+                vertices: 4,
+                indices: 6,
+                material: Some(0),
+                geometry: Some(mdc_model::MeshGeometry {
+                    positions: vec![
+                        [-0.5, -0.5, 0.0],
+                        [0.5, -0.5, 0.0],
+                        [0.5, 0.5, 0.0],
+                        [-0.5, 0.5, 0.0],
+                    ],
+                    indices: vec![0, 1, 2, 0, 2, 3],
+                    uv: Vec::new(),
+                    skin_joints: Vec::new(),
+                    skin_weights: Vec::new(),
+                }),
+                ..mdc_model::Mesh::default()
+            }],
+            materials: vec![mdc_model::Material {
+                name: "red".into(),
+                texture: None,
+                color: Some([255, 0, 0]),
+            }],
+            ..mdc_model::Model::default()
+        };
+        let package = mdc_bake::mesh_package_with_texture(
+            &model,
+            &mdc_model::RendererCapability::full_3d(),
+            None,
+        )
+        .unwrap();
+        let package_path = dir.join("mesh.mdcpkg");
+        std::fs::write(&package_path, package.to_bytes().unwrap()).unwrap();
+        let out = dir.join("mesh.ppm");
+        cmd_render_package(&[
+            package_path.to_string_lossy().into_owned(),
+            "--sprite".to_string(),
+            "16".to_string(),
+            "--out".to_string(),
+            out.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        assert!(std::fs::read(&out)
             .unwrap()
             .starts_with(b"P6\n16 16\n255\n"));
         let _ = std::fs::remove_dir_all(&dir);

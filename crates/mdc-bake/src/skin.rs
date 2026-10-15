@@ -696,6 +696,231 @@ pub fn bake_geometry_to_package(
     frames_to_package(baked, frames, size)
 }
 
+/// N184: world matrices for a scene render. Falls back to the bind pose when the
+/// model has no (or a missing) animation.
+fn scene_worlds(model: &Model, animation_index: usize, time: f32) -> Vec<Mat4> {
+    match model.animations.get(animation_index) {
+        Some(animation) => pose_world_matrices(&model.nodes, animation, time),
+        None => node_world_matrices(&model.nodes),
+    }
+}
+
+/// N184: the bind-pose XY box of every mesh node, shared by all frames so a
+/// scene animation does not jitter.
+fn scene_bind_bbox(model: &Model) -> Option<([f32; 2], [f32; 2])> {
+    let worlds = node_world_matrices(&model.nodes);
+    let mut points = Vec::new();
+    for (index, node) in model.nodes.iter().enumerate() {
+        let Some(mesh) = node.mesh.and_then(|mi| model.meshes.get(mi)) else {
+            continue;
+        };
+        let Some(geometry) = resolve_geometry(mesh) else {
+            continue;
+        };
+        for position in &geometry.positions {
+            points.push(transform_point(&worlds[index], *position));
+        }
+    }
+    bbox_xy(&points)
+}
+
+/// N184: render every mesh node of `model` at `time` into one frame. A mesh's
+/// geometry is skinned when it carries weights, otherwise placed by its node's
+/// world transform; each mesh uses its material colour or `fallback`.
+pub fn render_scene_at(
+    model: &Model,
+    animation_index: usize,
+    time: f32,
+    size: (u32, u32),
+    texture: Option<&crate::TextureMap>,
+    fallback: u16,
+) -> Result<BakedTexture, BakeError> {
+    if size.0 == 0 || size.1 == 0 || size.0 > 1024 || size.1 > 1024 {
+        return Err(BakeError::Budget(size.0, size.1));
+    }
+    let Some((min, max)) = scene_bind_bbox(model) else {
+        return Err(BakeError::Decode("model has no geometry to render".into()));
+    };
+    let worlds = scene_worlds(model, animation_index, time);
+    let skeleton = model.skeletons.iter().find(|s| !s.joint_nodes.is_empty());
+    let mut pixels = vec![0u8; (size.0 as usize) * (size.1 as usize) * 2];
+    for (index, node) in model.nodes.iter().enumerate() {
+        let Some(mesh) = node.mesh.and_then(|mi| model.meshes.get(mi)) else {
+            continue;
+        };
+        let Some(geometry) = resolve_geometry(mesh) else {
+            continue;
+        };
+        let deformed: Vec<[f32; 3]> = if !geometry.skin_joints.is_empty() {
+            match skeleton {
+                Some(skeleton) => skin_arrays(
+                    &geometry.skin_joints,
+                    &geometry.skin_weights,
+                    &geometry.positions,
+                    skeleton,
+                    &worlds,
+                ),
+                None => geometry
+                    .positions
+                    .iter()
+                    .map(|p| transform_point(&worlds[index], *p))
+                    .collect(),
+            }
+        } else {
+            geometry
+                .positions
+                .iter()
+                .map(|p| transform_point(&worlds[index], *p))
+                .collect()
+        };
+        let points = fit_to_box(&deformed, min, max, size.0, size.1);
+        let uvs: Option<&[[f32; 2]]> =
+            if geometry.uv.len() >= geometry.positions.len() && !geometry.uv.is_empty() {
+                Some(&geometry.uv)
+            } else {
+                None
+            };
+        let fill = material_color(model, mesh).unwrap_or(fallback);
+        crate::texture::draw_indexed(
+            &mut pixels,
+            &points,
+            uvs,
+            &geometry.indices,
+            size.0,
+            size.1,
+            texture,
+            fill,
+            mdc_model::MAX_GEOMETRY_VERTICES,
+        )?;
+    }
+    Ok(BakedTexture {
+        width: size.0,
+        height: size.1,
+        rgb565: pixels,
+    })
+}
+
+/// N185: render `frames` scene poses into atlas frames.
+pub fn bake_scene_frames(
+    model: &Model,
+    animation_index: usize,
+    frames: u32,
+    size: (u32, u32),
+    texture: Option<&crate::TextureMap>,
+    fallback: u16,
+) -> Result<Vec<BakedTexture>, BakeError> {
+    if frames == 0 || frames > 64 {
+        return Err(BakeError::FrameCount(frames as usize, 64));
+    }
+    let (start, end) = model
+        .animations
+        .get(animation_index)
+        .map(animation_span)
+        .unwrap_or((0.0, 0.0));
+    let mut out = Vec::with_capacity(frames as usize);
+    for frame in 0..frames {
+        let time = if frames > 1 {
+            start + (end - start) * (frame as f32) / ((frames - 1) as f32)
+        } else {
+            start
+        };
+        out.push(render_scene_at(
+            model,
+            animation_index,
+            time,
+            size,
+            texture,
+            fallback,
+        )?);
+    }
+    Ok(out)
+}
+
+/// N185: bake a whole multi-mesh scene into a `BakedSprites` package.
+pub fn bake_scene_to_package(
+    model: &Model,
+    animation_index: usize,
+    frames: u32,
+    size: (u32, u32),
+    texture: Option<&crate::TextureMap>,
+    fallback: u16,
+) -> Result<mdc_model::MdcPackage, BakeError> {
+    let baked = bake_scene_frames(model, animation_index, frames, size, texture, fallback)?;
+    frames_to_package(baked, frames, size)
+}
+
+/// N187: render a runtime package's mesh geometry to a frame. Uses the package's
+/// own `texture` blob and material colours; falls back to the preview when a
+/// mesh has no geometry.
+pub fn render_package_mesh(
+    package: &mdc_model::DevicePackage,
+    size: (u32, u32),
+) -> Result<BakedTexture, BakeError> {
+    if size.0 == 0 || size.1 == 0 || size.0 > 1024 || size.1 > 1024 {
+        return Err(BakeError::Budget(size.0, size.1));
+    }
+    let texture = match package.texture.as_ref().filter(|t| t.validate()) {
+        Some(blob) => Some(crate::TextureMap::from_rgb565(
+            blob.width,
+            blob.height,
+            blob.rgb565.clone(),
+        )?),
+        None => None,
+    };
+    let mut points = Vec::new();
+    let mut min = [f32::INFINITY; 2];
+    let mut max = [f32::NEG_INFINITY; 2];
+    for mesh in &package.meshes {
+        let Some(geometry) = resolve_geometry(mesh) else {
+            continue;
+        };
+        for p in &geometry.positions {
+            min[0] = min[0].min(p[0]);
+            min[1] = min[1].min(p[1]);
+            max[0] = max[0].max(p[0]);
+            max[1] = max[1].max(p[1]);
+            points.push(*p);
+        }
+    }
+    if points.is_empty() {
+        return Err(BakeError::Decode("package has no mesh geometry".into()));
+    }
+    let mut pixels = vec![0u8; (size.0 as usize) * (size.1 as usize) * 2];
+    for mesh in &package.meshes {
+        let Some(geometry) = resolve_geometry(mesh) else {
+            continue;
+        };
+        let projected = fit_to_box(&geometry.positions, min, max, size.0, size.1);
+        let uvs: Option<&[[f32; 2]]> =
+            if geometry.uv.len() >= geometry.positions.len() && !geometry.uv.is_empty() {
+                Some(&geometry.uv)
+            } else {
+                None
+            };
+        let fill = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .and_then(|material| material.color_rgb565())
+            .unwrap_or(0xF800);
+        crate::texture::draw_indexed(
+            &mut pixels,
+            &projected,
+            uvs,
+            &geometry.indices,
+            size.0,
+            size.1,
+            texture.as_ref(),
+            fill,
+            mdc_model::MAX_GEOMETRY_VERTICES,
+        )?;
+    }
+    Ok(BakedTexture {
+        width: size.0,
+        height: size.1,
+        rgb565: pixels,
+    })
+}
+
 /// N111: bake `frames` poses of the first skinned mesh in `model`, sampled from
 /// `animation_index` across its time span. At most 64 frames. Solid colour.
 pub fn bake_skinned_mesh(
@@ -1091,6 +1316,104 @@ mod tests {
         assert_eq!(package.manifest.mode, mdc_model::PackageMode::BakedSprites);
         let bytes = package.to_bytes().unwrap();
         assert_eq!(mdc_model::MdcPackage::from_bytes(&bytes).unwrap(), package);
+    }
+
+    fn quad_geometry() -> mdc_model::MeshGeometry {
+        mdc_model::MeshGeometry {
+            positions: vec![
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            skin_joints: Vec::new(),
+            skin_weights: Vec::new(),
+        }
+    }
+
+    fn two_mesh_model() -> Model {
+        let quad = |name: &str, material: usize| mdc_model::Mesh {
+            name: name.into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(material),
+            geometry: Some(quad_geometry()),
+            ..mdc_model::Mesh::default()
+        };
+        Model {
+            source: "test".into(),
+            nodes: vec![
+                Node {
+                    name: "root".into(),
+                    children: vec![1, 2],
+                    ..Node::default()
+                },
+                Node {
+                    name: "left".into(),
+                    mesh: Some(0),
+                    translation: [-0.6, 0.0, 0.0],
+                    ..Node::default()
+                },
+                Node {
+                    name: "right".into(),
+                    mesh: Some(1),
+                    translation: [0.6, 0.0, 0.0],
+                    ..Node::default()
+                },
+            ],
+            meshes: vec![quad("left", 0), quad("right", 1)],
+            materials: vec![
+                mdc_model::Material {
+                    name: "red".into(),
+                    texture: None,
+                    color: Some([255, 0, 0]),
+                },
+                mdc_model::Material {
+                    name: "green".into(),
+                    texture: None,
+                    color: Some([0, 255, 0]),
+                },
+            ],
+            ..Model::default()
+        }
+    }
+
+    #[test]
+    fn scene_render_draws_every_mesh_with_its_material() {
+        let model = two_mesh_model();
+        let frame = render_scene_at(&model, 0, 0.0, (32, 16), None, 0xFFFF).unwrap();
+        let at = |x: usize, y: usize| {
+            u16::from_le_bytes([
+                frame.rgb565[(y * 32 + x) * 2],
+                frame.rgb565[(y * 32 + x) * 2 + 1],
+            ])
+        };
+        // The left word is red, the right is green.
+        assert_eq!(at(6, 8), 0xF800, "left mesh red");
+        assert_eq!(at(25, 8), 0x07E0, "right mesh green");
+
+        let package = bake_scene_to_package(&model, 0, 3, (32, 16), None, 0xFFFF).unwrap();
+        let bytes = package.to_bytes().unwrap();
+        assert_eq!(mdc_model::MdcPackage::from_bytes(&bytes).unwrap(), package);
+    }
+
+    #[test]
+    fn package_mesh_render_draws_textured_geometry() {
+        let model = two_mesh_model();
+        // A mesh-mode package carries the geometry (not a baked atlas).
+        let package = crate::mesh_package_with_texture(
+            &model,
+            &mdc_model::RendererCapability::full_3d(),
+            None,
+        )
+        .unwrap();
+        let frame = render_package_mesh(&package.package, (16, 16)).unwrap();
+        assert!(frame
+            .rgb565
+            .chunks_exact(2)
+            .any(|px| px.iter().any(|b| *b != 0)));
     }
 
     #[test]

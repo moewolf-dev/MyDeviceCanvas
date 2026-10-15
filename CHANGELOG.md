@@ -2,6 +2,18 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.31] — Multi-mesh scene render (N183–N192)
+
+### Added
+
+- `texture::draw_indexed` — draw a bounded geometry into an existing framebuffer (N183)
+- `render_scene_at` renders every mesh node (skinned or node-placed) against one
+  bind-pose box with per-mesh material colour/texture (N184)
+- `bake_scene_frames` / `bake_scene_to_package` (N185)
+- `mdc render-mesh` renders the whole scene by default (`--single` for one mesh) (N186)
+- `render_package_mesh` + `mdc render-package` for mesh-mode packages (N187)
+- Multi-mesh compat fixture and scene render soak (N188, N189)
+
 ## [0.1.30] — Material colours + package textures (N173–N182)
 
 ### Added

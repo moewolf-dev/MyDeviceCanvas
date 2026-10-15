@@ -193,6 +193,15 @@ so frames do not jitter) and rasterises the real triangle list with UVs.
 animation. `mdc render-mesh` uses the geometry path automatically when present;
 the device double (`FakeDevice`) projects and draws the accepted geometry too.
 
+N184/N185: `render_scene_at` walks **every** mesh node — skinned meshes deform,
+plain meshes are placed by their node world transform — against one bind-pose box
+so multi-part models compose into one frame (each mesh uses its material colour or
+texture). `bake_scene_frames` / `bake_scene_to_package` bake the whole scene.
+`render_package_mesh` renders a mesh-mode `DevicePackage` (geometry + its texture
+blob) so `mdc render-package` works for mesh packages, not only baked atlases.
+`mdc render-mesh` renders the whole scene by default and a single mesh with
+`--single`.
+
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a
 mis-sized pixel buffer is still rejected.
