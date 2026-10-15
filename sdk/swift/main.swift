@@ -44,6 +44,20 @@ struct MdcSwiftHello {
             exit(1)
         }
 
+        // N246/N247: config round trip and package readiness.
+        if session.setConfig("brightness", "200") != 0 {
+            fputs("set config failed\n", stderr)
+            exit(1)
+        }
+        if session.getConfig("brightness") != "200" {
+            fputs("get config mismatch\n", stderr)
+            exit(1)
+        }
+        if session.installPackage([1, 2, 3]) != 0 || session.packageReady() != 0 {
+            fputs("bad package should not become ready\n", stderr)
+            exit(1)
+        }
+
         // Form B mirror over the async stream (simulator board with a GPU).
         let gpu = try! MdcSession(boardId: "linux-virt")
         let mirrorTask = Task {

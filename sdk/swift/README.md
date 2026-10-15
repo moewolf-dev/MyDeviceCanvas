@@ -40,4 +40,20 @@ final class MdcSession {
 Default session is **simulator FakeDevice** (same as CLI `--sim`). Physical transports are not exposed through the C ABI in 0.1.
 Also: `mdc_session_current_frame_id`, `mdc_session_surface_size`, `mdc_session_needs_full_frame`.
 
+## Package + config (N246)
+
+`MdcSession.swift` also wraps the newer C ABI calls:
+
+```swift
+try session.setConfig("brightness", "200")      // returns 0 / negative error
+let value = session.getConfig("brightness")     // "200" or nil
+let rc = session.installPackage(packageBytes)   // 0 on send; check readiness:
+if session.packageReady() == 1 { /* renderer ready */ }
+```
+
+`installPackage` acceptance is asynchronous (the device replies after commit), so
+poll `packageReady()` before treating the renderer as ready. `getConfig` returns
+`nil` for an unknown key; `setConfig` returns a negative code when the device
+rejects the value.
+
 License: Apache-2.0

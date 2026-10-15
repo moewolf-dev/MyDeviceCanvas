@@ -112,6 +112,25 @@ int mdc_set_scene(MdcSession* session, const char* json);
 /** Clear the vector scene. Returns 0 or -1. */
 int mdc_clear_scene(MdcSession* session);
 
+/**
+ * N243: upload a runtime package (`.mdcpkg` bytes).
+ * Returns 0 on send, -1 bad session, or -2 bad bytes. Acceptance is async:
+ * poll `mdc_package_ready` before treating the renderer as ready.
+ */
+int mdc_install_package(MdcSession* session, const uint8_t* bytes, size_t len);
+
+/** N243: 1 when the last accepted package is render-ready, 0 otherwise, -1 bad session. */
+int mdc_package_ready(MdcSession* session);
+
+/**
+ * N244: read a config value into `out` (NUL-terminated). Returns the length, or
+ * -1 bad session, -2 bad args, -3 unknown key, -4 buffer too small.
+ */
+int mdc_get_config(MdcSession* session, const char* key, char* out, size_t out_len);
+
+/** N244: write a config value. Returns 0, -1 bad session, -2 bad args, -3 rejected. */
+int mdc_set_config(MdcSession* session, const char* key, const char* value);
+
 /** Free a heap buffer returned by future helpers (no-op placeholder for symmetry). */
 void mdc_free(void* ptr);
 

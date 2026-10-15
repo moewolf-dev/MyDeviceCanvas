@@ -732,6 +732,105 @@ pub unsafe extern "C" fn mdc_clear_scene(session: *mut MdcSession) -> c_int {
     }
 }
 
+/// # Safety
+/// `session` must be alive. `bytes` must be readable for `len` when non-null.
+/// N243: upload a runtime package (`.mdcpkg` bytes). 0 on send, negative on
+/// error (-1 session, -2 bad bytes). Check `mdc_package_ready` for acceptance.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_install_package(
+    session: *mut MdcSession,
+    bytes: *const u8,
+    len: usize,
+) -> c_int {
+    let Some(session) = session.as_mut() else {
+        return -1;
+    };
+    if bytes.is_null() || len == 0 {
+        return -2;
+    }
+    let data = std::slice::from_raw_parts(bytes, len);
+    match session.session.install_package(data) {
+        Ok(_) => {
+            let _ = pump(session);
+            0
+        }
+        Err(_) => -3,
+    }
+}
+
+/// # Safety
+/// `session` must be alive. N243: 1 when the last accepted package is
+/// render-ready, 0 otherwise, -1 on a bad session.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_package_ready(session: *mut MdcSession) -> c_int {
+    let Some(session) = session.as_mut() else {
+        return -1;
+    };
+    let _ = pump(session);
+    match session.device.as_ref() {
+        Some(device) if device.package_ready() => 1,
+        _ => 0,
+    }
+}
+
+/// # Safety
+/// `session` alive; `key` NUL-terminated; `out` points to `out_len` writable
+/// bytes when non-null. N244: read a config value into `out`; returns the length
+/// or a negative error (-1 session, -2 bad args, -3 unknown key, -4 too small).
+#[no_mangle]
+pub unsafe extern "C" fn mdc_get_config(
+    session: *mut MdcSession,
+    key: *const c_char,
+    out: *mut c_char,
+    out_len: usize,
+) -> c_int {
+    let Some(session) = session.as_mut() else {
+        return -1;
+    };
+    if key.is_null() || out.is_null() || out_len == 0 {
+        return -2;
+    }
+    let key = CStr::from_ptr(key).to_string_lossy().to_string();
+    if session.session.get_config(&key).is_err() {
+        return -3;
+    }
+    let _ = pump(session);
+    let value = session.session.config(&key).unwrap_or("");
+    let bytes = value.as_bytes();
+    if bytes.len() + 1 > out_len {
+        return -4;
+    }
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), out as *mut u8, bytes.len());
+    *out.add(bytes.len()) = 0;
+    bytes.len() as c_int
+}
+
+/// # Safety
+/// `session` alive; `key`/`value` NUL-terminated. N244: write a config value.
+/// 0 on success, negative on error (-1 session, -2 bad args, -3 device rejected).
+#[no_mangle]
+pub unsafe extern "C" fn mdc_set_config(
+    session: *mut MdcSession,
+    key: *const c_char,
+    value: *const c_char,
+) -> c_int {
+    let Some(session) = session.as_mut() else {
+        return -1;
+    };
+    if key.is_null() || value.is_null() {
+        return -2;
+    }
+    let key = CStr::from_ptr(key).to_string_lossy().to_string();
+    let value = CStr::from_ptr(value).to_string_lossy().to_string();
+    match session.session.set_config(&key, &value) {
+        Ok(_) => {
+            let _ = pump(session);
+            0
+        }
+        Err(_) => -3,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1083,6 +1182,39 @@ mod tests {
             assert_eq!(mdc_clear_scene(session), 0);
             let bad = std::ffi::CString::new("not json").unwrap();
             assert_eq!(mdc_set_scene(session, bad.as_ptr()), -2);
+            mdc_session_destroy(session);
+        }
+    }
+
+    #[test]
+    fn config_round_trip_and_package_errors_via_c_abi() {
+        unsafe {
+            let session = mdc_session_create();
+            assert!(!session.is_null());
+            // N244: config round trip.
+            let key = std::ffi::CString::new("brightness").unwrap();
+            let value = std::ffi::CString::new("200").unwrap();
+            assert_eq!(mdc_set_config(session, key.as_ptr(), value.as_ptr()), 0);
+            let mut out = [0i8; 32];
+            let n = mdc_get_config(session, key.as_ptr(), out.as_mut_ptr(), out.len());
+            assert!(n > 0);
+            let text = std::ffi::CStr::from_ptr(out.as_ptr()).to_string_lossy();
+            assert_eq!(text, "200");
+            // Unknown key is refused.
+            let unknown = std::ffi::CString::new("nope").unwrap();
+            assert_eq!(
+                mdc_get_config(session, unknown.as_ptr(), out.as_mut_ptr(), out.len()),
+                -3
+            );
+            // N243: a bad package sends (0) but never becomes ready.
+            let bad = [1u8, 2, 3];
+            assert_eq!(mdc_install_package(session, bad.as_ptr(), bad.len()), 0);
+            assert_eq!(mdc_package_ready(session), 0);
+            assert_eq!(mdc_install_package(session, std::ptr::null(), 0), -2);
+            assert_eq!(
+                mdc_install_package(std::ptr::null_mut(), bad.as_ptr(), bad.len()),
+                -1
+            );
             mdc_session_destroy(session);
         }
     }

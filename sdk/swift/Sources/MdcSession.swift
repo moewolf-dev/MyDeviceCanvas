@@ -116,6 +116,43 @@ public final class MdcSession {
         return mdc_clear_scene(raw)
     }
 
+    /// N246: upload a runtime package (`.mdcpkg` bytes). 0 on send.
+    public func installPackage(_ bytes: [UInt8]) -> Int32 {
+        guard let raw else { return -1 }
+        return bytes.withUnsafeBufferPointer { buffer in
+            mdc_install_package(raw, buffer.baseAddress, buffer.count)
+        }
+    }
+
+    /// N246: 1 when the last accepted package is render-ready, else 0.
+    public func packageReady() -> Int32 {
+        guard let raw else { return -1 }
+        return mdc_package_ready(raw)
+    }
+
+    /// N246: read a config value.
+    public func getConfig(_ key: String) -> String? {
+        guard let raw else { return nil }
+        var out = [CChar](repeating: 0, count: 128)
+        let n = key.withCString { k in
+            out.withUnsafeMutableBufferPointer { buffer in
+                mdc_get_config(raw, k, buffer.baseAddress, buffer.count)
+            }
+        }
+        guard n >= 0 else { return nil }
+        return String(cString: out)
+    }
+
+    /// N246: write a config value. 0 on success.
+    public func setConfig(_ key: String, _ value: String) -> Int32 {
+        guard let raw else { return -1 }
+        return key.withCString { k in
+            value.withCString { v in
+                mdc_set_config(raw, k, v)
+            }
+        }
+    }
+
     public func simulateInput(phase: String, x: UInt16, y: UInt16) -> Int32 {
         guard let raw else { return -1 }
         return phase.withCString { text in

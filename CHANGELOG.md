@@ -2,6 +2,17 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.37] — C ABI + Swift package/config (N243–N252)
+
+### Added
+
+- C ABI `mdc_install_package` / `mdc_package_ready` / `mdc_get_config` /
+  `mdc_set_config` + header declarations (N243, N244)
+- C ABI tests for config round trip and package readiness (N245)
+- Swift `installPackage` / `packageReady` / `getConfig` / `setConfig` (N246)
+- Swift smoke exercises config + package readiness (N247)
+- `sdk/swift/README.md` documents the new surface (N248)
+
 ## [0.1.36] — Node SDK package install (N233–N242)
 
 ### Added
