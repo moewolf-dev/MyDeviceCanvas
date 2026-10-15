@@ -2,6 +2,15 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.38] — CUBICSPLINE animation sampling (N253–N262)
+
+### Added
+
+- `sample_channel` implements glTF `CUBICSPLINE` as a cubic Hermite using the
+  per-key in/out tangents; rotation results are normalized (N253, N254)
+- `sample_channel_looped` wraps time into a clip's span for looping playback (N255)
+- Cubic and looped sampling unit tests, a compat fixture and a sampling soak (N256–N258)
+
 ## [0.1.37] — C ABI + Swift package/config (N243–N252)
 
 ### Added

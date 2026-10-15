@@ -177,8 +177,9 @@ pub fn animation_span(animation: &Animation) -> (f32, f32) {
     }
 }
 
-/// Sample a channel at `time` into `components` values. `CUBICSPLINE` is read as
-/// `LINEAR` on the key value; rotation-sized (4) channels use slerp.
+/// Sample a channel at `time` into `components` values. N253: `CUBICSPLINE` uses
+/// the per-key in/out tangents (cubic Hermite); rotation-sized (4) channels are
+/// normalized. `LINEAR`/`STEP` are as before.
 pub fn sample_channel(track: &mdc_model::AnimationTrack, components: usize, time: f32) -> Vec<f32> {
     let mut out = vec![0.0f32; components];
     if components == 4 {
@@ -189,12 +190,15 @@ pub fn sample_channel(track: &mdc_model::AnimationTrack, components: usize, time
     if stride == 0 {
         return out;
     }
-    let value_at = |key: usize| -> Vec<f32> {
-        let base = key * stride + if cubic { components } else { 0 };
+    // CUBICSPLINE stores [in-tangent, value, out-tangent] per key.
+    let values_at = |key: usize, offset: usize| -> Vec<f32> {
+        let base = key * stride + offset;
         (0..components)
             .map(|k| track.values.get(base + k).copied().unwrap_or(0.0))
             .collect()
     };
+    let value_offset = if cubic { components } else { 0 };
+    let value_at = |key: usize| values_at(key, value_offset);
     let count = track.times.len();
     if count == 0 || track.values.len() < components {
         return out;
@@ -220,16 +224,57 @@ pub fn sample_channel(track: &mdc_model::AnimationTrack, components: usize, time
     let b = value_at(lower + 1);
     let t0 = track.times[lower];
     let t1 = track.times[lower + 1];
-    let f = if t1 > t0 {
-        ((time - t0) / (t1 - t0)).clamp(0.0, 1.0)
+    let span = t1 - t0;
+    let f = if span > 0.0 {
+        ((time - t0) / span).clamp(0.0, 1.0)
     } else {
         0.0
     };
+    if cubic {
+        // Hermite: out-tangent of key0 and in-tangent of key1, scaled by span.
+        let out0 = values_at(lower, components * 2);
+        let in1 = values_at(lower + 1, 0);
+        let h00 = 2.0 * f * f * f - 3.0 * f * f + 1.0;
+        let h10 = f * f * f - 2.0 * f * f + f;
+        let h01 = -2.0 * f * f * f + 3.0 * f * f;
+        let h11 = f * f * f - f * f;
+        let result: Vec<f32> = (0..components)
+            .map(|k| {
+                h00 * a[k]
+                    + h10 * span * out0.get(k).copied().unwrap_or(0.0)
+                    + h01 * b[k]
+                    + h11 * span * in1.get(k).copied().unwrap_or(0.0)
+            })
+            .collect();
+        if components == 4 {
+            return normalize4([result[0], result[1], result[2], result[3]]).to_vec();
+        }
+        return result;
+    }
     if components == 4 {
         slerp([a[0], a[1], a[2], a[3]], [b[0], b[1], b[2], b[3]], f).to_vec()
     } else {
         (0..components).map(|k| a[k] + (b[k] - a[k]) * f).collect()
     }
+}
+
+/// N255: sample with looping — `time` is wrapped into `[start, end)` when
+/// `looping`, otherwise clamped. `start`/`end` come from `animation_span`.
+pub fn sample_channel_looped(
+    track: &mdc_model::AnimationTrack,
+    components: usize,
+    time: f32,
+    start: f32,
+    end: f32,
+    looping: bool,
+) -> Vec<f32> {
+    let time = if end > start && looping {
+        let span = end - start;
+        start + (time - start).rem_euclid(span)
+    } else {
+        time
+    };
+    sample_channel(track, components, time)
 }
 
 /// Sample one transform channel at `time`. Returns up to four components.
@@ -1648,6 +1693,46 @@ mod tests {
         assert_ne!(
             neutral.rgb565, smiled.rgb565,
             "geometry morph moved the quad"
+        );
+    }
+
+    #[test]
+    fn cubicspline_uses_in_out_tangents() {
+        // One component: [in0, val0, out0, in1, val1, out1] with zero tangents
+        // (ease-in-out) over one second.
+        let track = AnimationTrack {
+            node: 0,
+            path: "translation".into(),
+            interpolation: "CUBICSPLINE".into(),
+            times: vec![0.0, 1.0],
+            values: vec![0.0, 0.0, 0.0, 0.0, 10.0, 0.0],
+        };
+        assert_eq!(sample_channel(&track, 1, 0.0), vec![0.0]);
+        assert_eq!(sample_channel(&track, 1, 1.0), vec![10.0]);
+        assert_eq!(sample_channel(&track, 1, 0.5), vec![5.0]);
+        // Ease-in: the quarter point is below the linear value.
+        let quarter = sample_channel(&track, 1, 0.25)[0];
+        assert!(quarter < 2.5, "ease-in quarter {quarter}");
+    }
+
+    #[test]
+    fn looped_sampling_wraps_into_the_span() {
+        let track = AnimationTrack {
+            node: 0,
+            path: "translation".into(),
+            interpolation: "LINEAR".into(),
+            times: vec![0.0, 1.0],
+            values: vec![0.0, 10.0],
+        };
+        // 2.5s wraps to 0.5s.
+        assert_eq!(
+            sample_channel_looped(&track, 1, 2.5, 0.0, 1.0, true),
+            vec![5.0]
+        );
+        // Not looping: clamped to the last value.
+        assert_eq!(
+            sample_channel_looped(&track, 1, 2.5, 0.0, 1.0, false),
+            vec![10.0]
         );
     }
 

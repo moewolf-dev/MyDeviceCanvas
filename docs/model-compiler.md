@@ -143,9 +143,12 @@ Once a glTF skin is present, `mdc-bake` deforms the preview mesh instead of
 cycling a source image:
 
 - `pose_world_matrices(nodes, animation, time)` samples each transform channel
-  (`STEP`, `LINEAR`, slerp for rotation; `CUBICSPLINE` sampled as `LINEAR` on the
-  key value) into per-node local matrices and composes them through the node
-  hierarchy (`world = parent_world × local`; a cycle cannot loop forever).
+  (`STEP`, `LINEAR`, slerp for rotation; N253 `CUBICSPLINE` uses the per-key
+  in/out tangents as a cubic Hermite, normalizing a rotation result) into
+  per-node local matrices and composes them through the node hierarchy
+  (`world = parent_world × local`; a cycle cannot loop forever).
+  `sample_channel_looped` (N255) wraps `time` into `[start, end)` for a looping
+  clip instead of clamping.
 - `skin_preview(mesh, skeleton, worlds)` runs linear blend skinning: each preview
   vertex is `Σ wᵢ · (world(jointᵢ) × inverseBindᵢ) · position`, normalized by the
   weight sum. A vertex with no usable weight keeps its bind position.

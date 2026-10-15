@@ -51,6 +51,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 41 | N223–N232: geometry morph targets (blend shapes) import + render (host + device mirror), fixtures + soak | sim-verified |
 | 42 | N233–N242: Node SDK `installPackage`/`packageReady`, native smoke + JS mock tests, Electron helper, `docs/node-sdk.md` | sim-verified |
 | 43 | N243–N252: C ABI + Swift `installPackage`/`packageReady`/`getConfig`/`setConfig`, C ABI tests + Swift smoke, docs | sim-verified |
+| 44 | N253–N262: `CUBICSPLINE` Hermite sampling + rotation normalize, `sample_channel_looped`, fixtures + soak | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 

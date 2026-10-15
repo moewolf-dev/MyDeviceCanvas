@@ -778,6 +778,41 @@ fn material_colour_tints_the_package_texture_on_the_device() {
 }
 
 #[test]
+fn cubicspline_sampling_is_deterministic_and_bounded() {
+    use mdc_model::AnimationTrack;
+    let cubic = AnimationTrack {
+        node: 0,
+        path: "translation".into(),
+        interpolation: "CUBICSPLINE".into(),
+        times: vec![0.0, 1.0],
+        values: vec![0.0, 0.0, 0.0, 0.0, 10.0, 0.0],
+    };
+    let linear = AnimationTrack {
+        node: 0,
+        path: "translation".into(),
+        interpolation: "LINEAR".into(),
+        times: vec![0.0, 1.0],
+        values: vec![0.0, 10.0],
+    };
+    // Cubic eases in, so its quarter point differs from the linear one.
+    let cubic_quarter = mdc_bake::sample_channel(&cubic, 1, 0.25)[0];
+    let linear_quarter = mdc_bake::sample_channel(&linear, 1, 0.25)[0];
+    assert!(cubic_quarter < linear_quarter);
+    // A truncated cubic stream never panics and stays finite.
+    let truncated = AnimationTrack {
+        values: vec![0.0, 1.0],
+        ..cubic
+    };
+    let value = mdc_bake::sample_channel(&truncated, 1, 0.5)[0];
+    assert!(value.is_finite());
+    // Looping wraps negative time too.
+    assert_eq!(
+        mdc_bake::sample_channel_looped(&linear, 1, -0.5, 0.0, 1.0, true),
+        vec![5.0]
+    );
+}
+
+#[test]
 fn device_renders_a_morph_animated_geometry_package() {
     use mdc_core::{ConnectionState, Session};
     use mdc_model::{Animation, AnimationTrack, Material, Mesh, MeshGeometry, Model, Node};

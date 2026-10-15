@@ -102,6 +102,24 @@ fn mirror_receiver_soak_is_bounded() {
 }
 
 #[test]
+fn cubicspline_sampling_soak_is_bounded() {
+    use mdc_model::AnimationTrack;
+    let track = AnimationTrack {
+        node: 0,
+        path: "translation".into(),
+        interpolation: "CUBICSPLINE".into(),
+        times: vec![0.0, 1.0],
+        values: vec![0.0, 0.0, 0.0, 0.0, 10.0, 0.0],
+    };
+    for i in 0..100_000u32 {
+        let t = (i % 1001) as f32 / 1000.0;
+        let v = mdc_bake::sample_channel(&track, 1, t)[0];
+        assert!(v.is_finite());
+        assert!((-0.5..=10.5).contains(&v), "cubic stays near range ({v})");
+    }
+}
+
+#[test]
 fn geometry_morph_render_soak_is_bounded() {
     use mdc_model::{Animation, AnimationTrack, Material, Mesh, MeshGeometry, Model, Node};
 
