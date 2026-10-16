@@ -1055,6 +1055,29 @@ pub fn render_package_scene(
     time: f32,
     size: (u32, u32),
 ) -> Result<BakedTexture, BakeError> {
+    render_package_scene_clip(package, SceneClip::First, time, size)
+}
+
+/// N315: which package animation the device renderer poses at `time`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SceneClip {
+    /// No animation: place nodes at their static world transform.
+    Static,
+    /// Pose with `animations[index]`; an out-of-range index renders static.
+    Index(usize),
+    /// Pose with the first animation (the legacy default).
+    #[default]
+    First,
+}
+
+/// N315: like [`render_package_scene`] but selects the animation clip explicitly,
+/// so a device can play more than `animations.first()`.
+pub fn render_package_scene_clip(
+    package: &mdc_model::DevicePackage,
+    clip: SceneClip,
+    time: f32,
+    size: (u32, u32),
+) -> Result<BakedTexture, BakeError> {
     if size.0 == 0 || size.1 == 0 || size.0 > 1024 || size.1 > 1024 {
         return Err(BakeError::Budget(size.0, size.1));
     }
@@ -1072,7 +1095,12 @@ pub fn render_package_scene(
         }
         None => None,
     };
-    let worlds = match package.animations.first() {
+    let animation = match clip {
+        SceneClip::Static => None,
+        SceneClip::First => package.animations.first(),
+        SceneClip::Index(index) => package.animations.get(index),
+    };
+    let worlds = match animation {
         Some(animation) => pose_world_matrices(&package.nodes, animation, time),
         None => node_world_matrices(&package.nodes),
     };
@@ -1086,13 +1114,7 @@ pub fn render_package_scene(
             continue;
         };
         // N226: morph the geometry before skinning / placement.
-        let morphed = morphed_positions(
-            geometry,
-            mesh,
-            package.animations.first(),
-            Some(index),
-            time,
-        );
+        let morphed = morphed_positions(geometry, mesh, animation, Some(index), time);
         let deformed: Vec<[f32; 3]> = if !geometry.skin_joints.is_empty() {
             match skeleton {
                 Some(skeleton) => skin_arrays(
@@ -1677,6 +1699,48 @@ mod tests {
         let posed = render_package_scene(&package.package, 1.0, (24, 24)).unwrap();
         assert_eq!((bind.width, bind.height), (24, 24));
         assert_ne!(bind.rgb565, posed.rgb565, "node animation moved a mesh");
+    }
+
+    #[test]
+    fn scene_clip_selects_between_package_animations() {
+        let clip = |name: &str, x: f32| Animation {
+            name: name.into(),
+            channels: 1,
+            tracks: vec![AnimationTrack {
+                node: 1,
+                path: "translation".into(),
+                interpolation: "LINEAR".into(),
+                times: vec![0.0, 1.0],
+                values: vec![x, 0.0, 0.0, x, 0.0, 0.0],
+            }],
+        };
+        let mut model = two_mesh_model();
+        model.animations = vec![clip("left", -0.6), clip("right", 0.6)];
+        let package = crate::mesh_package_with_texture(
+            &model,
+            &mdc_model::RendererCapability::full_3d(),
+            None,
+        )
+        .unwrap();
+        let first =
+            render_package_scene_clip(&package.package, SceneClip::First, 0.0, (24, 24)).unwrap();
+        let left = render_package_scene_clip(&package.package, SceneClip::Index(0), 0.0, (24, 24))
+            .unwrap();
+        let right = render_package_scene_clip(&package.package, SceneClip::Index(1), 0.0, (24, 24))
+            .unwrap();
+        let still =
+            render_package_scene_clip(&package.package, SceneClip::Static, 0.0, (24, 24)).unwrap();
+        // First == the first animation; the two clips and the static pose differ.
+        assert_eq!(first.rgb565, left.rgb565);
+        assert_ne!(
+            left.rgb565, right.rgb565,
+            "different clips pose differently"
+        );
+        assert_ne!(still.rgb565, right.rgb565);
+        // An out-of-range index has no animation: it renders the static pose.
+        let oob = render_package_scene_clip(&package.package, SceneClip::Index(9), 0.0, (24, 24))
+            .unwrap();
+        assert_eq!(oob.rgb565, still.rgb565);
     }
 
     #[test]

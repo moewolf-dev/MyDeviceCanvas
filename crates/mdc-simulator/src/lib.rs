@@ -1037,6 +1037,8 @@ pub struct FakeDevice {
     texture: Option<mdc_model::TextureBlob>,
     /// N195: the accepted mesh package, rendered as a multi-mesh scene.
     mesh_scene: Option<mdc_model::DevicePackage>,
+    /// N315: which package animation the device poses (default: first).
+    mesh_clip: mdc_bake::SceneClip,
     /// N178: UVs for the accepted geometry preview, parallel to `preview_xy`.
     preview_uv: Vec<[f32; 2]>,
     /// N176/N178: fill colour for the preview when no texture is sampled.
@@ -1106,6 +1108,7 @@ impl FakeDevice {
             atlas: None,
             texture: None,
             mesh_scene: None,
+            mesh_clip: mdc_bake::SceneClip::First,
             preview_uv: Vec::new(),
             preview_color: 0xF800,
             preview_masked: false,
@@ -1789,8 +1792,12 @@ impl FakeDevice {
         if let Some(scene) = self.mesh_scene.clone() {
             if scene.meshes.iter().any(|m| m.geometry.is_some()) {
                 let seconds = self.clock.tick as f32 / 1000.0;
-                if let Ok(frame) = mdc_bake::render_package_scene(&scene, seconds, (width, height))
-                {
+                if let Ok(frame) = mdc_bake::render_package_scene_clip(
+                    &scene,
+                    self.mesh_clip,
+                    seconds,
+                    (width, height),
+                ) {
                     let len = frame.rgb565.len().min(self.pixels.len());
                     self.pixels[..len].copy_from_slice(&frame.rgb565[..len]);
                     return true;
@@ -2005,11 +2012,20 @@ impl FakeDevice {
         self.write_control(MessageType::Config, 0, &reply)
     }
     /// N71: `config animation <clip|off>` starts/stops the atlas runtime.
+    /// N315: for an installed mesh package it selects one of the package's own
+    /// animations (`<index>|<name>|default|off`) instead.
     fn handle_animation_config(
         &mut self,
         packet: &Packet,
         command: &ConfigCommand,
     ) -> Result<(), SimError> {
+        if self
+            .mesh_scene
+            .as_ref()
+            .is_some_and(|scene| scene.meshes.iter().any(|mesh| mesh.geometry.is_some()))
+        {
+            return self.handle_mesh_clip_config(packet, command);
+        }
         match command.action.as_str() {
             "get" => {
                 let value = self.anim_clip.clone().unwrap_or_else(|| "off".to_string());
@@ -2061,10 +2077,69 @@ impl FakeDevice {
         self.anim_clip = None;
         self.anim_prev_frame = None;
         self.anim_crossfade_ms = 0;
+        // N315: a new package resets the mesh clip selection to the default.
+        self.mesh_clip = mdc_bake::SceneClip::First;
     }
     /// Form B: true once a host MirrorCtrl start has been accepted.
     pub fn mirror_active(&self) -> bool {
         self.mirror_active
+    }
+    /// N315: the mesh package animation currently selected.
+    pub fn mesh_clip(&self) -> mdc_bake::SceneClip {
+        self.mesh_clip
+    }
+    /// N315: select a mesh package animation by index/name; `off` renders static.
+    fn handle_mesh_clip_config(
+        &mut self,
+        _packet: &Packet,
+        command: &ConfigCommand,
+    ) -> Result<(), SimError> {
+        let names: Vec<String> = self
+            .mesh_scene
+            .as_ref()
+            .map(|scene| scene.animations.iter().map(|a| a.name.clone()).collect())
+            .unwrap_or_default();
+        match command.action.as_str() {
+            "get" => {
+                let value = match self.mesh_clip {
+                    mdc_bake::SceneClip::Static => "off".to_string(),
+                    mdc_bake::SceneClip::First => {
+                        names.first().cloned().unwrap_or_else(|| "default".into())
+                    }
+                    mdc_bake::SceneClip::Index(index) => names
+                        .get(index)
+                        .cloned()
+                        .unwrap_or_else(|| index.to_string()),
+                };
+                self.reply_config("animation", true, Some(value), None)
+            }
+            "set" => {
+                let value = command.value.clone().unwrap_or_default();
+                if value.is_empty() || value == "off" {
+                    self.mesh_clip = mdc_bake::SceneClip::Static;
+                    return self.reply_config("animation", true, Some("off".into()), None);
+                }
+                if value == "default" {
+                    self.mesh_clip = mdc_bake::SceneClip::First;
+                    return self.reply_config("animation", true, Some("default".into()), None);
+                }
+                if let Ok(index) = value.parse::<usize>() {
+                    if index < names.len() {
+                        self.mesh_clip = mdc_bake::SceneClip::Index(index);
+                        return self.reply_config("animation", true, Some(value), None);
+                    }
+                    return self.reply_config("animation", false, None, Some("E_VALUE"));
+                }
+                match names.iter().position(|name| name == &value) {
+                    Some(index) => {
+                        self.mesh_clip = mdc_bake::SceneClip::Index(index);
+                        self.reply_config("animation", true, Some(value), None)
+                    }
+                    None => self.reply_config("animation", false, None, Some("E_VALUE")),
+                }
+            }
+            _ => self.reply_config("animation", false, None, Some("E_ACTION")),
+        }
     }
     /// N263: the negotiated mirror mode ("full-frame" | "dirty-region").
     pub fn mirror_mode(&self) -> &str {

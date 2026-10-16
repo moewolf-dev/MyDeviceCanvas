@@ -1198,6 +1198,113 @@ fn device_renders_an_animated_mesh_package_scene() {
 }
 
 #[test]
+fn device_mesh_package_selects_a_named_clip() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_model::{Animation, AnimationTrack, Material, Mesh, MeshGeometry, Model, Node};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let mesh = Mesh {
+        name: "body".into(),
+        vertices: 4,
+        indices: 6,
+        material: Some(0),
+        geometry: Some(MeshGeometry {
+            positions: vec![
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uv: Vec::new(),
+            skin_joints: Vec::new(),
+            skin_weights: Vec::new(),
+            morph_targets: Vec::new(),
+        }),
+        ..Mesh::default()
+    };
+    let clip = |name: &str, x: f32| Animation {
+        name: name.into(),
+        channels: 1,
+        tracks: vec![AnimationTrack {
+            node: 1,
+            path: "translation".into(),
+            interpolation: "LINEAR".into(),
+            times: vec![0.0, 1.0],
+            values: vec![x, 0.0, 0.0, x, 0.0, 0.0],
+        }],
+    };
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![
+            Node {
+                name: "root".into(),
+                children: vec![1],
+                ..Node::default()
+            },
+            Node {
+                name: "body".into(),
+                mesh: Some(0),
+                ..Node::default()
+            },
+        ],
+        meshes: vec![mesh],
+        materials: vec![Material {
+            name: "red".into(),
+            color: Some([255, 0, 0]),
+            ..Default::default()
+        }],
+        animations: vec![clip("left", -0.6), clip("right", 0.6)],
+        ..Model::default()
+    };
+    let package = mdc_bake::mesh_package_with_texture(
+        &model,
+        &mdc_model::RendererCapability::full_3d(),
+        None,
+    )
+    .unwrap();
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .install_package(&package.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.package_ready());
+    session.start_mirror("main", "full-frame", 30).unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    let mirror_at_zero = |session: &mut Session<MemoryLink>, device: &mut FakeDevice| -> Vec<u8> {
+        device.clock.advance(0);
+        device.emit_mirror_frame().unwrap();
+        session.poll().unwrap();
+        session.take_mirror_frame().expect("mirror frame").bytes
+    };
+
+    // N315: select the second clip by name; the device pose changes.
+    assert!(session.set_animation("left").unwrap() > 0);
+    device.poll().unwrap();
+    session.poll().unwrap();
+    let left = mirror_at_zero(&mut session, &mut device);
+    assert!(session.set_animation("right").unwrap() > 0);
+    device.poll().unwrap();
+    session.poll().unwrap();
+    let right = mirror_at_zero(&mut session, &mut device);
+    assert_ne!(left, right, "selecting a different clip moved the mesh");
+
+    // An unknown clip name is refused and keeps the previous selection.
+    assert!(session.set_animation("nope").unwrap() > 0);
+    device.poll().unwrap();
+    let _ = session.poll();
+    assert_eq!(device.mesh_clip(), mdc_bake::SceneClip::Index(1));
+}
+
+#[test]
 fn multi_mesh_scene_bakes_and_reaches_a_device() {
     use mdc_core::{ConnectionState, Session};
     use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};

@@ -148,6 +148,11 @@ still receive a baked sprite atlas, Form A). It reuses `mdc-bake` and so is not 
 separate renderer implementation; a real device would implement the same math in
 its own runtime.
 
+N315: a mesh package can carry several animations; `config animation
+<index>|<name>|default|off` selects which one the device poses
+(`SceneClip::{Index,First,Static}` in `mdc-bake`), so the device is not limited to
+`animations.first()`.
+
 ### 4.2 Dirty-region emission (device → host, N263/N264)
 
 When a device advertises `mirror.mode` containing `dirty-region` and the host
