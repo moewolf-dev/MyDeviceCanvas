@@ -1334,6 +1334,75 @@ fn device_diagnostics_reach_the_host_channel() {
 }
 
 #[test]
+fn mirror_http_stream_pushes_device_frames() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+    use std::io::{Read, Write};
+    use std::time::Duration;
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 8,
+        height: 4,
+        mirror: true,
+        mirror_fps: 15,
+        device_id: "sim-http".into(),
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session.start_mirror("main", "full-frame", 15).unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    let mut http = mdc_mirror::HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+    let addr = http.local_addr().unwrap();
+    let mut client = std::net::TcpStream::connect(addr).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_millis(20)))
+        .unwrap();
+    client
+        .write_all(b"GET /stream HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+
+    let mut response = Vec::new();
+    for _ in 0..3 {
+        for _ in 0..10 {
+            device.emit_mirror_frame().unwrap();
+            session.poll().unwrap();
+            if let Some(frame) = session.take_mirror_frame() {
+                http.publish(&mdc_mirror::ShadowFrame {
+                    width: frame.width,
+                    height: frame.height,
+                    generation: frame.frame_id,
+                    frame_id: frame.frame_id,
+                    pixels: &frame.bytes,
+                });
+                break;
+            }
+        }
+        for _ in 0..10 {
+            let _ = http.pump();
+            let mut buffer = [0u8; 8192];
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => response.extend_from_slice(&buffer[..n]),
+                Err(_) => std::thread::sleep(Duration::from_millis(2)),
+            }
+        }
+    }
+    let head = String::from_utf8_lossy(&response);
+    assert!(
+        head.contains("multipart/x-mixed-replace; boundary=mdcframe"),
+        "{head:.80}"
+    );
+    let parts = response.windows(10).filter(|w| *w == b"--mdcframe").count();
+    assert!(parts >= 2, "expected a live stream of parts, got {parts}");
+    assert_eq!(http.streaming_clients(), 1);
+}
+
+#[test]
 fn multi_mesh_scene_bakes_and_reaches_a_device() {
     use mdc_core::{ConnectionState, Session};
     use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};

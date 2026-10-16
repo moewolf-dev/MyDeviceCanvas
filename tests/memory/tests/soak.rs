@@ -1124,3 +1124,47 @@ fn scene_render_soak_is_bounded() {
         assert_eq!(device.pixel_rgb565(5, 5), Some(0x07E0));
     }
 }
+
+#[test]
+fn diagnostics_and_text_wrap_stay_bounded() {
+    use mdc_protocol::SceneNode;
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 40,
+        height: 24,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    // N316: the host diagnostic queue is bounded and every metric round-trips.
+    let mut total = 0u64;
+    for i in 0..500 {
+        device
+            .emit_metric("tick", f64::from(i), Some("tick"))
+            .unwrap();
+        session.poll().unwrap();
+        total += session.take_diagnostics().len() as u64;
+        assert!(session.diagnostic_count() <= mdc_core::MAX_DIAGNOSTICS);
+    }
+    assert_eq!(total, 500);
+
+    // N318: wrapped multi-line text keeps a fixed framebuffer.
+    session
+        .set_scene(SceneNode {
+            name: "label".into(),
+            kind: "text".into(),
+            rect: Some([0, 0, 30, 7]),
+            value: Some("hello world hello world".into()),
+            children: Vec::new(),
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    let len = device.framebuffer().len();
+    for _ in 0..500 {
+        assert!(device.render_scene());
+        assert_eq!(device.framebuffer().len(), len, "framebuffer size is fixed");
+    }
+}
