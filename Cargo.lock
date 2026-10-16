@@ -346,6 +346,7 @@ dependencies = [
  "mdc-model",
  "mdc-protocol",
  "mdc-provision",
+ "mdc-schedule",
  "mdc-simulator",
  "mdc-transport",
  "serde",

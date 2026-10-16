@@ -1071,6 +1071,9 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
     let mut serve: Option<String> = None;
     let mut http: Option<String> = None;
     let mut format = String::from("ppm");
+    let mut source_fps: u16 = 30;
+    let mut max_fps: Option<u16> = None;
+    let mut bandwidth: Option<u64> = None;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -1081,6 +1084,14 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
             "--serve" => serve = iter.next().cloned(),
             "--http" => http = iter.next().cloned(),
             "--format" => format = iter.next().cloned().unwrap_or(format),
+            "--source-fps" => {
+                source_fps = iter
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(source_fps)
+            }
+            "--max-fps" => max_fps = iter.next().and_then(|v| v.parse().ok()),
+            "--bandwidth" => bandwidth = iter.next().and_then(|v| v.parse().ok()),
             _ => {}
         }
     }
@@ -1088,7 +1099,25 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
     if !session.supports_mirror() {
         return Err(format!("board {} does not advertise mirror", opts.board).into());
     }
-    session.start_mirror("main", "full-frame", 15)?;
+    // N314: pace output with `mdc-schedule`. The default ceiling is the device's
+    // advertised mirror fps (never above the source rate), and the default byte
+    // budget is the device's advertised mirror bandwidth.
+    let advertised_fps = session
+        .device
+        .as_ref()
+        .map(|d| d.capabilities.mirror_fps)
+        .unwrap_or(0);
+    let advertised_bandwidth = session
+        .device
+        .as_ref()
+        .map(|d| d.capabilities.mirror_bandwidth)
+        .unwrap_or(0);
+    let source_fps = source_fps.max(1);
+    let ceiling = max_fps.unwrap_or_else(|| advertised_fps.max(1).min(source_fps));
+    let byte_budget = bandwidth.unwrap_or(advertised_bandwidth);
+    let mut scheduler = mdc_schedule::Scheduler::new(ceiling, byte_budget);
+    let tick_ms = (1000 / u64::from(source_fps)).max(1);
+    session.start_mirror("main", "full-frame", ceiling)?;
     device.poll()?;
     session.poll()?;
 
@@ -1116,13 +1145,39 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
     }
 
     let mut frames_seen = 0u64;
-    for _ in 0..frames {
+    let mut paced_deferred = 0u64;
+    let mut paced_dropped = 0u64;
+    for index in 0..frames {
+        // Each loop step models one source frame at `source_fps`; the device
+        // clock advances so device-side animation keeps moving.
+        device.advance(tick_ms)?;
         device.emit_mirror_frame()?;
         session.poll()?;
         let Some(frame) = session.take_mirror_frame() else {
             continue;
         };
         frames_seen += 1;
+        // N314: decide whether this frame fits the output budget this tick. The
+        // frame is costed in 1 KiB tiles so the scheduler's byte budget applies.
+        let cost_tile = 1024u32;
+        let tile_count = frame.bytes.len().div_ceil(cost_tile as usize) as u32;
+        let tiles: Vec<mdc_schedule::TileCost> = (0..tile_count)
+            .map(|i| mdc_schedule::TileCost::new(i, cost_tile, false))
+            .collect();
+        let now = index as u64 * tick_ms;
+        match scheduler.plan(now, &tiles) {
+            mdc_schedule::FrameDecision::Defer { .. } => {
+                paced_deferred += 1;
+                continue;
+            }
+            mdc_schedule::FrameDecision::Send { deferred, .. } if !deferred.is_empty() => {
+                // A file/HTTP consumer cannot take half a frame, so defer it.
+                paced_dropped += 1;
+                continue;
+            }
+            mdc_schedule::FrameDecision::Send { .. } => {}
+        }
+        scheduler.commit(now);
         let shadow = |generation: u64| mdc_mirror::ShadowFrame {
             width: frame.width,
             height: frame.height,
@@ -1152,6 +1207,11 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
         "board": opts.board,
         "frames_requested": frames,
         "frames_seen": frames_seen,
+        "output_fps": ceiling,
+        "source_fps": source_fps,
+        "bandwidth_budget": byte_budget,
+        "paced_deferred": paced_deferred,
+        "paced_dropped": paced_dropped,
         "mirror_received": stats.frames_received,
         "mirror_dropped": stats.frames_dropped,
         "ppm_written": sink.as_ref().map(|s| s.frames_written()),
@@ -2399,7 +2459,7 @@ fn usage() {
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
-authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp] [--serve ADDR] [--http ADDR]|\
+authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg]|install-package <file.mdcpkg>|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
@@ -3166,6 +3226,34 @@ mod tests {
             "unexpected PPM header"
         );
         assert!(written.len() > 14);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mirror_command_drops_frames_over_a_tiny_bandwidth_budget() {
+        // N314: a 1000 B/s budget cannot fit one 800x480 RGB565 frame, so no
+        // frame is delivered to the sink.
+        let dir = std::env::temp_dir().join(format!("mdc-cli-mirror-bw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let opts = GlobalOpts {
+            sim: true,
+            address: None,
+            port: None,
+            board: "linux-virt".into(),
+        };
+        let extra = vec![
+            "--frames".to_string(),
+            "4".to_string(),
+            "--write-dir".to_string(),
+            dir.to_string_lossy().into_owned(),
+            "--bandwidth".to_string(),
+            "1000".to_string(),
+        ];
+        cmd_mirror(&opts, &extra).unwrap();
+        assert!(
+            !dir.join("frame.ppm").exists(),
+            "an over-budget frame must not be written"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
