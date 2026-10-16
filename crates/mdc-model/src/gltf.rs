@@ -262,6 +262,10 @@ impl GltfImporter {
                                     let uv = pair(&attributes_value, "TEXCOORD_0")
                                         .map(|(a, b)| decode_uv_mesh(a, b, MAX_GEOMETRY_VERTICES))
                                         .unwrap_or_default();
+                                    // N326: NORMAL, parallel to positions.
+                                    let normals = pair(&attributes_value, "NORMAL")
+                                        .map(|(a, b)| decode_normals(a, b, MAX_GEOMETRY_VERTICES))
+                                        .unwrap_or_default();
                                     let skin_joints = pair(&attributes_value, "JOINTS_0")
                                         .map(|(a, b)| {
                                             decode_joints_mesh(a, b, MAX_GEOMETRY_VERTICES)
@@ -299,6 +303,7 @@ impl GltfImporter {
                                         positions,
                                         indices,
                                         uv,
+                                        normals,
                                         skin_joints,
                                         skin_weights,
                                         morph_targets,
@@ -786,6 +791,56 @@ fn decode_positions(accessor: &Value, bytes: Option<&[u8]>, max: usize) -> Vec<[
         let z = f32::from_le_bytes(bytes[offset + 8..offset + 12].try_into().unwrap_or([0; 4]));
         out.push([x, y, z]);
         offset += 12;
+    }
+    out
+}
+
+/// N326: NORMAL (VEC3 f32, or normalized i8/i16) per full-geometry vertex.
+fn decode_normals(accessor: &Value, bytes: Option<&[u8]>, max: usize) -> Vec<[f32; 3]> {
+    if accessor.get("type").and_then(Value::as_str) != Some("VEC3") {
+        return Vec::new();
+    }
+    let component = accessor.get("componentType").and_then(Value::as_u64);
+    let normalized = accessor
+        .get("normalized")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let Some(bytes) = bytes else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    match component {
+        Some(5126) => {
+            let mut offset = 0usize;
+            while offset + 12 <= bytes.len() && out.len() < max {
+                let x = f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap_or([0; 4]));
+                let y =
+                    f32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap_or([0; 4]));
+                let z =
+                    f32::from_le_bytes(bytes[offset + 8..offset + 12].try_into().unwrap_or([0; 4]));
+                out.push([x, y, z]);
+                offset += 12;
+            }
+        }
+        Some(5120) if normalized => {
+            let mut offset = 0usize;
+            while offset + 3 <= bytes.len() && out.len() < max {
+                let v = |i: usize| (bytes[offset + i] as i8) as f32 / 127.0;
+                out.push([v(0).max(-1.0), v(1).max(-1.0), v(2).max(-1.0)]);
+                offset += 3;
+            }
+        }
+        Some(5122) if normalized => {
+            let mut offset = 0usize;
+            while offset + 6 <= bytes.len() && out.len() < max {
+                let v = |i: usize| {
+                    i16::from_le_bytes([bytes[offset + i], bytes[offset + i + 1]]) as f32 / 32767.0
+                };
+                out.push([v(0).max(-1.0), v(2).max(-1.0), v(4).max(-1.0)]);
+                offset += 6;
+            }
+        }
+        _ => {}
     }
     out
 }
@@ -1816,6 +1871,86 @@ mod tests {
         assert_eq!(geometry.indices, vec![0, 1, 2, 0, 2, 3]);
         assert_eq!(geometry.uv.len(), 4);
         assert_eq!(geometry.uv[2], [1.0, 1.0]);
+    }
+
+    #[test]
+    fn normals_import_in_f32_and_normalized_forms() {
+        let mut bin = Vec::new();
+        for (x, y) in [(-0.5f32, -0.5f32), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)] {
+            for v in [x, y, 0.0] {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        for i in [0u16, 1, 2, 0, 2, 3] {
+            bin.extend_from_slice(&i.to_le_bytes());
+        }
+        for _ in 0..4 {
+            for v in [0.0f32, 0.0, 1.0] {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": bin.len()}],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": 48},
+                {"buffer": 0, "byteOffset": 48, "byteLength": 12},
+                {"buffer": 0, "byteOffset": 60, "byteLength": 48}
+            ],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3"},
+                {"bufferView": 1, "componentType": 5123, "count": 6, "type": "SCALAR"},
+                {"bufferView": 2, "componentType": 5126, "count": 4, "type": "VEC3"}
+            ],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "NORMAL": 2}, "indices": 1}]}],
+            "nodes": [{"mesh": 0}]
+        });
+        let model = GltfImporter
+            .import(
+                &glb(&serde_json::to_vec(&doc).unwrap(), &bin),
+                &ImportLimits::default(),
+            )
+            .unwrap();
+        let geometry = model.meshes[0].geometry.as_ref().expect("geometry");
+        assert_eq!(geometry.normals.len(), 4);
+        assert_eq!(geometry.normals[0], [0.0, 0.0, 1.0]);
+
+        // Normalized i8 normals: (0, 0, 127) -> unit +z.
+        let mut bin = Vec::new();
+        for (x, y) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0)] {
+            for v in [x, y, 0.0] {
+                bin.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        for _ in 0..3 {
+            bin.extend_from_slice(&[0u8, 0, 127]);
+        }
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": bin.len()}],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+                {"buffer": 0, "byteOffset": 36, "byteLength": 9}
+            ],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 1, "componentType": 5120, "normalized": true, "count": 3, "type": "VEC3"}
+            ],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1}}]}],
+            "nodes": [{"mesh": 0}]
+        });
+        let model = GltfImporter
+            .import(
+                &glb(&serde_json::to_vec(&doc).unwrap(), &bin),
+                &ImportLimits::default(),
+            )
+            .unwrap();
+        let normals = &model.meshes[0].geometry.as_ref().unwrap().normals;
+        assert_eq!(normals.len(), 3);
+        assert!(
+            (normals[2][2] - 1.0).abs() < 1e-6,
+            "i8 normal normalized to +z"
+        );
     }
 
     #[test]
