@@ -24,7 +24,7 @@ Device renderer ── MIRRORFRAME ──▶ Session inbox ──▶ MirrorRecei
 |---|---|---|
 | Atomic PPM file | `mdc_mirror::PpmDirectorySink` | OBS "Image Source" watching `<dir>/frame.ppm` (or a `_0000..N` ring) |
 | BMP file | `mdc_mirror::encode_bmp` + `mdc mirror --format bmp` | OBS "Image Source" watching `<dir>/frame.bmp` |
-| HTTP | `mdc_mirror::HttpMirrorServer` | OBS "Browser Source" at `http://127.0.0.1:<port>/` (auto-refreshing `<img>`); `/frame.bmp` and `/frame.ppm` for scripts |
+| HTTP | `mdc_mirror::HttpMirrorServer` | OBS "Browser Source" at `http://127.0.0.1:<port>/stream` (live `multipart/x-mixed-replace` push) or `/` (auto-refreshing `<img>`); `/frame.bmp` and `/frame.ppm` for scripts |
 | TCP fan-out | `mdc_mirror::MirrorServer` | A local reader / browser source; one PPM frame per client, latest-wins |
 | Node | `onMirrorFrame` + `takeMirrorFrame` | Electron preview (see `examples/electron-demo`) |
 | Swift | `mirrorFrames()` `AsyncStream` | macOS app consumer |
@@ -37,8 +37,9 @@ Device renderer ── MIRRORFRAME ──▶ Session inbox ──▶ MirrorRecei
 mdc --board linux-virt mirror --frames 30 --write-dir ./mirror-out
 mdc --board linux-virt mirror --frames 30 --write-dir ./mirror-out --format bmp
 
-# Serve the latest frame to an OBS Browser Source (and a scriptable PPM).
+# Serve the latest frame to an OBS Browser Source (live push + a scriptable still).
 mdc --board linux-virt mirror --frames 300 --http 127.0.0.1:8080
+#   http://127.0.0.1:8080/stream      -> live multipart/x-mixed-replace (N313)
 #   http://127.0.0.1:8080/            -> auto-refreshing page
 #   http://127.0.0.1:8080/frame.bmp   -> image/bmp
 #   http://127.0.0.1:8080/frame.ppm   -> image/x-portable-pixmap
@@ -54,6 +55,11 @@ The command prints JSON stats (`mirror_received`, `mirror_dropped`,
 caches the newest frame as BMP (bottom-up 24-bit) and PPM, accepts at most
 `max_clients`, and answers one short-lived request per connection. A slow reader
 never blocks `pump`; it simply receives the frame that is current when it asks.
+`/stream` (N313) keeps the connection open and pushes a BMP part per published
+frame (`Content-Type: multipart/x-mixed-replace; boundary=mdcframe`); each
+streaming client buffers at most one part, and frames that arrive while a slow
+client is still writing are dropped (`clipped_frames()`), so `pump` never blocks
+and memory stays bounded.
 
 ## Guarantees
 

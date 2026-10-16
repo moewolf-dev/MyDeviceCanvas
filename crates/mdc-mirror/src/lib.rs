@@ -926,8 +926,16 @@ struct ServedFrame {
 
 /// N144: a minimal HTTP/1.1 fan-out for an OBS browser source. It serves the
 /// latest mirrored frame as `/frame.bmp`, `/frame.ppm`, or an auto-refreshing
-/// page at `/`. Connections are short-lived (one request, `Connection: close`);
-/// at most `max_clients` are open, and a slow client never blocks `pump`.
+/// page at `/`.
+///
+/// N313: `/stream` (and `/stream.bmp`) is a live `multipart/x-mixed-replace`
+/// push. Instead of polling a still image, a browser source keeps one connection
+/// open and receives a new BMP part per published frame. Each streaming client
+/// buffers at most one part; if it cannot drain it before the next frame the
+/// frame is dropped (`clipped`) so memory stays bounded.
+///
+/// One-shot connections are short-lived (one request, `Connection: close`); at
+/// most `max_clients` are open, and a slow client never blocks `pump`.
 pub struct HttpMirrorServer {
     listener: TcpListener,
     clients: Vec<HttpClient>,
@@ -939,7 +947,53 @@ pub struct HttpMirrorServer {
 struct HttpClient {
     stream: TcpStream,
     request: Vec<u8>,
+    /// One-shot response; unused once the client is streaming.
     response: Option<Vec<u8>>,
+    /// Multipart preamble, sent before the first part.
+    stream_headers: Vec<u8>,
+    /// At most one complete multipart part waiting to be written.
+    stream_part: Vec<u8>,
+    /// A long-lived multipart consumer rather than a one-shot request.
+    streaming: bool,
+    /// The peer closed or errored; dropped on the next pump.
+    dead: bool,
+    /// Frames skipped because the previous part was still being written.
+    clipped: u64,
+}
+
+/// N313: multipart boundary for the live stream.
+const MULTIPART_BOUNDARY: &str = "mdcframe";
+
+/// The path a request for a live stream uses.
+const STREAM_PATHS: [&str; 2] = ["/stream", "/stream.bmp"];
+
+fn multipart_headers() -> Vec<u8> {
+    format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: multipart/x-mixed-replace; boundary={MULTIPART_BOUNDARY}\r\n\
+         Cache-Control: no-store\r\nPragma: no-cache\r\n\r\n"
+    )
+    .into_bytes()
+}
+
+fn multipart_part(bmp: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bmp.len() + 96);
+    out.extend_from_slice(
+        format!(
+            "--{MULTIPART_BOUNDARY}\r\nContent-Type: image/bmp\r\nContent-Length: {}\r\n\r\n",
+            bmp.len()
+        )
+        .as_bytes(),
+    );
+    out.extend_from_slice(bmp);
+    out.extend_from_slice(b"\r\n");
+    out
+}
+
+/// What a request path resolves to.
+enum Served {
+    Bytes(Vec<u8>),
+    Multipart,
 }
 
 impl HttpMirrorServer {
@@ -964,8 +1018,8 @@ impl HttpMirrorServer {
         self.listener.local_addr()
     }
 
-    /// Cache the newest frame; per-client queues are not used, so a slow reader
-    /// simply gets the frame that is current when it asks.
+    /// Cache the newest frame; a slow streaming client keeps at most the part it
+    /// is still writing, so a newer frame is dropped rather than queued.
     pub fn publish(&mut self, frame: &ShadowFrame<'_>) {
         let bmp = encode_bmp(frame.width, frame.height, frame.pixels);
         let ppm = encode_ppm(frame.width, frame.height, frame.pixels);
@@ -973,6 +1027,19 @@ impl HttpMirrorServer {
             self.last = Some(ServedFrame { bmp, ppm });
         }
         self.frames = self.frames.saturating_add(1);
+        if let Some(frame) = self.last.as_ref() {
+            let part = multipart_part(&frame.bmp);
+            for client in &mut self.clients {
+                if !client.streaming {
+                    continue;
+                }
+                if client.stream_part.is_empty() {
+                    client.stream_part = part.clone();
+                } else {
+                    client.clipped = client.clipped.saturating_add(1);
+                }
+            }
+        }
     }
 
     fn accept_pending(&mut self) -> io::Result<()> {
@@ -984,6 +1051,11 @@ impl HttpMirrorServer {
                         stream,
                         request: Vec::new(),
                         response: None,
+                        stream_headers: Vec::new(),
+                        stream_part: Vec::new(),
+                        streaming: false,
+                        dead: false,
+                        clipped: 0,
                     });
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
@@ -994,12 +1066,13 @@ impl HttpMirrorServer {
     }
 
     /// Accept, read one request per client, queue the response, then try to
-    /// write it. A finished or errored client is dropped.
+    /// write it. A one-shot client is dropped once its response is written; a
+    /// streaming client stays until the peer closes.
     pub fn pump(&mut self) -> io::Result<()> {
         self.accept_pending()?;
         let last = self.last.as_ref();
         for client in &mut self.clients {
-            if client.response.is_some() {
+            if client.streaming || client.response.is_some() {
                 continue;
             }
             let mut buffer = [0u8; 1024];
@@ -1014,7 +1087,10 @@ impl HttpMirrorServer {
                     client.request.extend_from_slice(&buffer[..read]);
                     if let Some(end) = find_header_end(&client.request) {
                         let path = request_path(&client.request[..end]);
-                        client.response = Some(respond(last, &path));
+                        match respond(last, &path) {
+                            Served::Bytes(bytes) => client.response = Some(bytes),
+                            Served::Multipart => begin_stream(client, last),
+                        }
                     }
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
@@ -1023,7 +1099,18 @@ impl HttpMirrorServer {
                 }
             }
         }
+        for client in &mut self.clients {
+            if client.streaming && !client.dead {
+                flush_stream(client);
+            }
+        }
         self.clients.retain_mut(|client| {
+            if client.dead {
+                return false;
+            }
+            if client.streaming {
+                return true;
+            }
             let Some(response) = client.response.as_ref() else {
                 return true;
             };
@@ -1040,12 +1127,66 @@ impl HttpMirrorServer {
         self.clients.len()
     }
 
+    /// N313: clients currently consuming the live multipart stream.
+    pub fn streaming_clients(&self) -> usize {
+        self.clients
+            .iter()
+            .filter(|client| client.streaming)
+            .count()
+    }
+
+    /// N313: frames skipped because a streaming client was still writing.
+    pub fn clipped_frames(&self) -> u64 {
+        self.clients.iter().map(|client| client.clipped).sum()
+    }
+
     pub fn frames_published(&self) -> u64 {
         self.frames
     }
 
     pub fn has_frame(&self) -> bool {
         self.last.is_some()
+    }
+}
+
+/// N313: start a live multipart stream for a client, seeding it with the newest
+/// frame if one is already cached.
+fn begin_stream(client: &mut HttpClient, last: Option<&ServedFrame>) {
+    client.streaming = true;
+    client.stream_headers = multipart_headers();
+    client.stream_part = last
+        .map(|frame| multipart_part(&frame.bmp))
+        .unwrap_or_default();
+}
+
+/// Write the pending preamble and part. Never buffers more than one part; a
+/// `WouldBlock` leaves the remainder for the next pump.
+fn flush_stream(client: &mut HttpClient) {
+    if !client.stream_headers.is_empty() {
+        match client.stream.write(&client.stream_headers) {
+            Ok(0) => {
+                client.dead = true;
+                return;
+            }
+            Ok(written) => {
+                client.stream_headers.drain(..written);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
+            Err(_) => {
+                client.dead = true;
+                return;
+            }
+        }
+    }
+    if !client.stream_part.is_empty() {
+        match client.stream.write(&client.stream_part) {
+            Ok(0) => client.dead = true,
+            Ok(written) => {
+                client.stream_part.drain(..written);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(_) => client.dead = true,
+        }
     }
 }
 
@@ -1066,13 +1207,16 @@ fn request_path(request: &[u8]) -> String {
         .to_string()
 }
 
-fn respond(last: Option<&ServedFrame>, path: &str) -> Vec<u8> {
-    match path {
+fn respond(last: Option<&ServedFrame>, path: &str) -> Served {
+    if STREAM_PATHS.contains(&path) {
+        return Served::Multipart;
+    }
+    Served::Bytes(match path {
         "/" | "/index.html" => simple_response(
             200,
             "text/html; charset=utf-8",
             b"<!doctype html><title>MyDeviceCanvas mirror</title><h1>mirror</h1>\
-              <img src=\"/frame.bmp\">",
+              <img src=\"/stream\">",
         ),
         "/frame.bmp" => match last {
             Some(frame) => simple_response(200, "image/bmp", &frame.bmp),
@@ -1083,7 +1227,7 @@ fn respond(last: Option<&ServedFrame>, path: &str) -> Vec<u8> {
             None => simple_response(503, "text/plain", b"no frame yet"),
         },
         _ => simple_response(404, "text/plain", b"not found"),
-    }
+    })
 }
 
 fn simple_response(status: u16, content_type: &str, body: &[u8]) -> Vec<u8> {
@@ -1635,5 +1779,61 @@ mod tests {
         let missing = String::from_utf8_lossy(&http_get(&mut server, "/nope")).to_string();
         assert!(missing.contains("404 Not Found"), "{missing}");
         assert_eq!(server.frames_published(), 1);
+    }
+
+    /// N313: pump the server and drain whatever the streaming client can read.
+    fn drain(server: &mut HttpMirrorServer, client: &mut TcpStream, out: &mut Vec<u8>) {
+        for _ in 0..30 {
+            let _ = server.pump();
+            let mut buffer = [0u8; 8192];
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => out.extend_from_slice(&buffer[..n]),
+                Err(_) => std::thread::sleep(Duration::from_millis(2)),
+            }
+        }
+    }
+
+    #[test]
+    fn http_live_stream_pushes_multipart_parts() {
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(10)))
+            .unwrap();
+        client
+            .write_all(b"GET /stream HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+        // The client connects before any frame: it still gets the preamble.
+        std::thread::sleep(Duration::from_millis(20));
+        let mut response = Vec::new();
+        drain(&mut server, &mut client, &mut response);
+        assert_eq!(server.streaming_clients(), 1);
+        let head = String::from_utf8_lossy(&response);
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+        assert!(head.contains("multipart/x-mixed-replace; boundary=mdcframe"));
+
+        let red = vec![0u8, 0, 255, 255]; // 1x1 BGRA red
+        let green = vec![0u8, 255, 0, 255];
+        let blue = vec![255u8, 0, 0, 255];
+        for (frame_id, pixels) in [(1u64, &red), (2, &green), (3, &blue)] {
+            server.publish(&ShadowFrame {
+                width: 1,
+                height: 1,
+                generation: frame_id,
+                frame_id,
+                pixels,
+            });
+            drain(&mut server, &mut client, &mut response);
+        }
+        // Each published frame is a complete multipart part ending in a boundary.
+        let boundaries = response.windows(10).filter(|w| *w == b"--mdcframe").count();
+        assert!(boundaries >= 3, "expected >=3 parts, got {boundaries}");
+        assert!(
+            response.windows(2).any(|w| w == b"BM"),
+            "a BMP body must be streamed"
+        );
+        assert_eq!(server.frames_published(), 3);
     }
 }
