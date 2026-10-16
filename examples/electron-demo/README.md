@@ -6,6 +6,8 @@ Buttons: connect simulator, connect an explicit endpoint, refresh devices, send 
 
 The mirror panel subscribes to the public `onMirrorFrame` event, polls the device for the newest mirrored frame, and draws it on a canvas via `decodeMirrorFrame` (RGB565→RGBA). It is a preview consumer only; no OBS dependency is linked.
 
+N320: `mirrorStreamUrl(base)`, `parseMultipartBoundary(contentType)` and `streamPanelStatus(state)` build and describe the live `multipart/x-mixed-replace` endpoint that `mdc mirror --http` serves at `/stream` (N313), so a preview can consume the push stream instead of polling a still image.
+
 ```sh
 node --test demo-logic.test.js
 cargo build -p mdc-node-native

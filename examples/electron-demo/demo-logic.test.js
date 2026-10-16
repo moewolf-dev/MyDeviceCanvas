@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { colorBarsRgb565, decodeMirrorFrame, formatError, mirrorPanelStatus, normalizeBrightness, normalizeClip, originTile, packageMagicOk, sceneRect, planConnection, rejectNonSimEndpoint } from "./demo-logic.js";
+import { colorBarsRgb565, decodeMirrorFrame, formatError, mirrorPanelStatus, mirrorStreamUrl, normalizeBrightness, normalizeClip, originTile, packageMagicOk, parseMultipartBoundary, sceneRect, planConnection, rejectNonSimEndpoint, streamPanelStatus } from "./demo-logic.js";
 
 test("color bars are RGB565 little-endian and start with red", () => {
   const frame = colorBarsRgb565(8, 1);
@@ -87,4 +87,25 @@ test("packageMagicOk checks the MDCP magic", () => {
   assert.equal(packageMagicOk(new Uint8Array([0x4d, 0x44, 0x43, 0x50, 1])), true);
   assert.equal(packageMagicOk(new Uint8Array([1, 2, 3, 4])), false);
   assert.equal(packageMagicOk(new Uint8Array([0x4d, 0x44])), false);
+});
+
+test("mirrorStreamUrl builds a live stream endpoint", () => {
+  assert.equal(mirrorStreamUrl("http://127.0.0.1:8080"), "http://127.0.0.1:8080/stream");
+  assert.equal(mirrorStreamUrl("http://127.0.0.1:8080/"), "http://127.0.0.1:8080/stream");
+  assert.throws(() => mirrorStreamUrl("127.0.0.1:8080"), /http/);
+  assert.throws(() => mirrorStreamUrl(""), /required/);
+});
+
+test("parseMultipartBoundary extracts the boundary", () => {
+  assert.equal(parseMultipartBoundary("multipart/x-mixed-replace; boundary=mdcframe"), "mdcframe");
+  assert.equal(parseMultipartBoundary('multipart/x-mixed-replace; boundary="x"'), "x");
+  assert.equal(parseMultipartBoundary("image/bmp"), null);
+});
+
+test("streamPanelStatus reports frames and clipping", () => {
+  assert.equal(streamPanelStatus(null), "stream: disconnected");
+  assert.match(
+    streamPanelStatus({ connected: true, frames: 5, dropped: 2 }),
+    /5 frames, 2 clipped/,
+  );
 });

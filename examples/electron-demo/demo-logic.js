@@ -151,3 +151,33 @@ export function packageMagicOk(bytes) {
   }
   return bytes[0] === 0x4d && bytes[1] === 0x44 && bytes[2] === 0x43 && bytes[3] === 0x50;
 }
+
+/** N320: the live `multipart/x-mixed-replace` URL for a mirror HTTP server. */
+export function mirrorStreamUrl(base) {
+  const text = String(base ?? "").trim().replace(/\/+$/, "");
+  if (text.length === 0) {
+    throw new RangeError("mirror base URL is required");
+  }
+  if (!/^https?:\/\//.test(text)) {
+    throw new RangeError("mirror base must be an http(s) URL");
+  }
+  return `${text}/stream`;
+}
+
+/** N320: boundary of a multipart/x-mixed-replace content type, or null. */
+export function parseMultipartBoundary(contentType) {
+  const text = String(contentType ?? "");
+  if (!/multipart\/x-mixed-replace/i.test(text)) {
+    return null;
+  }
+  const match = /boundary=([^;]+)/i.exec(text);
+  return match ? match[1].trim().replace(/^"|"$/g, "") : null;
+}
+
+/** N320: one-line status for the live stream panel. */
+export function streamPanelStatus(state) {
+  if (!state || !state.connected) {
+    return "stream: disconnected";
+  }
+  return `stream: ${state.frames} frames, ${state.dropped} clipped`;
+}
