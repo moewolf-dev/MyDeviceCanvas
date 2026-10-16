@@ -1536,6 +1536,19 @@ mod tests {
         };
         let back: BootInfo = decode_control(&encode_control(&boot).unwrap()).unwrap();
         assert_eq!(back, boot);
+        let boot_vector = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../protocol/vectors/diagnostic_boot_info.json"),
+        )
+        .unwrap();
+        let boot_hex = boot_vector
+            .split("\"hex\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .nth(1)
+            .unwrap();
+        assert_eq!(encode_control(&boot).unwrap(), parse_hex(boot_hex));
 
         let vector = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

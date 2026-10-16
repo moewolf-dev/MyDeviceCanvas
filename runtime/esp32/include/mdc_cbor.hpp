@@ -4,6 +4,7 @@
  * Host-testable; no third-party CBOR dependency on the device runtime path.
  */
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -43,6 +44,27 @@ struct SurfaceDesc {
   std::uint16_t rotation = 0;
 };
 
+/// N331: a device -> host metric sample (MessageType::Metric). Optional fields are
+/// omitted when the `has_*` flag is false / the value is 0, matching serde.
+struct MetricReport {
+  std::string name;
+  double value = 0.0;
+  bool has_unit = false;
+  std::string unit;
+  std::uint64_t boot_id = 0;
+  std::uint64_t run_id = 0;
+  std::uint64_t event_seq = 0;
+};
+
+/// N331: a device -> host boot notification (MessageType::BootInfo).
+struct BootInfo {
+  std::string firmware;
+  std::uint64_t boot_id = 0;
+  std::uint64_t run_id = 0;
+  bool has_reset_reason = false;
+  std::string reset_reason;
+};
+
 /// Encode Capabilities control payload (MessageType::Capabilities).
 std::vector<std::uint8_t> encode_capabilities_cbor(const PeerIdentity& id,
                                                    const SurfaceDesc& surface);
@@ -52,5 +74,13 @@ std::vector<std::uint8_t> encode_ack_cbor(bool received, bool displayed, std::ui
 
 /// Encode Error control payload (MessageType::Error).
 std::vector<std::uint8_t> encode_error_cbor(const std::string& code, const std::string& message);
+
+/// N331: encode a MetricReport (MessageType::Metric). Byte-identical to the Rust
+/// serde_cbor encoding (protocol/vectors/diagnostic_metric.json).
+std::vector<std::uint8_t> encode_metric_cbor(const MetricReport& metric);
+
+/// N331: encode a BootInfo (MessageType::BootInfo). Byte-identical to the Rust
+/// serde_cbor encoding (protocol/vectors/diagnostic_boot_info.json).
+std::vector<std::uint8_t> encode_boot_info_cbor(const BootInfo& boot);
 
 }  // namespace mdc

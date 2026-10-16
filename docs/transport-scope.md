@@ -58,8 +58,10 @@ the message types now:
 `MessageType::try_from` (Rust) and the C++ `Parser::known_type` accept all four
 values so a downstream pin of the wire enum is stable. `Metric`/`BootInfo` are
 decoded by `Session` into a bounded, link-independent queue; `Telemetry`/`Crash`
-are accepted but their payloads are not decoded. Diagnostics are **not** sent on
-the link under test:
+are accepted but their payloads are not decoded. N331: the C++ runtime also
+**encodes** `Metric`/`BootInfo` (`encode_metric_cbor` / `encode_boot_info_cbor`)
+byte-identically to the Rust serde_cbor vectors checked in `cbor_control_test.cpp`.
+Diagnostics are **not** sent on the link under test:
 
 1. A diagnostic/telemetry channel **must be independent of the link under test**.
    A crashing or saturated Frame/MirrorFrame link must not be able to lose the

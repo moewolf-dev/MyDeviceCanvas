@@ -1,0 +1,4 @@
+{
+  "note": "N331 canonical CBOR BootInfo { firmware:1.0.0, boot_id:7, run_id:2, reset_reason:power-on }",
+  "hex": "a4686669726d7761726565312e302e3067626f6f745f6964076672756e5f6964026c72657365745f726561736f6e68706f7765722d6f6e"
+}

@@ -90,6 +90,37 @@ int main() {
     return 2;
   }
 
+  // N331: Metric/BootInfo encodings must match the Rust vectors byte-for-byte.
+  mdc::MetricReport metric;
+  metric.name = "fps";
+  metric.value = 29.97;
+  metric.has_unit = true;
+  metric.unit = "fps";
+  metric.boot_id = 7;
+  metric.run_id = 2;
+  metric.event_seq = 42;
+  const auto metric_hex = to_hex(mdc::encode_metric_cbor(metric));
+  const char* expect_metric =
+      "a6646e616d65636670736576616c7565fb403df851eb851eb864756e69746366707367626f6f745f6964076672756e5f696402696576656e745f736571182a";
+  if (metric_hex != expect_metric) {
+    std::fprintf(stderr, "metric mismatch\ngot %s\nexp %s\n", metric_hex.c_str(), expect_metric);
+    return 4;
+  }
+
+  mdc::BootInfo boot;
+  boot.firmware = "1.0.0";
+  boot.boot_id = 7;
+  boot.run_id = 2;
+  boot.has_reset_reason = true;
+  boot.reset_reason = "power-on";
+  const auto boot_hex = to_hex(mdc::encode_boot_info_cbor(boot));
+  const char* expect_boot =
+      "a4686669726d7761726565312e302e3067626f6f745f6964076672756e5f6964026c72657365745f726561736f6e68706f7765722d6f6e";
+  if (boot_hex != expect_boot) {
+    std::fprintf(stderr, "boot info mismatch\ngot %s\nexp %s\n", boot_hex.c_str(), expect_boot);
+    return 5;
+  }
+
   std::printf("cbor_control_test ok\n");
   return 0;
 }

@@ -46,6 +46,16 @@ void push_text(std::vector<std::uint8_t>& o, const std::string& s) {
 
 void push_bool(std::vector<std::uint8_t>& o, bool v) { push_u8(o, v ? 0xf5 : 0xf4); }
 
+/// N331: IEEE-754 double as a CBOR float64 (0xfb), matching serde_cbor.
+void push_double(std::vector<std::uint8_t>& o, double v) {
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &v, sizeof(bits));
+  push_u8(o, 0xfb);
+  for (int i = 7; i >= 0; --i) {
+    push_u8(o, static_cast<std::uint8_t>(bits >> (8 * i)));
+  }
+}
+
 void push_null(std::vector<std::uint8_t>& o) { push_u8(o, 0xf6); }
 
 void push_array_header(std::vector<std::uint8_t>& o, std::size_t n) {
@@ -164,6 +174,42 @@ std::vector<std::uint8_t> encode_error_cbor(const std::string& code, const std::
   push_u8(o, 0xa2);  // map(2): code, message
   push_kv_text(o, "code", code);
   push_kv_text(o, "message", message);
+  return o;
+}
+
+std::vector<std::uint8_t> encode_metric_cbor(const MetricReport& metric) {
+  std::vector<std::uint8_t> o;
+  o.reserve(160);
+  // Field order matches the Rust struct; optional fields are omitted, so the map
+  // count is computed from what is present.
+  std::size_t count = 2;  // name, value
+  if (metric.has_unit) count++;
+  if (metric.boot_id) count++;
+  if (metric.run_id) count++;
+  if (metric.event_seq) count++;
+  push_u8(o, static_cast<std::uint8_t>(0xa0 + count));
+  push_kv_text(o, "name", metric.name);
+  push_text(o, "value");
+  push_double(o, metric.value);
+  if (metric.has_unit) push_kv_text(o, "unit", metric.unit);
+  if (metric.boot_id) push_kv_uint(o, "boot_id", metric.boot_id);
+  if (metric.run_id) push_kv_uint(o, "run_id", metric.run_id);
+  if (metric.event_seq) push_kv_uint(o, "event_seq", metric.event_seq);
+  return o;
+}
+
+std::vector<std::uint8_t> encode_boot_info_cbor(const BootInfo& boot) {
+  std::vector<std::uint8_t> o;
+  o.reserve(128);
+  std::size_t count = 1;  // firmware
+  if (boot.boot_id) count++;
+  if (boot.run_id) count++;
+  if (boot.has_reset_reason) count++;
+  push_u8(o, static_cast<std::uint8_t>(0xa0 + count));
+  push_kv_text(o, "firmware", boot.firmware);
+  if (boot.boot_id) push_kv_uint(o, "boot_id", boot.boot_id);
+  if (boot.run_id) push_kv_uint(o, "run_id", boot.run_id);
+  if (boot.has_reset_reason) push_kv_text(o, "reset_reason", boot.reset_reason);
   return o;
 }
 
