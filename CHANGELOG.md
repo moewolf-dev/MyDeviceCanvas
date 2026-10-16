@@ -2,6 +2,32 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.44] — Live OBS stream, diagnostics, device clips, scene text (N313–N322)
+
+### Added
+
+- `mdc-mirror`: live `multipart/x-mixed-replace` HTTP stream at `/stream` for an
+  OBS browser source; each streaming client buffers at most one part and drops
+  newer frames rather than growing memory (`clipped_frames`) (N313)
+- `mdc mirror` paces its output through `mdc-schedule`
+  (`--source-fps`/`--max-fps`/`--bandwidth`; `paced_deferred`/`paced_dropped`
+  stats) (N314)
+- `mdc-bake`/`mdc-simulator`: `SceneClip` selection for a device mesh package
+  (`config animation <index>|<name>|default|off`), so the device is not limited to
+  `animations.first()` (N315)
+- protocol/core: `MetricReport`/`BootInfo` CBOR payloads + a bounded,
+  link-independent `Session::take_diagnostics()` queue; `mdc diag` and a bounded
+  JSONL inspector series (`mdc-inspector --jsonl`) (N316, N317)
+- Scene `text` word-wrap + explicit multi-line (`\n`), with the rect height
+  setting a uniform glyph scale (N318)
+- C ABI + Swift diagnostics surface (`mdc_session_emit_metric`/
+  `mdc_session_take_diagnostic`/`mdc_session_diagnostic_count`, `MdcDiagnostic`)
+  (N319)
+- Electron demo live-stream helpers (`mirrorStreamUrl`/`parseMultipartBoundary`/
+  `streamPanelStatus`) (N320)
+- Compatibility + memory fixtures for the stream, diagnostics and text wrap
+  (N321)
+
 ## [0.1.43] — Reserved diagnostics, reboot semantics, pacing, pixel formats (N303–N312)
 
 ### Added

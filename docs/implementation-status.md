@@ -61,6 +61,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 47 | N283–N292: `alphaMode`/`alphaCutoff` import, 1-bit texture alpha, masked raster cutout, CLI decode, fixtures + docs | sim-verified |
 | 48 | N293–N302: `TextureBlob.alpha` + device/packaged texture cutout, `bake_texture_blob` alpha, fixtures | sim-verified |
 | 49 | N303–N312: reserved diagnostics + `boot_id`/`run_id` reboot detection, `mdc-schedule` pacing, `PixelFormat` enum, surface display profile, mirror read-source + submodule contract docs | sim-verified |
+| 50 | N313–N322: live multipart OBS stream, CLI pacing, device mesh-package clip selection, diagnostics channel + `mdc diag`/JSONL inspector, scene text wrap, C/Swift diagnostics, demo stream helpers, fixtures | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 

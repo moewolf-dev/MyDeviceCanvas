@@ -103,6 +103,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Surface display profile (N308) | sim-verified (`preferred_tile_size` + adaptive host tile cut) | physical: pending |
 | Mirror read source (N309) | architecture (decision + hardware checklist; unmeasured) | physical: pending |
 | Submodule contract (N310) | docs (`docs/submodule-contract.md`) | n/a |
+| Live OBS HTTP stream (N313) | sim-verified (`/stream` multipart; loopback fixture + unit test) | physical: pending |
+| `mdc mirror` pacing (N314) | sim-verified (`mdc-schedule` budget; drop stats) | n/a |
+| Device mesh-package clip select (N315) | sim-verified (`config animation <index\|name>`; fixture) | physical: pending |
+| Diagnostics channel (N316) | sim-verified (`Metric`/`BootInfo` + `take_diagnostics`; `mdc diag`) | physical: pending |
+| Inspector JSONL series (N317) | sim-verified (`mdc-inspector --jsonl`) | n/a |
+| Scene text wrap (N318) | sim-verified (word wrap + `\n`, uniform glyph scale) | physical: pending |
+| C/Swift diagnostics (N319) | sim-verified (C ABI test + Swift smoke) | n/a |
+| Electron live stream helpers (N320) | sim-verified (`demo-logic.test.js`) | n/a |
 
 ## G03 sim exit
 
