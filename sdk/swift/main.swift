@@ -5,6 +5,15 @@ struct MdcSwiftHello {
     static func main() async {
         let session = try! MdcSession()
         let (width, height) = try! session.surfaceSize()
+        // N307: the surface format enum is exposed; only RGB565 is implemented.
+        if session.surfaceFormat(at: 0) != .rgb565 || !session.pixelFormatIsImplemented(.rgb565) {
+            fputs("unexpected surface pixel format\n", stderr)
+            exit(1)
+        }
+        if session.pixelFormatIsImplemented(.rgba8888) {
+            fputs("rgba8888 must not be implemented\n", stderr)
+            exit(1)
+        }
         if session.sendScene() != -5 {
             fputs("expected scene unsupported\n", stderr)
             exit(1)

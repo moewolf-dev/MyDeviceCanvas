@@ -381,6 +381,7 @@ dependencies = [
  "mdc-mirror",
  "mdc-model",
  "mdc-protocol",
+ "mdc-schedule",
  "mdc-simulator",
  "mdc-transport",
 ]
@@ -495,6 +496,10 @@ dependencies = [
  "mdc-core",
  "mdc-simulator",
 ]
+
+[[package]]
+name = "mdc-schedule"
+version = "0.1.0"
 
 [[package]]
 name = "mdc-sim-peer"

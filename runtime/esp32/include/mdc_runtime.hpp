@@ -25,6 +25,12 @@ enum class MessageType : std::uint8_t {
   Ping = 0x40,
   Pong = 0x41,
   Ack = 0x50,
+  /// N303: reserved diagnostic/telemetry types (device -> host). Accepted by the
+  /// parser so the wire enum is stable; the runtime does not decode the payload.
+  Telemetry = 0x60,
+  Metric = 0x61,
+  Crash = 0x62,
+  BootInfo = 0x63,
   Error = 0x7f,
 };
 

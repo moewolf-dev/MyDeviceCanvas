@@ -10,6 +10,7 @@ members = [
   "crates/mdc-mirror",
   "crates/mdc-model",
   "crates/mdc-bake",
+  "crates/mdc-schedule",
   "tools/mdc-cli",
   "tools/mdc-sim-peer",
   "tools/flasher",

@@ -68,5 +68,9 @@ int main(int argc, char** argv) {
   assert(package[0] == 1);
   assert(package[1] == 0x00 && package[2] == 0x00 && package[3] == 0x00 && package[4] == 0x0c);
   assert(package[5] == 0x01 && package[12] == 0x08);
+
+  // N303: reserved diagnostic/telemetry type table (first entry = Telemetry 0x60).
+  const auto diag = parse_hex(json_hex(read_file(dir + "/diagnostic_types.json")));
+  assert(diag[0] == 0x60);
   return 0;
 }

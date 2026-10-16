@@ -34,6 +34,11 @@ MyDeviceCanvas is the **Core + Runtime + SDK** layer for that problem. Applicati
 
 Default acceptance is **simulator / virtual board**. Physical results are documented separately and never implied by sim tests.
 
+> **Using this as a submodule?** This repo is a **host + simulator contract**.
+> `sim-verified` is **not** `hardware-usable`: the physical exit tasks **D05 / G03
+> / H06 are unchecked** until a real board is measured. Read
+> [`docs/submodule-contract.md`](docs/submodule-contract.md) before pinning.
+
 ## Quick start
 
 **Requirements:** Rust stable, Node.js 20+ (for Node SDK tests).
@@ -104,6 +109,7 @@ Design notes: [`docs/architecture.md`](docs/architecture.md) · Status: [`docs/i
 | `crates/mdc-protocol` | Wire types, codec, shared test vectors |
 | `crates/mdc-transport` | Byte channels (Memory, Serial, WebSocket, TCP) |
 | `crates/mdc-core` | Session, DeviceManager, Surfaces, queues |
+| `crates/mdc-schedule` | Host frame/tile pacing (fps clamp + byte budget), no GUI deps |
 | `crates/mdc-simulator` | FakeDevice peer, faults, virtual clock |
 | `crates/mdc-discovery` | Endpoint candidates (mDNS / serial filters, mocks) |
 | `crates/mdc-provision` | Artifact registry and install state machine |
@@ -140,6 +146,7 @@ Validation write-ups: [`docs/hardware-validation/`](docs/hardware-validation/). 
 | [`docs/upstream-porting.md`](docs/upstream-porting.md) | What we learned from AgentDeck / FrameOS (no code copy) |
 | [`docs/scene-spec.md`](docs/scene-spec.md) | Reserved Scene capability (later) |
 | [`docs/release-1.0-candidate.md`](docs/release-1.0-candidate.md) | 1.0 candidate gates |
+| [`docs/submodule-contract.md`](docs/submodule-contract.md) | Submodule contract: what is stable, what is unverified |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release notes |
 
 ## Contributing

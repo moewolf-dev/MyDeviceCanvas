@@ -341,6 +341,36 @@ pub fn validate_tile_base(tile: &Tile, current_frame_id: u64) -> Result<(), Tran
     }
 }
 
+/// N308: tile edge the host uses when a device does not announce a preference.
+pub const DEFAULT_TILE_SIZE: u16 = 32;
+
+/// N308: host-side tile cut for a surface. Uses the device-advertised preferred
+/// tile size when non-zero, otherwise [`DEFAULT_TILE_SIZE`]. Never overruns the
+/// surface and never returns a zero-area tile.
+pub fn plan_tiles(width: u16, height: u16, tile_size: u16) -> Vec<(u16, u16, u16, u16)> {
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let tile = if tile_size == 0 {
+        DEFAULT_TILE_SIZE
+    } else {
+        tile_size
+    };
+    let mut tiles = Vec::new();
+    let mut y = 0u16;
+    while y < height {
+        let h = tile.min(height - y);
+        let mut x = 0u16;
+        while x < width {
+            let w = tile.min(width - x);
+            tiles.push((x, y, w, h));
+            x += w;
+        }
+        y += h;
+    }
+    tiles
+}
+
 pub struct SurfaceQueue {
     pub info: Surface,
     pending: Option<(u64, Frame)>,
@@ -371,8 +401,8 @@ impl SurfaceQueue {
         {
             return Err(CoreError::Dimensions);
         }
-        if self.info.pixel_format != "RGB565" {
-            return Err(CoreError::Format(self.info.pixel_format.clone()));
+        if !self.info.pixel_format.is_implemented() {
+            return Err(CoreError::Format(self.info.pixel_format.to_string()));
         }
         let expected = (f.width as usize)
             .checked_mul(f.height as usize)
@@ -698,6 +728,13 @@ pub struct Session<T: Transport> {
     packages_sent: u64,
     /// N40: configuration values learned from device replies.
     config_cache: BTreeMap<String, String>,
+    /// N304: host boot identity advertised in Hello (0 = unset).
+    host_boot_id: u64,
+    /// N304: the peer's last reported boot identity (None before the first
+    /// Capabilities reply). A change means the device rebooted.
+    device_boot_id: Option<u64>,
+    /// N304: the peer's last reported run id.
+    device_run_id: u64,
 }
 impl<T: Transport> Session<T> {
     pub fn new(transport: T) -> Self {
@@ -748,10 +785,66 @@ impl<T: Transport> Session<T> {
             mirror_last_frame_id: 0,
             packages_sent: 0,
             config_cache: BTreeMap::new(),
+            host_boot_id: 0,
+            device_boot_id: None,
+            device_run_id: 0,
         }
     }
     pub fn set_manager(&mut self, manager: Arc<Mutex<DeviceManager>>) {
         self.manager = Some(manager);
+    }
+    /// N304: set the host boot identity advertised in Hello.
+    pub fn set_host_boot_id(&mut self, boot_id: u64) {
+        self.host_boot_id = boot_id;
+    }
+    pub fn host_boot_id(&self) -> u64 {
+        self.host_boot_id
+    }
+    /// N304: the peer boot identity from the last Capabilities reply.
+    pub fn device_boot_id(&self) -> Option<u64> {
+        self.device_boot_id
+    }
+    pub fn device_run_id(&self) -> u64 {
+        self.device_run_id
+    }
+    /// N304: adopt a Capabilities reply's run identity. Returns true when the
+    /// device reported a new boot id (the previous run's pending ACKs are dropped).
+    fn adopt_device_identity(&mut self, caps: &Capabilities) -> bool {
+        if caps.boot_id == 0 && caps.run_id == 0 {
+            return false;
+        }
+        let restarted = matches!(
+            (self.device_boot_id, caps.boot_id),
+            (Some(old), new) if new != 0 && old != new
+        );
+        if caps.boot_id != 0 {
+            self.device_boot_id = Some(caps.boot_id);
+        }
+        if caps.run_id != 0 {
+            self.device_run_id = caps.run_id;
+        }
+        if restarted {
+            self.discard_run();
+        }
+        restarted
+    }
+    /// Drop every outstanding request/held frame from the previous device run.
+    fn discard_run(&mut self) {
+        let held: Vec<usize> = self.held_frames.values().copied().collect();
+        for pixels in held {
+            self.copy_budget.release_frame(pixels);
+        }
+        self.held_frames.clear();
+        self.request_floor = self.next_request_id;
+        self.pending_requests.clear();
+        self.pending_control.clear();
+        self.pending_frames.clear();
+        self.finished_acks.clear();
+        self.frame_sent_at.clear();
+        self.frame_received_at.clear();
+        self.missed_heartbeats = 0;
+        self.heartbeat_outstanding = false;
+        self.needs_full_frame = true;
     }
     pub fn connect(&mut self) -> Result<(), CoreError> {
         if self.state != ConnectionState::Disconnected
@@ -768,6 +861,7 @@ impl<T: Transport> Session<T> {
             minor: VERSION.minor,
             max_message: MAX_FRAME_BYTES as u32,
             max_chunk: mdc_protocol::DEFAULT_MAX_CHUNK as u32,
+            boot_id: self.host_boot_id,
         })
         .map_err(|e| CoreError::Protocol(e.to_string()))?;
         self.write_packet(MessageType::Hello, hello)?;
@@ -1235,6 +1329,7 @@ impl<T: Transport> Session<T> {
             minor: VERSION.minor,
             max_message: MAX_FRAME_BYTES as u32,
             max_chunk: mdc_protocol::DEFAULT_MAX_CHUNK as u32,
+            boot_id: self.host_boot_id,
         })
         .map_err(|e| CoreError::Protocol(e.to_string()))?;
         self.write_packet(MessageType::Hello, hello)
@@ -1716,6 +1811,9 @@ impl<T: Transport> Session<T> {
                 }
                 self.missed_heartbeats = 0;
                 self.heartbeat_outstanding = false;
+                // N304: a changed device boot id discards the previous run's
+                // pending ACKs before the new run is adopted.
+                self.adopt_device_identity(&caps);
                 if let Some(mgr) = &self.manager {
                     mgr.lock()
                         .map_err(|e| CoreError::Transport(e.to_string()))?
@@ -1745,6 +1843,10 @@ impl<T: Transport> Session<T> {
                 }
                 let ack: Ack = mdc_protocol::decode_control(&packet.payload)
                     .map_err(|e| CoreError::Protocol(e.to_string()))?;
+                // N304: ignore an ACK stamped with a previous run id.
+                if ack.run_id != 0 && self.device_run_id != 0 && ack.run_id != self.device_run_id {
+                    return Ok(());
+                }
                 if self.pending_requests.contains(&packet.request_id)
                     && (ack.received || ack.displayed)
                 {
@@ -1838,6 +1940,21 @@ impl Device {
             surfaces,
         }
     }
+    /// N308: the surface's advertised display profile.
+    pub fn surface(&self, surface_id: &str) -> Option<&Surface> {
+        self.capabilities
+            .surfaces
+            .iter()
+            .find(|s| s.id == surface_id)
+    }
+    /// N308: tile cut the host should use for this surface, adapting to the
+    /// device-advertised preferred tile size (falls back to the default).
+    pub fn plan_surface_tiles(&self, surface_id: &str) -> Vec<(u16, u16, u16, u16)> {
+        match self.surface(surface_id) {
+            Some(surface) => plan_tiles(surface.width, surface.height, surface.preferred_tile_size),
+            None => Vec::new(),
+        }
+    }
     pub fn validate_frame(&self, f: &Frame) -> Result<(), CoreError> {
         let surface = self
             .capabilities
@@ -1848,8 +1965,8 @@ impl Device {
         if f.width != surface.width || f.height != surface.height {
             return Err(CoreError::Dimensions);
         }
-        if surface.pixel_format != "RGB565" {
-            return Err(CoreError::Format(surface.pixel_format.clone()));
+        if !surface.pixel_format.is_implemented() {
+            return Err(CoreError::Format(surface.pixel_format.to_string()));
         }
         let expected = usize::from(f.width)
             .checked_mul(usize::from(f.height))
@@ -1954,6 +2071,8 @@ mod tests {
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
             scene: mdc_protocol::SceneCapability::default(),
+            boot_id: 0,
+            run_id: 0,
         }
     }
     fn s() -> Surface {
@@ -1964,6 +2083,9 @@ mod tests {
             pixel_format: "RGB565".into(),
             stride: 4,
             rotation: 0,
+            preferred_tile_size: 0,
+            supports_partial_update: false,
+            supports_full_framebuffer: false,
         }
     }
     #[test]
@@ -2009,6 +2131,8 @@ mod tests {
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
             scene: mdc_protocol::SceneCapability::default(),
+            boot_id: 0,
+            run_id: 0,
         };
         let mut d = Device::new(caps);
         assert!(!d.update_surface_geometry("main", 2, 2).unwrap());
@@ -2038,6 +2162,8 @@ mod tests {
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
             scene: mdc_protocol::SceneCapability::default(),
+            boot_id: 0,
+            run_id: 0,
         };
         let d = Device::new(c);
         assert_eq!(
@@ -2334,6 +2460,8 @@ mod tests {
                         displayed: true,
                         frame_id: 1,
                         error: None,
+                        run_id: 0,
+                        event_seq: 0,
                     })
                     .unwrap(),
                 }
@@ -2435,6 +2563,9 @@ mod tests {
             pixel_format: "RGB565".into(),
             stride: 4,
             rotation: 0,
+            preferred_tile_size: 0,
+            supports_partial_update: false,
+            supports_full_framebuffer: false,
         });
         device
             .write(
@@ -2477,6 +2608,8 @@ mod tests {
                         displayed: true,
                         frame_id: 1,
                         error: None,
+                        run_id: 0,
+                        event_seq: 0,
                     })
                     .unwrap(),
                 }
@@ -2507,6 +2640,8 @@ mod tests {
                 displayed: true,
                 frame_id: 1,
                 error: None,
+                run_id: 0,
+                event_seq: 0,
             })
             .unwrap(),
         }
@@ -2666,6 +2801,8 @@ mod tests {
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
             scene: mdc_protocol::SceneCapability::default(),
+            boot_id: 0,
+            run_id: 0,
         };
         let mut manager = DeviceManager::new();
         manager.upsert(caps.clone()).unwrap();
@@ -2800,6 +2937,8 @@ mod tests {
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
             scene: mdc_protocol::SceneCapability::default(),
+            boot_id: 0,
+            run_id: 0,
         };
         assert_eq!(
             manager.upsert(caps.clone()),
@@ -2860,6 +2999,8 @@ mod tests {
                         renderer: None,
                         config: mdc_protocol::ConfigCapability::default(),
                         scene: mdc_protocol::SceneCapability::default(),
+                        boot_id: 0,
+                        run_id: 0,
                     })
                     .unwrap(),
                 }
@@ -2901,6 +3042,8 @@ mod tests {
                         renderer: None,
                         config: mdc_protocol::ConfigCapability::default(),
                         scene: mdc_protocol::SceneCapability::default(),
+                        boot_id: 0,
+                        run_id: 0,
                     })
                     .unwrap(),
                 }
@@ -2944,6 +3087,8 @@ mod tests {
                         displayed: true,
                         frame_id: req as u64,
                         error: None,
+                        run_id: 0,
+                        event_seq: 0,
                     })
                     .unwrap(),
                 }
@@ -3001,6 +3146,8 @@ mod tests {
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
             scene: mdc_protocol::SceneCapability::default(),
+            boot_id: 0,
+            run_id: 0,
         };
         let reply = Packet {
             version: VERSION,
@@ -3048,6 +3195,8 @@ mod tests {
                         displayed: true,
                         frame_id: 1,
                         error: None,
+                        run_id: 0,
+                        event_seq: 0,
                     })
                     .unwrap(),
                 }
@@ -3098,6 +3247,8 @@ mod tests {
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
             scene: mdc_protocol::SceneCapability::default(),
+            boot_id: 0,
+            run_id: 0,
         };
         device_link
             .write(
@@ -3184,6 +3335,8 @@ mod tests {
                         renderer: None,
                         config: mdc_protocol::ConfigCapability::default(),
                         scene: mdc_protocol::SceneCapability::default(),
+                        boot_id: 0,
+                        run_id: 0,
                     })
                     .unwrap(),
                 }
@@ -3236,6 +3389,8 @@ mod tests {
                         renderer: None,
                         config: mdc_protocol::ConfigCapability::default(),
                         scene: mdc_protocol::SceneCapability::default(),
+                        boot_id: 0,
+                        run_id: 0,
                     })
                     .unwrap(),
                 }
@@ -3273,6 +3428,8 @@ mod tests {
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
             scene: mdc_protocol::SceneCapability::default(),
+            boot_id: 0,
+            run_id: 0,
         };
         device_link
             .write(
@@ -3333,6 +3490,8 @@ mod tests {
                 renderer: None,
                 config: mdc_protocol::ConfigCapability::default(),
                 scene: mdc_protocol::SceneCapability::default(),
+                boot_id: 0,
+                run_id: 0,
             };
             device_link
                 .write(
@@ -3370,6 +3529,9 @@ mod tests {
                 pixel_format: "RGB565".into(),
                 stride: 8,
                 rotation: 0,
+                preferred_tile_size: 0,
+                supports_partial_update: false,
+                supports_full_framebuffer: false,
             }],
             frame: true,
             tile: true,
@@ -3386,6 +3548,8 @@ mod tests {
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
             scene: mdc_protocol::SceneCapability::default(),
+            boot_id: 0,
+            run_id: 0,
         };
         device_link
             .write(
@@ -3496,6 +3660,8 @@ mod tests {
                         displayed: false,
                         frame_id: first as u64,
                         error: None,
+                        run_id: 0,
+                        event_seq: 0,
                     })
                     .unwrap(),
                 }
@@ -3530,6 +3696,8 @@ mod tests {
                         displayed: true,
                         frame_id: first as u64,
                         error: None,
+                        run_id: 0,
+                        event_seq: 0,
                     })
                     .unwrap(),
                 }
@@ -3644,6 +3812,8 @@ mod tests {
                         displayed: true,
                         frame_id: frame.request_id as u64,
                         error: None,
+                        run_id: 0,
+                        event_seq: 0,
                     })
                     .unwrap(),
                 }
@@ -3733,6 +3903,8 @@ mod tests {
                         displayed: true,
                         frame_id: packet.request_id as u64,
                         error: None,
+                        run_id: 0,
+                        event_seq: 0,
                     })
                     .unwrap(),
                 }
@@ -3959,5 +4131,141 @@ mod tests {
         session.poll().unwrap();
         assert!(session.take_mirror_frame().is_none());
         assert_eq!(session.mirror_frames_received(), 1);
+    }
+
+    #[test]
+    fn device_reboot_discards_the_previous_run() {
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        let hello = Packet::decode(&device.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        let mut first = caps();
+        first.boot_id = 100;
+        first.run_id = 1;
+        write_caps(&mut device, hello.request_id, &first);
+        session.poll().unwrap();
+        assert_eq!(session.device_boot_id(), Some(100));
+        assert_eq!(session.device_run_id(), 1);
+
+        // A frame becomes in-flight, so there is a pending ACK for this run.
+        let request = session.send_frame(frame(&[1; 8])).unwrap();
+        assert_ne!(request, 0);
+        assert_eq!(session.pending_request_count(), 1);
+        assert!(!session.needs_full_frame);
+
+        // Same boot id -> no reset.
+        write_caps(&mut device, 900, &first);
+        session.poll().unwrap();
+        assert_eq!(session.pending_request_count(), 1);
+
+        // New boot id -> the old run's pending ACK is dropped and a full frame
+        // is required again.
+        let mut second = first.clone();
+        second.boot_id = 101;
+        second.run_id = 2;
+        write_caps(&mut device, 901, &second);
+        session.poll().unwrap();
+        assert_eq!(session.device_boot_id(), Some(101));
+        assert_eq!(session.device_run_id(), 2);
+        assert_eq!(session.pending_request_count(), 0);
+        assert!(session.needs_full_frame);
+    }
+
+    #[test]
+    fn stale_run_ack_is_ignored() {
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        let hello = Packet::decode(&device.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        let mut run2 = caps();
+        run2.boot_id = 7;
+        run2.run_id = 2;
+        write_caps(&mut device, hello.request_id, &run2);
+        session.poll().unwrap();
+        let request = session.send_frame(frame(&[2; 8])).unwrap();
+        assert_eq!(session.pending_request_count(), 1);
+        // An ACK stamped with run 1 is from the previous boot and must not clear
+        // the request.
+        let stale = Ack {
+            received: true,
+            displayed: true,
+            frame_id: 1,
+            error: None,
+            run_id: 1,
+            event_seq: 5,
+        };
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Ack,
+                    flags: 0,
+                    request_id: request,
+                    payload: encode_control(&stale).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        assert_eq!(session.pending_request_count(), 1);
+    }
+
+    #[test]
+    fn preferred_tile_size_drives_the_host_cut() {
+        // No advertised preference -> the host's default edge (32).
+        let mut c = caps();
+        c.surfaces[0] = Surface {
+            width: 70,
+            height: 40,
+            ..s()
+        };
+        let device = Device::new(c);
+        assert_eq!(
+            device.plan_surface_tiles("main"),
+            vec![
+                (0, 0, 32, 32),
+                (32, 0, 32, 32),
+                (64, 0, 6, 32),
+                (0, 32, 32, 8),
+                (32, 32, 32, 8),
+                (64, 32, 6, 8),
+            ]
+        );
+        // The device's preferred tile size is used when present.
+        let mut c2 = caps();
+        c2.surfaces[0] = Surface {
+            width: 40,
+            height: 40,
+            preferred_tile_size: 20,
+            ..s()
+        };
+        let device2 = Device::new(c2);
+        assert_eq!(
+            device2.plan_surface_tiles("main"),
+            vec![
+                (0, 0, 20, 20),
+                (20, 0, 20, 20),
+                (0, 20, 20, 20),
+                (20, 20, 20, 20)
+            ]
+        );
+        // Degenerate surfaces never produce tiles.
+        assert!(plan_tiles(0, 10, 32).is_empty());
+        assert!(plan_tiles(10, 0, 32).is_empty());
+        assert!(device.plan_surface_tiles("missing").is_empty());
+    }
+
+    #[test]
+    fn unimplemented_pixel_format_is_rejected_explicitly() {
+        let mut c = caps();
+        c.surfaces[0].pixel_format = mdc_protocol::PixelFormat::Rgba8888;
+        let device = Device::new(c);
+        let error = device.validate_frame(&frame(&[0; 8])).unwrap_err();
+        assert_eq!(error, CoreError::Format("RGBA8888".into()));
     }
 }

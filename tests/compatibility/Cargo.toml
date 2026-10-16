@@ -13,3 +13,4 @@ mdc-simulator = { path = "../../crates/mdc-simulator" }
 mdc-model = { path = "../../crates/mdc-model" }
 mdc-bake = { path = "../../crates/mdc-bake" }
 mdc-mirror = { path = "../../crates/mdc-mirror" }
+mdc-schedule = { path = "../../crates/mdc-schedule" }

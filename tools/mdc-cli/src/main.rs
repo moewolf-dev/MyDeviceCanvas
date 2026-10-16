@@ -86,6 +86,8 @@ struct SurfaceDto {
     width: u16,
     height: u16,
     pixel_format: String,
+    /// N307: the format enum is exposed to the SDK; only RGB565 is implemented.
+    implemented: bool,
     stride: u32,
     rotation: u16,
 }
@@ -172,7 +174,8 @@ fn devices_json(manager: &DeviceManager) -> String {
                     id: s.id.clone(),
                     width: s.width,
                     height: s.height,
-                    pixel_format: s.pixel_format.clone(),
+                    pixel_format: s.pixel_format.to_string(),
+                    implemented: s.pixel_format.is_implemented(),
                     stride: s.stride,
                     rotation: s.rotation,
                 })
@@ -227,7 +230,8 @@ fn inspect_json(manager: &DeviceManager, metrics: Option<&SimMetrics>) -> String
                     id: s.id.clone(),
                     width: s.width,
                     height: s.height,
-                    pixel_format: s.pixel_format.clone(),
+                    pixel_format: s.pixel_format.to_string(),
+                    implemented: s.pixel_format.is_implemented(),
                     stride: s.stride,
                     rotation: s.rotation,
                 })
@@ -2742,6 +2746,7 @@ mod tests {
                 minor: 0,
                 max_message: 4096,
                 max_chunk: 1024,
+                boot_id: 0,
             })
             .unwrap(),
         }
@@ -2781,6 +2786,9 @@ mod tests {
                     pixel_format: "RGB565".into(),
                     stride: 4,
                     rotation: 0,
+                    preferred_tile_size: 0,
+                    supports_partial_update: false,
+                    supports_full_framebuffer: false,
                 }],
                 frame: true,
                 tile: true,
@@ -2797,6 +2805,8 @@ mod tests {
                 renderer: None,
                 config: mdc_protocol::ConfigCapability::default(),
                 scene: mdc_protocol::SceneCapability::default(),
+                boot_id: 0,
+                run_id: 0,
             })
             .unwrap(),
         }
@@ -2856,6 +2866,9 @@ mod tests {
                                                 pixel_format: "RGB565".into(),
                                                 stride: 4,
                                                 rotation: 0,
+                                                preferred_tile_size: 0,
+                                                supports_partial_update: false,
+                                                supports_full_framebuffer: false,
                                             }],
                                             frame: true,
                                             tile: true,
@@ -2872,6 +2885,8 @@ mod tests {
                                             renderer: None,
                                             config: mdc_protocol::ConfigCapability::default(),
                                             scene: mdc_protocol::SceneCapability::default(),
+                                            boot_id: 0,
+                                            run_id: 0,
                                         };
                                         let reply = Packet {
                                             version: VERSION,

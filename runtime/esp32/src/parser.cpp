@@ -23,6 +23,11 @@ bool known_type(std::uint8_t type) {
     case 0x40:
     case 0x41:
     case 0x50:
+    // N303: reserved diagnostic/telemetry values (payload not decoded yet).
+    case 0x60:
+    case 0x61:
+    case 0x62:
+    case 0x63:
     case 0x7f:
       return true;
     default:

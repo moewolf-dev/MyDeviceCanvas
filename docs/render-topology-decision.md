@@ -159,6 +159,47 @@ falls back to requiring a full frame). A `full-frame`-only host still receives
 full frames; `dirty-region` never replaces the full-frame contract. The simulator
 models this with `BoardProfile.mirror_dirty_region` (`linux-virt` / `pi4-hdmi`).
 
+### 4.3 Mirror read source — what `MIRRORFRAME` actually captures (N309)
+
+Open question from report 2: does the device mirror the **LVGL/drawer buffer** it
+renders into, or the **LCD final framebuffer** the panel is showing? The two are
+not always the same, so this is an open decision that **can only be settled on
+hardware**; it is recorded here so every board answers it the same way.
+
+`MirrorFrame` contract by display pipeline (the *pixels* a device sends):
+
+| Pipeline | Read source to define | `MirrorFrame` contract | Risk |
+|---|---|---|---|
+| Single framebuffer, no DMA overlay | final framebuffer | pixels = what the panel shows after the last flush | tearing visible in the mirror if read mid-flush |
+| Double buffer (draw buffer ≠ display buffer) | the buffer just presented | mirror the buffer that was swapped in, not the one being drawn | reading the draw buffer yields a half-updated frame |
+| Partial refresh (e-ink / partial LCD) | **composited logical frame** | accumulate dirty regions into a logical frame and mirror that; never mirror only the changed region as if it were whole | a raw partial read looks like a torn frame |
+| DMA direct-to-panel (no CPU-visible buffer) | a dedicated mirror buffer fed at flush time | the driver copies the flushed region into a mirror buffer; the sender reads that | if only the panel sees the pixels, there is nothing to send |
+
+Rules:
+
+1. The mirror source is a **board/driver fact**, advertised as part of the board
+   profile, not assumed by the host. The wire contract is only "a complete,
+   coherent RGB565 `surface_id` frame of `w×h`".
+2. `dirty-region` (4.2) is a **transport optimisation on top of** the contract: a
+   device may advertise it only when it can compute coherent changed ranges from
+   the same read source. A device that can only read the panel cannot diff
+   reliably and must advertise `full-frame`.
+3. Partial-refresh panels must composite into a logical frame before mirroring;
+   sending the raw refreshed region is forbidden (it is not a whole frame).
+4. The host stays agnostic: `Session`/`mdc-mirror` patch by pixel-aligned byte
+   ranges and never assume which buffer the device read.
+
+On-hardware verification checklist (per board, `physical: pending` until done):
+
+- [ ] Identify the pipeline (single / double / partial / DMA-direct).
+- [ ] Confirm the declared read source produces a **whole, coherent** frame
+      (no tear at flush boundaries) under rapid updates.
+- [ ] If `dirty-region` is advertised, confirm changed ranges match the composite
+      of the same read source, not a different buffer.
+- [ ] Confirm `local_display_fps` and `mirror_fps` may differ without changing the
+      read source's correctness.
+- [ ] Record the measured latency (flush → `MIRRORFRAME`) and the buffer count.
+
 ## 5. Mode selection and defaults
 - Default mode is decided by capability intersection, not by board family.
 - `full-frame` is the safe default for 3D/Live2D/mesh deformation because
@@ -208,6 +249,30 @@ pub trait MirrorSink {
 - Frame pacing is a host concern: the sink may be called with the same front
   buffer more than once (OBS 30 FPS vs device 15 FPS); the shadow buffer is the
   pacing boundary between the device clock and the OBS clock.
+
+### 7.1 Host frame scheduling and the bandwidth arithmetic (N305/N306)
+
+Report 2 insists a low-FPS device must **schedule**, because raw frames do not
+fit a small link. The arithmetic: an 800×480 RGB565 frame is `800·480·2 =
+768,000` bytes; at 60 FPS that is `46,080,000 B/s ≈ 46 MB/s`. A serial link, a
+Wi-Fi mirror, or a small MCU cannot sustain that, so the host must clamp FPS and
+spend a byte budget per interval.
+
+`crates/mdc-schedule` implements that pacing and nothing else:
+
+- `Scheduler::new(max_fps, max_bytes_per_second)` (or `SchedulerConfig::for_mirror`
+  from the advertised `mirror_fps` / `mirror_bandwidth`).
+- `Scheduler::plan(now_ms, tiles)` returns `Send { selected, deferred }` or
+  `Defer { at_ms }`; a frame is emitted only after `min_interval_ms` (`1000/fps`).
+  Tiles are packed dirty-first; the byte budget is `bytes_per_second · interval`.
+  At least one tile is always selected so a frame cannot stall.
+- `merge_dirty_ranges` coalesces touching dirty tiles into one transaction.
+- It never reorders image content; `latest-frame-wins` stays in `mdc-core`. The
+  scheduler only decides **pacing**.
+
+Test `crates/mdc-schedule/tests/bandwidth.rs` drives an 8 FPS / 200 KB/s link over
+a 375-tile frame, asserts tiles are deferred (not sent all at once) and that every
+tile eventually converges.
 
 ## 8. Versioning
 

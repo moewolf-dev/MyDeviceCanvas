@@ -16,6 +16,8 @@ pub struct SurfaceInfo {
     pub height: u16,
     #[napi(js_name = "pixelFormat")]
     pub pixel_format: String,
+    /// N307: only RGB565 is implemented on the host/frame path.
+    pub implemented: bool,
     pub stride: u32,
     pub rotation: u16,
 }
@@ -300,7 +302,8 @@ impl NativeManager {
                         id: s.id.clone(),
                         width: s.width,
                         height: s.height,
-                        pixel_format: s.pixel_format.clone(),
+                        pixel_format: s.pixel_format.to_string(),
+                        implemented: s.pixel_format.is_implemented(),
                         stride: s.stride,
                         rotation: s.rotation,
                     })

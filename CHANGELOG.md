@@ -2,6 +2,26 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.43] — Reserved diagnostics, reboot semantics, pacing, pixel formats (N303–N312)
+
+### Added
+
+- Reserved diagnostic/telemetry message types `Telemetry`/`Metric`/`Crash`/`BootInfo`
+  (`0x60..0x63`), accepted (payload not decoded) by the Rust codec and the C++
+  parser; shared `diagnostic_types.json` vector + docs (N303)
+- `Hello.boot_id`, `Capabilities.boot_id`/`run_id`, `Ack.run_id`/`event_seq`
+  (additive, omitted at 0); `Session` detects a changed device `boot_id`, drops the
+  previous run's pending ACKs/held frames and ignores a stale-run ACK (N304)
+- New crate `crates/mdc-schedule`: deterministic host frame/tile pacing
+  (`Scheduler::plan`, fps clamp, byte budget, dirty-first packing,
+  `merge_dirty_ranges`) with a bandwidth-constrained convergence test (N305, N306)
+- `PixelFormat` enum threaded through protocol → core → CLI/Node/C/Swift; only
+  RGB565 is implemented and the rest are rejected explicitly (N307)
+- `Surface.{preferred_tile_size, supports_partial_update,
+  supports_full_framebuffer}` + host adaptive tile cut (`plan_tiles`) (N308)
+- `render-topology-decision.md` §4.3 mirror-read-source decision + §7.1 scheduling
+  arithmetic; new `docs/submodule-contract.md` + README/status callouts (N309, N310)
+
 ## [0.1.42] — Device-side texture cutout (N293–N302)
 
 ### Added

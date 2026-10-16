@@ -48,6 +48,31 @@ uint32_t mdc_session_surface_count(const MdcSession* session);
 int mdc_session_surface_at(const MdcSession* session, uint32_t index, char* id, size_t id_len,
                            uint16_t* width, uint16_t* height);
 
+/**
+ * N307: pixel format enum exposed to SDK consumers. Only MDC_PIXEL_RGB565 is
+ * implemented by the host/frame path; the others decode but are rejected with an
+ * explicit unsupported error. MDC_PIXEL_UNKNOWN covers any forward-compatible
+ * name the protocol learns later.
+ */
+enum MdcPixelFormat {
+  MDC_PIXEL_RGB565 = 0,
+  MDC_PIXEL_RGB888 = 1,
+  MDC_PIXEL_RGBA8888 = 2,
+  MDC_PIXEL_GRAY1 = 3,
+  MDC_PIXEL_GRAY4 = 4,
+  MDC_PIXEL_UNKNOWN = -1
+};
+
+/**
+ * N307: pixel format code of one surface (an MdcPixelFormat value). Returns
+ * MDC_PIXEL_UNKNOWN when the session is null/not ready or the index is out of
+ * range.
+ */
+int mdc_session_surface_format_at(const MdcSession* session, uint32_t index);
+
+/** N307: non-zero when the host/frame path implements this format code. */
+int mdc_pixel_format_is_implemented(int code);
+
 /** Simulator session for a board id such as "dual-sim". NULL uses the default board. */
 MdcSession* mdc_session_create_board(const char* board_id);
 

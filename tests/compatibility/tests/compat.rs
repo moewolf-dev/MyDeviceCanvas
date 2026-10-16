@@ -23,6 +23,9 @@ fn major_version_mismatch_is_rejected_at_decode() {
                 pixel_format: "RGB565".into(),
                 stride: 2,
                 rotation: 0,
+                preferred_tile_size: 0,
+                supports_partial_update: false,
+                supports_full_framebuffer: false,
             }],
             frame: true,
             tile: false,
@@ -39,6 +42,8 @@ fn major_version_mismatch_is_rejected_at_decode() {
             renderer: None,
             config: mdc_protocol::ConfigCapability::default(),
             scene: mdc_protocol::SceneCapability::default(),
+            boot_id: 0,
+            run_id: 0,
         })
         .unwrap(),
     }
@@ -69,6 +74,7 @@ fn fake_device_rejects_hello_with_foreign_major() {
         minor: 0,
         max_message: 4096,
         max_chunk: 1024,
+        boot_id: 0,
     })
     .unwrap();
     let pkt = Packet {
@@ -1535,4 +1541,89 @@ fn morph_weight_edge_cases_are_bounded() {
         mdc_bake::apply_morphs(&base, &targets, &[]),
         vec![[0.0, 0.0, 0.0]]
     );
+}
+
+// ---- N304–N308: reboot, pacing and display-profile fixtures -----------------
+
+#[test]
+fn device_reboot_drops_the_previous_run_over_the_simulator() {
+    let profile = BoardProfile {
+        width: 4,
+        height: 2,
+        ..BoardProfile::default()
+    };
+    let (host, mut device) = FakeDevice::pair(profile);
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    let first_boot = device.boot_id();
+    assert_eq!(session.device_boot_id(), Some(first_boot));
+
+    // An in-flight frame for this run leaves one pending ACK.
+    session
+        .send_frame(Frame {
+            surface_id: "main".into(),
+            width: 4,
+            height: 2,
+            bytes: vec![1; 16],
+        })
+        .unwrap();
+    assert_eq!(session.pending_request_count(), 1);
+
+    // Device reboots; the host refreshes capabilities and re-handshakes.
+    device.restart();
+    assert_eq!(device.boot_id(), first_boot.wrapping_add(1));
+    session.refresh_capabilities().unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    assert_eq!(session.device_boot_id(), Some(device.boot_id()));
+    assert_ne!(session.device_boot_id(), Some(first_boot));
+    assert_eq!(session.pending_request_count(), 0);
+    assert!(session.needs_full_frame);
+}
+
+#[test]
+fn scheduler_bounds_a_simulated_mirror_bandwidth() {
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    let device = session.device.as_ref().unwrap();
+    let mirror_fps = device.capabilities.mirror_fps;
+    let bandwidth = device.capabilities.mirror_bandwidth;
+    assert!(mirror_fps > 0 && bandwidth > 0);
+
+    // N305/N306: the advertised mirror limits drive one pacing budget shared by
+    // every consumer. The simulator advertises one frame per mirror interval, so
+    // the budget never exceeds one full 800x480 frame.
+    let scheduler = mdc_schedule::Scheduler::for_mirror(mirror_fps, bandwidth);
+    let full_frame = 800u64 * 480 * 2;
+    assert!(scheduler.budget_bytes() > 0 && scheduler.budget_bytes() <= full_frame);
+    let tile = mdc_schedule::TileCost::new(0, 32 * 32 * 2, false);
+    assert!(!scheduler.plan(0, &[tile]).is_defer());
+}
+
+#[test]
+fn surface_pixel_format_and_display_profile_are_exposed() {
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    let device = session.device.as_ref().unwrap();
+    let surface = device.surface("main").expect("main surface");
+    // N307: the enum is threaded through the public API; RGB565 is implemented.
+    assert!(surface.pixel_format.is_implemented());
+    assert_eq!(surface.pixel_format.to_string(), "RGB565");
+    // N308: the host adapts to the device-advertised tile size.
+    assert_eq!(surface.preferred_tile_size, 64);
+    assert!(surface.supports_partial_update && surface.supports_full_framebuffer);
+    let tiles = device.plan_surface_tiles("main");
+    assert!(!tiles.is_empty());
+    let (_, _, w, h) = tiles[0];
+    assert_eq!((w, h), (64, 64));
+    assert_eq!(tiles.len(), 800usize.div_ceil(64) * 480usize.div_ceil(64));
 }

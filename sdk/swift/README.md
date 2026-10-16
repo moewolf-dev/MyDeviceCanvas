@@ -40,6 +40,20 @@ final class MdcSession {
 Default session is **simulator FakeDevice** (same as CLI `--sim`). Physical transports are not exposed through the C ABI in 0.1.
 Also: `mdc_session_current_frame_id`, `mdc_session_surface_size`, `mdc_session_needs_full_frame`.
 
+## Pixel format (N307)
+
+`MdcSession.swift` exposes the surface pixel format enum:
+
+```swift
+let format = session.surfaceFormat(at: 0)          // .rgb565 on the default board
+let ok = session.pixelFormatIsImplemented(format)  // true only for .rgb565
+```
+
+`MdcPixelFormat` is `rgb565` (implemented) plus `rgb888` / `rgba8888` / `gray1` /
+`gray4` / `unknown` (decode but are rejected by the host/frame path). The C ABI
+function is `mdc_session_surface_format_at`; the enum mirrors `MdcPixelFormat` in
+`sdk/c/include/mdc.h`.
+
 ## Package + config (N246)
 
 `MdcSession.swift` also wraps the newer C ABI calls:

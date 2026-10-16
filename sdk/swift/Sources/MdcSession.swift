@@ -22,6 +22,19 @@ public struct MdcMirrorFrame {
     public let pixels: [UInt8]
 }
 
+/// N307: surface pixel format exposed by the C ABI. Only `rgb565` is implemented
+/// by the host/frame path; the rest decode but are rejected as unsupported.
+public enum MdcPixelFormat: Int32 {
+    case rgb565 = 0
+    case rgb888 = 1
+    case rgba8888 = 2
+    case gray1 = 3
+    case gray4 = 4
+    case unknown = -1
+
+    public var isImplemented: Bool { self == .rgb565 }
+}
+
 /// Opaque session. Swift only calls the C ABI and releases the handle in `close` / `deinit`.
 public final class MdcSession {
     private var raw: OpaquePointer?
@@ -89,6 +102,17 @@ public final class MdcSession {
         }
         guard rc == 0 else { throw MdcError.sendFailed(rc) }
         return (String(cString: id), width, height)
+    }
+
+    /// N307: the surface pixel format. Only RGB565 is implemented by the host.
+    public func surfaceFormat(at index: UInt32) -> MdcPixelFormat {
+        guard let raw else { return .unknown }
+        return MdcPixelFormat(rawValue: mdc_session_surface_format_at(raw, index)) ?? .unknown
+    }
+
+    /// N307: whether the host/frame path implements a format code.
+    public func pixelFormatIsImplemented(_ format: MdcPixelFormat) -> Bool {
+        mdc_pixel_format_is_implemented(format.rawValue) != 0
     }
 
     public func sendFrame(_ bytes: [UInt8]) throws {

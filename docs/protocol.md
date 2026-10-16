@@ -16,7 +16,41 @@ The wire format is a byte stream. Every packet starts with the 20-byte little-en
 
 Integers are little-endian. Control payloads are CBOR and are limited to 4096 bytes. Frame and tile payloads are raw RGB565 little-endian bytes, never base64. The default chunk limit is 16 KiB. A receiver must reject invalid magic, unsupported major versions, unknown message types, lengths above its negotiated limit, truncation and checksum failures without allocating the advertised payload first.
 
-Supported types are HELLO, CAPABILITIES, FRAME, TILE, MIRRORFRAME, INPUT, OTA, MIRRORCTRL, PACKAGE, PING, PONG, ACK and ERROR. Input and OTA are reserved in 0.1 and return `Unsupported` unless capabilities explicitly enable them.
+Supported types are HELLO, CAPABILITIES, FRAME, TILE, MIRRORFRAME, INPUT, OTA, MIRRORCTRL, PACKAGE, CONFIG, SCENE, PING, PONG, ACK and ERROR. Input and OTA are reserved in 0.1 and return `Unsupported` unless capabilities explicitly enable them. `TELEMETRY`, `METRIC`, `CRASH` and `BOOTINFO` (`0x60..0x63`, N303) are **reserved**: the decoder accepts the values so the enum is stable, but no payload is implemented yet (see below).
+
+## Reserved diagnostics (N303)
+
+`TELEMETRY`/`METRIC`/`CRASH`/`BOOTINFO` are device → host types reserved for a
+HIL diagnostic channel. A receiver accepts the type but must not assume a payload
+layout; `Core` currently ignores them. Diagnostics belong on a channel
+**independent of the link under test** so a saturated Frame/MirrorFrame link
+cannot lose the result of that same test. See
+[transport-scope.md](transport-scope.md#reserved-diagnostics--telemetry-n303--not-implemented).
+
+## Reboot semantics (N304)
+
+`HELLO` carries a host `boot_id`; `CAPABILITIES` carries the device `boot_id` and
+a `run_id`; `ACK` carries `run_id` and a monotonic `event_seq`. All three are
+additive and omitted on the wire when 0, so a pre-N304 peer is byte-identical. A
+`Session` records the device `boot_id`; a change means the device rebooted, so the
+previous run's pending ACKs and held frames are discarded and an ACK stamped with
+a different `run_id` is ignored.
+
+## Pixel format (N307)
+
+A `SURFACE.pixel_format` is a `PixelFormat` enum serialized as its canonical wire
+string. Only `RGB565` is implemented by the host/frame path; `RGB888`, `RGBA8888`,
+`GRAY1`, `GRAY4` and any other name decode but are rejected with an explicit
+unsupported error. SDKs expose the enum (CLI/Node `implemented`, C
+`mdc_session_surface_format_at`, Swift `MdcPixelFormat`).
+
+## Display profile (N308)
+
+A `SURFACE` may advertise `preferred_tile_size` (0 = no preference),
+`supports_partial_update` and `supports_full_framebuffer`. All are additive and
+omitted when default. The host adapts its tile cut to the advertised
+`preferred_tile_size` (falling back to its own default) instead of assuming the
+optimal 16/32 size, which is a per-board measurement.
 
 ## Form B: mirror upstream (N03)
 

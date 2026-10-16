@@ -92,13 +92,25 @@ int main() {
   unknown[0] = 'M';
   unknown[1] = 'D';
   unknown[2] = 1;
-  unknown[4] = 99;
+  unknown[4] = 0x55;  // still unknown after N303 reserved 0x60..0x63
   put32(unknown, 12, 0x00ffffffu);
   mdc::Parser unknown_parser;
   mdc::Packet unknown_out;
   assert(unknown_parser.feed(unknown.data(), unknown.size(), unknown_out) ==
          mdc::ParseResult::Invalid);
   assert(unknown_out.payload.empty());
+
+  // N303: the reserved diagnostic types parse (no payload is decoded by the
+  // device yet), so a downstream pin of the wire enum is stable.
+  for (std::uint8_t reserved : {0x60, 0x61, 0x62, 0x63}) {
+    auto packet = mdc::encode_packet(static_cast<mdc::MessageType>(reserved), 5, {1, 2});
+    mdc::Parser reserved_parser;
+    mdc::Packet reserved_out;
+    assert(reserved_parser.feed(packet.data(), packet.size(), reserved_out) ==
+           mdc::ParseResult::Packet);
+    assert(static_cast<std::uint8_t>(reserved_out.type) == reserved);
+    assert(reserved_out.payload.size() == 2);
+  }
 
   mdc::Packet ping;
   assert(parser.feed(encoded.data(), encoded.size(), ping) == mdc::ParseResult::Packet);

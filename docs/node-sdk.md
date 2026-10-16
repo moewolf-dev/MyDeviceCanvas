@@ -24,6 +24,7 @@ is idempotent and cancels listeners; every method rejects after dispose.
 | Method | Notes |
 |---|---|
 | `devices()` | `DeviceInfo[]`, each with `surface(id)` |
+| `surface.pixelFormat` / `surface.implemented` | N307: canonical wire name plus whether the host/frame path implements it (only RGB565 today) |
 | `surface.sendFrame(bytes)` / `sendTile(tile)` | RGB565; the caller buffer is copied before dispatch |
 | `currentFrameId()` | |
 | `pollEvents()` | drained `NativeEvent[]` (`connected` / `disconnected` / `input` / `mirror` / `error`) |

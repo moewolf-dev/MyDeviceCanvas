@@ -2,7 +2,10 @@ export interface SurfaceInfo {
   id: string;
   width: number;
   height: number;
+  /** Canonical wire name, e.g. "RGB565", "RGB888"; N307. */
   pixelFormat: string;
+  /** N307: only RGB565 has an implemented host/frame path. */
+  implemented: boolean;
   stride: number;
   rotation: number;
 }

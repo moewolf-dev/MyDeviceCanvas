@@ -23,7 +23,13 @@ limits:
   host_frame: 1048576
 
 pixel_formats:
-  - RGB565_LE
+  - RGB565_LE        # implemented
+  # N307: these decode but are rejected as unsupported by the host/frame path.
+  - RGB888
+  - RGBA8888
+  - GRAY1
+  - GRAY4
+  # any other name decodes as PixelFormat::Other and is unsupported
 
 message_types:
   HELLO: {code: 1, payload: cbor, struct: Hello}
@@ -36,9 +42,17 @@ message_types:
   OTA: {code: 48, payload: cbor, struct: OtaCommand}
   # Host -> device mirror control (Form B).
   MIRROR_CTRL: {code: 49, payload: cbor, struct: MirrorCommand, direction: host_to_device}
+  PACKAGE: {code: 50, payload: binary, struct: PackagePayload, direction: host_to_device}
+  CONFIG: {code: 51, payload: cbor, struct: ConfigCommand}
+  SCENE: {code: 52, payload: cbor, struct: SceneCommand}
   PING: {code: 64, payload: empty}
   PONG: {code: 65, payload: empty}
   ACK: {code: 80, payload: cbor, struct: Ack}
+  # N303: reserved diagnostic/telemetry (device -> host). Values parse; payload not implemented.
+  TELEMETRY: {code: 96, payload: reserved, direction: device_to_host}
+  METRIC: {code: 97, payload: reserved, direction: device_to_host}
+  CRASH: {code: 98, payload: reserved, direction: device_to_host}
+  BOOTINFO: {code: 99, payload: reserved, direction: device_to_host}
   ERROR: {code: 127, payload: cbor, struct: ErrorPayload}
 
 # Frame payloads use a leading u8 phase (preferred over MessageType flags).
@@ -59,6 +73,7 @@ structs:
     minor: u8
     max_message: u32
     max_chunk: u32
+    boot_id: u64           # N304 host boot identity; omitted when 0
   Capabilities:
     device_id: string
     firmware: string
@@ -76,6 +91,9 @@ structs:
     local_display_fps: u16
     mirror_fps: u16
     mirror_bandwidth: u64
+    # N304: omitted when 0. A changed boot_id means the device rebooted.
+    boot_id: u64
+    run_id: u64
   MirrorCapability:
     mode: [string]          # subset of full-frame | dirty-region; empty = unsupported
     max_fps: u16
@@ -93,9 +111,13 @@ structs:
     id: string
     width: u16
     height: u16
-    pixel_format: string
+    pixel_format: string   # N307 PixelFormat enum serialized as its canonical name
     stride: u32
     rotation: u16
+    # N308: omitted when default. preferred_tile_size 0 = no preference.
+    preferred_tile_size: u16
+    supports_partial_update: bool
+    supports_full_framebuffer: bool
   Ack:
     received: bool
     displayed: bool

@@ -137,6 +137,36 @@ fn surfaces_of(session: &MdcSession) -> Vec<(String, u16, u16)> {
         .unwrap_or_default()
 }
 
+/// N307: surfaces with their pixel format, for the SDK surface-format ABI.
+fn surface_formats_of(session: &MdcSession) -> Vec<mdc_protocol::PixelFormat> {
+    session
+        .session
+        .device
+        .as_ref()
+        .map(|device| {
+            device
+                .capabilities
+                .surfaces
+                .iter()
+                .map(|surface| surface.pixel_format.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// N307: stable code for a `PixelFormat` (see `mdc.h`). Only `0` (RGB565) is
+/// implemented; `-1` is an unknown/forward-compatible format.
+fn pixel_format_code(format: &mdc_protocol::PixelFormat) -> c_int {
+    match format {
+        mdc_protocol::PixelFormat::Rgb565 => 0,
+        mdc_protocol::PixelFormat::Rgb888 => 1,
+        mdc_protocol::PixelFormat::Rgba8888 => 2,
+        mdc_protocol::PixelFormat::Gray1 => 3,
+        mdc_protocol::PixelFormat::Gray4 => 4,
+        mdc_protocol::PixelFormat::Other(_) => -1,
+    }
+}
+
 /// # Safety
 /// `board_id` is a NUL-terminated board name, or null for the default board.
 #[no_mangle]
@@ -186,6 +216,38 @@ pub unsafe extern "C" fn mdc_session_surface_at(
     *width = w;
     *height = h;
     0
+}
+
+/// N307: the pixel format code of one surface (see `mdc.h`). Returns -1 when the
+/// session is null/not ready or the index is out of range.
+///
+/// # Safety
+/// `session` is null or a live session.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_surface_format_at(
+    session: *const MdcSession,
+    index: u32,
+) -> c_int {
+    if session.is_null() {
+        return -1;
+    }
+    match surface_formats_of(&*session)
+        .into_iter()
+        .nth(index as usize)
+    {
+        Some(format) => pixel_format_code(&format),
+        None => -1,
+    }
+}
+
+/// N307: non-zero when the host/frame path implements this format code. Only
+/// RGB565 (`0`) is implemented in this batch; every other code is rejected.
+///
+/// # Safety
+/// Pure function; no pointers involved.
+#[no_mangle]
+pub extern "C" fn mdc_pixel_format_is_implemented(code: c_int) -> c_int {
+    c_int::from(code == 0)
 }
 
 /// # Safety
@@ -1068,6 +1130,12 @@ mod tests {
             assert_eq!((main_w, main_h), (8, 4));
             let created = mdc_session_create();
             assert_eq!(mdc_session_surface_count(created), 1);
+            // N307: the surface format enum is exposed; only RGB565 is implemented.
+            assert_eq!(mdc_session_surface_format_at(session, 0), 0);
+            assert_eq!(mdc_session_surface_format_at(session, 1), 0);
+            assert_eq!(mdc_session_surface_format_at(session, 9), -1);
+            assert_eq!(mdc_pixel_format_is_implemented(0), 1);
+            assert_eq!(mdc_pixel_format_is_implemented(2), 0);
             mdc_session_destroy(created);
             mdc_session_destroy(session);
         }

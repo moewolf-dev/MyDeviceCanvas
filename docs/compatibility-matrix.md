@@ -96,6 +96,13 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Target backends (esp32-plane / linux-mesh) | sim-verified (mesh↔sprite by capability; no board-id branch) | n/a |
 | Board family skeletons (arduino/rockchip/nvidia) | architecture (`physical: pending`) | physical: pending |
 | Transport scope (BLE/USB bulk/PCIe) | architecture (reserved, not implemented) | physical: pending |
+| Reserved diagnostics (N303) | architecture (`0x60..0x63` parse; payload not implemented) | physical: pending |
+| Reboot semantics (N304) | sim-verified (`boot_id`/`run_id`; reboot drops the previous run) | physical: pending |
+| Host frame scheduler (N305/N306) | sim-verified (`mdc-schedule` pacing + bandwidth convergence test) | n/a |
+| PixelFormat enum (N307) | sim-verified (protocol → CLI/Node/C/Swift; non-RGB565 rejected) | n/a |
+| Surface display profile (N308) | sim-verified (`preferred_tile_size` + adaptive host tile cut) | physical: pending |
+| Mirror read source (N309) | architecture (decision + hardware checklist; unmeasured) | physical: pending |
+| Submodule contract (N310) | docs (`docs/submodule-contract.md`) | n/a |
 
 ## G03 sim exit
 

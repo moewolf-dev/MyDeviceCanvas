@@ -839,6 +839,13 @@ pub struct BoardProfile {
     pub renderer_max_vertices: u32,
     /// N41: configuration keys this board accepts.
     pub config_keys: Vec<String>,
+    /// N308: device-advertised preferred tile edge (0 = no preference; the host
+    /// then uses its own default). Reported from the device, not assumed.
+    pub preferred_tile_size: u16,
+    /// N308: the device accepts partial (tile/dirty) updates.
+    pub supports_partial_update: bool,
+    /// N308: the device accepts a full framebuffer push (Form A).
+    pub supports_full_framebuffer: bool,
 }
 impl Default for BoardProfile {
     fn default() -> Self {
@@ -873,6 +880,11 @@ impl Default for BoardProfile {
                 // N71: atlas animation control (only meaningful with a baked atlas).
                 "animation".into(),
             ],
+            // N308: an MCU-class panel prefers 32-pixel tiles and takes both
+            // partial and full updates (it advertises tile support).
+            preferred_tile_size: 32,
+            supports_partial_update: true,
+            supports_full_framebuffer: true,
         }
     }
 }
@@ -897,6 +909,8 @@ impl BoardProfile {
                 renderer_skeleton: true,
                 renderer_max_texture: 2048,
                 renderer_max_vertices: 200_000,
+                // N308: a bigger panel can take bigger tiles.
+                preferred_tile_size: 64,
                 ..Self::default()
             },
             "pi4-hdmi" => Self {
@@ -1038,6 +1052,10 @@ pub struct FakeDevice {
     /// First accepted mesh preview, in framebuffer pixels.
     preview_xy: Vec<(i16, i16)>,
     preview_indices: Vec<u16>,
+    /// N304: device boot identity reported in Capabilities. `restart` bumps it.
+    boot_id: u64,
+    /// N304: monotonic run id for the current boot, echoed in Acks.
+    run_id: u64,
 }
 impl FakeDevice {
     pub fn from_transport(link: Box<dyn Transport>, profile: BoardProfile) -> Self {
@@ -1098,6 +1116,8 @@ impl FakeDevice {
             anim_blend_start: 0,
             preview_xy: Vec::new(),
             preview_indices: Vec::new(),
+            boot_id: 0x4D44_0001,
+            run_id: 1,
         }
     }
 
@@ -1122,6 +1142,25 @@ impl FakeDevice {
     }
     pub fn current_frame_id(&self) -> u64 {
         self.current_frame_id
+    }
+    /// N304: the boot identity reported in Capabilities.
+    pub fn boot_id(&self) -> u64 {
+        self.boot_id
+    }
+    /// N304: the current run id echoed in Acks.
+    pub fn run_id(&self) -> u64 {
+        self.run_id
+    }
+    /// N304: simulate a device reboot. Bumps `boot_id`/`run_id` and drops the
+    /// transient render state so the host can detect the new run.
+    pub fn restart(&mut self) {
+        self.boot_id = self.boot_id.wrapping_add(1);
+        self.run_id = self.run_id.saturating_add(1);
+        self.current_frame_id = 0;
+        self.assembler = None;
+        self.mirror_active = false;
+        self.mirror_prev.clear();
+        self.stop_animation();
     }
     pub fn firmware(&self) -> &str {
         &self.firmware
@@ -1257,6 +1296,9 @@ impl FakeDevice {
             pixel_format: "RGB565".into(),
             stride,
             rotation: self.profile.rotation,
+            preferred_tile_size: self.profile.preferred_tile_size,
+            supports_partial_update: self.profile.supports_partial_update,
+            supports_full_framebuffer: self.profile.supports_full_framebuffer,
         }];
         if self.profile.overlay_width > 0 && self.profile.overlay_height > 0 {
             surfaces.push(Surface {
@@ -1266,6 +1308,9 @@ impl FakeDevice {
                 pixel_format: "RGB565".into(),
                 stride: u32::from(self.profile.overlay_width) * 2,
                 rotation: 0,
+                preferred_tile_size: 0,
+                supports_partial_update: false,
+                supports_full_framebuffer: true,
             });
         }
         Capabilities {
@@ -1327,6 +1372,8 @@ impl FakeDevice {
                 keys: self.profile.config_keys.clone(),
             },
             scene: mdc_protocol::SceneCapability::enabled(64, 4),
+            boot_id: self.boot_id,
+            run_id: self.run_id,
         }
     }
     /// Advance virtual clock and process inbound packets.
@@ -2254,6 +2301,8 @@ impl FakeDevice {
             displayed,
             frame_id,
             error: None,
+            run_id: self.run_id,
+            event_seq: self.metrics.acks_sent,
         };
         self.write_control(MessageType::Ack, request_id, &ack)
     }

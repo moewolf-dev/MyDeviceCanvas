@@ -1,0 +1,8 @@
+[package]
+name = "mdc-schedule"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Host-side frame/tile pacing for bandwidth-limited devices (N305)."
+
+[dependencies]

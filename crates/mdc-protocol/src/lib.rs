@@ -48,7 +48,25 @@ pub enum MessageType {
     Ping = 0x40,
     Pong = 0x41,
     Ack = 0x50,
+    /// N303: device -> host diagnostic/telemetry types reserved for HIL testing
+    /// (report 1). The decoder accepts the values now so the wire enum is stable
+    /// for downstream pins, but no payload is implemented in this batch. A host
+    /// keeps diagnostics on a channel independent of the link under test; Core
+    /// currently ignores the payloads (see `docs/transport-scope.md`).
+    Telemetry = 0x60,
+    Metric = 0x61,
+    Crash = 0x62,
+    BootInfo = 0x63,
     Error = 0x7f,
+}
+impl MessageType {
+    /// N303: a reserved diagnostic/telemetry type whose payload is not decoded yet.
+    pub fn is_diagnostic(self) -> bool {
+        matches!(
+            self,
+            Self::Telemetry | Self::Metric | Self::Crash | Self::BootInfo
+        )
+    }
 }
 impl TryFrom<u8> for MessageType {
     type Error = CodecError;
@@ -68,6 +86,10 @@ impl TryFrom<u8> for MessageType {
             0x40 => Ok(Self::Ping),
             0x41 => Ok(Self::Pong),
             0x50 => Ok(Self::Ack),
+            0x60 => Ok(Self::Telemetry),
+            0x61 => Ok(Self::Metric),
+            0x62 => Ok(Self::Crash),
+            0x63 => Ok(Self::BootInfo),
             0x7f => Ok(Self::Error),
             _ => Err(CodecError::UnknownType(v)),
         }
@@ -232,6 +254,17 @@ fn framed_len(input: &[u8], max_payload: usize) -> Option<usize> {
     Some(total)
 }
 
+/// Serde helpers for `skip_serializing_if` on additive fields (N304/N308).
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+fn is_zero_u16(value: &u16) -> bool {
+    *value == 0
+}
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Form B mirror capability. `mode` is empty when the device cannot mirror.
 /// All fields default so older devices that never advertised mirror decode as
 /// disabled (`supports()` is false) instead of failing the control payload.
@@ -394,6 +427,15 @@ pub struct Capabilities {
     /// N53: vector scene limits. Omitted when disabled.
     #[serde(default, skip_serializing_if = "SceneCapability::is_disabled")]
     pub scene: SceneCapability,
+    /// N304: device boot identity. A change between two Capabilities replies means
+    /// the device rebooted, so the host discards the previous run's pending ACKs.
+    /// Defaults to 0 (omitted) so pre-N304 devices stay byte-identical.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub boot_id: u64,
+    /// N304: monotonic run counter for the current boot. Ack replies carry the
+    /// same value so a late ACK from a previous run can be recognised.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub run_id: u64,
 }
 
 /// Vector scene limits a device advertises (N53). `max_nodes == 0` means the
@@ -558,14 +600,89 @@ pub struct ConfigReply {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
+/// N307: pixel formats a surface/frame path may carry. Only `Rgb565` is
+/// implemented; the others decode (so unknown-but-named formats are not lost)
+/// but are rejected with an explicit `Unsupported` error. Serialized as the
+/// canonical wire string so the encoding is unchanged from the old `String`
+/// field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PixelFormat {
+    Rgb565,
+    Rgb888,
+    Rgba8888,
+    Gray1,
+    Gray4,
+    /// Any other advertised format (forward compatible; rejected on send).
+    Other(String),
+}
+impl PixelFormat {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Rgb565 => "RGB565",
+            Self::Rgb888 => "RGB888",
+            Self::Rgba8888 => "RGBA8888",
+            Self::Gray1 => "GRAY1",
+            Self::Gray4 => "GRAY4",
+            Self::Other(name) => name,
+        }
+    }
+    /// Only RGB565 has an implemented host/frame path in this batch.
+    pub fn is_implemented(&self) -> bool {
+        matches!(self, Self::Rgb565)
+    }
+}
+impl std::fmt::Display for PixelFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl From<&str> for PixelFormat {
+    fn from(value: &str) -> Self {
+        match value.to_ascii_uppercase().as_str() {
+            "RGB565" => Self::Rgb565,
+            "RGB888" => Self::Rgb888,
+            "RGBA8888" => Self::Rgba8888,
+            "GRAY1" => Self::Gray1,
+            "GRAY4" => Self::Gray4,
+            _ => Self::Other(value.to_string()),
+        }
+    }
+}
+impl From<String> for PixelFormat {
+    fn from(value: String) -> Self {
+        Self::from(value.as_str())
+    }
+}
+impl Serialize for PixelFormat {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+impl<'de> Deserialize<'de> for PixelFormat {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Ok(Self::from(value))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Surface {
     pub id: String,
     pub width: u16,
     pub height: u16,
-    pub pixel_format: String,
+    pub pixel_format: PixelFormat,
     pub stride: u32,
     pub rotation: u16,
+    /// N308: device-advertised preferred tile edge in pixels (0 = no preference).
+    /// The host adapts its tile cut to this rather than assuming 16/32.
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub preferred_tile_size: u16,
+    /// N308: the device can accept partial (tile/dirty) updates.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub supports_partial_update: bool,
+    /// N308: the device can accept a full framebuffer push (Form A).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub supports_full_framebuffer: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Hello {
@@ -573,6 +690,9 @@ pub struct Hello {
     pub minor: u8,
     pub max_message: u32,
     pub max_chunk: u32,
+    /// N304: host boot identity (0 when unset / pre-N304 peer).
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub boot_id: u64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Ack {
@@ -580,6 +700,12 @@ pub struct Ack {
     pub displayed: bool,
     pub frame_id: u64,
     pub error: Option<String>,
+    /// N304: the device run this ACK belongs to (0 when unset).
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub run_id: u64,
+    /// N304: monotonic event sequence within the run (0 when unset).
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub event_seq: u64,
 }
 
 /// Touch / pointer input (CBOR control payload for MessageType::Input).
@@ -1052,11 +1178,11 @@ mod tests {
         bytes[2] = 2;
         assert_eq!(Packet::decode(&bytes, 10), Err(CodecError::Major(2)));
         let mut bytes = packet.encode(10).unwrap();
-        bytes[4] = 99;
+        bytes[4] = 0x55; // still unknown after N303 reserved the 0x60..0x63 range
         bytes[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
         assert_eq!(
             Packet::decode(&bytes[..HEADER_LEN], usize::MAX),
-            Err(CodecError::UnknownType(99))
+            Err(CodecError::UnknownType(0x55))
         );
         let mut reserved = packet.encode(10).unwrap();
         reserved[5] = 1;
@@ -1349,6 +1475,32 @@ mod tests {
     }
 
     #[test]
+    fn loads_reserved_diagnostic_vector() {
+        // N303: the reserved type table is shared with the C++ parser test.
+        let dir = vectors_dir();
+        let json = std::fs::read_to_string(dir.join("diagnostic_types.json")).unwrap();
+        let hex = json
+            .split("\"hex\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .nth(1)
+            .unwrap();
+        let bytes = parse_hex(hex);
+        assert_eq!(MessageType::try_from(bytes[0]), Ok(MessageType::Telemetry));
+        for (name, byte) in [
+            ("Telemetry", 0x60u8),
+            ("Metric", 0x61),
+            ("Crash", 0x62),
+            ("BootInfo", 0x63),
+        ] {
+            let needle = format!("\"{name}\": {}", byte);
+            assert!(json.contains(&needle), "vector must list {name}");
+            assert!(MessageType::try_from(byte).unwrap().is_diagnostic());
+        }
+    }
+
+    #[test]
     fn mirror_frame_payload_round_trip_reuses_frame_phases() {
         let pixels = [1u8, 2, 3, 4, 5, 6, 7, 8];
         let packet = Packet {
@@ -1422,6 +1574,9 @@ mod tests {
                 pixel_format: "RGB565".into(),
                 stride: 4,
                 rotation: 0,
+                preferred_tile_size: 0,
+                supports_partial_update: false,
+                supports_full_framebuffer: false,
             }],
             frame: true,
             tile: false,
@@ -1452,6 +1607,9 @@ mod tests {
                 pixel_format: "RGB565".into(),
                 stride: 960,
                 rotation: 0,
+                preferred_tile_size: 0,
+                supports_partial_update: false,
+                supports_full_framebuffer: false,
             }],
             frame: true,
             tile: false,
@@ -1468,6 +1626,8 @@ mod tests {
             renderer: None,
             config: ConfigCapability::default(),
             scene: SceneCapability::default(),
+            boot_id: 0,
+            run_id: 0,
         };
         // No mirror advertised -> rejected.
         assert!(negotiate_mirror(&caps, "main", "full-frame", 30, "RGB565").is_none());
@@ -1501,6 +1661,9 @@ mod tests {
                 pixel_format: "RGB565".into(),
                 stride: 1600,
                 rotation: 0,
+                preferred_tile_size: 0,
+                supports_partial_update: false,
+                supports_full_framebuffer: false,
             }],
             frame: true,
             tile: true,
@@ -1517,6 +1680,8 @@ mod tests {
             renderer: None,
             config: ConfigCapability::default(),
             scene: SceneCapability::default(),
+            boot_id: 0,
+            run_id: 0,
         };
         // Absent renderer: the key is not serialized.
         let bytes = encode_control(&caps).unwrap();
@@ -1544,6 +1709,9 @@ mod tests {
                 pixel_format: "RGB565".into(),
                 stride: 4,
                 rotation: 0,
+                preferred_tile_size: 0,
+                supports_partial_update: false,
+                supports_full_framebuffer: false,
             }],
             frame: true,
             tile: true,
@@ -1560,6 +1728,8 @@ mod tests {
             renderer: None,
             config: ConfigCapability::default(),
             scene: SceneCapability::default(),
+            boot_id: 0,
+            run_id: 0,
         };
         let bytes = encode_control(&caps).unwrap();
         assert!(!bytes.windows(6).any(|w| w == b"config"));
@@ -1695,6 +1865,9 @@ mod tests {
                 pixel_format: "RGB565".into(),
                 stride: 4,
                 rotation: 0,
+                preferred_tile_size: 0,
+                supports_partial_update: false,
+                supports_full_framebuffer: false,
             }],
             frame: true,
             tile: true,
@@ -1711,6 +1884,8 @@ mod tests {
             renderer: None,
             config: ConfigCapability::default(),
             scene: SceneCapability::enabled(64, 4),
+            boot_id: 0,
+            run_id: 0,
         };
         let bytes = encode_control(&caps).unwrap();
         let back: Capabilities = decode_control(&bytes).unwrap();
@@ -1741,5 +1916,179 @@ mod tests {
             .nth(1)
             .unwrap();
         assert_eq!(bytes, parse_hex(hex));
+    }
+
+    #[test]
+    fn reserved_diagnostic_types_decode_without_breaking() {
+        // N303: the reserved type values decode so a downstream pin is stable,
+        // even though the payloads are not implemented yet.
+        for (byte, kind) in [
+            (0x60u8, MessageType::Telemetry),
+            (0x61, MessageType::Metric),
+            (0x62, MessageType::Crash),
+            (0x63, MessageType::BootInfo),
+        ] {
+            assert_eq!(MessageType::try_from(byte), Ok(kind));
+            assert!(kind.is_diagnostic());
+            let packet = Packet {
+                version: VERSION,
+                kind,
+                flags: 0,
+                request_id: 7,
+                payload: vec![1, 2, 3],
+            };
+            let bytes = packet.encode(64).unwrap();
+            let (decoded, _) = Packet::decode(&bytes, 64).unwrap();
+            assert_eq!(decoded.kind, kind);
+            assert_eq!(decoded.payload, vec![1, 2, 3]);
+        }
+        assert!(!MessageType::Ping.is_diagnostic());
+        let mut bytes = Packet {
+            version: VERSION,
+            kind: MessageType::Ping,
+            flags: 0,
+            request_id: 0,
+            payload: vec![],
+        }
+        .encode(0)
+        .unwrap();
+        bytes[4] = 0x6f;
+        assert_eq!(
+            Packet::decode(&bytes, 0),
+            Err(CodecError::UnknownType(0x6f))
+        );
+    }
+
+    #[test]
+    fn boot_and_run_ids_are_additive_and_default_to_zero() {
+        // N304: the new field is omitted when zero, so a pre-N304 peer is byte
+        // identical, and carried through when set.
+        let hello = Hello {
+            major: 1,
+            minor: 0,
+            max_message: 4096,
+            max_chunk: 1024,
+            boot_id: 0,
+        };
+        let bytes = encode_control(&hello).unwrap();
+        assert!(!bytes.windows(7).any(|w| w == b"boot_id"));
+        let hello2 = Hello {
+            boot_id: 0xDEAD_BEEF,
+            ..hello
+        };
+        let back: Hello = decode_control(&encode_control(&hello2).unwrap()).unwrap();
+        assert_eq!(back.boot_id, 0xDEAD_BEEF);
+
+        let ack = Ack {
+            received: true,
+            displayed: true,
+            frame_id: 1,
+            error: None,
+            run_id: 4,
+            event_seq: 9,
+        };
+        let back: Ack = decode_control(&encode_control(&ack).unwrap()).unwrap();
+        assert_eq!(back, ack);
+        let bare = Ack {
+            received: true,
+            displayed: false,
+            frame_id: 2,
+            error: None,
+            run_id: 0,
+            event_seq: 0,
+        };
+        let bytes = encode_control(&bare).unwrap();
+        assert!(!bytes.windows(6).any(|w| w == b"run_id"));
+    }
+
+    #[test]
+    fn pixel_format_enum_keeps_the_wire_string() {
+        // N307: only RGB565 is implemented; unknown names survive the round trip
+        // but are rejected with an explicit error.
+        assert_eq!(PixelFormat::from("RGB565"), PixelFormat::Rgb565);
+        assert_eq!(PixelFormat::from("rgb565"), PixelFormat::Rgb565);
+        assert_eq!(PixelFormat::from("RGBA8888"), PixelFormat::Rgba8888);
+        assert_eq!(
+            PixelFormat::from("YUV420"),
+            PixelFormat::Other("YUV420".into())
+        );
+        assert!(PixelFormat::Rgb565.is_implemented());
+        for format in [
+            PixelFormat::Rgb888,
+            PixelFormat::Rgba8888,
+            PixelFormat::Gray1,
+            PixelFormat::Gray4,
+            PixelFormat::Other("YUV420".into()),
+        ] {
+            assert!(!format.is_implemented());
+        }
+        let generated = config_command_vector();
+        assert_eq!(generated.surfaces[0].pixel_format, PixelFormat::Rgb565);
+        // The wire keeps the canonical string, not the Rust variant name.
+        let bytes = encode_control(&generated.surfaces[0]).unwrap();
+        assert!(bytes.windows(6).any(|w| w == b"RGB565"));
+    }
+
+    #[test]
+    fn old_surface_without_display_profile_still_decodes() {
+        // N308: a pre-N308 Surface map without the display fields decodes to the
+        // neutral defaults (no preference, no partial/full claims).
+        #[derive(Serialize)]
+        struct OldSurface {
+            id: String,
+            width: u16,
+            height: u16,
+            pixel_format: String,
+            stride: u32,
+            rotation: u16,
+        }
+        let old = OldSurface {
+            id: "main".into(),
+            width: 2,
+            height: 2,
+            pixel_format: "RGB565".into(),
+            stride: 4,
+            rotation: 0,
+        };
+        let surface: Surface = decode_control(&encode_control(&old).unwrap()).unwrap();
+        assert_eq!(surface.pixel_format, PixelFormat::Rgb565);
+        assert_eq!(surface.preferred_tile_size, 0);
+        assert!(!surface.supports_partial_update);
+        assert!(!surface.supports_full_framebuffer);
+    }
+
+    fn config_command_vector() -> Capabilities {
+        Capabilities {
+            device_id: "vector".into(),
+            firmware: "1".into(),
+            surfaces: vec![Surface {
+                id: "main".into(),
+                width: 2,
+                height: 2,
+                pixel_format: PixelFormat::Rgb565,
+                stride: 4,
+                rotation: 0,
+                preferred_tile_size: 16,
+                supports_partial_update: true,
+                supports_full_framebuffer: true,
+            }],
+            frame: true,
+            tile: true,
+            touch: false,
+            ota: false,
+            max_message: 4096,
+            max_chunk: 1024,
+            max_in_flight: 1,
+            max_fps: 30,
+            mirror: MirrorCapability::disabled(),
+            local_display_fps: 0,
+            mirror_fps: 0,
+            mirror_bandwidth: 0,
+            renderer: None,
+            config: ConfigCapability::default(),
+            scene: SceneCapability::default(),
+            boot_id: 0,
+            run_id: 0,
+        }
     }
 }

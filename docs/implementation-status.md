@@ -3,6 +3,10 @@
 Track items with three states: `architecture`, `sim-verified`, `physical: pending`.
 Do not mark physical verification from host-only or simulator tests.
 
+> **Submodule consumers:** this tree is a **host + simulator contract**. The
+> physical exit tasks **D05 / G03 / H06 are unchecked**; `sim-verified` is not
+> `hardware-usable`. See [`submodule-contract.md`](submodule-contract.md).
+
 ## Wave progress
 
 | Wave | Focus | State |
@@ -56,6 +60,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 46 | N273–N282: multi-primitive geometry merge (`MeshGeometry::merge`), `Mesh.primitives`, fixtures + soak | sim-verified |
 | 47 | N283–N292: `alphaMode`/`alphaCutoff` import, 1-bit texture alpha, masked raster cutout, CLI decode, fixtures + docs | sim-verified |
 | 48 | N293–N302: `TextureBlob.alpha` + device/packaged texture cutout, `bake_texture_blob` alpha, fixtures | sim-verified |
+| 49 | N303–N312: reserved diagnostics + `boot_id`/`run_id` reboot detection, `mdc-schedule` pacing, `PixelFormat` enum, surface display profile, mirror read-source + submodule contract docs | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 

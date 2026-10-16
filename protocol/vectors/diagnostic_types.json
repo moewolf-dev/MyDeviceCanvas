@@ -1,0 +1,10 @@
+{
+  "note": "N303 reserved diagnostic/telemetry message types (device -> host). No payload is implemented; the values are reserved so the wire enum is stable for downstream. Diagnostics should travel on a channel independent of the link under test (see docs/transport-scope.md).",
+  "types": {
+    "Telemetry": 96,
+    "Metric": 97,
+    "Crash": 98,
+    "BootInfo": 99
+  },
+  "hex": "60"
+}
