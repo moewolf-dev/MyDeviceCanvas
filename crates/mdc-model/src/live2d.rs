@@ -246,6 +246,7 @@ impl Live2DImporter {
                 height: 0,
                 format: texture_format(path),
                 bytes: 0,
+                data: None,
             });
             materials.push(Material {
                 name: name.clone(),

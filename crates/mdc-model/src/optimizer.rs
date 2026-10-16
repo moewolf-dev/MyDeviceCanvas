@@ -90,6 +90,7 @@ mod tests {
                 height: texture,
                 format: "image/png".into(),
                 bytes: 0,
+                data: None,
             }],
             ..Model::default()
         }

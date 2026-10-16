@@ -210,6 +210,11 @@ pub struct Texture {
     pub height: u32,
     pub format: String,
     pub bytes: u32,
+    /// N323: the embedded image bytes (bufferView or `data:` URI), retained
+    /// within `ImportLimits::max_texture_bytes`. `None` when the source image is
+    /// not on disk or would exceed the budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -326,5 +331,14 @@ impl Model {
     }
     pub fn texture_bytes(&self) -> u64 {
         self.textures.iter().map(|t| u64::from(t.bytes)).sum()
+    }
+    /// N323: the raw embedded bytes of the texture at `index`, if retained.
+    pub fn embedded_texture(&self, index: usize) -> Option<&[u8]> {
+        self.textures.get(index)?.data.as_deref()
+    }
+    /// N323: the embedded bytes of the material's base-colour texture, if any.
+    pub fn material_texture(&self, material: usize) -> Option<&[u8]> {
+        let index = self.materials.get(material)?.texture?;
+        self.embedded_texture(index)
     }
 }

@@ -87,16 +87,43 @@ impl GltfImporter {
             .and_then(Value::as_array)
             .unwrap_or(&empty);
         let mut textures = Vec::with_capacity(images.len());
+        let mut retained_bytes: u64 = 0;
         for (i, image) in images.iter().enumerate() {
             let declared_w = image.get("width").and_then(Value::as_u64).unwrap_or(0) as u32;
             let declared_h = image.get("height").and_then(Value::as_u64).unwrap_or(0) as u32;
             let view_index = image.get("bufferView").and_then(Value::as_u64);
-            let bytes_len = view_index
-                .and_then(|bv| buffer_views.get(bv as usize))
-                .map(|v| v.byte_length)
+            // N323: keep the actual image bytes (bufferView or `data:` URI) so the
+            // compiler can use the model's own texture. Bounded by max_texture_bytes.
+            let raw: Option<Vec<u8>> = if let Some(bytes) = view_index.and_then(view_bytes) {
+                Some(bytes.to_vec())
+            } else {
+                image
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .filter(|uri| uri.starts_with("data:"))
+                    .and_then(|uri| decode_data_uri(uri).ok())
+            };
+            let bytes_len = raw
+                .as_ref()
+                .map(|raw| raw.len() as u64)
+                .or_else(|| {
+                    view_index
+                        .and_then(|bv| buffer_views.get(bv as usize))
+                        .map(|v| v.byte_length)
+                })
                 .unwrap_or(0);
-            let probed = view_index.and_then(view_bytes).and_then(probe_image_size);
+            let probed = raw.as_deref().and_then(probe_image_size);
             let (width, height) = probed.unwrap_or((declared_w, declared_h));
+            let data = match raw {
+                Some(raw)
+                    if retained_bytes.saturating_add(raw.len() as u64)
+                        <= limits.max_texture_bytes =>
+                {
+                    retained_bytes += raw.len() as u64;
+                    Some(raw)
+                }
+                _ => None,
+            };
             textures.push(Texture {
                 name: json_name(image, &format!("image{i}")),
                 width,
@@ -107,6 +134,7 @@ impl GltfImporter {
                     .unwrap_or("image/png")
                     .to_string(),
                 bytes: bytes_len.min(u64::from(u32::MAX)) as u32,
+                data,
             });
         }
         let declared_bytes: u64 = textures.iter().map(|t| u64::from(t.bytes)).sum();
@@ -1558,6 +1586,31 @@ mod tests {
         out
     }
 
+    /// Standard base64 for test `data:` URIs.
+    fn base64(bytes: &[u8]) -> String {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let b0 = chunk[0];
+            let b1 = *chunk.get(1).unwrap_or(&0);
+            let b2 = *chunk.get(2).unwrap_or(&0);
+            out.push(TABLE[(b0 >> 2) as usize] as char);
+            out.push(TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+            out.push(if chunk.len() > 1 {
+                TABLE[(((b1 & 0x0F) << 2) | (b2 >> 6)) as usize] as char
+            } else {
+                '='
+            });
+            out.push(if chunk.len() > 2 {
+                TABLE[(b2 & 0x3F) as usize] as char
+            } else {
+                '='
+            });
+        }
+        out
+    }
+
     /// Build a GLB with a JSON chunk and a BIN chunk.
     fn glb(json: &[u8], bin: &[u8]) -> Vec<u8> {
         fn pad4(data: &mut Vec<u8>, byte: u8) {
@@ -1952,6 +2005,42 @@ mod tests {
             (model.textures[0].width, model.textures[0].height),
             (640, 480)
         );
+        // N323: the embedded bytes are retained for the compiler.
+        assert_eq!(model.embedded_texture(0), Some(jpeg.as_slice()));
+        assert_eq!(model.embedded_texture(1), None);
+    }
+
+    #[test]
+    fn image_bytes_over_budget_are_not_retained() {
+        // A tiny max_texture_bytes keeps the declared metadata but not the bytes.
+        let png = png_header(16, 16); // ~45 bytes
+        let limits = ImportLimits {
+            max_texture_bytes: 8,
+            ..ImportLimits::default()
+        };
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": png.len(), "uri": format!("data:image/png;base64,{}", base64(&png))}],
+            "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": png.len()}],
+            "images": [{"name": "tex", "mimeType": "image/png", "bufferView": 0}],
+            "textures": [{"source": 0}]
+        });
+        // The declared size is over the budget, so the import is refused before
+        // any retention (the metadata check fires first).
+        let err = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &limits)
+            .unwrap_err();
+        assert!(matches!(err, ModelError::Budget(_)));
+
+        // With the bytes inside the budget, they are retained.
+        let limits = ImportLimits {
+            max_texture_bytes: 1024,
+            ..ImportLimits::default()
+        };
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &limits)
+            .unwrap();
+        assert_eq!(model.embedded_texture(0), Some(png.as_slice()));
     }
 
     #[test]
