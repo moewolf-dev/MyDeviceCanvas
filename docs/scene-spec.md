@@ -44,8 +44,11 @@ A device that accepts a scene rasterizes it locally:
   out-of-bounds rect draws its in-bounds part and never panics.
 - `text` draws a 5×7 bitmap for space, digits, `A–Z` (lowercase maps to its
   uppercase glyph) and punctuation `.,:!?-+/()=*#`, starting at `rect.x/y`. The
-  string lives in `value`. `rect` width/height set an integer glyph scale
-  (`w/6`, `h/7`, each clamped to 1..=8). Unknown letters are skipped.
+  string lives in `value`. `rect` height sets a uniform integer glyph scale
+  (`h/7`, clamped to 1..=8). N318: the string is word-wrapped to `rect` width
+  (`w / (6*scale)` columns, spaces are break points, a longer word is hard-broken)
+  and explicit `\n` starts a new line; wrapped lines are drawn at `8*scale` px
+  line height and clipped by the framebuffer. Unknown letters are skipped.
 - `image` blits tightly packed RGB565 when `value` is `w*h` hex words (4 digits
   each, little-endian on the framebuffer). A short or malformed string draws nothing.
 - `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour.

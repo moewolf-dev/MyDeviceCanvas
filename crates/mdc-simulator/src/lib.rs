@@ -92,6 +92,58 @@ fn glyph_columns(ch: u8) -> Option<[u8; 5]> {
     FONT.get(index).copied()
 }
 
+/// N318: wrap `text` for a `max_cols`-wide cell grid. Explicit `\n` always
+/// starts a new line; spaces are break points, and a word longer than the line
+/// is hard-broken. Bounded by the input length.
+fn wrap_text(text: &str, max_cols: usize) -> Vec<String> {
+    let max_cols = max_cols.max(1);
+    let mut lines: Vec<String> = Vec::new();
+    for paragraph in text.split('\n') {
+        if paragraph.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let mut current: Vec<char> = Vec::new();
+        for word in paragraph.split(' ') {
+            let word_chars: Vec<char> = word.chars().collect();
+            if word_chars.len() > max_cols {
+                // A word that cannot fit on any line: hard-break it.
+                if !current.is_empty() {
+                    lines.push(current.iter().collect());
+                    current.clear();
+                }
+                let mut chunk: Vec<char> = Vec::new();
+                for ch in word_chars {
+                    chunk.push(ch);
+                    if chunk.len() == max_cols {
+                        lines.push(chunk.iter().collect());
+                        chunk.clear();
+                    }
+                }
+                current = chunk;
+                continue;
+            }
+            let needed = current.len() + usize::from(!current.is_empty()) + word_chars.len();
+            if needed <= max_cols {
+                if !current.is_empty() {
+                    current.push(' ');
+                }
+                current.extend(word_chars);
+            } else {
+                lines.push(current.iter().collect());
+                current = word_chars;
+            }
+        }
+        // A trailing hard-break can leave nothing; do not add a phantom line.
+        if !current.is_empty() {
+            lines.push(current.iter().collect());
+        } else if lines.is_empty() {
+            lines.push(String::new());
+        }
+    }
+    lines
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_text(
     pixels: &mut [u8],
@@ -631,28 +683,26 @@ fn fill_scene(
     } else if node.kind == "text" {
         if let (Some(rect), Some(text)) = (node.rect, node.value.as_deref()) {
             let [x, y, w, h] = transform.apply(rect);
-            // N128: rect width/height set the integer glyph scale (1..=8).
-            let scale_x = if w >= 6 {
-                u32::from((w / 6).clamp(1, 8))
-            } else {
-                1
-            };
-            let scale_y = if h >= 7 {
-                u32::from((h / 7).clamp(1, 8))
-            } else {
-                1
-            };
-            draw_text(
-                pixels,
-                width,
-                height,
-                x,
-                y,
-                text,
-                node.color_rgb565(),
-                scale_x,
-                scale_y,
-            );
+            // N128/N318: the rect height sets a uniform glyph scale (1..=8); the
+            // rect width bounds how many columns a line may use.
+            let scale = u32::from((h / 7).clamp(1, 8));
+            let scale_x = scale;
+            let scale_y = scale;
+            // N318: wrap to the rect width; the rect height sets the glyph scale,
+            // and lines are clipped by the framebuffer (not the rect height).
+            let max_cols = (u32::from(w) / (6 * scale_x)).max(1) as usize;
+            let lines = wrap_text(text, max_cols);
+            let line_height = (8 * scale_y).max(1);
+            let color = node.color_rgb565();
+            for (line_index, line) in lines.iter().enumerate() {
+                let ly = u32::from(y) + line_index as u32 * line_height;
+                if ly >= height {
+                    break;
+                }
+                draw_text(
+                    pixels, width, height, x, ly as u16, line, color, scale_x, scale_y,
+                );
+            }
             *drew = true;
         }
     } else if node.kind == "image" {
@@ -2939,6 +2989,61 @@ mod tests {
         session.poll().unwrap();
         assert!(device.render_scene());
         assert_ne!(device.pixel_rgb565(1, 1), Some(0), "scale 2 fills (1,1)");
+    }
+
+    #[test]
+    fn text_wraps_to_the_rect_width() {
+        assert_eq!(
+            wrap_text("ab\ncd", 10),
+            vec!["ab".to_string(), "cd".to_string()]
+        );
+        assert_eq!(
+            wrap_text("hello world", 7),
+            vec!["hello".to_string(), "world".to_string()]
+        );
+        // A word longer than the line is hard-broken.
+        assert_eq!(
+            wrap_text("abcdef", 3),
+            vec!["abc".to_string(), "def".to_string()]
+        );
+        // A blank paragraph keeps a blank line.
+        assert_eq!(
+            wrap_text("a\n\nb", 5),
+            vec!["a".to_string(), "".to_string(), "b".to_string()]
+        );
+        // Zero width still makes progress one char per line.
+        assert_eq!(wrap_text("ab", 0), vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn scene_text_draws_wrapped_lines() {
+        use mdc_protocol::SceneNode;
+        // 40×30 box, 30-wide text rect -> scale 1, 5 columns; two lines.
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 40,
+            height: 30,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        let scene = SceneNode {
+            name: "label".into(),
+            kind: "text".into(),
+            rect: Some([0, 0, 30, 7]),
+            value: Some("hello world".into()),
+            children: Vec::new(),
+        };
+        session.set_scene(scene).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        // Line 1 at y=0, line 2 at y=8 (line height 8 at scale 1).
+        assert_ne!(device.pixel_rgb565(0, 0), Some(0), "first line drawn");
+        assert_ne!(device.pixel_rgb565(0, 8), Some(0), "wrapped line drawn");
+        // Row 7 is the gap between the two lines and stays clear.
+        assert_eq!(device.pixel_rgb565(0, 7), Some(0), "line gap is clear");
     }
 
     #[test]
