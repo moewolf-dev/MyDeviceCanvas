@@ -23,7 +23,7 @@ Source model (glTF / GLB / Live2D model3.json)
 
 | Importer | Input | Reads | Does **not** read |
 |---|---|---|---|
-| `GltfImporter` | glTF 2.0 `.gltf` (JSON) and `.glb` (binary container) | nodes (+ TRS/matrix), meshes, accessors, materials, textures, animations (+ timed channels), `skins` (+ joint nodes, inverse bind matrices), `JOINTS_0`/`WEIGHTS_0`, VRM humanoid; buffer/bufferView/accessor bounds; embedded PNG/JPEG header for real pixel size | pixels (no image decode), external buffer files, morph targets, VRM spring bones |
+| `GltfImporter` | glTF 2.0 `.gltf` (JSON) and `.glb` (binary container) | nodes (+ TRS/matrix), meshes, accessors, materials, textures (embedded bytes retained, N323), animations (+ timed channels), `skins` (+ joint nodes, inverse bind matrices), `JOINTS_0`/`WEIGHTS_0`, VRM humanoid; buffer/bufferView/accessor bounds; embedded PNG/JPEG header for real pixel size | image pixel decode, external buffer files, morph targets, VRM spring bones |
 | `Live2DImporter` | Cubism `model3.json` (Version 2–5) and `motion3.json` bundle | textures, motion groups, expressions, moc reference; motion curve count + `Meta` (duration/fps/loop/fade) | `.moc3` binary (mesh / deformer / parameter data), motion keyframes |
 
 Both importers check `ImportLimits` **before allocating**: `max_input_bytes`
@@ -83,7 +83,13 @@ A decode bomb is refused before any decode buffer is created.
   and preview renders prefer this colour over their fallback when no texture is
   sampled. N177: a mesh package may also carry a `TextureBlob` (RGB565 + dims),
   built by `bake_texture_blob` / `mesh_package_with_texture` and sampled by a
-  strong device through the geometry UVs (`mdc package --texture tex.png`).
+  strong device through the geometry UVs. N323: the importer retains the embedded
+  image bytes (`Texture.data`, bounded by `max_texture_bytes`) and exposes
+  `Model::embedded_texture` / `Model::material_texture`. N324: `mdc package`
+  auto-uses a material's embedded `baseColorTexture` (`auto_texture_blob` /
+  `resolve_texture_blob`); an explicit `--texture tex.png` still overrides, and an
+  embedded image that fails to decode is reported (`textureError`) while the
+  package is still produced untextured.
 - N123: a primitive's `targets[].POSITION` morph deltas (capped at
   `MAX_MORPH_TARGETS`, 16 per mesh) become `Mesh.morph_targets`, and
   `mesh.weights` becomes `Mesh.morph_weights`. N124: an animation channel with

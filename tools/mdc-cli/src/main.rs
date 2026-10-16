@@ -434,13 +434,22 @@ fn cmd_package(
         max_texture: profile.renderer_max_texture,
         max_vertices: profile.renderer_max_vertices,
     };
-    // N179: an optional texture rides along for a mesh-capable device.
-    let texture = match &texture_path {
-        Some(path) => Some(mdc_bake::bake_texture_blob(
-            &std::fs::read(path)?,
-            &mdc_bake::BakeLimits::default(),
-        )?),
-        None => None,
+    // N179/N324: an explicit `--texture` overrides; otherwise the model's own
+    // embedded base-colour texture is used.
+    let limits = mdc_bake::BakeLimits::default();
+    let (texture, texture_source, texture_error) = match &texture_path {
+        Some(path) => (
+            Some(mdc_bake::bake_texture_blob(&std::fs::read(path)?, &limits)?),
+            Some("arg"),
+            None,
+        ),
+        None => match mdc_bake::auto_texture_blob(&model, &limits) {
+            Ok(Some(blob)) => (Some(blob), Some("model"), None),
+            Ok(None) => (None, None, None),
+            // An embedded image that fails to decode is reported, not fatal:
+            // the package is still produced (untextured).
+            Err(error) => (None, None, Some(error.to_string())),
+        },
     };
     let textured = texture.is_some();
     let package = mdc_bake::mesh_package_with_texture(&model, &caps, texture)?;
@@ -455,6 +464,8 @@ fn cmd_package(
             "target": package.manifest.target,
             "mode": package.manifest.mode,
             "textured": textured,
+            "textureSource": texture_source,
+            "textureError": texture_error,
             "nodes": package.package.nodes.len(),
             "meshes": package.package.meshes.len(),
             "animations": package.package.animations.len(),

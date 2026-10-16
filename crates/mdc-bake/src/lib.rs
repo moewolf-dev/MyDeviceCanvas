@@ -570,6 +570,33 @@ pub fn mesh_package_with_texture(
     mdc_model::MdcPackage::seal(package).map_err(|e| BakeError::Package(e.to_string()))
 }
 
+/// N324: decode the model's own base-colour texture (the first material that has
+/// an embedded one), so a caller does not need a separate `--texture`.
+pub fn auto_texture_blob(
+    model: &mdc_model::Model,
+    limits: &BakeLimits,
+) -> Result<Option<mdc_model::TextureBlob>, BakeError> {
+    for material in 0..model.materials.len() {
+        if let Some(bytes) = model.material_texture(material) {
+            return Ok(Some(bake_texture_blob(bytes, limits)?));
+        }
+    }
+    Ok(None)
+}
+
+/// N324: the model's own texture or the caller's override. An override always
+/// wins; `None` means the model had no usable embedded texture.
+pub fn resolve_texture_blob(
+    model: &mdc_model::Model,
+    override_blob: Option<mdc_model::TextureBlob>,
+    limits: &BakeLimits,
+) -> Result<Option<mdc_model::TextureBlob>, BakeError> {
+    match override_blob {
+        Some(blob) => Ok(Some(blob)),
+        None => auto_texture_blob(model, limits),
+    }
+}
+
 /// N60: bake a sprite set straight into a sealed runtime package the device can
 /// receive over the `PACKAGE` path.
 #[allow(clippy::too_many_arguments)]
@@ -621,6 +648,47 @@ mod tests {
             .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
             .unwrap();
         out
+    }
+
+    #[test]
+    fn auto_texture_resolution_prefers_override_then_model() {
+        let png = png_of(2, 2, [0, 0, 255]);
+        let model = mdc_model::Model {
+            materials: vec![mdc_model::Material {
+                name: "m".into(),
+                texture: Some(0),
+                ..Default::default()
+            }],
+            textures: vec![mdc_model::Texture {
+                name: "t".into(),
+                width: 2,
+                height: 2,
+                format: "image/png".into(),
+                bytes: png.len() as u32,
+                data: Some(png.clone()),
+            }],
+            ..Default::default()
+        };
+        // N324: the model's own texture is decoded without a CLI override.
+        let auto = auto_texture_blob(&model, &BakeLimits::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!((auto.width, auto.height), (2, 2));
+        assert_eq!(&auto.rgb565[0..2], &[0x1F, 0x00]); // blue 0x001F little-endian
+
+        // An override always wins.
+        let override_blob =
+            bake_texture_blob(&png_of(1, 1, [255, 0, 0]), &BakeLimits::default()).unwrap();
+        let chosen = resolve_texture_blob(&model, Some(override_blob), &BakeLimits::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!((chosen.width, chosen.height), (1, 1));
+
+        // No override and no embedded texture -> no texture.
+        let empty = mdc_model::Model::default();
+        assert!(resolve_texture_blob(&empty, None, &BakeLimits::default())
+            .unwrap()
+            .is_none());
     }
 
     #[test]
