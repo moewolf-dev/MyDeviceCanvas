@@ -18,13 +18,16 @@ Integers are little-endian. Control payloads are CBOR and are limited to 4096 by
 
 Supported types are HELLO, CAPABILITIES, FRAME, TILE, MIRRORFRAME, INPUT, OTA, MIRRORCTRL, PACKAGE, CONFIG, SCENE, PING, PONG, ACK and ERROR. Input and OTA are reserved in 0.1 and return `Unsupported` unless capabilities explicitly enable them. `TELEMETRY`, `METRIC`, `CRASH` and `BOOTINFO` (`0x60..0x63`, N303) are **reserved**: the decoder accepts the values so the enum is stable, but no payload is implemented yet (see below).
 
-## Reserved diagnostics (N303)
+## Reserved diagnostics (N303) and diagnostics channel (N316)
 
-`TELEMETRY`/`METRIC`/`CRASH`/`BOOTINFO` are device → host types reserved for a
-HIL diagnostic channel. A receiver accepts the type but must not assume a payload
-layout; `Core` currently ignores them. Diagnostics belong on a channel
-**independent of the link under test** so a saturated Frame/MirrorFrame link
-cannot lose the result of that same test. See
+`TELEMETRY`/`METRIC`/`CRASH`/`BOOTINFO` are device → host types. `METRIC`
+(`MetricReport`) and `BOOTINFO` (`BootInfo`) now carry CBOR payloads (N316);
+`TELEMETRY` and `CRASH` remain **reserved** with no payload. Diagnostics travel
+on their own message types so they never mix with a frame transaction, and a
+receiver keeps them in a bounded queue (`Session::take_diagnostics`, 64 records).
+A `MetricReport`/`BootInfo` `boot_id`/`run_id` also feeds the reboot detection of
+N304. Diagnostics should still use a channel **independent of the link under
+test**; see
 [transport-scope.md](transport-scope.md#reserved-diagnostics--telemetry-n303--not-implemented).
 
 ## Reboot semantics (N304)

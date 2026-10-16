@@ -2,9 +2,9 @@
 use mdc_core::{validate_tile_base, FrameAssembler, Tile, TransactionNack, MAX_FRAME_BYTES};
 use mdc_protocol::{
     decode_control, decode_frame_payload, decode_package_payload, decode_tile_payload,
-    encode_control, Ack, Capabilities, ConfigCommand, ConfigReply, ErrorPayload, FramePayload,
-    Hello, InputEvent, MessageType, MirrorCommand, OtaCommand, PackagePayload, Packet, Surface,
-    VERSION,
+    encode_control, Ack, BootInfo, Capabilities, ConfigCommand, ConfigReply, ErrorPayload,
+    FramePayload, Hello, InputEvent, MessageType, MetricReport, MirrorCommand, OtaCommand,
+    PackagePayload, Packet, Surface, VERSION,
 };
 use mdc_transport::{MemoryLink, Transport, TransportError};
 use serde::{Deserialize, Serialize};
@@ -974,6 +974,8 @@ pub struct SimMetrics {
     pub packages_received: u64,
     pub config_commands: u64,
     pub scene_commands: u64,
+    /// N316: diagnostic records (metrics + boot info) emitted to the host.
+    pub diagnostics_emitted: u64,
     pub current_frame_id: u64,
     pub pixel_bytes: usize,
 }
@@ -1242,6 +1244,36 @@ impl FakeDevice {
     }
     pub fn assert_pixels_eq(&self, expected: &[u8]) {
         assert_eq!(self.pixels, expected, "pixel buffer mismatch");
+    }
+    /// N316: emit a metric sample on the diagnostics channel. Diagnostics are
+    /// independent of the frame/ack path.
+    pub fn emit_metric(
+        &mut self,
+        name: &str,
+        value: f64,
+        unit: Option<&str>,
+    ) -> Result<(), SimError> {
+        self.metrics.diagnostics_emitted = self.metrics.diagnostics_emitted.saturating_add(1);
+        let report = MetricReport {
+            name: name.to_string(),
+            value,
+            unit: unit.map(str::to_string),
+            boot_id: self.boot_id,
+            run_id: self.run_id,
+            event_seq: self.metrics.diagnostics_emitted,
+        };
+        self.write_control(MessageType::Metric, 0, &report)
+    }
+    /// N316: emit a boot notification (firmware + run identity).
+    pub fn emit_boot_info(&mut self) -> Result<(), SimError> {
+        self.metrics.diagnostics_emitted = self.metrics.diagnostics_emitted.saturating_add(1);
+        let boot = BootInfo {
+            firmware: self.firmware.clone(),
+            boot_id: self.boot_id,
+            run_id: self.run_id,
+            reset_reason: Some("power-on".into()),
+        };
+        self.write_control(MessageType::BootInfo, 0, &boot)
     }
     /// Emit a touch/input event toward the host session (capability-gated).
     pub fn emit_input(&mut self, event: InputEvent) -> Result<(), SimError> {

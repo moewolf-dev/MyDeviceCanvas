@@ -735,6 +735,35 @@ pub struct ErrorPayload {
     pub message: String,
 }
 
+/// N316: a device -> host metric sample (CBOR for `MessageType::Metric`). The
+/// diagnostics channel is independent of the frame/ack path, so a saturated
+/// image link cannot lose a test result.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MetricReport {
+    pub name: String,
+    pub value: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub boot_id: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub run_id: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub event_seq: u64,
+}
+
+/// N316: a device -> host boot notification (CBOR for `MessageType::BootInfo`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BootInfo {
+    pub firmware: String,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub boot_id: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub run_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_reason: Option<String>,
+}
+
 /// Decoded FRAME payload variants (leading phase byte).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FramePayload {
@@ -1472,6 +1501,55 @@ mod tests {
             decode_package_payload(&[9]),
             Err(CodecError::UnknownType(9))
         );
+    }
+
+    #[test]
+    fn diagnostic_payloads_round_trip() {
+        // N316: the reserved Metric/BootInfo types now carry CBOR payloads.
+        let metric = MetricReport {
+            name: "fps".into(),
+            value: 29.97,
+            unit: Some("fps".into()),
+            boot_id: 7,
+            run_id: 2,
+            event_seq: 42,
+        };
+        let back: MetricReport = decode_control(&encode_control(&metric).unwrap()).unwrap();
+        assert_eq!(back, metric);
+        // Defaulted fields stay off the wire.
+        let bare = MetricReport {
+            name: "heap".into(),
+            value: 1024.0,
+            unit: None,
+            boot_id: 0,
+            run_id: 0,
+            event_seq: 0,
+        };
+        let bytes = encode_control(&bare).unwrap();
+        assert!(!bytes.windows(7).any(|w| w == b"boot_id"));
+
+        let boot = BootInfo {
+            firmware: "1.0.0".into(),
+            boot_id: 7,
+            run_id: 2,
+            reset_reason: Some("power-on".into()),
+        };
+        let back: BootInfo = decode_control(&encode_control(&boot).unwrap()).unwrap();
+        assert_eq!(back, boot);
+
+        let vector = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../protocol/vectors/diagnostic_metric.json"),
+        )
+        .unwrap();
+        let hex = vector
+            .split("\"hex\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .nth(1)
+            .unwrap();
+        assert_eq!(encode_control(&metric).unwrap(), parse_hex(hex));
     }
 
     #[test]

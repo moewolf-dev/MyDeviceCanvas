@@ -50,15 +50,16 @@ the message types now:
 
 | Type | Code | Status |
 |---|---|---|
+| `Metric` | `0x61` | **implemented** (N316: CBOR `MetricReport`; `Session::take_diagnostics`) |
+| `BootInfo` | `0x63` | **implemented** (N316: CBOR `BootInfo`) |
 | `Telemetry` | `0x60` | **reserved, not implemented** — payload not decoded |
-| `Metric` | `0x61` | **reserved, not implemented** |
 | `Crash` | `0x62` | **reserved, not implemented** |
-| `BootInfo` | `0x63` | **reserved, not implemented** |
 
-`MessageType::try_from` (Rust) and the C++ `Parser::known_type` accept these
-values so a downstream pin of the wire enum is stable, but neither side decodes a
-payload yet. `mdc-schedule` is unrelated; diagnostics are **not** sent on the link
-under test:
+`MessageType::try_from` (Rust) and the C++ `Parser::known_type` accept all four
+values so a downstream pin of the wire enum is stable. `Metric`/`BootInfo` are
+decoded by `Session` into a bounded, link-independent queue; `Telemetry`/`Crash`
+are accepted but their payloads are not decoded. Diagnostics are **not** sent on
+the link under test:
 
 1. A diagnostic/telemetry channel **must be independent of the link under test**.
    A crashing or saturated Frame/MirrorFrame link must not be able to lose the

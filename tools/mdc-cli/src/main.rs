@@ -1223,6 +1223,57 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+/// N316: read the device diagnostics channel (metrics + boot info) and print it.
+fn cmd_diag(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut metric = "fps".to_string();
+    let mut value = 30.0_f64;
+    let mut unit: Option<String> = Some("fps".to_string());
+    let mut iter = extra.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--metric" => metric = iter.next().cloned().unwrap_or(metric),
+            "--value" => value = iter.next().and_then(|v| v.parse().ok()).unwrap_or(value),
+            "--unit" => unit = iter.next().cloned(),
+            _ => {}
+        }
+    }
+    let (mut session, mut device, _manager) = open_sim(&opts.board)?;
+    // Diagnostics travel on their own message types and never mix with a frame
+    // transaction.
+    device.emit_boot_info()?;
+    device.emit_metric(&metric, value, unit.as_deref())?;
+    session.poll()?;
+    let records = session.take_diagnostics();
+    let diagnostics: Vec<serde_json::Value> = records
+        .iter()
+        .map(|record| match record {
+            mdc_core::DiagnosticRecord::Metric(m) => serde_json::json!({
+                "kind": "metric",
+                "name": m.name,
+                "value": m.value,
+                "unit": m.unit,
+                "boot_id": m.boot_id,
+                "run_id": m.run_id,
+                "event_seq": m.event_seq,
+            }),
+            mdc_core::DiagnosticRecord::BootInfo(b) => serde_json::json!({
+                "kind": "bootInfo",
+                "firmware": b.firmware,
+                "boot_id": b.boot_id,
+                "run_id": b.run_id,
+                "reset_reason": b.reset_reason,
+            }),
+        })
+        .collect();
+    let out = serde_json::json!({
+        "board": opts.board,
+        "count": records.len(),
+        "diagnostics": diagnostics,
+    });
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
 #[cfg(feature = "serial")]
 fn open_serial_session(
     port: &str,
@@ -2459,7 +2510,7 @@ fn usage() {
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
-authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|\
+authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg]|install-package <file.mdcpkg>|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
@@ -2510,6 +2561,12 @@ fn main() {
             let mut o = opts.clone();
             o.sim = true;
             cmd_benchmark(&o, n)
+        }
+        Some("diag") => {
+            if opts.sim || opts.address.is_none() {
+                // diagnostics on a sim board; a TCP peer would emit its own.
+            }
+            cmd_diag(&opts, &args[1..])
         }
         Some("discover") => {
             let mut o = opts.clone();

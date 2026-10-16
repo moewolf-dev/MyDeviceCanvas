@@ -1,0 +1,4 @@
+{
+  "note": "N316 canonical CBOR MetricReport { name:fps, value:29.97, unit:fps, boot_id:7, run_id:2, event_seq:42 }",
+  "hex": "a6646e616d65636670736576616c7565fb403df851eb851eb864756e69746366707367626f6f745f6964076672756e5f696402696576656e745f736571182a"
+}

@@ -1,9 +1,9 @@
 use mdc_protocol::{
     decode_frame_payload, encode_control, encode_frame_begin, encode_frame_chunk,
     encode_frame_commit, encode_frame_payload, encode_package_begin, encode_package_chunk,
-    encode_package_commit, encode_tile_payload, negotiate_mirror, package_checksum, Ack,
+    encode_package_commit, encode_tile_payload, negotiate_mirror, package_checksum, Ack, BootInfo,
     Capabilities, ConfigCommand, ConfigReply, ErrorPayload, FramePayload, Hello, InputEvent,
-    MessageType, MirrorCommand, OtaCommand, Packet, Surface, VERSION,
+    MessageType, MetricReport, MirrorCommand, OtaCommand, Packet, Surface, VERSION,
 };
 mod ledger;
 pub use ledger::{AllocationLedger, HostCopyBudget, SimHeap};
@@ -18,6 +18,17 @@ pub const MAX_MANAGER_EVENTS: usize = 128;
 pub const MAX_CONTROL_IN_FLIGHT: usize = 32;
 /// N40: longest configuration value the host will send (bytes).
 pub const MAX_CONFIG_VALUE_BYTES: usize = 256;
+/// N316: bounded host-side diagnostic queue (metrics + boot info).
+pub const MAX_DIAGNOSTICS: usize = 64;
+
+/// N316: one diagnostic record received on the (separate) diagnostics channel.
+/// Kept apart from frame/ack bookkeeping so a reboot or a busy image link cannot
+/// mix old results into the current run.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DiagnosticRecord {
+    Metric(MetricReport),
+    BootInfo(BootInfo),
+}
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoreError {
@@ -735,6 +746,8 @@ pub struct Session<T: Transport> {
     device_boot_id: Option<u64>,
     /// N304: the peer's last reported run id.
     device_run_id: u64,
+    /// N316: bounded diagnostics received on the separate channel.
+    diagnostics: std::collections::VecDeque<DiagnosticRecord>,
 }
 impl<T: Transport> Session<T> {
     pub fn new(transport: T) -> Self {
@@ -788,6 +801,7 @@ impl<T: Transport> Session<T> {
             host_boot_id: 0,
             device_boot_id: None,
             device_run_id: 0,
+            diagnostics: std::collections::VecDeque::new(),
         }
     }
     pub fn set_manager(&mut self, manager: Arc<Mutex<DeviceManager>>) {
@@ -810,23 +824,42 @@ impl<T: Transport> Session<T> {
     /// N304: adopt a Capabilities reply's run identity. Returns true when the
     /// device reported a new boot id (the previous run's pending ACKs are dropped).
     fn adopt_device_identity(&mut self, caps: &Capabilities) -> bool {
-        if caps.boot_id == 0 && caps.run_id == 0 {
+        self.note_run_identity(caps.boot_id, caps.run_id)
+    }
+    /// N304/N316: fold a peer-reported `(boot_id, run_id)` into the run
+    /// bookkeeping. A changed boot id discards the previous run.
+    fn note_run_identity(&mut self, boot_id: u64, run_id: u64) -> bool {
+        if boot_id == 0 && run_id == 0 {
             return false;
         }
         let restarted = matches!(
-            (self.device_boot_id, caps.boot_id),
+            (self.device_boot_id, boot_id),
             (Some(old), new) if new != 0 && old != new
         );
-        if caps.boot_id != 0 {
-            self.device_boot_id = Some(caps.boot_id);
+        if boot_id != 0 {
+            self.device_boot_id = Some(boot_id);
         }
-        if caps.run_id != 0 {
-            self.device_run_id = caps.run_id;
+        if run_id != 0 {
+            self.device_run_id = run_id;
         }
         if restarted {
             self.discard_run();
         }
         restarted
+    }
+    /// N316: drain the bounded diagnostic queue (metrics + boot info). This is a
+    /// separate channel: it never mixes with frame/ack results.
+    pub fn take_diagnostics(&mut self) -> Vec<DiagnosticRecord> {
+        self.diagnostics.drain(..).collect()
+    }
+    pub fn diagnostic_count(&self) -> usize {
+        self.diagnostics.len()
+    }
+    fn push_diagnostic(&mut self, record: DiagnosticRecord) {
+        while self.diagnostics.len() >= MAX_DIAGNOSTICS {
+            self.diagnostics.pop_front();
+        }
+        self.diagnostics.push_back(record);
     }
     /// Drop every outstanding request/held frame from the previous device run.
     fn discard_run(&mut self) {
@@ -1926,7 +1959,24 @@ impl<T: Transport> Session<T> {
             }
             MessageType::MirrorFrame => self.handle_mirror_frame(packet),
             MessageType::Config => self.handle_config(&packet),
+            MessageType::Metric => {
+                // N316: a metric is a diagnostic record, never an ACK/error for a
+                // frame transaction.
+                let metric: MetricReport = mdc_protocol::decode_control(&packet.payload)
+                    .map_err(|e| CoreError::Protocol(e.to_string()))?;
+                self.note_run_identity(metric.boot_id, metric.run_id);
+                self.push_diagnostic(DiagnosticRecord::Metric(metric));
+                Ok(())
+            }
+            MessageType::BootInfo => {
+                let boot: BootInfo = mdc_protocol::decode_control(&packet.payload)
+                    .map_err(|e| CoreError::Protocol(e.to_string()))?;
+                self.note_run_identity(boot.boot_id, boot.run_id);
+                self.push_diagnostic(DiagnosticRecord::BootInfo(boot));
+                Ok(())
+            }
             MessageType::MirrorCtrl => Ok(()),
+            // Reserved diagnostics without a payload (N303) are ignored.
             _ => Ok(()),
         }
     }
@@ -4213,6 +4263,126 @@ mod tests {
             .unwrap();
         session.poll().unwrap();
         assert_eq!(session.pending_request_count(), 1);
+    }
+
+    #[test]
+    fn diagnostics_stay_apart_from_the_frame_path() {
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        let hello = Packet::decode(&device.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        let mut boot_caps = caps();
+        boot_caps.boot_id = 500;
+        boot_caps.run_id = 1;
+        write_caps(&mut device, hello.request_id, &boot_caps);
+        session.poll().unwrap();
+        let _request = session.send_frame(frame(&[3; 8])).unwrap();
+        assert_eq!(session.pending_request_count(), 1);
+
+        let metric = MetricReport {
+            name: "heap".into(),
+            value: 1024.0,
+            unit: Some("bytes".into()),
+            boot_id: 0,
+            run_id: 0,
+            event_seq: 1,
+        };
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Metric,
+                    flags: 0,
+                    request_id: 0,
+                    payload: encode_control(&metric).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        assert_eq!(session.diagnostic_count(), 1);
+        assert_eq!(
+            session.pending_request_count(),
+            1,
+            "a metric must not clear a frame ACK"
+        );
+        assert_eq!(
+            session.take_diagnostics(),
+            vec![DiagnosticRecord::Metric(metric)]
+        );
+        assert_eq!(session.diagnostic_count(), 0);
+
+        // The channel is bounded: the 65th record drops the oldest.
+        for seq in 0..(MAX_DIAGNOSTICS as u64 + 5) {
+            let metric = MetricReport {
+                name: "seq".into(),
+                value: seq as f64,
+                unit: None,
+                boot_id: 0,
+                run_id: 0,
+                event_seq: seq,
+            };
+            device
+                .write(
+                    &Packet {
+                        version: VERSION,
+                        kind: MessageType::Metric,
+                        flags: 0,
+                        request_id: 0,
+                        payload: encode_control(&metric).unwrap(),
+                    }
+                    .encode(4096)
+                    .unwrap(),
+                )
+                .unwrap();
+            session.poll().unwrap();
+        }
+        assert_eq!(session.diagnostic_count(), MAX_DIAGNOSTICS);
+        let records = session.take_diagnostics();
+        assert_eq!(
+            records.first(),
+            Some(&DiagnosticRecord::Metric(MetricReport {
+                name: "seq".into(),
+                value: 5.0,
+                unit: None,
+                boot_id: 0,
+                run_id: 0,
+                event_seq: 5,
+            }))
+        );
+
+        // A BootInfo (N316) with a new boot id discards the old run.
+        let boot = BootInfo {
+            firmware: "2.0.0".into(),
+            boot_id: 999,
+            run_id: 7,
+            reset_reason: Some("watchdog".into()),
+        };
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::BootInfo,
+                    flags: 0,
+                    request_id: 0,
+                    payload: encode_control(&boot).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        assert_eq!(session.device_boot_id(), Some(999));
+        assert_eq!(session.pending_request_count(), 0);
+        assert!(session.needs_full_frame);
+        let records = session.take_diagnostics();
+        assert!(matches!(
+            records.as_slice(),
+            [DiagnosticRecord::BootInfo(_)]
+        ));
     }
 
     #[test]

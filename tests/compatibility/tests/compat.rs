@@ -1305,6 +1305,35 @@ fn device_mesh_package_selects_a_named_clip() {
 }
 
 #[test]
+fn device_diagnostics_reach_the_host_channel() {
+    use mdc_core::{ConnectionState, DiagnosticRecord, Session};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+    // N316: metrics and boot info travel on their own types, not the frame path.
+    device.emit_boot_info().unwrap();
+    device.emit_metric("fps", 29.5, Some("fps")).unwrap();
+    session.poll().unwrap();
+    let records = session.take_diagnostics();
+    assert_eq!(records.len(), 2);
+    assert!(matches!(records[0], DiagnosticRecord::BootInfo(_)));
+    match &records[1] {
+        DiagnosticRecord::Metric(metric) => {
+            assert_eq!(metric.name, "fps");
+            assert_eq!(metric.unit.as_deref(), Some("fps"));
+            assert!((metric.value - 29.5).abs() < 1e-9);
+            assert_eq!(metric.boot_id, device.boot_id());
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
 fn multi_mesh_scene_bakes_and_reaches_a_device() {
     use mdc_core::{ConnectionState, Session};
     use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};
