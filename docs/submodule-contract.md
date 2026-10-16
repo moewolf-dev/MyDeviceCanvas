@@ -19,7 +19,8 @@ proven, and how to pin it safely.
 - **Dependency direction** (no cycles): `mdc-protocol` and `mdc-transport` have no
   upper-layer dependency; `mdc-core → protocol + transport`; `mdc-model →
   protocol` (does **not** depend on Core); `mdc-mirror → protocol + transport`;
-  `mdc-schedule` depends on nothing. `mdc-mirror` never links OBS / Electron /
+  `mdc-schedule` depends on nothing (`mdc-core` uses it only for opt-in pacing,
+  N329). `mdc-mirror` never links OBS / Electron /
   Tauri and never renders. A downstream GUI/agent app pulls in only what it uses.
 - **Wire protocol v1**: header layout, magic, CBOR control, binary images, the
   message types listed in `docs/protocol.md`, and the shared vectors in

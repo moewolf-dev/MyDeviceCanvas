@@ -273,7 +273,10 @@ spend a byte budget per interval.
   At least one tile is always selected so a frame cannot stall.
 - `merge_dirty_ranges` coalesces touching dirty tiles into one transaction.
 - It never reorders image content; `latest-frame-wins` stays in `mdc-core`. The
-  scheduler only decides **pacing**.
+  scheduler only decides **pacing**. N329: `Session::set_frame_pacing(max_fps,
+  bytes_per_second)` wires the same scheduler into `send_frame`; a frame that is
+  too soon or over the byte budget returns `CoreError::Throttled` and is counted
+  by `pacing_dropped()` (opt-in; the default is unthrottled).
 
 Test `crates/mdc-schedule/tests/bandwidth.rs` drives an 8 FPS / 200 KB/s link over
 a 375-tile frame, asserts tiles are deferred (not sent all at once) and that every

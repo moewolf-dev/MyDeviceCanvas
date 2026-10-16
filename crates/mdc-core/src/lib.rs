@@ -68,6 +68,9 @@ pub enum CoreError {
     NotPaired,
     #[error("full frame required after reconnect or endpoint switch before tiles")]
     NeedFullFrame,
+    /// N329: the frame-pacing budget refused this frame; retry on a later tick.
+    #[error("frame throttled by the pacing budget")]
+    Throttled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -748,6 +751,10 @@ pub struct Session<T: Transport> {
     device_run_id: u64,
     /// N316: bounded diagnostics received on the separate channel.
     diagnostics: std::collections::VecDeque<DiagnosticRecord>,
+    /// N329: opt-in host frame pacing (fps clamp + byte budget).
+    pacing: Option<mdc_schedule::Scheduler>,
+    /// N329: frames refused by the pacing budget.
+    pacing_dropped: u64,
 }
 impl<T: Transport> Session<T> {
     pub fn new(transport: T) -> Self {
@@ -802,10 +809,25 @@ impl<T: Transport> Session<T> {
             device_boot_id: None,
             device_run_id: 0,
             diagnostics: std::collections::VecDeque::new(),
+            pacing: None,
+            pacing_dropped: 0,
         }
     }
     pub fn set_manager(&mut self, manager: Arc<Mutex<DeviceManager>>) {
         self.manager = Some(manager);
+    }
+    /// N329: pace `send_frame` with an fps clamp and a byte budget. `0` for either
+    /// limit disables that limit (`max_fps = 0` = no clamp, `bytes_per_second = 0`
+    /// = unlimited). A paced frame that does not fit returns [`CoreError::Throttled`].
+    pub fn set_frame_pacing(&mut self, max_fps: u16, bytes_per_second: u64) {
+        self.pacing = Some(mdc_schedule::Scheduler::new(max_fps, bytes_per_second));
+    }
+    pub fn clear_frame_pacing(&mut self) {
+        self.pacing = None;
+    }
+    /// N329: frames refused by the pacing budget since the last reset.
+    pub fn pacing_dropped(&self) -> u64 {
+        self.pacing_dropped
     }
     /// N304: set the host boot identity advertised in Hello.
     pub fn set_host_boot_id(&mut self, boot_id: u64) {
@@ -1164,6 +1186,36 @@ impl<T: Transport> Session<T> {
         {
             let device = self.device.as_ref().ok_or(CoreError::NotReady)?;
             device.validate_frame(&frame)?;
+        }
+        // N329: opt-in pacing refuses a frame that is too soon or over budget.
+        if self.pacing.is_some() {
+            let cost_tile = 1024u32;
+            let count = frame.bytes.len().div_ceil(cost_tile as usize) as u32;
+            let tiles: Vec<mdc_schedule::TileCost> = (0..count)
+                .map(|i| mdc_schedule::TileCost::new(i, cost_tile, false))
+                .collect();
+            let now = self.virtual_ms;
+            let decision = self
+                .pacing
+                .as_ref()
+                .map(|scheduler| scheduler.plan(now, &tiles));
+            match decision {
+                Some(mdc_schedule::FrameDecision::Defer { .. }) => {
+                    return Err(CoreError::Throttled);
+                }
+                Some(mdc_schedule::FrameDecision::Send { deferred, .. })
+                    if !deferred.is_empty() =>
+                {
+                    self.pacing_dropped = self.pacing_dropped.saturating_add(1);
+                    return Err(CoreError::Throttled);
+                }
+                Some(mdc_schedule::FrameDecision::Send { .. }) => {
+                    if let Some(scheduler) = self.pacing.as_mut() {
+                        scheduler.commit(now);
+                    }
+                }
+                None => {}
+            }
         }
         let device_max_chunk = self
             .device
@@ -4383,6 +4435,64 @@ mod tests {
             records.as_slice(),
             [DiagnosticRecord::BootInfo(_)]
         ));
+    }
+
+    #[test]
+    fn frame_pacing_clamps_fps_and_can_be_cleared() {
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        session.set_frame_pacing(8, 0); // 125 ms interval, unlimited bytes
+                                        // First frame at virtual 0 is sent.
+        assert!(session.send_frame(frame(&[1; 8])).is_ok());
+        // 10 ms later it is too soon.
+        session.tick(10).unwrap();
+        assert_eq!(
+            session.send_frame(frame(&[2; 8])),
+            Err(CoreError::Throttled)
+        );
+        assert_eq!(
+            session.pacing_dropped(),
+            0,
+            "the fps gate is not a budget drop"
+        );
+        // At the interval the next frame passes.
+        session.tick(125).unwrap();
+        assert!(session.send_frame(frame(&[3; 8])).is_ok());
+        // Clearing the pacing removes all gating.
+        session.clear_frame_pacing();
+        session.tick(126).unwrap();
+        assert!(session.send_frame(frame(&[4; 8])).is_ok());
+    }
+
+    #[test]
+    fn frame_pacing_drops_a_frame_over_the_byte_budget() {
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        // A 40x40 surface so one frame spans several 1 KiB tiles.
+        let mut custom = caps();
+        custom.surfaces[0] = Surface {
+            width: 40,
+            height: 40,
+            ..s()
+        };
+        let hello = Packet::decode(&device.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        write_caps(&mut device, hello.request_id, &custom);
+        session.poll().unwrap();
+        // 8 FPS -> 125 ms -> 8 B/s budget = 1 byte per interval, far below a frame.
+        session.set_frame_pacing(8, 8);
+        let big = Frame {
+            surface_id: "main".into(),
+            width: 40,
+            height: 40,
+            bytes: vec![0; 40 * 40 * 2],
+        };
+        assert_eq!(session.send_frame(big), Err(CoreError::Throttled));
+        assert_eq!(session.pacing_dropped(), 1);
     }
 
     #[test]

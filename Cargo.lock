@@ -393,6 +393,7 @@ version = "0.1.0"
 dependencies = [
  "mdc-model",
  "mdc-protocol",
+ "mdc-schedule",
  "mdc-transport",
  "thiserror",
 ]
