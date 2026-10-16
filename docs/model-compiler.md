@@ -235,7 +235,9 @@ texture). `bake_scene_frames` / `bake_scene_to_package` bake the whole scene.
 `render_package_mesh` renders a mesh-mode `DevicePackage` (geometry + its texture
 blob) so `mdc render-package` works for mesh packages, not only baked atlases.
 `mdc render-mesh` renders the whole scene by default and a single mesh with
-`--single`.
+`--single`. N325: meshes are drawn far-to-near (painter's algorithm, ordered by
+mean world-space z, stable for ties), so a nearer mesh overlays a farther one in
+both `render_scene_at` and `render_package_scene`; there is no z-buffer.
 
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a

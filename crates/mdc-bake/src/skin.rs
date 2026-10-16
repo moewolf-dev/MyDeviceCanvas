@@ -815,6 +815,45 @@ fn scene_bind_bbox(model: &Model) -> Option<([f32; 2], [f32; 2])> {
 /// N184: render every mesh node of `model` at `time` into one frame. A mesh's
 /// geometry is skinned when it carries weights, otherwise placed by its node's
 /// world transform; each mesh uses its material colour or `fallback`.
+/// N325: one mesh ready to draw, with the mean world-space z used to order
+/// occluding meshes (painter's algorithm: far first).
+struct SceneDrawable<'a> {
+    depth: f32,
+    points: Vec<(i16, i16)>,
+    uvs: Option<&'a [[f32; 2]]>,
+    indices: &'a [u32],
+    tint: Option<u16>,
+    mask: bool,
+    fill: u16,
+}
+
+/// N325: draw meshes far-to-near so a nearer mesh overlays a farther one. Ties
+/// keep the caller's order (stable sort); a z-buffer is not used.
+fn draw_scene_sorted(
+    pixels: &mut [u8],
+    size: (u32, u32),
+    texture: Option<&crate::TextureMap>,
+    mut drawables: Vec<SceneDrawable<'_>>,
+) -> Result<(), BakeError> {
+    drawables.sort_by(|a, b| b.depth.total_cmp(&a.depth));
+    for d in drawables {
+        crate::texture::draw_indexed(
+            pixels,
+            &d.points,
+            d.uvs,
+            d.indices,
+            size.0,
+            size.1,
+            texture,
+            d.tint,
+            d.mask,
+            d.fill,
+            mdc_model::MAX_GEOMETRY_VERTICES,
+        )?;
+    }
+    Ok(())
+}
+
 pub fn render_scene_at(
     model: &Model,
     animation_index: usize,
@@ -832,6 +871,7 @@ pub fn render_scene_at(
     let worlds = scene_worlds(model, animation_index, time);
     let skeleton = model.skeletons.iter().find(|s| !s.joint_nodes.is_empty());
     let mut pixels = vec![0u8; (size.0 as usize) * (size.1 as usize) * 2];
+    let mut drawables = Vec::new();
     for (index, node) in model.nodes.iter().enumerate() {
         let Some(mesh) = node.mesh.and_then(|mi| model.meshes.get(mi)) else {
             continue;
@@ -867,6 +907,7 @@ pub fn render_scene_at(
                 .map(|p| transform_point(&worlds[index], *p))
                 .collect()
         };
+        let depth = mean_z(&deformed);
         let points = fit_to_box(&deformed, min, max, size.0, size.1);
         let uvs: Option<&[[f32; 2]]> =
             if geometry.uv.len() >= geometry.positions.len() && !geometry.uv.is_empty() {
@@ -876,26 +917,31 @@ pub fn render_scene_at(
             };
         let tint = material_color(model, mesh);
         let mask = material_masked(model, mesh);
-        let fill = tint.unwrap_or(fallback);
-        crate::texture::draw_indexed(
-            &mut pixels,
-            &points,
+        drawables.push(SceneDrawable {
+            depth,
+            points,
             uvs,
-            &geometry.indices,
-            size.0,
-            size.1,
-            texture,
+            indices: &geometry.indices,
             tint,
             mask,
-            fill,
-            mdc_model::MAX_GEOMETRY_VERTICES,
-        )?;
+            fill: tint.unwrap_or(fallback),
+        });
     }
+    draw_scene_sorted(&mut pixels, size, texture, drawables)?;
     Ok(BakedTexture {
         width: size.0,
         height: size.1,
         rgb565: pixels,
     })
+}
+
+/// Mean world-space z of a set of points (0 when empty). Larger z is farther
+/// under the glTF (-z forward) convention, so it is drawn first.
+fn mean_z(points: &[[f32; 3]]) -> f32 {
+    if points.is_empty() {
+        return 0.0;
+    }
+    points.iter().map(|p| p[2]).sum::<f32>() / points.len() as f32
 }
 
 /// N185: render `frames` scene poses into atlas frames.
@@ -1106,6 +1152,7 @@ pub fn render_package_scene_clip(
     };
     let skeleton = package.skeletons.iter().find(|s| !s.joint_nodes.is_empty());
     let mut pixels = vec![0u8; (size.0 as usize) * (size.1 as usize) * 2];
+    let mut drawables = Vec::new();
     for (index, node) in package.nodes.iter().enumerate() {
         let Some(mesh) = node.mesh.and_then(|mi| package.meshes.get(mi)) else {
             continue;
@@ -1135,6 +1182,7 @@ pub fn render_package_scene_clip(
                 .map(|p| transform_point(&worlds[index], *p))
                 .collect()
         };
+        let depth = mean_z(&deformed);
         let points = fit_to_box(&deformed, min, max, size.0, size.1);
         let uvs: Option<&[[f32; 2]]> =
             if geometry.uv.len() >= geometry.positions.len() && !geometry.uv.is_empty() {
@@ -1150,21 +1198,17 @@ pub fn render_package_scene_clip(
             .material
             .and_then(|mi| package.materials.get(mi))
             .is_some_and(|material| material.is_masked());
-        let fill = tint.unwrap_or(0xF800);
-        crate::texture::draw_indexed(
-            &mut pixels,
-            &points,
+        drawables.push(SceneDrawable {
+            depth,
+            points,
             uvs,
-            &geometry.indices,
-            size.0,
-            size.1,
-            texture.as_ref(),
+            indices: &geometry.indices,
             tint,
             mask,
-            fill,
-            mdc_model::MAX_GEOMETRY_VERTICES,
-        )?;
+            fill: tint.unwrap_or(0xF800),
+        });
     }
+    draw_scene_sorted(&mut pixels, size, texture.as_ref(), drawables)?;
     Ok(BakedTexture {
         width: size.0,
         height: size.1,
@@ -1741,6 +1785,63 @@ mod tests {
         let oob = render_package_scene_clip(&package.package, SceneClip::Index(9), 0.0, (24, 24))
             .unwrap();
         assert_eq!(oob.rgb565, still.rgb565);
+    }
+
+    #[test]
+    fn nearer_mesh_is_drawn_over_a_farther_one() {
+        let mesh = |name: &str, material: usize| mdc_model::Mesh {
+            name: name.into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(material),
+            geometry: Some(quad_geometry()),
+            ..mdc_model::Mesh::default()
+        };
+        // The NEAR node is listed first; without depth ordering the far node
+        // would draw last and win. Painter order must put the near node on top.
+        let model = Model {
+            source: "test".into(),
+            nodes: vec![
+                Node {
+                    name: "near".into(),
+                    mesh: Some(0),
+                    translation: [0.0, 0.0, 0.0],
+                    ..Node::default()
+                },
+                Node {
+                    name: "far".into(),
+                    mesh: Some(1),
+                    translation: [0.0, 0.0, 1.0],
+                    ..Node::default()
+                },
+            ],
+            meshes: vec![mesh("near", 0), mesh("far", 1)],
+            materials: vec![
+                mdc_model::Material {
+                    name: "red".into(),
+                    color: Some([255, 0, 0]),
+                    ..mdc_model::Material::default()
+                },
+                mdc_model::Material {
+                    name: "blue".into(),
+                    color: Some([0, 0, 255]),
+                    ..mdc_model::Material::default()
+                },
+            ],
+            ..Model::default()
+        };
+        let frame = render_scene_at(&model, 0, 0.0, (16, 16), None, 0xFFFF).unwrap();
+        let at = |x: usize, y: usize| {
+            u16::from_le_bytes([
+                frame.rgb565[(y * 16 + x) * 2],
+                frame.rgb565[(y * 16 + x) * 2 + 1],
+            ])
+        };
+        assert_eq!(
+            at(8, 8),
+            0xF800,
+            "the near (red) mesh over the far (blue) one"
+        );
     }
 
     #[test]
