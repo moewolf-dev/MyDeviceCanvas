@@ -630,6 +630,7 @@ fn full_geometry_reaches_the_device_and_renders() {
         ],
         indices: vec![0, 1, 2, 0, 2, 3],
         uv: Vec::new(),
+        normals: Vec::new(),
         skin_joints: Vec::new(),
         skin_weights: Vec::new(),
         morph_targets: Vec::new(),
@@ -724,6 +725,7 @@ fn material_colour_tints_the_package_texture_on_the_device() {
             ],
             indices: vec![0, 1, 2, 0, 2, 3],
             uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            normals: Vec::new(),
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
@@ -803,6 +805,7 @@ fn packaged_masked_texture_cuts_out_on_render() {
             ],
             indices: vec![0, 1, 2, 0, 2, 3],
             uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            normals: Vec::new(),
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
@@ -875,6 +878,7 @@ fn masked_material_cuts_out_transparent_texels() {
                 ],
                 indices: vec![0, 1, 2, 0, 2, 3],
                 uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                normals: Vec::new(),
                 skin_joints: Vec::new(),
                 skin_weights: Vec::new(),
                 morph_targets: Vec::new(),
@@ -934,6 +938,7 @@ fn merged_multi_primitive_geometry_renders_every_triangle() {
                 ],
                 indices: vec![0, 1, 2, 3, 4, 5],
                 uv: Vec::new(),
+                normals: Vec::new(),
                 skin_joints: Vec::new(),
                 skin_weights: Vec::new(),
                 morph_targets: Vec::new(),
@@ -1027,6 +1032,7 @@ fn device_renders_a_morph_animated_geometry_package() {
                 ],
                 indices: vec![0, 1, 2, 0, 2, 3],
                 uv: Vec::new(),
+                normals: Vec::new(),
                 skin_joints: Vec::new(),
                 skin_weights: Vec::new(),
                 morph_targets: vec![vec![
@@ -1113,6 +1119,7 @@ fn device_renders_an_animated_mesh_package_scene() {
             ],
             indices: vec![0, 1, 2, 0, 2, 3],
             uv: Vec::new(),
+            normals: Vec::new(),
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
@@ -1217,6 +1224,7 @@ fn device_mesh_package_selects_a_named_clip() {
             ],
             indices: vec![0, 1, 2, 0, 2, 3],
             uv: Vec::new(),
+            normals: Vec::new(),
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
@@ -1279,22 +1287,24 @@ fn device_mesh_package_selects_a_named_clip() {
     device.poll().unwrap();
     session.poll().unwrap();
 
-    let mirror_at_zero = |session: &mut Session<MemoryLink>, device: &mut FakeDevice| -> Vec<u8> {
-        device.clock.advance(0);
-        device.emit_mirror_frame().unwrap();
-        session.poll().unwrap();
-        session.take_mirror_frame().expect("mirror frame").bytes
-    };
+    let mirror_after_fade =
+        |session: &mut Session<MemoryLink>, device: &mut FakeDevice| -> Vec<u8> {
+            // N330: advancing past the cross-fade window gives the pure new clip.
+            device.clock.advance(400);
+            device.emit_mirror_frame().unwrap();
+            session.poll().unwrap();
+            session.take_mirror_frame().expect("mirror frame").bytes
+        };
 
     // N315: select the second clip by name; the device pose changes.
     assert!(session.set_animation("left").unwrap() > 0);
     device.poll().unwrap();
     session.poll().unwrap();
-    let left = mirror_at_zero(&mut session, &mut device);
+    let left = mirror_after_fade(&mut session, &mut device);
     assert!(session.set_animation("right").unwrap() > 0);
     device.poll().unwrap();
     session.poll().unwrap();
-    let right = mirror_at_zero(&mut session, &mut device);
+    let right = mirror_after_fade(&mut session, &mut device);
     assert_ne!(left, right, "selecting a different clip moved the mesh");
 
     // An unknown clip name is refused and keeps the previous selection.
@@ -1422,6 +1432,7 @@ fn multi_mesh_scene_bakes_and_reaches_a_device() {
             ],
             indices: vec![0, 1, 2, 0, 2, 3],
             uv: Vec::new(),
+            normals: Vec::new(),
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
@@ -1505,6 +1516,7 @@ fn textured_geometry_package_renders_on_the_device() {
             ],
             indices: vec![0, 1, 2, 0, 2, 3],
             uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            normals: Vec::new(),
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),

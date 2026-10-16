@@ -111,6 +111,13 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Scene text wrap (N318) | sim-verified (word wrap + `\n`, uniform glyph scale) | physical: pending |
 | C/Swift diagnostics (N319) | sim-verified (C ABI test + Swift smoke) | n/a |
 | Electron live stream helpers (N320) | sim-verified (`demo-logic.test.js`) | n/a |
+| Embedded glTF textures (N323/N324) | sim-verified (bytes retained; `mdc package` auto-uses them) | n/a |
+| Painter depth ordering (N325) | sim-verified (near mesh overlays far) | n/a |
+| glTF NORMAL + directional shading (N326/N327) | sim-verified (import f32/i8; scene shading; flat +z unchanged) | physical: pending |
+| PNG delivery (N328) | sim-verified (`encode_png` decode round-trip; `/frame.png`) | n/a |
+| Opt-in Core pacing (N329) | sim-verified (`Session::set_frame_pacing` -> `Throttled`) | n/a |
+| Mesh clip cross-fade (N330) | sim-verified (blend window on clip change) | physical: pending |
+| C++ diagnostics encoders (N331) | sim-verified (bytes match the Rust vectors) | physical: pending |
 
 ## G03 sim exit
 

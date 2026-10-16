@@ -2,6 +2,28 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.45] — Real model assets, shading, PNG delivery, core pacing (N323–N332)
+
+### Added
+
+- `mdc-model`: glTF embedded image bytes are retained (`Texture.data`, bounded by
+  `max_texture_bytes`) with `Model::embedded_texture`/`material_texture` (N323)
+- `mdc package` auto-uses a material's embedded `baseColorTexture`
+  (`auto_texture_blob`/`resolve_texture_blob`); `--texture` still overrides and a
+  failed decode is reported as `textureError` (N324)
+- `mdc-bake`: painter depth ordering in `render_scene_at`/`render_package_scene`
+  (far-to-near by mean z) (N325)
+- glTF `NORMAL` import into `MeshGeometry.normals` (f32 or normalized i8/i16) (N326)
+- per-triangle directional shading from normals (fixed key light, ambient 0.45) in
+  the scene/package renderers (N327)
+- `mdc-mirror`: dependency-free PNG encoder (stored deflate) + `/frame.png` +
+  `mdc mirror --format png` (N328)
+- `mdc-core`: opt-in `Session::set_frame_pacing` / `clear_frame_pacing` backed by
+  `mdc-schedule`, refusing over-budget frames with `CoreError::Throttled` (N329)
+- `mdc-simulator`: mesh-package clip cross-fade on `config animation` changes (N330)
+- `runtime/esp32` C++: `encode_metric_cbor`/`encode_boot_info_cbor` byte-identical
+  to the Rust vectors (N331)
+
 ## [0.1.44] — Live OBS stream, diagnostics, device clips, scene text (N313–N322)
 
 ### Added
