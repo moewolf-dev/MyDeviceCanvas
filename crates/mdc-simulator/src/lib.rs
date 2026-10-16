@@ -408,6 +408,34 @@ fn fade_toward_black(pixels: &mut [u8], quarters: u8) {
 
 /// N153: mix one atlas frame over `pixels` by `quarters`/4 (0 keeps the pixels,
 /// 4 replaces them with the frame). Used by the animation cross-fade.
+/// N330: blend `src` over `dst` (both whole RGB565 LE buffers) with `quarters/4`
+/// weight toward `src`. 0 keeps `dst`, 4 copies `src`.
+fn mix_rgb565(dst: &mut [u8], src: &[u8], quarters: u8) {
+    let q = u32::from(quarters.min(4));
+    let keep = 4 - q;
+    if q == 0 {
+        return;
+    }
+    let n = (dst.len().min(src.len())) / 2 * 2;
+    if q >= 4 {
+        dst[..n].copy_from_slice(&src[..n]);
+        return;
+    }
+    for i in (0..n).step_by(2) {
+        let dv = u16::from_le_bytes([dst[i], dst[i + 1]]);
+        let sv = u16::from_le_bytes([src[i], src[i + 1]]);
+        let channel = |shift: u32, mask: u16| -> u16 {
+            let d = u32::from((dv >> shift) & mask);
+            let s = u32::from((sv >> shift) & mask);
+            ((d * keep + s * q) / 4) as u16
+        };
+        let out = (channel(11, 0x1f) << 11) | (channel(5, 0x3f) << 5) | channel(0, 0x1f);
+        let bytes = out.to_le_bytes();
+        dst[i] = bytes[0];
+        dst[i + 1] = bytes[1];
+    }
+}
+
 fn mix_atlas_frame(
     pixels: &mut [u8],
     atlas: &mdc_model::AtlasBlob,
@@ -762,6 +790,8 @@ fn fill_scene(
 
 /// 虚拟时钟上，begin 之后这么多个 tick 没有 chunk 就回滚。
 const OTA_CHUNK_TIMEOUT_TICKS: u64 = 5_000;
+/// N330: mesh clip cross-fade window in virtual milliseconds.
+const MESH_CROSSFADE_MS: u32 = 300;
 
 /// N41: baseline managed configuration.
 fn default_config() -> BTreeMap<String, String> {
@@ -1091,6 +1121,10 @@ pub struct FakeDevice {
     mesh_scene: Option<mdc_model::DevicePackage>,
     /// N315: which package animation the device poses (default: first).
     mesh_clip: mdc_bake::SceneClip,
+    /// N330: the frame frozen at the last mesh-clip change, blended out.
+    mesh_prev_pixels: Vec<u8>,
+    mesh_crossfade_ms: u32,
+    mesh_blend_start: u64,
     /// N178: UVs for the accepted geometry preview, parallel to `preview_xy`.
     preview_uv: Vec<[f32; 2]>,
     /// N176/N178: fill colour for the preview when no texture is sampled.
@@ -1161,6 +1195,9 @@ impl FakeDevice {
             texture: None,
             mesh_scene: None,
             mesh_clip: mdc_bake::SceneClip::First,
+            mesh_prev_pixels: Vec::new(),
+            mesh_crossfade_ms: 0,
+            mesh_blend_start: 0,
             preview_uv: Vec::new(),
             preview_color: 0xF800,
             preview_masked: false,
@@ -1882,6 +1919,22 @@ impl FakeDevice {
                 ) {
                     let len = frame.rgb565.len().min(self.pixels.len());
                     self.pixels[..len].copy_from_slice(&frame.rgb565[..len]);
+                    // N330: cross-fade the frame frozen at the last clip change.
+                    if self.mesh_crossfade_ms > 0 {
+                        let elapsed = self.clock.tick.saturating_sub(self.mesh_blend_start);
+                        if elapsed >= u64::from(self.mesh_crossfade_ms) {
+                            self.mesh_crossfade_ms = 0;
+                            self.mesh_prev_pixels.clear();
+                        } else if self.mesh_prev_pixels.len() >= len {
+                            let progress = (elapsed.saturating_mul(4)
+                                / u64::from(self.mesh_crossfade_ms))
+                            .min(4) as u8;
+                            let quarters = 4u8.saturating_sub(progress);
+                            let previous = std::mem::take(&mut self.mesh_prev_pixels);
+                            mix_rgb565(&mut self.pixels[..len], &previous[..len], quarters);
+                            self.mesh_prev_pixels = previous;
+                        }
+                    }
                     return true;
                 }
             }
@@ -2161,6 +2214,9 @@ impl FakeDevice {
         self.anim_crossfade_ms = 0;
         // N315: a new package resets the mesh clip selection to the default.
         self.mesh_clip = mdc_bake::SceneClip::First;
+        // N330: and clears any in-flight mesh cross-fade.
+        self.mesh_prev_pixels.clear();
+        self.mesh_crossfade_ms = 0;
     }
     /// Form B: true once a host MirrorCtrl start has been accepted.
     pub fn mirror_active(&self) -> bool {
@@ -2197,31 +2253,41 @@ impl FakeDevice {
             }
             "set" => {
                 let value = command.value.clone().unwrap_or_default();
-                if value.is_empty() || value == "off" {
-                    self.mesh_clip = mdc_bake::SceneClip::Static;
-                    return self.reply_config("animation", true, Some("off".into()), None);
-                }
-                if value == "default" {
-                    self.mesh_clip = mdc_bake::SceneClip::First;
-                    return self.reply_config("animation", true, Some("default".into()), None);
-                }
-                if let Ok(index) = value.parse::<usize>() {
-                    if index < names.len() {
-                        self.mesh_clip = mdc_bake::SceneClip::Index(index);
-                        return self.reply_config("animation", true, Some(value), None);
-                    }
+                let new_clip = if value.is_empty() || value == "off" {
+                    Some(mdc_bake::SceneClip::Static)
+                } else if value == "default" {
+                    Some(mdc_bake::SceneClip::First)
+                } else if let Ok(index) = value.parse::<usize>() {
+                    (index < names.len()).then_some(mdc_bake::SceneClip::Index(index))
+                } else {
+                    names
+                        .iter()
+                        .position(|name| name == &value)
+                        .map(mdc_bake::SceneClip::Index)
+                };
+                let Some(new_clip) = new_clip else {
                     return self.reply_config("animation", false, None, Some("E_VALUE"));
+                };
+                if new_clip != self.mesh_clip {
+                    // N330: freeze the current frame and cross-fade it out.
+                    self.begin_mesh_crossfade();
                 }
-                match names.iter().position(|name| name == &value) {
-                    Some(index) => {
-                        self.mesh_clip = mdc_bake::SceneClip::Index(index);
-                        self.reply_config("animation", true, Some(value), None)
-                    }
-                    None => self.reply_config("animation", false, None, Some("E_VALUE")),
-                }
+                self.mesh_clip = new_clip;
+                let shown = if value.is_empty() {
+                    "off".to_string()
+                } else {
+                    value
+                };
+                self.reply_config("animation", true, Some(shown), None)
             }
             _ => self.reply_config("animation", false, None, Some("E_ACTION")),
         }
+    }
+    /// N330: freeze the current framebuffer for a short cross-fade window.
+    fn begin_mesh_crossfade(&mut self) {
+        self.mesh_prev_pixels = self.pixels.clone();
+        self.mesh_crossfade_ms = MESH_CROSSFADE_MS;
+        self.mesh_blend_start = self.clock.tick;
     }
     /// N263: the negotiated mirror mode ("full-frame" | "dirty-region").
     pub fn mirror_mode(&self) -> &str {
@@ -3044,6 +3110,33 @@ mod tests {
         assert_ne!(device.pixel_rgb565(0, 8), Some(0), "wrapped line drawn");
         // Row 7 is the gap between the two lines and stays clear.
         assert_eq!(device.pixel_rgb565(0, 7), Some(0), "line gap is clear");
+    }
+
+    #[test]
+    fn mesh_clip_cross_fade_blends_and_expires() {
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 4,
+            height: 4,
+            ..BoardProfile::default()
+        });
+        device.begin_mesh_crossfade();
+        assert_eq!(device.mesh_crossfade_ms, MESH_CROSSFADE_MS);
+        assert_eq!(device.mesh_prev_pixels.len(), device.pixels.len());
+
+        // Full weight copies; zero keeps.
+        let src = [0xE0u8, 0x07, 0x00, 0xF8];
+        let mut dst = vec![0x00u8, 0xF8, 0xE0, 0x07];
+        mix_rgb565(&mut dst, &src, 4);
+        assert_eq!(dst, src);
+        let mut dst = vec![0x00u8, 0xF8, 0xE0, 0x07];
+        mix_rgb565(&mut dst, &src, 0);
+        assert_eq!(dst, vec![0x00, 0xF8, 0xE0, 0x07]);
+
+        // Half weight blends red toward green (r channel strictly between).
+        let mut dst = vec![0x00u8, 0xF8, 0x00, 0xF8];
+        mix_rgb565(&mut dst, &[0xE0u8, 0x07, 0xE0, 0x07], 2);
+        let red = (u16::from_le_bytes([dst[0], dst[1]]) >> 11) & 0x1f;
+        assert!(red > 0 && red < 0x1f, "red channel blended: {red}");
     }
 
     #[test]

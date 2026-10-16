@@ -151,7 +151,8 @@ its own runtime.
 N315: a mesh package can carry several animations; `config animation
 <index>|<name>|default|off` selects which one the device poses
 (`SceneClip::{Index,First,Static}` in `mdc-bake`), so the device is not limited to
-`animations.first()`.
+`animations.first()`. N330: changing the selection cross-fades the previously
+rendered frame out over a short (~300 ms) window on the device double.
 
 ### 4.2 Dirty-region emission (device → host, N263/N264)
 
