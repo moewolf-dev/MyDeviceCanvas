@@ -42,3 +42,12 @@ python3 tools/validate_board.py boards/esp32/test-valid/board.yaml
 python3 tools/validate_board.py boards/esp32/jc3248w535/board.yaml  # expected failure: unverified unknowns
 python3 -m unittest discover -s tools -p 'test_*.py'
 ```
+
+Metrics / diagnostics series (bounded JSONL, N317):
+
+```sh
+cargo run -p mdc-inspector -- --fresh                 # one pretty snapshot
+cargo run -p mdc-inspector -- --jsonl 60 --interval 100 --board linux-virt
+cargo run -p mdc -- --board linux-virt diag --metric fps --value 29.5 --unit fps
+```
+
