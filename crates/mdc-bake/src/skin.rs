@@ -825,6 +825,70 @@ struct SceneDrawable<'a> {
     tint: Option<u16>,
     mask: bool,
     fill: u16,
+    /// N327: per-triangle directional shading factor.
+    shade: Vec<f32>,
+}
+
+/// N327: default key light (straight down -z, i.e. toward +z-facing surfaces) and
+/// the ambient floor. A surface facing the light is unshaded (factor 1.0), so a
+/// flat XY quad renders exactly as before.
+const SHADE_LIGHT: [f32; 3] = [0.0, 0.0, 1.0];
+const SHADE_AMBIENT: f32 = 0.45;
+
+/// N327: per-triangle Lambert factor from 3D positions and (optional) normals.
+/// Without per-vertex normals the geometric face normal is used.
+fn triangle_shades(
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    indices: &[u32],
+    light: [f32; 3],
+) -> Vec<f32> {
+    if indices.len() < 3 {
+        return Vec::new();
+    }
+    let use_normals = !normals.is_empty() && normals.len() >= positions.len();
+    indices
+        .chunks_exact(3)
+        .map(|tri| {
+            let normal = if use_normals {
+                let mut acc = [0.0f32; 3];
+                for &i in tri {
+                    let v = normals.get(i as usize).copied().unwrap_or([0.0, 0.0, 1.0]);
+                    acc[0] += v[0];
+                    acc[1] += v[1];
+                    acc[2] += v[2];
+                }
+                acc
+            } else {
+                geometric_normal(positions, tri)
+            };
+            let len =
+                (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+            if len <= 1e-6 {
+                return 1.0;
+            }
+            let dot = (normal[0] * light[0] + normal[1] * light[1] + normal[2] * light[2]) / len;
+            dot.clamp(SHADE_AMBIENT, 1.0)
+        })
+        .collect()
+}
+
+/// Geometric (unnormalized) normal of one triangle.
+fn geometric_normal(positions: &[[f32; 3]], tri: &[u32]) -> [f32; 3] {
+    let p = |k: usize| {
+        tri.get(k)
+            .and_then(|&i| positions.get(i as usize))
+            .copied()
+            .unwrap_or([0.0, 0.0, 0.0])
+    };
+    let (a, b, c) = (p(0), p(1), p(2));
+    let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ]
 }
 
 /// N325: draw meshes far-to-near so a nearer mesh overlays a farther one. Ties
@@ -848,6 +912,7 @@ fn draw_scene_sorted(
             d.tint,
             d.mask,
             d.fill,
+            Some(&d.shade),
             mdc_model::MAX_GEOMETRY_VERTICES,
         )?;
     }
@@ -925,6 +990,7 @@ pub fn render_scene_at(
             tint,
             mask,
             fill: tint.unwrap_or(fallback),
+            shade: triangle_shades(&deformed, &geometry.normals, &geometry.indices, SHADE_LIGHT),
         });
     }
     draw_scene_sorted(&mut pixels, size, texture, drawables)?;
@@ -1053,6 +1119,12 @@ pub fn render_package_mesh(
             .and_then(|mi| package.materials.get(mi))
             .is_some_and(|material| material.is_masked());
         let fill = tint.unwrap_or(0xF800);
+        let shade = triangle_shades(
+            &geometry.positions,
+            &geometry.normals,
+            &geometry.indices,
+            SHADE_LIGHT,
+        );
         crate::texture::draw_indexed(
             &mut pixels,
             &projected,
@@ -1064,6 +1136,7 @@ pub fn render_package_mesh(
             tint,
             mask,
             fill,
+            Some(&shade),
             mdc_model::MAX_GEOMETRY_VERTICES,
         )?;
     }
@@ -1206,6 +1279,7 @@ pub fn render_package_scene_clip(
             tint,
             mask,
             fill: tint.unwrap_or(0xF800),
+            shade: triangle_shades(&deformed, &geometry.normals, &geometry.indices, SHADE_LIGHT),
         });
     }
     draw_scene_sorted(&mut pixels, size, texture.as_ref(), drawables)?;
@@ -1843,6 +1917,53 @@ mod tests {
             at(8, 8),
             0xF800,
             "the near (red) mesh over the far (blue) one"
+        );
+    }
+
+    #[test]
+    fn faces_tilted_away_from_the_light_are_shaded() {
+        let mesh = |normals: Vec<[f32; 3]>| mdc_model::Mesh {
+            name: "q".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(mdc_model::MeshGeometry {
+                normals,
+                ..quad_geometry()
+            }),
+            ..mdc_model::Mesh::default()
+        };
+        let material = mdc_model::Material {
+            name: "red".into(),
+            color: Some([255, 0, 0]),
+            ..mdc_model::Material::default()
+        };
+        let render = |normals: Vec<[f32; 3]>| {
+            let model = Model {
+                source: "t".into(),
+                nodes: vec![Node {
+                    name: "n".into(),
+                    mesh: Some(0),
+                    ..Node::default()
+                }],
+                meshes: vec![mesh(normals)],
+                materials: vec![material.clone()],
+                ..Model::default()
+            };
+            render_scene_at(&model, 0, 0.0, (16, 16), None, 0xFFFF).unwrap()
+        };
+        let px = |f: &BakedTexture| {
+            u16::from_le_bytes([f.rgb565[(8 * 16 + 8) * 2], f.rgb565[(8 * 16 + 8) * 2 + 1]])
+        };
+        // No normals -> geometric +z normal, facing the light: unshaded.
+        let flat = px(&render(Vec::new()));
+        assert_eq!(flat, 0xF800);
+        // Explicit normals along +x graze the light: the surface is shaded down.
+        let shaded = px(&render(vec![[1.0, 0.0, 0.0]; 4]));
+        assert_ne!(shaded, 0xF800, "the side-facing surface is shaded");
+        assert!(
+            shaded >> 11 < flat >> 11,
+            "the red channel is reduced by shading"
         );
     }
 

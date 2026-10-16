@@ -238,6 +238,11 @@ blob) so `mdc render-package` works for mesh packages, not only baked atlases.
 `--single`. N325: meshes are drawn far-to-near (painter's algorithm, ordered by
 mean world-space z, stable for ties), so a nearer mesh overlays a farther one in
 both `render_scene_at` and `render_package_scene`; there is no z-buffer.
+N326/N327: glTF `NORMAL` is imported into `MeshGeometry.normals`, and scene
+renders apply a per-triangle Lambert shade from a fixed key light (`+z`, ambient
+0.45) — a surface facing the light is unshaded, so a flat +z quad is unchanged,
+while a side-facing surface darkens. Skinned vertices use their bind-pose normals
+(no normal skinning).
 
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a

@@ -154,6 +154,17 @@ impl TextureMap {
     }
 }
 
+/// N327: scale an RGB565 colour's channels by `factor` (0..=1) and repack.
+pub(crate) fn rgb565_scale(color: u16, factor: f32) -> u16 {
+    let f = factor.clamp(0.0, 1.0);
+    let r = ((color >> 11) & 0x1f) as f32 * f;
+    let g = ((color >> 5) & 0x3f) as f32 * f;
+    let b = (color & 0x1f) as f32 * f;
+    (((r.round() as u16) & 0x1f) << 11)
+        | (((g.round() as u16) & 0x3f) << 5)
+        | ((b.round() as u16) & 0x1f)
+}
+
 /// Map a possibly out-of-range coordinate onto `[0, dimension)` with repeat.
 fn wrap(value: f32, dimension: u32) -> u32 {
     if !value.is_finite() || dimension == 0 {
@@ -219,6 +230,7 @@ pub(crate) fn raster_indexed(
         tint,
         mask,
         fallback,
+        None,
         max_points,
     )?;
     Ok(pixels)
@@ -226,6 +238,8 @@ pub(crate) fn raster_indexed(
 
 /// N183: draw a geometry's triangles into an existing framebuffer (so a scene of
 /// several meshes can share one target). Bounded by `max_points` vertices.
+/// N327: `shade` is an optional per-triangle factor (0..=1) applied to the
+/// tint/fallback colour.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_indexed(
     pixels: &mut [u8],
@@ -238,6 +252,7 @@ pub(crate) fn draw_indexed(
     tint: Option<u16>,
     mask: bool,
     fallback: u16,
+    shade: Option<&[f32]>,
     max_points: usize,
 ) -> Result<(), BakeError> {
     if width == 0 || height == 0 || width > 1024 || height > 1024 {
@@ -256,7 +271,7 @@ pub(crate) fn draw_indexed(
     } else {
         Vec::new()
     };
-    for triangle in triangles {
+    for (ti, triangle) in triangles.into_iter().enumerate() {
         let (Some(&a), Some(&b), Some(&c)) = (
             points.get(triangle[0]),
             points.get(triangle[1]),
@@ -264,6 +279,10 @@ pub(crate) fn draw_indexed(
         ) else {
             continue;
         };
+        // N327: shade the tint/fallback for this triangle.
+        let factor = shade.and_then(|s| s.get(ti)).copied().unwrap_or(1.0);
+        let tint = tint.map(|t| rgb565_scale(t, factor));
+        let fill = rgb565_scale(fallback, factor);
         let uvs = uvs.filter(|u| u.len() >= points.len());
         match (texture, uvs) {
             (Some(texture), Some(uvs)) => fill_textured_triangle(
@@ -277,7 +296,7 @@ pub(crate) fn draw_indexed(
                 tint,
                 mask,
             ),
-            _ => crate::fill_triangle(pixels, width, height, a, b, c, fallback),
+            _ => crate::fill_triangle(pixels, width, height, a, b, c, fill),
         }
     }
     Ok(())
