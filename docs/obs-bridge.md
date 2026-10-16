@@ -24,6 +24,7 @@ Device renderer ── MIRRORFRAME ──▶ Session inbox ──▶ MirrorRecei
 |---|---|---|
 | Atomic PPM file | `mdc_mirror::PpmDirectorySink` | OBS "Image Source" watching `<dir>/frame.ppm` (or a `_0000..N` ring) |
 | BMP file | `mdc_mirror::encode_bmp` + `mdc mirror --format bmp` | OBS "Image Source" watching `<dir>/frame.bmp` |
+| PNG file | `mdc_mirror::encode_png` + `mdc mirror --format png` | OBS "Image Source" watching `<dir>/frame.png` (N328, no compression dependency) |
 | HTTP | `mdc_mirror::HttpMirrorServer` | OBS "Browser Source" at `http://127.0.0.1:<port>/stream` (live `multipart/x-mixed-replace` push) or `/` (auto-refreshing `<img>`); `/frame.bmp` and `/frame.ppm` for scripts |
 | TCP fan-out | `mdc_mirror::MirrorServer` | A local reader / browser source; one PPM frame per client, latest-wins |
 | Node | `onMirrorFrame` + `takeMirrorFrame` | Electron preview (see `examples/electron-demo`) |
@@ -43,6 +44,7 @@ mdc --board linux-virt mirror --frames 300 --http 127.0.0.1:8080
 #   http://127.0.0.1:8080/            -> auto-refreshing page
 #   http://127.0.0.1:8080/frame.bmp   -> image/bmp
 #   http://127.0.0.1:8080/frame.ppm   -> image/x-portable-pixmap
+#   http://127.0.0.1:8080/frame.png   -> image/png (N328)
 
 # Or fan out over TCP for a local consumer.
 mdc --board linux-virt mirror --frames 30 --serve 127.0.0.1:7777

@@ -1140,7 +1140,11 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
         (Some(dir), "bmp") => Some(PathBuf::from(dir)),
         _ => None,
     };
-    if let Some(dir) = &bmp_dir {
+    let png_dir = match (&write_dir, format.as_str()) {
+        (Some(dir), "png") => Some(PathBuf::from(dir)),
+        _ => None,
+    };
+    for dir in [&bmp_dir, &png_dir].into_iter().flatten() {
         std::fs::create_dir_all(dir)?;
     }
     let mut server = match &serve {
@@ -1202,6 +1206,11 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
         if let Some(dir) = &bmp_dir {
             let bmp = mdc_mirror::encode_bmp(frame.width, frame.height, &frame.bytes);
             std::fs::write(dir.join("frame.bmp"), bmp)?;
+        }
+        if let Some(dir) = &png_dir {
+            // N328: PNG for a smaller OBS image source.
+            let png = mdc_mirror::encode_png(frame.width, frame.height, &frame.bytes);
+            std::fs::write(dir.join("frame.png"), png)?;
         }
         if let Some(server) = server.as_mut() {
             let _ = server.accept_pending();
@@ -2521,7 +2530,7 @@ fn usage() {
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
-authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U]|\
+authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg]|install-package <file.mdcpkg>|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
@@ -3569,6 +3578,7 @@ mod tests {
                     ],
                     indices: vec![0, 1, 2, 0, 2, 3],
                     uv: Vec::new(),
+                    normals: Vec::new(),
                     skin_joints: Vec::new(),
                     skin_weights: Vec::new(),
                     morph_targets: Vec::new(),

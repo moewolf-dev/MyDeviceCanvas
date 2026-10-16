@@ -129,6 +129,7 @@ fn multi_primitive_geometry_soak_is_bounded() {
                 ],
                 indices: vec![0, 1, 2, 3, 4, 5],
                 uv: Vec::new(),
+                normals: Vec::new(),
                 skin_joints: Vec::new(),
                 skin_weights: Vec::new(),
                 morph_targets: Vec::new(),
@@ -250,6 +251,7 @@ fn geometry_morph_render_soak_is_bounded() {
                 ],
                 indices: vec![0, 1, 2, 0, 2, 3],
                 uv: Vec::new(),
+                normals: Vec::new(),
                 skin_joints: Vec::new(),
                 skin_weights: Vec::new(),
                 morph_targets: vec![vec![
@@ -332,6 +334,7 @@ fn linear_filter_render_soak_is_bounded() {
                 ],
                 indices: vec![0, 1, 2, 0, 2, 3],
                 uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                normals: Vec::new(),
                 skin_joints: Vec::new(),
                 skin_weights: Vec::new(),
                 morph_targets: Vec::new(),
@@ -381,6 +384,7 @@ fn device_mesh_scene_render_soak_is_bounded() {
             ],
             indices: vec![0, 1, 2, 0, 2, 3],
             uv: Vec::new(),
+            normals: Vec::new(),
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
@@ -470,6 +474,7 @@ fn multi_mesh_scene_render_soak_is_bounded() {
             ],
             indices: vec![0, 1, 2, 0, 2, 3],
             uv: Vec::new(),
+            normals: Vec::new(),
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
@@ -550,6 +555,7 @@ fn textured_mesh_package_soak_is_bounded() {
                 ],
                 indices: vec![0, 1, 2, 0, 2, 3],
                 uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                normals: Vec::new(),
                 skin_joints: Vec::new(),
                 skin_weights: Vec::new(),
                 morph_targets: Vec::new(),
@@ -606,6 +612,7 @@ fn geometry_render_soak_is_bounded() {
             ],
             indices: vec![0, 1, 2, 0, 2, 3],
             uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            normals: Vec::new(),
             skin_joints: vec![[1, 0, 0, 0]; 4],
             skin_weights: vec![[1.0, 0.0, 0.0, 0.0]; 4],
             morph_targets: Vec::new(),
@@ -1167,4 +1174,17 @@ fn diagnostics_and_text_wrap_stay_bounded() {
         assert!(device.render_scene());
         assert_eq!(device.framebuffer().len(), len, "framebuffer size is fixed");
     }
+}
+
+#[test]
+fn png_encoder_round_trips_through_the_image_crate() {
+    // N328: the stored-deflate PNG is a valid image the `image` crate decodes.
+    let bgra: Vec<u8> = vec![0, 0, 255, 255, 0, 255, 0, 255]; // 2x1 BGRA: red, green
+    let png = mdc_mirror::encode_png(2, 1, &bgra);
+    let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+        .unwrap()
+        .to_rgba8();
+    assert_eq!(decoded.dimensions(), (2, 1));
+    assert_eq!(decoded.get_pixel(0, 0).0, [255, 0, 0, 255]);
+    assert_eq!(decoded.get_pixel(1, 0).0, [0, 255, 0, 255]);
 }

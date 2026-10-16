@@ -918,10 +918,107 @@ pub fn encode_bmp(width: u16, height: u16, bgra: &[u8]) -> Vec<u8> {
     out
 }
 
+/// N328: encode a BGRA frame as a PNG (8-bit RGBA). No compression library is
+/// used — the zlib stream is a series of *stored* deflate blocks, so the output
+/// is valid but not compressed. Still much smaller than a bottom-up BMP for a
+/// screenshot-like image with few distinct colours.
+pub fn encode_png(width: u16, height: u16, bgra: &[u8]) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    if w == 0 || h == 0 {
+        return Vec::new();
+    }
+    let Some(raw_len) = w
+        .checked_mul(4)
+        .and_then(|row| row.checked_add(1))
+        .and_then(|row| h.checked_mul(row))
+    else {
+        return Vec::new();
+    };
+    if raw_len > MAX_SHADOW_BYTES {
+        return Vec::new();
+    }
+    // Raw image: each scanline is a filter byte (0 = none) then RGBA pixels.
+    let mut raw = Vec::with_capacity(raw_len);
+    for y in 0..h {
+        raw.push(0u8);
+        for x in 0..w {
+            let src = (y * w + x) * 4;
+            match bgra.get(src..src + 4) {
+                Some(pixel) => raw.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]),
+                None => raw.extend_from_slice(&[0, 0, 0, 0]),
+            }
+        }
+    }
+    let mut out = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&u32::from(width).to_be_bytes());
+    ihdr.extend_from_slice(&u32::from(height).to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit, RGBA, no interlace
+    png_chunk(&mut out, b"IHDR", &ihdr);
+    png_chunk(&mut out, b"IDAT", &zlib_stored(&raw));
+    png_chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+fn png_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    let mut crc_input = Vec::with_capacity(4 + data.len());
+    crc_input.extend_from_slice(kind);
+    crc_input.extend_from_slice(data);
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    out.extend_from_slice(kind);
+    out.extend_from_slice(data);
+    out.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+}
+
+/// N328: a zlib stream of stored deflate blocks (no compression).
+fn zlib_stored(raw: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x78, 0x01];
+    if raw.is_empty() {
+        out.extend_from_slice(&[0x01, 0x00, 0x00, 0xFF, 0xFF]);
+    }
+    let mut at = 0;
+    while at < raw.len() {
+        let len = (raw.len() - at).min(0xFFFF);
+        let last = at + len >= raw.len();
+        out.push(u8::from(last));
+        out.extend_from_slice(&(len as u16).to_le_bytes());
+        out.extend_from_slice(&(!(len as u16)).to_le_bytes());
+        out.extend_from_slice(&raw[at..at + len]);
+        at += len;
+    }
+    out.extend_from_slice(&adler32(raw).to_be_bytes());
+    out
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+fn adler32(bytes: &[u8]) -> u32 {
+    let mut a = 1u32;
+    let mut b = 0u32;
+    for &byte in bytes {
+        a = (a + u32::from(byte)) % 65521;
+        b = (b + a) % 65521;
+    }
+    (b << 16) | a
+}
+
 /// The most recent mirrored frame, cached in both served encodings.
 struct ServedFrame {
     bmp: Vec<u8>,
     ppm: Vec<u8>,
+    // N328: PNG (stored deflate) for a smaller OBS delivery.
+    png: Vec<u8>,
 }
 
 /// N144: a minimal HTTP/1.1 fan-out for an OBS browser source. It serves the
@@ -1023,8 +1120,9 @@ impl HttpMirrorServer {
     pub fn publish(&mut self, frame: &ShadowFrame<'_>) {
         let bmp = encode_bmp(frame.width, frame.height, frame.pixels);
         let ppm = encode_ppm(frame.width, frame.height, frame.pixels);
-        if bmp.len() + ppm.len() <= MAX_SHADOW_BYTES {
-            self.last = Some(ServedFrame { bmp, ppm });
+        let png = encode_png(frame.width, frame.height, frame.pixels);
+        if bmp.len() + ppm.len() + png.len() <= MAX_SHADOW_BYTES {
+            self.last = Some(ServedFrame { bmp, ppm, png });
         }
         self.frames = self.frames.saturating_add(1);
         if let Some(frame) = self.last.as_ref() {
@@ -1225,6 +1323,10 @@ fn respond(last: Option<&ServedFrame>, path: &str) -> Served {
         "/frame.ppm" => match last {
             Some(frame) => simple_response(200, "image/x-portable-pixmap", &frame.ppm),
             None => simple_response(503, "text/plain", b"no frame yet"),
+        },
+        "/frame.png" => match last {
+            Some(frame) if !frame.png.is_empty() => simple_response(200, "image/png", &frame.png),
+            _ => simple_response(503, "text/plain", b"no frame yet"),
         },
         _ => simple_response(404, "text/plain", b"not found"),
     })
@@ -1779,6 +1881,34 @@ mod tests {
         let missing = String::from_utf8_lossy(&http_get(&mut server, "/nope")).to_string();
         assert!(missing.contains("404 Not Found"), "{missing}");
         assert_eq!(server.frames_published(), 1);
+
+        // N328: PNG is served too.
+        let png = http_get(&mut server, "/frame.png");
+        let png_head = String::from_utf8_lossy(&png);
+        assert!(png_head.starts_with("HTTP/1.1 200 OK"), "{png_head}");
+        assert!(png_head.contains("Content-Type: image/png"));
+        assert!(png
+            .windows(8)
+            .any(|w| w == [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]));
+    }
+
+    #[test]
+    fn png_encoder_emits_a_valid_structure() {
+        let bgra = vec![0u8, 0, 255, 255]; // 1x1 BGRA red
+        let png = encode_png(1, 1, &bgra);
+        assert_eq!(&png[..8], &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+        assert!(png.windows(4).any(|w| w == b"IHDR"));
+        assert!(png.windows(4).any(|w| w == b"IDAT"));
+        assert!(
+            png.ends_with(b"IEND\xae\x42\x60\x82"),
+            "ends with a valid IEND"
+        );
+        assert_eq!(u32::from_be_bytes(png[16..20].try_into().unwrap()), 1);
+        assert_eq!(u32::from_be_bytes(png[20..24].try_into().unwrap()), 1);
+        assert_eq!(png[24], 8, "8-bit depth");
+        assert_eq!(png[25], 6, "RGBA colour type");
+        // Zero-size input is refused rather than panicking.
+        assert!(encode_png(0, 4, &[]).is_empty());
     }
 
     /// N313: pump the server and drain whatever the streaming client can read.
