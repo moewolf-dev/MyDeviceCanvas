@@ -35,6 +35,18 @@ public enum MdcPixelFormat: Int32 {
     public var isImplemented: Bool { self == .rgb565 }
 }
 
+/// N319: one diagnostic record from the link-independent channel.
+public struct MdcDiagnostic {
+    public enum Kind: Int32 {
+        case metric = 0
+        case bootInfo = 1
+    }
+    public let kind: Kind
+    public let name: String
+    public let value: Double
+    public let unit: String
+}
+
 /// Opaque session. Swift only calls the C ABI and releases the handle in `close` / `deinit`.
 public final class MdcSession {
     private var raw: OpaquePointer?
@@ -113,6 +125,41 @@ public final class MdcSession {
     /// N307: whether the host/frame path implements a format code.
     public func pixelFormatIsImplemented(_ format: MdcPixelFormat) -> Bool {
         mdc_pixel_format_is_implemented(format.rawValue) != 0
+    }
+
+    /// N319: number of diagnostics waiting on the link-independent channel.
+    public func diagnosticCount() -> UInt32 {
+        guard let raw else { return 0 }
+        return mdc_session_diagnostic_count(raw)
+    }
+
+    /// N319: emit a metric on the simulator device (sim-only; returns the queue
+    /// length or a negative code).
+    @discardableResult
+    public func emitMetric(_ name: String, _ value: Double, unit: String = "") -> Int32 {
+        guard let raw else { return -1 }
+        return name.withCString { n in
+            unit.withCString { u in
+                mdc_session_emit_metric(raw, n, value, u)
+            }
+        }
+    }
+
+    /// N319: pop the oldest diagnostic, or nil when the queue is empty.
+    public func takeDiagnostic() -> MdcDiagnostic? {
+        guard let raw else { return nil }
+        var kind: Int32 = 0
+        var name = [CChar](repeating: 0, count: 64)
+        var unit = [CChar](repeating: 0, count: 64)
+        var value = 0.0
+        let rc = mdc_session_take_diagnostic(
+            raw, &kind, &name, name.count, &value, &unit, unit.count)
+        guard rc == 1 else { return nil }
+        return MdcDiagnostic(
+            kind: MdcDiagnostic.Kind(rawValue: kind) ?? .metric,
+            name: String(cString: name),
+            value: value,
+            unit: String(cString: unit))
     }
 
     public func sendFrame(_ bytes: [UInt8]) throws {

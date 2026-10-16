@@ -14,6 +14,23 @@ struct MdcSwiftHello {
             fputs("rgba8888 must not be implemented\n", stderr)
             exit(1)
         }
+        // N319: the diagnostics channel is independent of the frame path.
+        if session.emitMetric("fps", 29.5, unit: "fps") < 1 {
+            fputs("emit metric failed\n", stderr)
+            exit(1)
+        }
+        guard let diagnostic = session.takeDiagnostic(),
+              diagnostic.kind == .metric,
+              diagnostic.name == "fps",
+              diagnostic.value == 29.5,
+              diagnostic.unit == "fps" else {
+            fputs("metric diagnostic mismatch\n", stderr)
+            exit(1)
+        }
+        if session.diagnosticCount() != 0 {
+            fputs("diagnostic queue not drained\n", stderr)
+            exit(1)
+        }
         if session.sendScene() != -5 {
             fputs("expected scene unsupported\n", stderr)
             exit(1)

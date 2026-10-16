@@ -54,6 +54,21 @@ let ok = session.pixelFormatIsImplemented(format)  // true only for .rgb565
 function is `mdc_session_surface_format_at`; the enum mirrors `MdcPixelFormat` in
 `sdk/c/include/mdc.h`.
 
+## Diagnostics (N319)
+
+`MdcSession.swift` exposes the link-independent diagnostics channel:
+
+```swift
+session.emitMetric("fps", 29.5, unit: "fps")   // sim-only; returns queue length
+if let d = session.takeDiagnostic() {          // nil when empty
+  // d.kind == .metric | .bootInfo, d.name, d.value, d.unit
+}
+session.diagnosticCount()
+```
+
+The C ABI is `mdc_session_emit_metric` / `mdc_session_take_diagnostic` /
+`mdc_session_diagnostic_count`.
+
 ## Package + config (N246)
 
 `MdcSession.swift` also wraps the newer C ABI calls:

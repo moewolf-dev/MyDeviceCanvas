@@ -1,5 +1,7 @@
 //! C ABI: opaque MdcSession over FakeDevice or a TCP simulator peer.
-use mdc_core::{ConnectionState, DeviceManager, Frame, ManagerEvent, Session, Tile};
+use mdc_core::{
+    ConnectionState, DeviceManager, DiagnosticRecord, Frame, ManagerEvent, Session, Tile,
+};
 use mdc_protocol::InputEvent;
 use mdc_simulator::{BoardProfile, FakeDevice};
 use mdc_transport::{TcpTransport, Transport};
@@ -15,6 +17,8 @@ pub struct MdcSession {
     device: Option<FakeDevice>,
     manager: Arc<Mutex<DeviceManager>>,
     queued: Vec<ManagerEvent>,
+    /// N319: diagnostics drained from the session, oldest first.
+    queued_diagnostics: std::collections::VecDeque<DiagnosticRecord>,
 }
 
 fn pump(session: &mut MdcSession) -> Result<(), ()> {
@@ -27,6 +31,8 @@ fn pump(session: &mut MdcSession) -> Result<(), ()> {
     let session_result = session.session.poll();
     device_result.map_err(|_| ())?;
     session_result.map_err(|_| ())?;
+    let drained = session.session.take_diagnostics();
+    session.queued_diagnostics.extend(drained);
     Ok(())
 }
 
@@ -53,6 +59,7 @@ fn open_board(board_id: &str) -> Result<MdcSession, ()> {
         device: Some(device),
         manager,
         queued: Vec::new(),
+        queued_diagnostics: std::collections::VecDeque::new(),
     };
     pump(&mut held)?;
     if held.session.state != ConnectionState::Ready {
@@ -73,6 +80,7 @@ fn open_tcp(addr: &str) -> Result<MdcSession, ()> {
         device: None,
         manager,
         queued: Vec::new(),
+        queued_diagnostics: std::collections::VecDeque::new(),
     };
     for _ in 0..40 {
         let _ = held.session.poll();
@@ -248,6 +256,96 @@ pub unsafe extern "C" fn mdc_session_surface_format_at(
 #[no_mangle]
 pub extern "C" fn mdc_pixel_format_is_implemented(code: c_int) -> c_int {
     c_int::from(code == 0)
+}
+
+/// N319: emit a metric on the simulator device's diagnostics channel (sim-only).
+/// Returns the number of queued diagnostics, or -1 on a null/real session.
+///
+/// # Safety
+/// `session` must be null or a live session; `name`/`unit` are NUL-terminated
+/// when non-null.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_emit_metric(
+    session: *mut MdcSession,
+    name: *const c_char,
+    value: f64,
+    unit: *const c_char,
+) -> c_int {
+    if session.is_null() || name.is_null() {
+        return -1;
+    }
+    let held = &mut *session;
+    let Ok(name) = CStr::from_ptr(name).to_str() else {
+        return -1;
+    };
+    let unit = if unit.is_null() {
+        None
+    } else {
+        CStr::from_ptr(unit).to_str().ok().map(str::to_string)
+    };
+    let Some(device) = held.device.as_mut() else {
+        return -1;
+    };
+    if device.emit_metric(name, value, unit.as_deref()).is_err() {
+        return -1;
+    }
+    if pump(held).is_err() {
+        return -1;
+    }
+    held.queued_diagnostics.len() as c_int
+}
+
+/// N319: number of diagnostics waiting to be taken.
+///
+/// # Safety
+/// `session` is null or a live session.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_diagnostic_count(session: *const MdcSession) -> u32 {
+    if session.is_null() {
+        return 0;
+    }
+    (*session).queued_diagnostics.len() as u32
+}
+
+/// N319: pop the oldest diagnostic. Writes `kind` (0 metric, 1 boot info), a
+/// name/firmware string, a value (metric value or boot id) and a unit/reset
+/// reason. Returns 1 when a record was taken, 0 when the queue is empty, -1 on a
+/// bad pointer.
+///
+/// # Safety
+/// All out pointers must be writable when non-null.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_take_diagnostic(
+    session: *mut MdcSession,
+    kind: *mut c_int,
+    name: *mut c_char,
+    name_len: usize,
+    value: *mut f64,
+    unit: *mut c_char,
+    unit_len: usize,
+) -> c_int {
+    if session.is_null() || kind.is_null() || value.is_null() {
+        return -1;
+    }
+    let held = &mut *session;
+    let Some(record) = held.queued_diagnostics.pop_front() else {
+        return 0;
+    };
+    match record {
+        DiagnosticRecord::Metric(metric) => {
+            *kind = 0;
+            copy_cstr(name, name_len, &metric.name);
+            *value = metric.value;
+            copy_cstr(unit, unit_len, metric.unit.as_deref().unwrap_or(""));
+        }
+        DiagnosticRecord::BootInfo(boot) => {
+            *kind = 1;
+            copy_cstr(name, name_len, &boot.firmware);
+            *value = boot.boot_id as f64;
+            copy_cstr(unit, unit_len, boot.reset_reason.as_deref().unwrap_or(""));
+        }
+    }
+    1
 }
 
 /// # Safety
@@ -896,6 +994,63 @@ pub unsafe extern "C" fn mdc_set_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn c_abi_diagnostics_round_trip() {
+        let session = mdc_session_create();
+        assert!(!session.is_null());
+        unsafe {
+            let name = std::ffi::CString::new("fps").unwrap();
+            let unit = std::ffi::CString::new("fps").unwrap();
+            assert!(mdc_session_emit_metric(session, name.as_ptr(), 29.5, unit.as_ptr()) >= 1);
+            assert_eq!(mdc_session_diagnostic_count(session), 1);
+            let mut kind = -1;
+            let mut out_name = [0i8; 32];
+            let mut value = 0.0f64;
+            let mut out_unit = [0i8; 16];
+            assert_eq!(
+                mdc_session_take_diagnostic(
+                    session,
+                    &mut kind,
+                    out_name.as_mut_ptr(),
+                    out_name.len(),
+                    &mut value,
+                    out_unit.as_mut_ptr(),
+                    out_unit.len(),
+                ),
+                1
+            );
+            assert_eq!(kind, 0);
+            assert_eq!(
+                std::ffi::CStr::from_ptr(out_name.as_ptr())
+                    .to_str()
+                    .unwrap(),
+                "fps"
+            );
+            assert_eq!(value, 29.5);
+            assert_eq!(
+                std::ffi::CStr::from_ptr(out_unit.as_ptr())
+                    .to_str()
+                    .unwrap(),
+                "fps"
+            );
+            assert_eq!(mdc_session_diagnostic_count(session), 0);
+            // An empty queue returns 0, not an error.
+            assert_eq!(
+                mdc_session_take_diagnostic(
+                    session,
+                    &mut kind,
+                    out_name.as_mut_ptr(),
+                    out_name.len(),
+                    &mut value,
+                    out_unit.as_mut_ptr(),
+                    out_unit.len(),
+                ),
+                0
+            );
+            mdc_session_destroy(session);
+        }
+    }
 
     #[test]
     fn c_abi_frame_copy_returns_to_zero_after_destroy() {

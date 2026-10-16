@@ -73,6 +73,19 @@ int mdc_session_surface_format_at(const MdcSession* session, uint32_t index);
 /** N307: non-zero when the host/frame path implements this format code. */
 int mdc_pixel_format_is_implemented(int code);
 
+/**
+ * N319: diagnostics (N316 channel). `mdc_session_emit_metric` is simulator-only;
+ * `count`/`take` read the bounded, link-independent diagnostic queue. `take`
+ * writes `kind` (0 metric, 1 boot info), a name/firmware, a value (metric value
+ * or boot id) and a unit/reset reason. Returns 1 when a record was taken, 0 when
+ * empty, -1 on a bad pointer.
+ */
+int mdc_session_emit_metric(MdcSession* session, const char* name, double value,
+                           const char* unit);
+uint32_t mdc_session_diagnostic_count(const MdcSession* session);
+int mdc_session_take_diagnostic(MdcSession* session, int* kind, char* name, size_t name_len,
+                                double* value, char* unit, size_t unit_len);
+
 /** Simulator session for a board id such as "dual-sim". NULL uses the default board. */
 MdcSession* mdc_session_create_board(const char* board_id);
 
