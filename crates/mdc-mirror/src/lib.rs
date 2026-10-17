@@ -1018,11 +1018,12 @@ fn adler32(bytes: &[u8]) -> u32 {
 /// The most recent mirrored frame, cached in both served encodings.
 struct ServedFrame {
     bmp: Vec<u8>,
-    ppm: Vec<u8>,
-    // N328: PNG (stored deflate) for a smaller OBS delivery.
-    png: Vec<u8>,
     // N336: baseline JPEG for the smallest OBS delivery.
     jpg: Vec<u8>,
+    // N346: the raw BGRA frame, so `?scale=`/`?quality=` can re-encode on demand.
+    width: u16,
+    height: u16,
+    bgra: Vec<u8>,
 }
 
 /// N144: a minimal HTTP/1.1 fan-out for an OBS browser source. It serves the
@@ -1128,11 +1129,16 @@ impl HttpMirrorServer {
     /// is still writing, so a newer frame is dropped rather than queued.
     pub fn publish(&mut self, frame: &ShadowFrame<'_>) {
         let bmp = encode_bmp(frame.width, frame.height, frame.pixels);
-        let ppm = encode_ppm(frame.width, frame.height, frame.pixels);
-        let png = encode_png(frame.width, frame.height, frame.pixels);
         let jpg = encode_jpeg(frame.width, frame.height, frame.pixels, 80);
-        if bmp.len() + ppm.len() + png.len() + jpg.len() <= MAX_SHADOW_BYTES {
-            self.last = Some(ServedFrame { bmp, ppm, png, jpg });
+        let bgra = frame.pixels.to_vec();
+        if bmp.len() + jpg.len() + bgra.len() <= MAX_SHADOW_BYTES {
+            self.last = Some(ServedFrame {
+                bmp,
+                jpg,
+                width: frame.width,
+                height: frame.height,
+                bgra,
+            });
         }
         self.frames = self.frames.saturating_add(1);
         if let Some(frame) = self.last.as_ref() {
@@ -1202,8 +1208,8 @@ impl HttpMirrorServer {
                     }
                     client.request.extend_from_slice(&buffer[..read]);
                     if let Some(end) = find_header_end(&client.request) {
-                        let path = request_path(&client.request[..end]);
-                        match respond(last, &path) {
+                        let (path, query) = request_target(&client.request[..end]);
+                        match respond(last, &path, &query) {
                             Served::Bytes(bytes) => client.response = Some(bytes),
                             Served::Multipart { jpeg } => begin_stream(client, last, jpeg),
                         }
@@ -1321,19 +1327,75 @@ fn find_header_end(request: &[u8]) -> Option<usize> {
 }
 
 /// The path of the first request line (`GET /x HTTP/1.1`), defaults to `/`.
-fn request_path(request: &[u8]) -> String {
+/// N346: the request target split into `(path, query)`.
+fn request_target(request: &[u8]) -> (String, String) {
     let line = request.split(|b| *b == b'\n').next().unwrap_or(&[]);
     let line = String::from_utf8_lossy(line);
-    line.split_whitespace()
-        .nth(1)
-        .unwrap_or("/")
-        .split('?')
-        .next()
-        .unwrap_or("/")
-        .to_string()
+    let target = line.split_whitespace().nth(1).unwrap_or("/");
+    match target.split_once('?') {
+        Some((path, query)) => (path.to_string(), query.to_string()),
+        None => (target.to_string(), String::new()),
+    }
 }
 
-fn respond(last: Option<&ServedFrame>, path: &str) -> Served {
+/// N346: a numeric query parameter.
+fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
+    query.split('&').find_map(|pair| {
+        let (name, value) = pair.split_once('=')?;
+        (name == key).then_some(value)
+    })
+}
+
+/// N346: nearest-neighbour integer downscale of a BGRA frame.
+fn downscale_bgra(width: u16, height: u16, bgra: &[u8], scale: u16) -> (u16, u16, Vec<u8>) {
+    let scale = scale.max(1);
+    if scale == 1 {
+        return (width, height, bgra.to_vec());
+    }
+    let w = (width / scale).max(1);
+    let h = (height / scale).max(1);
+    let mut out = Vec::with_capacity(w as usize * h as usize * 4);
+    for y in 0..h {
+        for x in 0..w {
+            let sx = x as usize * scale as usize;
+            let sy = y as usize * scale as usize;
+            let src = (sy * width as usize + sx) * 4;
+            match bgra.get(src..src + 4) {
+                Some(pixel) => out.extend_from_slice(pixel),
+                None => out.extend_from_slice(&[0, 0, 0, 255]),
+            }
+        }
+    }
+    (w, h, out)
+}
+
+/// N346: the frame downscaled by the `?scale=` query (1..=8, default 1).
+fn scaled_frame<'a>(frame: &'a ServedFrame, query: &str) -> (u16, u16, std::borrow::Cow<'a, [u8]>) {
+    let scale = query_param(query, "scale")
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(1)
+        .clamp(1, 8);
+    if scale == 1 {
+        (
+            frame.width,
+            frame.height,
+            std::borrow::Cow::Borrowed(&frame.bgra),
+        )
+    } else {
+        let (w, h, raw) = downscale_bgra(frame.width, frame.height, &frame.bgra, scale);
+        (w, h, std::borrow::Cow::Owned(raw))
+    }
+}
+
+/// N346: the JPEG `?quality=` query (1..=100, default 80).
+fn query_quality(query: &str) -> u8 {
+    query_param(query, "quality")
+        .and_then(|v| v.parse::<u8>().ok())
+        .unwrap_or(80)
+        .clamp(1, 100)
+}
+
+fn respond(last: Option<&ServedFrame>, path: &str, query: &str) -> Served {
     if STREAM_PATHS.contains(&path) {
         // N337: `/stream.jpg` serves JPEG parts; the others serve BMP.
         return Served::Multipart {
@@ -1348,20 +1410,36 @@ fn respond(last: Option<&ServedFrame>, path: &str) -> Served {
               <img src=\"/stream\">",
         ),
         "/frame.bmp" => match last {
-            Some(frame) => simple_response(200, "image/bmp", &frame.bmp),
+            Some(frame) => {
+                let (w, h, raw) = scaled_frame(frame, query);
+                simple_response(200, "image/bmp", &encode_bmp(w, h, &raw))
+            }
             None => simple_response(503, "text/plain", b"no frame yet"),
         },
         "/frame.ppm" => match last {
-            Some(frame) => simple_response(200, "image/x-portable-pixmap", &frame.ppm),
+            Some(frame) => {
+                let (w, h, raw) = scaled_frame(frame, query);
+                simple_response(200, "image/x-portable-pixmap", &encode_ppm(w, h, &raw))
+            }
             None => simple_response(503, "text/plain", b"no frame yet"),
         },
         "/frame.png" => match last {
-            Some(frame) if !frame.png.is_empty() => simple_response(200, "image/png", &frame.png),
-            _ => simple_response(503, "text/plain", b"no frame yet"),
+            Some(frame) => {
+                let (w, h, raw) = scaled_frame(frame, query);
+                simple_response(200, "image/png", &encode_png(w, h, &raw))
+            }
+            None => simple_response(503, "text/plain", b"no frame yet"),
         },
         "/frame.jpg" => match last {
-            Some(frame) if !frame.jpg.is_empty() => simple_response(200, "image/jpeg", &frame.jpg),
-            _ => simple_response(503, "text/plain", b"no frame yet"),
+            Some(frame) => {
+                let (w, h, raw) = scaled_frame(frame, query);
+                simple_response(
+                    200,
+                    "image/jpeg",
+                    &encode_jpeg(w, h, &raw, query_quality(query)),
+                )
+            }
+            None => simple_response(503, "text/plain", b"no frame yet"),
         },
         _ => simple_response(404, "text/plain", b"not found"),
     })
@@ -1935,6 +2013,35 @@ mod tests {
             jpg.windows(2).any(|w| w == [0xFF, 0xD8]),
             "JPEG body present"
         );
+    }
+
+    #[test]
+    fn http_scale_query_downscales_and_quality_parses() {
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        let pixels = vec![0x40u8; 4 * 4 * 4]; // 4x4 BGRA
+        server.publish(&ShadowFrame {
+            width: 4,
+            height: 4,
+            generation: 1,
+            frame_id: 1,
+            pixels: &pixels,
+        });
+        // scale=2 -> a 2x2 BMP.
+        let response = http_get(&mut server, "/frame.bmp?scale=2");
+        let start = response
+            .windows(2)
+            .position(|w| w == b"BM")
+            .expect("BMP body");
+        let width = u32::from_le_bytes(response[start + 18..start + 22].try_into().unwrap());
+        let height = u32::from_le_bytes(response[start + 22..start + 26].try_into().unwrap());
+        assert_eq!((width, height), (2, 2));
+        // Query parsing.
+        assert_eq!(query_param("a=1&scale=3&quality=50", "scale"), Some("3"));
+        assert_eq!(query_param("a=1&quality=50", "quality"), Some("50"));
+        assert_eq!(query_param("a=1", "scale"), None);
+        // The JPEG endpoint still serves with a quality hint.
+        let jpg = http_get(&mut server, "/frame.jpg?quality=20");
+        assert!(jpg.windows(2).any(|w| w == [0xFF, 0xD8]), "JPEG body");
     }
 
     #[test]

@@ -1197,6 +1197,7 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
     let mut source_fps: u16 = 30;
     let mut max_fps: Option<u16> = None;
     let mut bandwidth: Option<u64> = None;
+    let mut quality: u8 = 80;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -1215,6 +1216,7 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
             }
             "--max-fps" => max_fps = iter.next().and_then(|v| v.parse().ok()),
             "--bandwidth" => bandwidth = iter.next().and_then(|v| v.parse().ok()),
+            "--quality" => quality = iter.next().and_then(|v| v.parse().ok()).unwrap_or(quality),
             _ => {}
         }
     }
@@ -1329,8 +1331,9 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
             std::fs::write(dir.join("frame.png"), png)?;
         }
         if let Some(dir) = &jpg_dir {
-            // N336: baseline JPEG, the smallest OBS image source.
-            let jpg = mdc_mirror::encode_jpeg(frame.width, frame.height, &frame.bytes, 80);
+            // N336/N346: baseline JPEG, the smallest OBS image source.
+            let jpg =
+                mdc_mirror::encode_jpeg(frame.width, frame.height, &frame.bytes, quality.max(1));
             std::fs::write(dir.join("frame.jpg"), jpg)?;
         }
         if let Some(server) = server.as_mut() {
@@ -2667,7 +2670,7 @@ fn usage() {
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
-authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME]|\
+authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg]|install-package <file.mdcpkg>|provision <file.mdcpkg>|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\

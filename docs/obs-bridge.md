@@ -47,6 +47,7 @@ mdc --board linux-virt mirror --frames 300 --http 127.0.0.1:8080
 #   http://127.0.0.1:8080/frame.ppm   -> image/x-portable-pixmap
 #   http://127.0.0.1:8080/frame.png   -> image/png (N328)
 #   http://127.0.0.1:8080/frame.jpg   -> image/jpeg (N336)
+# Optional query on /frame.*: ?scale=2 (integer 1..=8), ?quality=70 (JPEG 1..=100, N346)
 
 # Or fan out over TCP for a local consumer.
 mdc --board linux-virt mirror --frames 30 --serve 127.0.0.1:7777
@@ -65,7 +66,9 @@ frame (`Content-Type: multipart/x-mixed-replace; boundary=mdcframe`); `/stream.j
 and frames that arrive while a slow client is still writing are dropped
 (`clipped_frames()`), so `pump` never blocks and memory stays bounded. N336 adds a
 dependency-free baseline JPEG encoder (`encode_jpeg`) served at `/frame.jpg` and
-`mdc mirror --format jpg`.
+`mdc mirror --format jpg --quality N`. N346: the one-shot `/frame.*` endpoints
+accept `?scale=N` (nearest integer downscale, 1..=8) and `?quality=N` (JPEG) from
+the raw BGRA frame.
 
 ## Guarantees
 
