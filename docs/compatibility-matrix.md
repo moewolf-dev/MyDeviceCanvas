@@ -125,6 +125,15 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Scene node opacity (N338) | sim-verified (source-over alpha) | physical: pending |
 | `mdc provision` (N339) | sim-verified (preflight → install → readback → rollback) | physical: pending |
 | Node `connectWebSocket` (N340) | sim-verified (native smoke vs `mdc-sim-peer --ws`) | physical: pending |
+| Metallic/roughness shading (N343) | sim-verified (roughness flattens shading) | n/a |
+| 8-bit texture alpha (N344) | sim-verified (soft `BLEND` edges) | n/a |
+| Multi-clip atlas bake (N345) | sim-verified (`bake-mesh --all-animations`) | physical: pending |
+| JPEG quality / HTTP scale (N346) | sim-verified (`--quality`, `?scale=`/`?quality=`) | n/a |
+| Device filtering config (N347) | sim-verified (`config filtering linear`) | physical: pending |
+| Scene gradient (N348) | sim-verified (vertical linear gradient) | physical: pending |
+| Node diagnostics (N349) | sim-verified (native smoke) | n/a |
+| `mdc ota` (N350) | sim-verified (begin/chunk/confirm + readback/rollback) | physical: pending |
+| Inspector surface profile/counters (N351) | sim-verified (JSON fields) | n/a |
 
 ## G03 sim exit
 

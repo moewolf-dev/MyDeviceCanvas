@@ -2,6 +2,25 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.47] — Roughness, soft alpha, multi-clip bake, delivery tuning, OTA (N343–N352)
+
+### Added
+
+- glTF `metallicFactor`/`roughnessFactor` imported; roughness raises the shading
+  ambient floor (N343)
+- 8-bit texture alpha (`decode_rgba8_native`/`texture_map_with_alpha8`) folded into
+  a `BLEND` material alpha for soft edges (N344)
+- `bake-mesh --all-animations --package` bakes one clip per animation into a
+  multi-clip atlas package (N345)
+- JPEG `--quality` and HTTP `/frame.*?scale=N&quality=N` (nearest downscale from the
+  raw frame) (N346)
+- device `config filtering <nearest|linear>` selects the package-scene sampler (N347)
+- scene `gradient` kind (vertical linear gradient) (N348)
+- `sdk/node` diagnostics surface: `emitMetric`/`takeDiagnostics`/`diagnosticCount` (N349)
+- `mdc ota <version>` drives begin → chunk → confirm and reads the version back,
+  with a rollback report (N350)
+- `mdc inspect`/`--watch` expose the surface display profile + diagnostics counters (N351)
+
 ## [0.1.46] — Transparency, JPEG delivery, Telemetry, provisioning, WS (N333–N342)
 
 ### Added
