@@ -2,6 +2,24 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.48] — Multi-material textures, OTA over TCP, rounded rect, stream scale (N353–N362)
+
+### Added
+
+- multi-material textures: `DevicePackage.texture_blobs` (indexed by
+  `Material.texture`) with `mesh_package_with_textures`/`attach_model_textures`;
+  the package-scene and `render_package_mesh` renderers sample each mesh's own
+  texture, falling back to the single `texture` (N353, N358)
+- `mdc ota --address host:port` drives the OTA over TCP (N354)
+- scene `rounded-rect` (corner radius in `value2`) (N355)
+- `/stream[.jpg]?scale=N` downscales each streamed part; frames are encoded on
+  demand from the raw BGRA frame (N356)
+- `ManagerEvent::Telemetry` (metadata-only) + C ABI kind 7 and Node `telemetry`
+  events (N357)
+- device multi-texture mesh fixture and a multi-texture/stream-scale memory soak
+  (N359, N360)
+- `mdc-mirror` `/health` JSON counters (N361)
+
 ## [0.1.47] — Roughness, soft alpha, multi-clip bake, delivery tuning, OTA (N343–N352)
 
 ### Added

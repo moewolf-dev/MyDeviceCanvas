@@ -65,6 +65,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 51 | N323–N332: glTF embedded textures + auto-use, NORMAL import + directional shading, painter depth order, PNG delivery, opt-in Core pacing, mesh clip cross-fade, C++ diagnostics encoders | sim-verified |
 | 52 | N333–N342: BLEND alpha, texture wrap mode, Telemetry events, JPEG encoder + `/frame.jpg` + `/stream.jpg`, scene opacity, `mdc provision`, Node `connectWebSocket`, demo helpers | sim-verified |
 | 53 | N343–N352: metallic/roughness shading, 8-bit texture alpha, multi-clip atlas bake, JPEG quality + HTTP scale, device filtering config, scene gradient, Node diagnostics, `mdc ota`, inspector profile/counters | sim-verified |
+| 54 | N353–N362: multi-material textures, OTA over TCP, scene rounded-rect, stream scale, telemetry events, multi-texture fixtures/soak, `/health` | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 

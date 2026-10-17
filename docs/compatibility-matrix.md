@@ -134,6 +134,12 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Node diagnostics (N349) | sim-verified (native smoke) | n/a |
 | `mdc ota` (N350) | sim-verified (begin/chunk/confirm + readback/rollback) | physical: pending |
 | Inspector surface profile/counters (N351) | sim-verified (JSON fields) | n/a |
+| Multi-material textures (N353/N358) | sim-verified (`texture_blobs`; per-mesh sampling host + device) | physical: pending |
+| `mdc ota` over TCP (N354) | sim-verified (TCP branch; in-process peer) | physical: pending |
+| Scene rounded-rect (N355) | sim-verified (corner clip) | physical: pending |
+| Stream scale (N356) | sim-verified (`/stream?scale=` downscales parts) | n/a |
+| Telemetry events (N357) | sim-verified (`ManagerEvent::Telemetry` + C/Node mapping) | physical: pending |
+| `/health` endpoint (N361) | sim-verified (JSON counters) | n/a |
 
 ## G03 sim exit
 
