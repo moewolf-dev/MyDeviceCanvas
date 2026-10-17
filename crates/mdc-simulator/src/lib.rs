@@ -535,6 +535,18 @@ impl SceneTransform {
     }
 }
 
+/// N348: interpolate two RGB565 colours by `t` (0..=255).
+fn lerp_rgb565(a: u16, b: u16, t: u8) -> u16 {
+    let tt = u32::from(t);
+    let k = 255 - tt;
+    let channel = |shift: u32, mask: u16| -> u16 {
+        let av = u32::from((a >> shift) & mask);
+        let bv = u32::from((b >> shift) & mask);
+        ((av * k + bv * tt) / 255) as u16
+    };
+    (channel(11, 0x1f) << 11) | (channel(5, 0x3f) << 5) | channel(0, 0x1f)
+}
+
 /// N338: source-over write of an RGB565 value at `index` with source alpha.
 fn put_pixel(pixels: &mut [u8], index: usize, value: u16, alpha: u8) {
     if index + 1 >= pixels.len() || alpha == 0 {
@@ -691,7 +703,7 @@ fn fill_scene(
 ) {
     let drawable = matches!(
         node.kind.as_str(),
-        "rect" | "text" | "image" | "sprite" | "circle" | "line"
+        "rect" | "text" | "image" | "sprite" | "circle" | "line" | "gradient"
     );
     // N338: source alpha for every rasterised kind.
     let alpha = node.opacity_u8();
@@ -778,6 +790,29 @@ fn fill_scene(
                 node.color_rgb565(),
                 alpha,
             );
+            *drew = true;
+        }
+    } else if node.kind == "gradient" {
+        // N348: vertical linear gradient from `value` to `value2` over `rect`.
+        if let Some(rect) = node.rect {
+            let [x, y, w, h] = transform.apply(rect);
+            let start = node.color_rgb565();
+            let end = node.color2_rgb565();
+            let span = u32::from(h.saturating_sub(1)).max(1);
+            for yy in y..y.saturating_add(h) {
+                if u32::from(yy) >= height {
+                    break;
+                }
+                let t = (u32::from(yy.saturating_sub(y)) * 255 / span).min(255) as u8;
+                let color = lerp_rgb565(start, end, t);
+                for xx in x..x.saturating_add(w) {
+                    if u32::from(xx) >= width {
+                        break;
+                    }
+                    let index = ((u32::from(yy) * width + u32::from(xx)) * 2) as usize;
+                    put_pixel(pixels, index, color, alpha);
+                }
+            }
             *drew = true;
         }
     }
@@ -2696,6 +2731,7 @@ mod tests {
             children: Vec::new(),
             value: value.map(str::to_string),
             opacity: None,
+            value2: None,
         };
         let mut root = leaf("root", "rect", None);
         root.children.push(leaf("label", "text", Some("hi")));
@@ -3010,6 +3046,7 @@ mod tests {
             children: Vec::new(),
             value: Some(color.into()),
             opacity: None,
+            value2: None,
         };
         // Background red covers all; a green child on top; a third clipped.
         let scene = SceneNode {
@@ -3022,6 +3059,7 @@ mod tests {
             ],
             value: Some("#FF0000".into()),
             opacity: None,
+            value2: None,
         };
         session.set_scene(scene).unwrap();
         device.poll().unwrap();
@@ -3061,6 +3099,7 @@ mod tests {
                     value: Some("H".into()),
                     children: Vec::new(),
                     opacity: None,
+                    value2: None,
                 },
                 SceneNode {
                     name: "swatch".into(),
@@ -3069,9 +3108,11 @@ mod tests {
                     value: Some("07e0".into()),
                     children: Vec::new(),
                     opacity: None,
+                    value2: None,
                 },
             ],
             opacity: None,
+            value2: None,
         };
         session.set_scene(scene).unwrap();
         device.poll().unwrap();
@@ -3112,6 +3153,7 @@ mod tests {
             value: Some("H".into()),
             children: Vec::new(),
             opacity: None,
+            value2: None,
         };
         // rect 0×0 -> scale 1, so (1,1) stays clear on the fresh framebuffer.
         session.set_scene(text([0, 0, 0, 0])).unwrap();
@@ -3176,6 +3218,7 @@ mod tests {
             value: Some("hello world".into()),
             children: Vec::new(),
             opacity: None,
+            value2: None,
         };
         session.set_scene(scene).unwrap();
         device.poll().unwrap();
@@ -3202,6 +3245,7 @@ mod tests {
             rect: Some([0, 0, 4, 4]),
             value: Some(color.into()),
             opacity,
+            value2: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -3214,6 +3258,7 @@ mod tests {
                 rect("bg", "#FFFFFF", None),
                 rect("fg", "#FF0000", Some(128)),
             ],
+            value2: None,
         });
         assert!(device.render_scene());
         let px = device.pixel_rgb565(1, 1).unwrap();
@@ -3242,6 +3287,33 @@ mod tests {
             device.texture_filter,
             mdc_bake::Filter::Linear,
             "an unknown filter leaves the sampler unchanged"
+        );
+    }
+
+    #[test]
+    fn scene_gradient_interpolates_top_to_bottom() {
+        use mdc_protocol::SceneNode;
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 1,
+            height: 8,
+            ..BoardProfile::default()
+        });
+        device.scene = Some(SceneNode {
+            name: "g".into(),
+            kind: "gradient".into(),
+            rect: Some([0, 0, 1, 8]),
+            value: Some("#FF0000".into()),
+            value2: Some("#0000FF".into()),
+            opacity: None,
+            children: Vec::new(),
+        });
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(0, 0), Some(0xF800), "top is red");
+        assert_eq!(device.pixel_rgb565(0, 7), Some(0x001F), "bottom is blue");
+        let mid = device.pixel_rgb565(0, 4).unwrap();
+        assert!(
+            (mid >> 11) > 0 && (mid & 0x1f) > 0,
+            "mid blended: {mid:#06x}"
         );
     }
 
@@ -3291,6 +3363,7 @@ mod tests {
             children: Vec::new(),
             value: Some(value.into()),
             opacity: None,
+            value2: None,
         };
         let scene = SceneNode {
             name: "root".into(),
@@ -3302,6 +3375,7 @@ mod tests {
                 node("diag", "line", [0, 15, 15, 0], "#00FF00"),
             ],
             opacity: None,
+            value2: None,
         };
         session.set_scene(scene).unwrap();
         device.poll().unwrap();
@@ -3336,6 +3410,7 @@ mod tests {
             children: Vec::new(),
             value: Some(color.into()),
             opacity: None,
+            value2: None,
         };
         // Group offset (4, 2) and 2× scale: [0,0,2,2] red -> [4,2,4,4].
         let scene = SceneNode {
@@ -3345,6 +3420,7 @@ mod tests {
             children: vec![rect("bg", [0, 0, 2, 2], "#FF0000")],
             value: None,
             opacity: None,
+            value2: None,
         };
         session.set_scene(scene).unwrap();
         device.poll().unwrap();
@@ -3416,6 +3492,7 @@ mod tests {
                 children: Vec::new(),
                 value: Some("#FFFFFF".into()),
                 opacity: None,
+                value2: None,
             })
             .unwrap();
         device.poll().unwrap();
@@ -3560,6 +3637,7 @@ mod tests {
                 children: Vec::new(),
                 value: Some("0".into()),
                 opacity: None,
+                value2: None,
             })
             .unwrap();
         device.poll().unwrap();
@@ -3701,6 +3779,7 @@ mod tests {
                 children: Vec::new(),
                 value: Some("#0000FF".into()),
                 opacity: None,
+                value2: None,
             })
             .unwrap();
         device.poll().unwrap();
@@ -4064,6 +4143,7 @@ mod tests {
                 children: Vec::new(),
                 value: Some("#000000".into()),
                 opacity: None,
+                value2: None,
             })
             .unwrap();
         device.poll().unwrap();
@@ -4088,6 +4168,7 @@ mod tests {
                 children: Vec::new(),
                 value: Some("#FF0000".into()),
                 opacity: None,
+                value2: None,
             })
             .unwrap();
         device.poll().unwrap();

@@ -471,6 +471,9 @@ pub struct SceneNode {
     pub children: Vec<SceneNode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    /// N348: the end colour of a `gradient` node; falls back to `value`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value2: Option<String>,
     /// N338: source opacity for rasterised kinds (0..=255; `None` = opaque).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<u8>,
@@ -495,20 +498,32 @@ impl SceneNode {
     /// `#RRGGBB`, `#RGB`, or a named colour. Missing or malformed values use
     /// opaque white.
     pub fn color_rgb565(&self) -> u16 {
-        let Some(value) = self.value.as_deref() else {
-            return 0xFFFF;
-        };
-        if let Some(rgb) = parse_hex_color(value) {
-            return rgb565_from(rgb.0, rgb.1, rgb.2);
+        match self.value.as_deref() {
+            Some(value) => parse_color(value),
+            None => 0xFFFF,
         }
-        let Some(rgb) = named_color(value) else {
-            return 0xFFFF;
-        };
-        rgb565_from(rgb.0, rgb.1, rgb.2)
+    }
+    /// N348: the end colour of a `gradient` node (defaults to the start colour).
+    pub fn color2_rgb565(&self) -> u16 {
+        match self.value2.as_deref() {
+            Some(value) => parse_color(value),
+            None => self.color_rgb565(),
+        }
     }
     /// N338: the node opacity as 8 bits (255 when unset).
     pub fn opacity_u8(&self) -> u8 {
         self.opacity.unwrap_or(255)
+    }
+}
+
+/// N136/N348: parse `#RRGGBB`, `#RGB`, bare hex, or a named colour (default white).
+fn parse_color(value: &str) -> u16 {
+    if let Some(rgb) = parse_hex_color(value) {
+        return rgb565_from(rgb.0, rgb.1, rgb.2);
+    }
+    match named_color(value) {
+        Some(rgb) => rgb565_from(rgb.0, rgb.1, rgb.2),
+        None => 0xFFFF,
     }
 }
 
@@ -1920,9 +1935,11 @@ mod tests {
                     children: Vec::new(),
                     value: Some("hi".into()),
                     opacity: None,
+                    value2: None,
                 }],
                 value: None,
                 opacity: None,
+                value2: None,
             }),
         }
     }
@@ -1936,6 +1953,7 @@ mod tests {
             children: Vec::new(),
             value: Some(value.into()),
             opacity: None,
+            value2: None,
         };
         // #RGB expands each nibble.
         assert_eq!(coloured("#F00").color_rgb565(), 0xF800);
@@ -1957,6 +1975,7 @@ mod tests {
             children: Vec::new(),
             value: Some("#FF0000".into()),
             opacity: None,
+            value2: None,
         };
         assert_eq!(node.color_rgb565(), 0xF800);
         assert_eq!(
@@ -1967,6 +1986,7 @@ mod tests {
                 children: Vec::new(),
                 value: None,
                 opacity: None,
+                value2: None,
             }
             .color_rgb565(),
             0xFFFF
