@@ -2,6 +2,28 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.46] — Transparency, JPEG delivery, Telemetry, provisioning, WS (N333–N342)
+
+### Added
+
+- glTF `alphaMode: BLEND` with `baseColorFactor` alpha renders as source-over
+  transparency in the host and device raster paths (N333)
+- glTF sampler wrap (`CLAMP_TO_EDGE` → `clamp`) recorded and applied by
+  `TextureMap::with_wrap`; `mdc render-mesh --wrap` and auto-use of the model's
+  own embedded texture (N334)
+- the reserved `Telemetry` opcode now carries a structured `TelemetryEvent`
+  (name/level/fields); `Session` records it in the diagnostics queue; `mdc diag
+  --telemetry` (N335)
+- `mdc-mirror`: dependency-free baseline JPEG encoder + `/frame.jpg` +
+  `mdc mirror --format jpg` (N336)
+- `mdc-mirror`: JPEG `multipart/x-mixed-replace` live stream at `/stream.jpg` (N337)
+- protocol/simulator: scene node `opacity` (0..=255) applied as source-over alpha
+  for `rect`/`text`/`image`/`sprite`/`circle`/`line` (N338)
+- `mdc provision <pkg>`: preflight → install → version readback with a rollback
+  report on a simulator board (N339)
+- `sdk/node`: `connectWebSocket(url)` + `mdc-sim-peer --ws` (N340)
+- Electron demo `jpegStreamUrl` / `normalizeOpacity` helpers (N341)
+
 ## [0.1.45] — Real model assets, shading, PNG delivery, core pacing (N323–N332)
 
 ### Added

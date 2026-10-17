@@ -63,6 +63,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 49 | N303–N312: reserved diagnostics + `boot_id`/`run_id` reboot detection, `mdc-schedule` pacing, `PixelFormat` enum, surface display profile, mirror read-source + submodule contract docs | sim-verified |
 | 50 | N313–N322: live multipart OBS stream, CLI pacing, device mesh-package clip selection, diagnostics channel + `mdc diag`/JSONL inspector, scene text wrap, C/Swift diagnostics, demo stream helpers, fixtures | sim-verified |
 | 51 | N323–N332: glTF embedded textures + auto-use, NORMAL import + directional shading, painter depth order, PNG delivery, opt-in Core pacing, mesh clip cross-fade, C++ diagnostics encoders | sim-verified |
+| 52 | N333–N342: BLEND alpha, texture wrap mode, Telemetry events, JPEG encoder + `/frame.jpg` + `/stream.jpg`, scene opacity, `mdc provision`, Node `connectWebSocket`, demo helpers | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 

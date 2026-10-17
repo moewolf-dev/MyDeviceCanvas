@@ -118,6 +118,13 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Opt-in Core pacing (N329) | sim-verified (`Session::set_frame_pacing` -> `Throttled`) | n/a |
 | Mesh clip cross-fade (N330) | sim-verified (blend window on clip change) | physical: pending |
 | C++ diagnostics encoders (N331) | sim-verified (bytes match the Rust vectors) | physical: pending |
+| Material BLEND alpha (N333) | sim-verified (source-over in host + device) | n/a |
+| Texture wrap mode (N334) | sim-verified (glTF sampler → clamp/repeat) | n/a |
+| Telemetry events (N335) | sim-verified (structured envelope on the diagnostics channel) | physical: pending |
+| JPEG delivery (N336/N337) | sim-verified (`encode_jpeg` decode round-trip; `/frame.jpg`, `/stream.jpg`) | n/a |
+| Scene node opacity (N338) | sim-verified (source-over alpha) | physical: pending |
+| `mdc provision` (N339) | sim-verified (preflight → install → readback → rollback) | physical: pending |
+| Node `connectWebSocket` (N340) | sim-verified (native smoke vs `mdc-sim-peer --ws`) | physical: pending |
 
 ## G03 sim exit
 
