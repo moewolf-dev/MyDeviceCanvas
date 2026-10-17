@@ -929,6 +929,8 @@ struct SceneDrawable<'a> {
     texture: Option<&'a crate::TextureMap>,
     /// N364: per-vertex colours, parallel to the points.
     colors: Option<&'a [[f32; 4]]>,
+    /// N373: the material's base-colour UV transform.
+    uv_transform: mdc_model::UvTransform,
 }
 
 /// N327: default key light (straight down -z, i.e. toward +z-facing surfaces) and
@@ -1017,6 +1019,7 @@ fn draw_scene_sorted(
             d.fill,
             Some(&d.shade),
             d.colors,
+            d.uv_transform,
             mdc_model::MAX_GEOMETRY_VERTICES,
         )?;
     }
@@ -1126,6 +1129,9 @@ pub fn render_scene_at(
             } else {
                 None
             },
+            uv_transform: material_of(model, mesh)
+                .map(|m| m.uv_transform())
+                .unwrap_or_default(),
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -1311,6 +1317,10 @@ pub fn render_package_mesh(
             } else {
                 None
             },
+            mesh.material
+                .and_then(|mi| package.materials.get(mi))
+                .map(|m| m.uv_transform())
+                .unwrap_or_default(),
             mdc_model::MAX_GEOMETRY_VERTICES,
         )?;
     }
@@ -1528,6 +1538,11 @@ pub fn render_package_scene_clip_filtered(
             } else {
                 None
             },
+            uv_transform: mesh
+                .material
+                .and_then(|mi| package.materials.get(mi))
+                .map(|m| m.uv_transform())
+                .unwrap_or_default(),
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -2268,6 +2283,62 @@ mod tests {
         assert!(
             shaded >> 11 < flat >> 11,
             "the red channel is reduced by shading"
+        );
+    }
+
+    #[test]
+    fn uv_transform_offsets_texture_sampling() {
+        // N373: KHR_texture_transform shifts which texel each pixel samples.
+        let texture = crate::TextureMap::from_rgb565(2, 1, vec![0x00, 0xF8, 0xE0, 0x07]).unwrap();
+        let render = |uv_transform: Option<mdc_model::UvTransform>| {
+            let model = Model {
+                source: "t".into(),
+                nodes: vec![Node {
+                    name: "n".into(),
+                    mesh: Some(0),
+                    ..Node::default()
+                }],
+                meshes: vec![mdc_model::Mesh {
+                    name: "q".into(),
+                    vertices: 4,
+                    indices: 6,
+                    material: Some(0),
+                    geometry: Some(quad_geometry()),
+                    ..mdc_model::Mesh::default()
+                }],
+                materials: vec![mdc_model::Material {
+                    name: "m".into(),
+                    texture: Some(0),
+                    color: Some([255, 255, 255]),
+                    uv_transform,
+                    ..mdc_model::Material::default()
+                }],
+                ..Model::default()
+            };
+            render_scene_at(&model, 0, 0.0, (16, 16), Some(&texture), 0x0000).unwrap()
+        };
+        let at = |frame: &BakedTexture, x: usize| {
+            u16::from_le_bytes([
+                frame.rgb565[(8 * 16 + x) * 2],
+                frame.rgb565[(8 * 16 + x) * 2 + 1],
+            ])
+        };
+        let plain = render(None);
+        let shifted = render(Some(mdc_model::UvTransform {
+            offset: [0.5, 0.0],
+            rotation: 0.0,
+            scale: [1.0, 1.0],
+        }));
+        // No transform: the left is the red texel. Offset 0.5: it becomes green.
+        assert!(
+            at(&plain, 2) >> 11 > ((at(&plain, 2) >> 5) & 0x3f),
+            "left red: {:#06x}",
+            at(&plain, 2)
+        );
+        assert!(
+            ((at(&shifted, 2) >> 5) & 0x3f) > at(&shifted, 2) >> 11,
+            "left green: {:#06x}",
+            at(&shifted, 2)
         );
     }
 

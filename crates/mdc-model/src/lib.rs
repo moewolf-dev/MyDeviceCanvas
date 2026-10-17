@@ -24,7 +24,8 @@ pub use backend::{
 pub use gltf::GltfImporter;
 pub use ir::{
     Animation, AnimationTrack, ImportLimits, Layer, Material, Mesh, MeshGeometry, Model,
-    ModelError, Node, Skeleton, Sprite, Texture, MAX_GEOMETRY_INDICES, MAX_GEOMETRY_VERTICES,
+    ModelError, Node, Skeleton, Sprite, Texture, UvTransform, MAX_GEOMETRY_INDICES,
+    MAX_GEOMETRY_VERTICES,
 };
 pub use live2d::{
     sample_segments, ImportedBundle, Live2DBundle, Live2DImporter, MotionCurve, MotionInfo,

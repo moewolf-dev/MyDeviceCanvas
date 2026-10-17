@@ -848,6 +848,7 @@ fn packaged_masked_texture_cuts_out_on_render() {
             roughness: None,
             emissive: None,
             unlit: None,
+            uv_transform: None,
         }],
         skeletons: Vec::new(),
         animations: Vec::new(),
@@ -918,6 +919,7 @@ fn masked_material_cuts_out_transparent_texels() {
             roughness: None,
             emissive: None,
             unlit: None,
+            uv_transform: None,
         }],
         ..Model::default()
     };
@@ -1543,6 +1545,7 @@ fn unlit_material_and_vertex_colours_render_on_the_device() {
                 name: "flat".into(),
                 color: Some([255, 255, 255]),
                 unlit: Some(unlit),
+                uv_transform: None,
                 ..Material::default()
             }],
             ..Model::default()

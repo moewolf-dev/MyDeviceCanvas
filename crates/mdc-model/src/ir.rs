@@ -267,6 +267,53 @@ pub struct Material {
     /// N363: `KHR_materials_unlit` — draw without directional shading.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unlit: Option<bool>,
+    /// N373: `KHR_texture_transform` on the base-colour texture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uv_transform: Option<UvTransform>,
+}
+
+/// N373: glTF `KHR_texture_transform`. `rotation` is in radians; the transform is
+/// `scale → rotate → offset` applied to the UV.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct UvTransform {
+    #[serde(default)]
+    pub offset: [f32; 2],
+    #[serde(default)]
+    pub rotation: f32,
+    #[serde(default = "unit_pair")]
+    pub scale: [f32; 2],
+}
+
+fn unit_pair() -> [f32; 2] {
+    [1.0, 1.0]
+}
+
+impl Default for UvTransform {
+    fn default() -> Self {
+        Self {
+            offset: [0.0, 0.0],
+            rotation: 0.0,
+            scale: unit_pair(),
+        }
+    }
+}
+
+impl UvTransform {
+    /// The identity transform (leaves UVs unchanged).
+    pub fn is_identity(&self) -> bool {
+        self.offset == [0.0, 0.0] && self.rotation == 0.0 && self.scale == unit_pair()
+    }
+
+    /// Apply the transform to a UV coordinate.
+    pub fn apply(&self, uv: [f32; 2]) -> [f32; 2] {
+        let x = uv[0] * self.scale[0];
+        let y = uv[1] * self.scale[1];
+        let (sin, cos) = self.rotation.sin_cos();
+        [
+            cos * x - sin * y + self.offset[0],
+            sin * x + cos * y + self.offset[1],
+        ]
+    }
 }
 
 impl Material {
@@ -316,6 +363,11 @@ impl Material {
 }
 
 impl Material {
+    /// N373: the base-colour `KHR_texture_transform`, or identity when absent.
+    pub fn uv_transform(&self) -> UvTransform {
+        self.uv_transform.unwrap_or_default()
+    }
+
     /// N173: the base colour as RGB565, or `None` when unset.
     pub fn color_rgb565(&self) -> Option<u16> {
         self.color.map(|[r, g, b]| {

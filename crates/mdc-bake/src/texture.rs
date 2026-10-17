@@ -361,6 +361,7 @@ pub(crate) fn raster_indexed(
         fallback,
         None,
         None,
+        mdc_model::UvTransform::default(),
         max_points,
     )?;
     Ok(pixels)
@@ -385,6 +386,7 @@ pub(crate) fn draw_indexed(
     fallback: u16,
     shade: Option<&[f32]>,
     colors: Option<&[[f32; 4]]>,
+    uv_transform: mdc_model::UvTransform,
     max_points: usize,
 ) -> Result<(), BakeError> {
     if width == 0 || height == 0 || width > 1024 || height > 1024 {
@@ -433,6 +435,7 @@ pub(crate) fn draw_indexed(
                 mask,
                 blend,
                 vc,
+                uv_transform,
             ),
             _ => crate::fill_triangle(pixels, width, height, a, b, c, fill, blend, vc),
         }
@@ -453,6 +456,7 @@ fn fill_textured_triangle(
     mask: bool,
     blend: u8,
     vc: Option<([f32; 4], [f32; 4], [f32; 4])>,
+    uv_transform: mdc_model::UvTransform,
 ) {
     let area = edge(a.0, b.0, c.0);
     if area == 0 {
@@ -484,6 +488,8 @@ fn fill_textured_triangle(
             let w2 = e2 as f32 / area_f;
             let u = w0 * a.1[0] + w1 * b.1[0] + w2 * c.1[0];
             let v = w0 * a.1[1] + w1 * b.1[1] + w2 * c.1[1];
+            // N373: apply the material's KHR_texture_transform before sampling.
+            let [u, v] = uv_transform.apply([u, v]);
             if mask && !texture.alpha_at(u, v) {
                 continue;
             }

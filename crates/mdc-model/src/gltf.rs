@@ -5,7 +5,7 @@
 //! buffer is allocated.
 use crate::ir::{
     Animation, ImportLimits, Layer, Material, Mesh, Model, ModelError, Node, Skeleton, Texture,
-    MAX_GEOMETRY_INDICES, MAX_GEOMETRY_VERTICES,
+    UvTransform, MAX_GEOMETRY_INDICES, MAX_GEOMETRY_VERTICES,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -238,6 +238,34 @@ impl GltfImporter {
                 .get("extensions")
                 .and_then(|e| e.get("KHR_materials_unlit"))
                 .map(|_| true);
+            // N373: KHR_texture_transform on the base-colour texture.
+            let uv_transform = pbr
+                .and_then(|p| p.get("baseColorTexture"))
+                .and_then(|b| b.get("extensions"))
+                .and_then(|e| e.get("KHR_texture_transform"))
+                .map(|t| {
+                    let pair = |key: &str, default: [f32; 2]| -> [f32; 2] {
+                        t.get(key)
+                            .and_then(Value::as_array)
+                            .and_then(|list| {
+                                Some([
+                                    list.first()?.as_f64()? as f32,
+                                    list.get(1)?.as_f64()? as f32,
+                                ])
+                            })
+                            .unwrap_or(default)
+                    };
+                    UvTransform {
+                        offset: pair("offset", [0.0, 0.0]),
+                        rotation: t
+                            .get("rotation")
+                            .and_then(Value::as_f64)
+                            .map(|v| v as f32)
+                            .unwrap_or(0.0),
+                        scale: pair("scale", [1.0, 1.0]),
+                    }
+                })
+                .filter(|t| !t.is_identity());
             materials.push(Material {
                 name: json_name(material, &format!("material{i}")),
                 texture,
@@ -255,6 +283,7 @@ impl GltfImporter {
                 roughness,
                 emissive,
                 unlit,
+                uv_transform,
             });
         }
 
@@ -2122,7 +2151,7 @@ mod tests {
             "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "material": 0}]}],
             "accessors": [{"count": 3, "type": "VEC3"}],
             "materials": [
-                {"name": "red", "emissiveFactor": [1.0, 0.5, 0.0], "extensions": {"KHR_materials_unlit": {}}, "pbrMetallicRoughness": {"baseColorFactor": [1.0, 0.0, 0.0, 1.0], "metallicFactor": 0.25, "roughnessFactor": 0.75}},
+                {"name": "red", "emissiveFactor": [1.0, 0.5, 0.0], "extensions": {"KHR_materials_unlit": {}}, "pbrMetallicRoughness": {"baseColorFactor": [1.0, 0.0, 0.0, 1.0], "metallicFactor": 0.25, "roughnessFactor": 0.75, "baseColorTexture": {"index": 0, "extensions": {"KHR_texture_transform": {"offset": [0.25, 0.0], "rotation": 0.0, "scale": [2.0, 1.0]}}}}},
                 {"name": "plain"}
             ]
         });
@@ -2140,6 +2169,13 @@ mod tests {
         assert!(model.materials[0].is_unlit());
         assert!(model.materials[0].emissive_luma() > 0.0);
         assert!(!model.materials[1].is_unlit());
+        // N373: KHR_texture_transform on the base-colour texture.
+        let uv = model.materials[0].uv_transform();
+        assert_eq!(uv.offset, [0.25, 0.0]);
+        assert_eq!(uv.scale, [2.0, 1.0]);
+        assert_eq!(uv.rotation, 0.0);
+        assert!(!uv.is_identity());
+        assert!(model.materials[1].uv_transform().is_identity());
         assert_eq!(model.materials[0].color_rgb565(), Some(0xF800));
         assert_eq!(model.materials[1].color, None);
         assert_eq!(model.materials[1].color_rgb565(), None);
