@@ -2,6 +2,27 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.51] — UV sets, 8-influence skinning, scene lights, smooth/specular shading, quantization, CLI introspection (N383–N392)
+
+### Added
+
+- glTF `texCoord` selects the material's UV set (`Material.uv_set`) and
+  `TEXCOORD_1` is imported into `MeshGeometry.uv2` (N383)
+- `JOINTS_1`/`WEIGHTS_1` import plus `skin_arrays_multi`/`skin_normals_multi`, so a
+  vertex can blend up to eight skinning influences (N384)
+- `KHR_lights_punctual` import (`Model.lights`/`DevicePackage.lights`); the first
+  directional light overrides the renderer's fixed key light (N385)
+- `ShadeMode::Smooth` per-pixel (Gouraud) shading for the package renderer, and
+  per-pixel shading now also covers untextured triangles (N386)
+- `ShadeMode::SmoothSpecular` Blinn-Phong specular highlight with
+  strength/shininess derived from `roughness`/`metallic` (N387)
+- `mdc model-info` prints a JSON import report (`Model::summary`) (N388)
+- `mdc diff <a.mdcpkg> <b.mdcpkg>` prints a JSON manifest + structure diff (N389)
+- `KHR_mesh_quantization`: integer POSITION and normalized byte/short TANGENT
+  decode (N390)
+- compatibility fixtures (smooth/specular shading, imported light on-device) and a
+  quantized-import soak (N391)
+
 ## [0.1.50] — Texture transforms, scene selection, sparse/interleaved import, AO, normal maps, atlas packing (N373–N382)
 
 ### Added

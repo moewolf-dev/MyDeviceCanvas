@@ -156,6 +156,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Occlusion texture (N378) | sim-verified (per-triangle AO) | physical: pending |
 | Normal mapping (N379) | sim-verified (per-pixel `TANGENT`+`normalTexture`) | physical: pending |
 | Atlas packing (N380) | sim-verified (`pack_material_atlas`; UV remap) | physical: pending |
+| `texCoord`/`TEXCOORD_1` (N383) | sim-verified (material UV set) | physical: pending |
+| `JOINTS_1`/`WEIGHTS_1` (N384) | sim-verified (eight influences) | physical: pending |
+| `KHR_lights_punctual` (N385) | sim-verified (directional key light) | physical: pending |
+| Smooth shading mode (N386) | sim-verified (per-pixel Gouraud) | n/a |
+| Specular shading mode (N387) | sim-verified (Blinn-Phong) | n/a |
+| `mdc model-info` (N388) | sim-verified (JSON import report) | n/a |
+| `mdc diff` (N389) | sim-verified (manifest + structure diff) | n/a |
+| `KHR_mesh_quantization` (N390) | sim-verified (integer attributes decode) | physical: pending |
 
 ## G03 sim exit
 
