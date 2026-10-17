@@ -146,6 +146,23 @@ pub fn decode_rgba_native(
     bytes: &[u8],
     limits: &BakeLimits,
 ) -> Result<(BakedTexture, Vec<u8>), BakeError> {
+    // N344: 1-bit mask derived from the 8-bit alpha channel (threshold 128).
+    let (baked, alpha8) = decode_rgba8_native(bytes, limits)?;
+    let mut mask = vec![0u8; alpha8.len().div_ceil(8)];
+    for (index, alpha) in alpha8.iter().enumerate() {
+        if *alpha >= 128 {
+            mask[index / 8] |= 1 << (index % 8);
+        }
+    }
+    Ok((baked, mask))
+}
+
+/// N344: like [`decode_rgba_native`] but returns the 8-bit alpha channel, so a
+/// `BLEND` material can fade per texel instead of cutting out.
+pub fn decode_rgba8_native(
+    bytes: &[u8],
+    limits: &BakeLimits,
+) -> Result<(BakedTexture, Vec<u8>), BakeError> {
     if bytes.len() > limits.max_input_bytes {
         return Err(BakeError::InputTooLarge(
             bytes.len(),
@@ -175,14 +192,12 @@ pub fn decode_rgba_native(
         .map_err(|e| BakeError::Decode(e.to_string()))?;
     let rgba = image.to_rgba8();
     let mut rgb565 = Vec::with_capacity(output_bytes as usize);
-    let mut alpha = vec![0u8; (width as usize * height as usize).div_ceil(8)];
-    for (index, pixel) in rgba.pixels().enumerate() {
+    let mut alpha = Vec::with_capacity(width as usize * height as usize);
+    for pixel in rgba.pixels() {
         let value = rgb565_of(pixel[0], pixel[1], pixel[2]);
         rgb565.push((value & 0xff) as u8);
         rgb565.push((value >> 8) as u8);
-        if pixel[3] >= 128 {
-            alpha[index / 8] |= 1 << (index % 8);
-        }
+        alpha.push(pixel[3]);
     }
     Ok((
         BakedTexture {
@@ -198,6 +213,12 @@ pub fn decode_rgba_native(
 pub fn texture_map_with_alpha(bytes: &[u8], limits: &BakeLimits) -> Result<TextureMap, BakeError> {
     let (baked, alpha) = decode_rgba_native(bytes, limits)?;
     Ok(TextureMap::from_baked(&baked)?.with_alpha(alpha))
+}
+
+/// N344: build a `TextureMap` carrying the 8-bit alpha channel (soft blend).
+pub fn texture_map_with_alpha8(bytes: &[u8], limits: &BakeLimits) -> Result<TextureMap, BakeError> {
+    let (baked, alpha8) = decode_rgba8_native(bytes, limits)?;
+    Ok(TextureMap::from_baked(&baked)?.with_alpha8(alpha8))
 }
 
 /// Pack one RGB888 pixel into RGB565.

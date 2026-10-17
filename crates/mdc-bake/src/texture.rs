@@ -48,6 +48,9 @@ pub struct TextureMap {
     pub wrap: Wrap,
     /// N285: optional bit-packed alpha mask (1 = opaque). `None` = fully opaque.
     pub alpha: Option<Vec<u8>>,
+    /// N344: optional 8-bit alpha channel (one byte per texel). Takes precedence
+    /// over `alpha` for soft `BLEND`.
+    pub alpha8: Option<Vec<u8>>,
 }
 
 impl TextureMap {
@@ -67,6 +70,7 @@ impl TextureMap {
             filter: Filter::Nearest,
             wrap: Wrap::Repeat,
             alpha: None,
+            alpha8: None,
         })
     }
 
@@ -118,6 +122,33 @@ impl TextureMap {
     pub fn with_alpha(mut self, alpha: Vec<u8>) -> Self {
         self.alpha = Some(alpha);
         self
+    }
+
+    /// N344: attach a per-texel 8-bit alpha channel.
+    pub fn with_alpha8(mut self, alpha8: Vec<u8>) -> Self {
+        self.alpha8 = Some(alpha8);
+        self
+    }
+
+    /// N344: the source alpha at `uv` (0..=255). Falls back to the 1-bit mask,
+    /// then to opaque.
+    pub fn alpha_value_at(&self, u: f32, v: f32) -> u8 {
+        if self.width == 0 || self.height == 0 {
+            return 255;
+        }
+        let x = self.wrap_u(u * self.width as f32);
+        let y = self.wrap_v(v * self.height as f32);
+        let index = y as usize * self.width as usize + x as usize;
+        if let Some(alpha8) = &self.alpha8 {
+            return alpha8.get(index).copied().unwrap_or(255);
+        }
+        if let Some(mask) = &self.alpha {
+            return match mask.get(index / 8) {
+                Some(byte) if byte & (1 << (index % 8)) != 0 => 255,
+                _ => 0,
+            };
+        }
+        255
     }
 
     /// N285: whether the texel at `uv` is opaque (`true` when no mask).
@@ -446,8 +477,15 @@ fn fill_textured_triangle(
             if let Some(tint) = tint {
                 value = rgb565_mul(value, tint);
             }
+            // N344: for a blended material, fold the per-texel alpha into the
+            // material alpha so soft edges fade instead of cutting out.
+            let effective = if blend == u8::MAX {
+                u8::MAX
+            } else {
+                (u16::from(blend) * u16::from(texture.alpha_value_at(u, v)) / 255) as u8
+            };
             let index = ((y * width + x) * 2) as usize;
-            write_pixel(pixels, index, value, blend);
+            write_pixel(pixels, index, value, effective);
         }
     }
 }
@@ -462,6 +500,18 @@ mod tests {
             rgb565.extend_from_slice(&value.to_le_bytes());
         }
         TextureMap::from_rgb565(width, height, rgb565).unwrap()
+    }
+
+    #[test]
+    fn alpha_value_prefers_the_8bit_channel() {
+        let map = TextureMap::from_rgb565(2, 1, vec![0, 0, 0, 0])
+            .unwrap()
+            .with_alpha8(vec![0, 200]);
+        assert_eq!(map.alpha_value_at(0.0, 0.0), 0);
+        assert_eq!(map.alpha_value_at(0.75, 0.0), 200);
+        // No alpha -> opaque.
+        let opaque = TextureMap::from_rgb565(2, 1, vec![0, 0, 0, 0]).unwrap();
+        assert_eq!(opaque.alpha_value_at(0.0, 0.0), 255);
     }
 
     #[test]

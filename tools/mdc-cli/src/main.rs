@@ -737,7 +737,7 @@ fn cmd_bake_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let texture = match &texture_path {
         Some(path) => {
             let image = std::fs::read(path)?;
-            Some(mdc_bake::texture_map_with_alpha(
+            Some(mdc_bake::texture_map_with_alpha8(
                 &image,
                 &mdc_bake::BakeLimits::default(),
             )?)
@@ -946,14 +946,14 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         Some(path) => {
             let image = std::fs::read(path)?;
             Some(
-                mdc_bake::texture_map_with_alpha(&image, &mdc_bake::BakeLimits::default())?
+                mdc_bake::texture_map_with_alpha8(&image, &mdc_bake::BakeLimits::default())?
                     .with_filter(filter)
                     .with_wrap(wrap),
             )
         }
         None => match model.material_texture(0) {
             Some(image) => Some(
-                mdc_bake::texture_map_with_alpha(image, &mdc_bake::BakeLimits::default())?
+                mdc_bake::texture_map_with_alpha8(image, &mdc_bake::BakeLimits::default())?
                     .with_filter(filter)
                     .with_wrap(wrap),
             ),
