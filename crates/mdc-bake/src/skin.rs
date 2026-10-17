@@ -93,6 +93,68 @@ pub fn transform_direction(m: &Mat4, v: [f32; 3]) -> [f32; 3] {
     }
 }
 
+/// N424: skin tangents with the same joints as the normals (the xyz part is
+/// rotated; the handedness `w` is preserved).
+#[allow(clippy::too_many_arguments)]
+pub fn skin_tangents_multi(
+    joints: &[[u16; 4]],
+    weights: &[[f32; 4]],
+    joints2: &[[u16; 4]],
+    weights2: &[[f32; 4]],
+    tangents: &[[f32; 4]],
+    skeleton: &Skeleton,
+    worlds: &[Mat4],
+) -> Vec<[f32; 4]> {
+    let mut out = Vec::with_capacity(tangents.len());
+    for (i, tangent) in tangents.iter().enumerate() {
+        let mut acc = [0.0f32; 3];
+        let mut total = 0.0f32;
+        for (set_joints, set_weights) in [(joints, weights), (joints2, weights2)] {
+            let (Some(vertex_joints), Some(vertex_weights)) =
+                (set_joints.get(i), set_weights.get(i))
+            else {
+                continue;
+            };
+            for k in 0..4 {
+                let weight = vertex_weights[k];
+                if weight == 0.0 {
+                    continue;
+                }
+                let joint = vertex_joints[k] as usize;
+                let (Some(&node), Some(bind)) = (
+                    skeleton.joint_nodes.get(joint),
+                    skeleton.inverse_bind.get(joint),
+                ) else {
+                    continue;
+                };
+                let Some(world) = worlds.get(node) else {
+                    continue;
+                };
+                let skinned = transform_direction(
+                    &mat4_mul(world, bind),
+                    [tangent[0], tangent[1], tangent[2]],
+                );
+                acc[0] += skinned[0] * weight;
+                acc[1] += skinned[1] * weight;
+                acc[2] += skinned[2] * weight;
+                total += weight;
+            }
+        }
+        let xyz = if total > 0.0 {
+            let len = (acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2]).sqrt();
+            if len > 1e-6 {
+                [acc[0] / len, acc[1] / len, acc[2] / len]
+            } else {
+                [tangent[0], tangent[1], tangent[2]]
+            }
+        } else {
+            [tangent[0], tangent[1], tangent[2]]
+        };
+        out.push([xyz[0], xyz[1], xyz[2], tangent[3]]);
+    }
+    out
+}
+
 /// N365: skin normals with the same joints as the positions (the linear part of
 /// `world · inverseBind`; no inverse-transpose, so non-uniform scale is approximate).
 pub fn skin_normals(
@@ -2144,11 +2206,23 @@ pub fn render_package_scene_clip_mode(
                 None
             },
             tangents: if per_pixel {
-                Some(if geometry.tangents.len() >= geometry.positions.len() {
+                // N423: derive tangents when the mesh omits them; N424: skin them.
+                let base = if geometry.tangents.len() >= geometry.positions.len() {
                     geometry.tangents.clone()
                 } else {
-                    // N423: derive tangents from the UV gradient.
                     generate_tangents(geometry)
+                };
+                Some(match skeleton {
+                    Some(skeleton) if !geometry.skin_joints.is_empty() => skin_tangents_multi(
+                        &geometry.skin_joints,
+                        &geometry.skin_weights,
+                        &geometry.skin_joints2,
+                        &geometry.skin_weights2,
+                        &base,
+                        skeleton,
+                        &worlds,
+                    ),
+                    _ => base,
                 })
             } else {
                 None
@@ -2998,6 +3072,31 @@ mod tests {
             &worlds,
         );
         assert!((out[0][0] - 5.0).abs() < 1e-4, "blended: {:?}", out[0]);
+    }
+
+    #[test]
+    fn skin_tangents_rotate_with_the_joint() {
+        // N424: a rotated joint rotates the tangent xyz and keeps handedness.
+        let skeleton = mdc_model::Skeleton {
+            name: "s".into(),
+            bones: 1,
+            joint_nodes: vec![0],
+            inverse_bind: vec![mat4_identity()],
+        };
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        let world = mat4_from_trs([0.0, 0.0, 0.0], [s, 0.0, 0.0, s], [1.0, 1.0, 1.0]);
+        let out = skin_tangents_multi(
+            &[[0, 0, 0, 0]],
+            &[[1.0, 0.0, 0.0, 0.0]],
+            &[],
+            &[],
+            &[[0.0, 1.0, 0.0, -1.0]],
+            &skeleton,
+            &[world],
+        );
+        assert_eq!(out.len(), 1);
+        assert!(out[0][2].abs() > 0.9, "tangent rotated to z: {:?}", out[0]);
+        assert_eq!(out[0][3], -1.0, "handedness preserved");
     }
 
     #[test]
