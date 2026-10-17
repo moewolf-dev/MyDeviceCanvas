@@ -98,7 +98,12 @@ A decode bomb is refused before any decode buffer is created.
   instead of cutting out; the 1-bit mask still backs `MASK` and the device blob.
   N334: the glTF sampler wrap (`CLAMP_TO_EDGE` → `clamp`) is recorded on
   `Texture.wrap` (`Model::material_texture_wrap`) and applied by
-  `TextureMap::with_wrap`; `mdc render-mesh --wrap` overrides.
+  `TextureMap::with_wrap`; `mdc render-mesh --wrap` overrides. N353:
+  `mesh_package_with_textures` / `attach_model_textures` attach one `TextureBlob`
+  per material (`DevicePackage.texture_blobs`, indexed by `Material.texture`; a
+  missing image is an empty placeholder), and the package-scene renderer samples
+  each mesh's own texture (falling back to the single `texture`). `render_package_mesh`
+  still uses the single texture.
 - N123: a primitive's `targets[].POSITION` morph deltas (capped at
   `MAX_MORPH_TARGETS`, 16 per mesh) become `Mesh.morph_targets`, and
   `mesh.weights` becomes `Mesh.morph_weights`. N124: an animation channel with

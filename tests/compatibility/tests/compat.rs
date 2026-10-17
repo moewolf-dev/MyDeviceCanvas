@@ -306,6 +306,7 @@ fn baked_package(frames: u32, pixels: usize) -> mdc_model::MdcPackage {
         estimated_bytes: pixels as u64,
         atlas: Some(atlas),
         texture: None,
+        texture_blobs: Vec::new(),
     };
     mdc_model::MdcPackage::seal(package).unwrap()
 }
@@ -425,6 +426,7 @@ fn animation_requires_a_baked_atlas_and_a_known_clip() {
         estimated_bytes: 16,
         atlas: Some(atlas),
         texture: None,
+        texture_blobs: Vec::new(),
     };
     let sealed = mdc_model::MdcPackage::seal(package).unwrap();
     session
@@ -669,6 +671,7 @@ fn full_geometry_reaches_the_device_and_renders() {
         estimated_bytes: 48,
         atlas: None,
         texture: None,
+        texture_blobs: Vec::new(),
     };
     let sealed = mdc_model::MdcPackage::seal(package).unwrap();
 
@@ -769,6 +772,7 @@ fn material_colour_tints_the_package_texture_on_the_device() {
             rgb565: vec![0x00, 0xF8], // 1×1 red
             alpha: Vec::new(),
         }),
+        texture_blobs: Vec::new(),
     };
     let sealed = mdc_model::MdcPackage::seal(package).unwrap();
 
@@ -852,6 +856,7 @@ fn packaged_masked_texture_cuts_out_on_render() {
             rgb565: vec![0x00, 0xF8, 0xE0, 0x07],
             alpha: vec![0b01],
         }),
+        texture_blobs: Vec::new(),
     };
     let frame = mdc_bake::render_package_scene(&package, 0.0, (16, 16)).unwrap();
     let at = |x: usize, y: usize| {
@@ -1572,6 +1577,7 @@ fn textured_geometry_package_renders_on_the_device() {
         estimated_bytes: 48,
         atlas: None,
         texture: Some(texture),
+        texture_blobs: Vec::new(),
     };
     let sealed = mdc_model::MdcPackage::seal(package).unwrap();
 

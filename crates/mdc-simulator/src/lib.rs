@@ -2779,6 +2779,7 @@ mod tests {
             estimated_bytes: 16,
             atlas: Some(atlas),
             texture: None,
+            texture_blobs: Vec::new(),
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
         session
@@ -2831,6 +2832,7 @@ mod tests {
             estimated_bytes: atlas.rgb565.len() as u64,
             atlas: Some(atlas),
             texture: None,
+            texture_blobs: Vec::new(),
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
         session
@@ -2916,6 +2918,7 @@ mod tests {
             estimated_bytes: 8,
             atlas: Some(atlas),
             texture: None,
+            texture_blobs: Vec::new(),
         };
         session
             .install_package(
@@ -3002,6 +3005,7 @@ mod tests {
             estimated_bytes: atlas.rgb565.len() as u64,
             atlas: Some(atlas),
             texture: None,
+            texture_blobs: Vec::new(),
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
         session
@@ -3472,6 +3476,7 @@ mod tests {
             estimated_bytes: 16,
             atlas: Some(atlas),
             texture: None,
+            texture_blobs: Vec::new(),
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
         session
@@ -3530,6 +3535,7 @@ mod tests {
             estimated_bytes: 36,
             atlas: None,
             texture: None,
+            texture_blobs: Vec::new(),
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
         session
@@ -3576,6 +3582,7 @@ mod tests {
             estimated_bytes: 48,
             atlas: None,
             texture: None,
+            texture_blobs: Vec::new(),
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
         session
@@ -3622,6 +3629,7 @@ mod tests {
                 clips: Vec::new(),
             }),
             texture: None,
+            texture_blobs: Vec::new(),
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
         session
@@ -3687,6 +3695,7 @@ mod tests {
                 }],
             }),
             texture: None,
+            texture_blobs: Vec::new(),
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
         session
@@ -3745,6 +3754,7 @@ mod tests {
                 }],
             }),
             texture: None,
+            texture_blobs: Vec::new(),
         };
         let sealed = mdc_model::MdcPackage::seal(package).unwrap();
         session
@@ -4094,6 +4104,7 @@ mod tests {
                 rgb565: vec![0x00, 0xF8, 0xE0, 0x07],
                 alpha: vec![0b01],
             }),
+            texture_blobs: Vec::new(),
         };
         let (host, mut device) = FakeDevice::pair(BoardProfile {
             width: 16,

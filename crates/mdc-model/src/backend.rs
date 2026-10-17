@@ -195,6 +195,11 @@ pub struct DevicePackage {
     /// N176: present when a mesh package carries a texture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub texture: Option<TextureBlob>,
+    /// N353: per-material textures, indexed by `Material.texture` (an entry is an
+    /// empty/invalid blob when the source image was not retained). Supersedes the
+    /// single `texture` for multi-material packages; a mesh falls back to `texture`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub texture_blobs: Vec<TextureBlob>,
 }
 
 /// A compiler that turns MDC IR into a device package for one target family.
@@ -288,6 +293,7 @@ impl TargetBackend for Esp32PlaneBackend {
                 estimated_bytes: model.texture_bytes(),
                 atlas: None,
                 texture: None,
+                texture_blobs: Vec::new(),
             });
         }
 
@@ -311,6 +317,7 @@ impl TargetBackend for Esp32PlaneBackend {
             estimated_bytes,
             atlas: None,
             texture: None,
+            texture_blobs: Vec::new(),
         })
     }
 }
@@ -360,6 +367,7 @@ impl TargetBackend for LinuxMeshBackend {
                 estimated_bytes,
                 atlas: None,
                 texture: None,
+                texture_blobs: Vec::new(),
             });
         }
         // Estimated package size: textures plus 12 bytes per vertex (3×f32).
@@ -382,6 +390,7 @@ impl TargetBackend for LinuxMeshBackend {
             estimated_bytes,
             atlas: None,
             texture: None,
+            texture_blobs: Vec::new(),
         })
     }
 }

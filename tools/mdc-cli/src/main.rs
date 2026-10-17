@@ -448,25 +448,29 @@ fn cmd_package(
         max_texture: profile.renderer_max_texture,
         max_vertices: profile.renderer_max_vertices,
     };
-    // N179/N324: an explicit `--texture` overrides; otherwise the model's own
-    // embedded base-colour texture is used.
+    // N179/N324/N353: an explicit `--texture` overrides; otherwise every
+    // embedded material texture is attached (multi-material).
     let limits = mdc_bake::BakeLimits::default();
-    let (texture, texture_source, texture_error) = match &texture_path {
-        Some(path) => (
-            Some(mdc_bake::bake_texture_blob(&std::fs::read(path)?, &limits)?),
-            Some("arg"),
-            None,
-        ),
-        None => match mdc_bake::auto_texture_blob(&model, &limits) {
-            Ok(Some(blob)) => (Some(blob), Some("model"), None),
-            Ok(None) => (None, None, None),
-            // An embedded image that fails to decode is reported, not fatal:
-            // the package is still produced (untextured).
-            Err(error) => (None, None, Some(error.to_string())),
-        },
+    let (package, texture_source, textured) = match &texture_path {
+        Some(path) => {
+            let blob = mdc_bake::bake_texture_blob(&std::fs::read(path)?, &limits)?;
+            (
+                mdc_bake::mesh_package_with_texture(&model, &caps, Some(blob))?,
+                Some("arg"),
+                true,
+            )
+        }
+        None => {
+            let blobs = mdc_bake::attach_model_textures(&model, &limits);
+            let textured = blobs.iter().any(|blob| blob.validate());
+            (
+                mdc_bake::mesh_package_with_textures(&model, &caps, blobs)?,
+                if textured { Some("model") } else { None },
+                textured,
+            )
+        }
     };
-    let textured = texture.is_some();
-    let package = mdc_bake::mesh_package_with_texture(&model, &caps, texture)?;
+    let texture_error: Option<String> = None;
     let bytes = package.to_bytes()?;
     let out = out.unwrap_or_else(|| format!("{model_path}.mdcpkg"));
     std::fs::write(&out, &bytes)?;

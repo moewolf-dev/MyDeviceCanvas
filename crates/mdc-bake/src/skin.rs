@@ -846,6 +846,8 @@ struct SceneDrawable<'a> {
     shade: Vec<f32>,
     /// N333: source alpha (255 = opaque).
     blend: u8,
+    /// N353: the mesh's texture (per material when the package carries several).
+    texture: Option<&'a crate::TextureMap>,
 }
 
 /// N327: default key light (straight down -z, i.e. toward +z-facing surfaces) and
@@ -916,7 +918,6 @@ fn geometric_normal(positions: &[[f32; 3]], tri: &[u32]) -> [f32; 3] {
 fn draw_scene_sorted(
     pixels: &mut [u8],
     size: (u32, u32),
-    texture: Option<&crate::TextureMap>,
     mut drawables: Vec<SceneDrawable<'_>>,
 ) -> Result<(), BakeError> {
     drawables.sort_by(|a, b| b.depth.total_cmp(&a.depth));
@@ -928,7 +929,7 @@ fn draw_scene_sorted(
             d.indices,
             size.0,
             size.1,
-            texture,
+            d.texture,
             d.tint,
             d.mask,
             d.blend,
@@ -1019,9 +1020,10 @@ pub fn render_scene_at(
                 material_ambient(model, mesh),
             ),
             blend: material_blend(model, mesh),
+            texture,
         });
     }
-    draw_scene_sorted(&mut pixels, size, texture, drawables)?;
+    draw_scene_sorted(&mut pixels, size, drawables)?;
     Ok(BakedTexture {
         width: size.0,
         height: size.1,
@@ -1259,16 +1261,28 @@ pub fn render_package_scene_clip_filtered(
     let Some((min, max)) = package_bind_bbox(package) else {
         return Err(BakeError::Decode("package has no mesh geometry".into()));
     };
-    let texture = match package.texture.as_ref().filter(|t| t.validate()) {
-        Some(blob) => {
-            let map = crate::TextureMap::from_rgb565(blob.width, blob.height, blob.rgb565.clone())?
-                .with_filter(filter);
-            Some(if blob.alpha.is_empty() {
-                map
-            } else {
-                map.with_alpha(blob.alpha.clone())
-            })
-        }
+    let build_texture = |blob: &mdc_model::TextureBlob| -> Result<crate::TextureMap, BakeError> {
+        let map = crate::TextureMap::from_rgb565(blob.width, blob.height, blob.rgb565.clone())?
+            .with_filter(filter);
+        Ok(if blob.alpha.is_empty() {
+            map
+        } else {
+            map.with_alpha(blob.alpha.clone())
+        })
+    };
+    // N353: per-material textures, indexed by `Material.texture`.
+    let mut textures: Vec<Option<crate::TextureMap>> =
+        Vec::with_capacity(package.texture_blobs.len());
+    for blob in &package.texture_blobs {
+        textures.push(if blob.validate() {
+            Some(build_texture(blob)?)
+        } else {
+            None
+        });
+    }
+    // The single `texture` is the fallback when a material has no per-material one.
+    let single = match package.texture.as_ref().filter(|t| t.validate()) {
+        Some(blob) => Some(build_texture(blob)?),
         None => None,
     };
     let animation = match clip {
@@ -1328,6 +1342,14 @@ pub fn render_package_scene_clip_filtered(
             .material
             .and_then(|mi| package.materials.get(mi))
             .is_some_and(|material| material.is_masked());
+        // N353: the mesh's own material texture, else the single package texture.
+        let mesh_texture = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .and_then(|material| material.texture)
+            .and_then(|index| textures.get(index))
+            .and_then(|texture| texture.as_ref())
+            .or(single.as_ref());
         drawables.push(SceneDrawable {
             depth,
             points,
@@ -1346,6 +1368,7 @@ pub fn render_package_scene_clip_filtered(
                     .map(|m| (SHADE_AMBIENT + 0.35 * m.roughness()).min(0.9))
                     .unwrap_or(0.9),
             ),
+            texture: mesh_texture,
             blend: mesh
                 .material
                 .and_then(|mi| package.materials.get(mi))
@@ -1359,7 +1382,7 @@ pub fn render_package_scene_clip_filtered(
                 .unwrap_or(255),
         });
     }
-    draw_scene_sorted(&mut pixels, size, texture.as_ref(), drawables)?;
+    draw_scene_sorted(&mut pixels, size, drawables)?;
     Ok(BakedTexture {
         width: size.0,
         height: size.1,
@@ -1496,6 +1519,7 @@ fn frames_to_clip_package(
         estimated_bytes: atlas.rgb565.len() as u64,
         atlas: Some(atlas),
         texture: None,
+        texture_blobs: Vec::new(),
     };
     mdc_model::MdcPackage::seal(package).map_err(|e| BakeError::Package(e.to_string()))
 }
@@ -2133,6 +2157,72 @@ mod tests {
         assert_eq!(atlas.clips[1].name, "walk");
         assert_eq!(atlas.clips[1].start, 2);
         assert_eq!(atlas.frames, 4);
+    }
+
+    #[test]
+    fn package_carries_per_material_textures() {
+        let png = |color: [u8; 3]| {
+            let image = image::RgbImage::from_pixel(1, 1, image::Rgb(color));
+            let mut out = Vec::new();
+            image
+                .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                .unwrap();
+            out
+        };
+        let red = png([255, 0, 0]);
+        let blue = png([0, 0, 255]);
+        let mut model = two_mesh_model();
+        for (index, material) in model.materials.iter_mut().enumerate() {
+            material.color = Some([255, 255, 255]);
+            material.texture = Some(index);
+        }
+        model.textures = vec![
+            mdc_model::Texture {
+                name: "red".into(),
+                width: 1,
+                height: 1,
+                format: "image/png".into(),
+                bytes: red.len() as u32,
+                data: Some(red),
+                wrap: None,
+            },
+            mdc_model::Texture {
+                name: "blue".into(),
+                width: 1,
+                height: 1,
+                format: "image/png".into(),
+                bytes: blue.len() as u32,
+                data: Some(blue),
+                wrap: None,
+            },
+        ];
+        let blobs = crate::attach_model_textures(&model, &crate::BakeLimits::default());
+        assert_eq!(blobs.len(), 2);
+        let package = crate::mesh_package_with_textures(
+            &model,
+            &mdc_model::RendererCapability::full_3d(),
+            blobs,
+        )
+        .unwrap();
+        assert_eq!(package.package.texture_blobs.len(), 2);
+        let frame =
+            render_package_scene_clip(&package.package, SceneClip::Static, 0.0, (32, 16)).unwrap();
+        let at = |x: usize| {
+            u16::from_le_bytes([
+                frame.rgb565[(8 * 32 + x) * 2],
+                frame.rgb565[(8 * 32 + x) * 2 + 1],
+            ])
+        };
+        let left = at(6);
+        let right = at(26);
+        assert!(
+            left >> 11 > 20 && (left & 0x1f) < 8,
+            "left red: {left:#06x}"
+        );
+        assert!(
+            (right >> 11) < 8 && (right & 0x1f) > 20,
+            "right blue: {right:#06x}"
+        );
     }
 
     #[test]

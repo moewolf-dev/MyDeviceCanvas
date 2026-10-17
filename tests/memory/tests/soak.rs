@@ -1090,6 +1090,7 @@ fn atlas_animation_soak_is_bounded() {
         estimated_bytes: atlas.rgb565.len() as u64,
         atlas: Some(atlas),
         texture: None,
+        texture_blobs: Vec::new(),
     };
     let sealed = mdc_model::MdcPackage::seal(package).unwrap();
     session

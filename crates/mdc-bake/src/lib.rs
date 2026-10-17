@@ -618,6 +618,48 @@ pub fn resolve_texture_blob(
     }
 }
 
+/// N353: an empty texture blob used as a placeholder for a missing image.
+pub fn empty_texture_blob() -> mdc_model::TextureBlob {
+    mdc_model::TextureBlob {
+        width: 0,
+        height: 0,
+        rgb565: Vec::new(),
+        alpha: Vec::new(),
+    }
+}
+
+/// N353: decode every embedded model texture into a blob aligned to the IR
+/// texture index (`Material.texture` addresses this list). A missing or
+/// undecodable image becomes an empty blob.
+pub fn attach_model_textures(
+    model: &mdc_model::Model,
+    limits: &BakeLimits,
+) -> Vec<mdc_model::TextureBlob> {
+    (0..model.textures.len())
+        .map(|index| match model.embedded_texture(index) {
+            Some(bytes) => {
+                bake_texture_blob(bytes, limits).unwrap_or_else(|_| empty_texture_blob())
+            }
+            None => empty_texture_blob(),
+        })
+        .collect()
+}
+
+/// N353: compile a model with per-material textures (`texture_blobs`, indexed by
+/// `Material.texture`). The first valid blob is also kept as the single `texture`
+/// for single-texture consumers.
+pub fn mesh_package_with_textures(
+    model: &mdc_model::Model,
+    caps: &mdc_model::RendererCapability,
+    texture_blobs: Vec<mdc_model::TextureBlob>,
+) -> Result<mdc_model::MdcPackage, BakeError> {
+    let mut package =
+        mdc_model::compile_auto(model, caps).map_err(|e| BakeError::Package(e.to_string()))?;
+    package.texture = texture_blobs.iter().find(|blob| blob.validate()).cloned();
+    package.texture_blobs = texture_blobs;
+    mdc_model::MdcPackage::seal(package).map_err(|e| BakeError::Package(e.to_string()))
+}
+
 /// N60: bake a sprite set straight into a sealed runtime package the device can
 /// receive over the `PACKAGE` path.
 #[allow(clippy::too_many_arguments)]
@@ -653,6 +695,7 @@ pub fn bake_to_package(
         estimated_bytes,
         atlas: Some(atlas),
         texture: None,
+        texture_blobs: Vec::new(),
     };
     mdc_model::MdcPackage::seal(package).map_err(|e| BakeError::Package(e.to_string()))
 }
