@@ -980,6 +980,10 @@ struct SceneDrawable<'a> {
     normal_ambient: f32,
     /// N385: the key light direction for this drawable.
     light: [f32; 3],
+    /// N387: Blinn-Phong specular strength (0 = no highlight).
+    specular: f32,
+    /// N387: Blinn-Phong shininess exponent.
+    shininess: f32,
 }
 
 /// N327: default key light (straight down -z, i.e. toward +z-facing surfaces) and
@@ -1133,6 +1137,8 @@ fn draw_scene_sorted(
                     scale: d.normal_scale,
                     light: d.light,
                     ambient: d.normal_ambient,
+                    specular: d.specular,
+                    shininess: d.shininess,
                 }),
                 _ => None,
             },
@@ -1258,6 +1264,8 @@ pub fn render_scene_at(
             normal_scale: 1.0,
             normal_ambient: 0.9,
             light,
+            specular: 0.0,
+            shininess: 1.0,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -1688,6 +1696,8 @@ pub enum ShadeMode {
     #[default]
     Flat,
     Smooth,
+    /// N387: smooth shading plus a Blinn-Phong specular highlight.
+    SmoothSpecular,
 }
 
 /// N386: like [`render_package_scene_clip_filtered`] but with an explicit shade
@@ -1835,8 +1845,24 @@ pub fn render_package_scene_clip_mode(
         let usable_normal_map = normal_map.is_some()
             && geometry.tangents.len() >= geometry.positions.len()
             && has_normals;
-        let smooth = mode == ShadeMode::Smooth && has_normals && !usable_normal_map;
+        let smooth = matches!(mode, ShadeMode::Smooth | ShadeMode::SmoothSpecular)
+            && has_normals
+            && !usable_normal_map;
         let per_pixel = usable_normal_map || smooth;
+        // N387: material-derived Blinn-Phong parameters for the specular mode.
+        let (specular, shininess) = if mode == ShadeMode::SmoothSpecular {
+            let (roughness, metallic) = mesh
+                .material
+                .and_then(|mi| package.materials.get(mi))
+                .map(|material| (material.roughness(), material.metallic()))
+                .unwrap_or((1.0, 1.0));
+            (
+                (1.0 - roughness) * (0.4 + 0.6 * metallic) * 0.9,
+                8.0 + 120.0 * (1.0 - roughness),
+            )
+        } else {
+            (0.0, 1.0)
+        };
         let occlusion = occlusion_factors(package, mesh, geometry, &textures);
         let shade = if per_pixel {
             // The per-pixel pass applies the Lambert term, so the per-triangle
@@ -1910,6 +1936,8 @@ pub fn render_package_scene_clip_mode(
             normal_scale: drawable_scale,
             normal_ambient,
             light,
+            specular,
+            shininess,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;

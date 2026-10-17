@@ -384,6 +384,18 @@ pub(crate) struct NormalMap<'a> {
     pub light: [f32; 3],
     /// Ambient floor for the Lambert term.
     pub ambient: f32,
+    /// N387: Blinn-Phong specular strength (0 = no highlight).
+    pub specular: f32,
+    /// N387: Blinn-Phong shininess exponent.
+    pub shininess: f32,
+}
+
+/// N387: saturating per-channel RGB565 add (for an additive specular term).
+fn rgb565_add(a: u16, b: u16) -> u16 {
+    let r = (((a >> 11) & 0x1f) + ((b >> 11) & 0x1f)).min(0x1f);
+    let g = (((a >> 5) & 0x3f) + ((b >> 5) & 0x3f)).min(0x3f);
+    let bl = ((a & 0x1f) + (b & 0x1f)).min(0x1f);
+    (r << 11) | (g << 5) | bl
 }
 
 fn v3_dot(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -421,6 +433,50 @@ fn rgb565_channels(value: u16) -> [f32; 3] {
         f32::from((value >> 5) & 0x3f) / 63.0,
         f32::from(value & 0x1f) / 31.0,
     ]
+}
+
+/// N379/N387: apply per-pixel Lambert + specular from the normal bundle.
+pub(crate) fn apply_normal_map(
+    value: u16,
+    nm: &NormalMap<'_>,
+    tri: [usize; 3],
+    weights: [f32; 3],
+    uv: [f32; 2],
+) -> u16 {
+    let [w0, w1, w2] = weights;
+    let interp = |k: usize| {
+        w0 * nm.tangents[tri[0]][k] + w1 * nm.tangents[tri[1]][k] + w2 * nm.tangents[tri[2]][k]
+    };
+    let n = v3_normalize([
+        w0 * nm.normals[tri[0]][0] + w1 * nm.normals[tri[1]][0] + w2 * nm.normals[tri[2]][0],
+        w0 * nm.normals[tri[0]][1] + w1 * nm.normals[tri[1]][1] + w2 * nm.normals[tri[2]][1],
+        w0 * nm.normals[tri[0]][2] + w1 * nm.normals[tri[1]][2] + w2 * nm.normals[tri[2]][2],
+    ]);
+    let t = v3_normalize([interp(0), interp(1), interp(2)]);
+    let handed = interp(3).signum();
+    let cross = v3_cross(n, t);
+    let b = [cross[0] * handed, cross[1] * handed, cross[2] * handed];
+    let texel = rgb565_channels(nm.map.sample(uv[0], uv[1]));
+    let nt = v3_normalize([
+        (texel[0] * 2.0 - 1.0) * nm.scale,
+        (texel[1] * 2.0 - 1.0) * nm.scale,
+        texel[2] * 2.0 - 1.0,
+    ]);
+    let world = v3_normalize([
+        t[0] * nt[0] + b[0] * nt[1] + n[0] * nt[2],
+        t[1] * nt[0] + b[1] * nt[1] + n[1] * nt[2],
+        t[2] * nt[0] + b[2] * nt[1] + n[2] * nt[2],
+    ]);
+    let lux = v3_dot(world, nm.light).clamp(nm.ambient, 1.0);
+    let mut value = rgb565_scale(value, lux);
+    if nm.specular > 0.0 {
+        let half = v3_normalize([nm.light[0], nm.light[1], nm.light[2] + 1.0]);
+        let spec = nm.specular * v3_dot(world, half).max(0.0).powf(nm.shininess);
+        if spec > 0.0 {
+            value = rgb565_add(value, rgb565_scale(0xFFFF, spec.clamp(0.0, 1.0)));
+        }
+    }
+    value
 }
 
 /// N327: `shade` is an optional per-triangle factor (0..=1) applied to the
@@ -498,7 +554,23 @@ pub(crate) fn draw_indexed(
                     })
                     .map(|nm| (nm, triangle)),
             ),
-            _ => crate::fill_triangle(pixels, width, height, a, b, c, fill, blend, vc),
+            _ => crate::fill_triangle(
+                pixels,
+                width,
+                height,
+                a,
+                b,
+                c,
+                fill,
+                blend,
+                vc,
+                normal_map
+                    .as_ref()
+                    .filter(|nm| {
+                        nm.normals.len() >= points.len() && nm.tangents.len() >= points.len()
+                    })
+                    .map(|nm| (nm, triangle)),
+            ),
         }
     }
     Ok(())
@@ -571,39 +643,7 @@ fn fill_textured_triangle(
             }
             // N379: per-pixel Lambert using the tangent-space normal map.
             if let Some((nm, tri)) = normal_map {
-                let interp = |k: usize| {
-                    w0 * nm.tangents[tri[0]][k]
-                        + w1 * nm.tangents[tri[1]][k]
-                        + w2 * nm.tangents[tri[2]][k]
-                };
-                let n = v3_normalize([
-                    w0 * nm.normals[tri[0]][0]
-                        + w1 * nm.normals[tri[1]][0]
-                        + w2 * nm.normals[tri[2]][0],
-                    w0 * nm.normals[tri[0]][1]
-                        + w1 * nm.normals[tri[1]][1]
-                        + w2 * nm.normals[tri[2]][1],
-                    w0 * nm.normals[tri[0]][2]
-                        + w1 * nm.normals[tri[1]][2]
-                        + w2 * nm.normals[tri[2]][2],
-                ]);
-                let t = v3_normalize([interp(0), interp(1), interp(2)]);
-                let handed = interp(3).signum();
-                let cross = v3_cross(n, t);
-                let b = [cross[0] * handed, cross[1] * handed, cross[2] * handed];
-                let texel = rgb565_channels(nm.map.sample(u, v));
-                let nt = v3_normalize([
-                    (texel[0] * 2.0 - 1.0) * nm.scale,
-                    (texel[1] * 2.0 - 1.0) * nm.scale,
-                    texel[2] * 2.0 - 1.0,
-                ]);
-                let world = v3_normalize([
-                    t[0] * nt[0] + b[0] * nt[1] + n[0] * nt[2],
-                    t[1] * nt[0] + b[1] * nt[1] + n[1] * nt[2],
-                    t[2] * nt[0] + b[2] * nt[1] + n[2] * nt[2],
-                ]);
-                let lux = v3_dot(world, nm.light).clamp(nm.ambient, 1.0);
-                value = rgb565_scale(value, lux);
+                value = apply_normal_map(value, nm, tri, [w0, w1, w2], [u, v]);
             }
             // N344: for a blended material, fold the per-texel alpha into the
             // material alpha so soft edges fade instead of cutting out.

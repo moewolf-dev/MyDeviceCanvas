@@ -282,7 +282,9 @@ directional light overrides the renderer's fixed key light (its node rotation
 orients it and `intensity` scales it). N386: `ShadeMode::Smooth` shades the package
 renderer per pixel from interpolated normals (Gouraud) instead of one factor per
 triangle; `render_package_scene_clip_mode` selects the mode and the device keeps
-`Flat`. N380:
+`Flat`. N387: `ShadeMode::SmoothSpecular` adds a Blinn-Phong specular highlight,
+its strength/shininess derived from the material's `roughness`/`metallic`. Per-pixel
+shading now also applies to untextured (solid) triangles. N380:
 `pack_material_atlas` (and `mdc package --atlas MAX_PAGE`) shelf-packs a package's
 per-material textures into one bounded page, remapping material indices and mesh UVs.
 

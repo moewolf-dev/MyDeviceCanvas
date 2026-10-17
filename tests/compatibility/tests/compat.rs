@@ -2106,6 +2106,77 @@ fn smooth_shading_gradients_across_a_triangle() {
 }
 
 #[test]
+fn smooth_specular_adds_a_highlight() {
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};
+
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.5, 0.5, 0.0],
+                    [-0.5, 0.5, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                uv: Vec::new(),
+                uv2: Vec::new(),
+                normals: vec![[0.0, 0.0, 1.0]; 4],
+                colors: Vec::new(),
+                tangents: Vec::new(),
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                skin_joints2: Vec::new(),
+                skin_weights2: Vec::new(),
+                morph_targets: Vec::new(),
+            }),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "shiny".into(),
+            color: Some([128, 128, 128]),
+            metallic: Some(1.0),
+            roughness: Some(0.1),
+            ..Material::default()
+        }],
+        ..Model::default()
+    };
+    let package =
+        mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d()).unwrap();
+    let render = |mode| {
+        mdc_bake::render_package_scene_clip_mode(
+            &package.package,
+            mdc_bake::SceneClip::First,
+            0.0,
+            (32, 32),
+            mdc_bake::Filter::Nearest,
+            mode,
+        )
+        .unwrap()
+    };
+    let smooth = render(mdc_bake::ShadeMode::Smooth);
+    let spec = render(mdc_bake::ShadeMode::SmoothSpecular);
+    assert_ne!(smooth.rgb565, spec.rgb565, "specular changes the frame");
+    let sum = |f: &mdc_bake::BakedTexture| -> u64 {
+        f.rgb565
+            .chunks_exact(2)
+            .map(|b| u64::from(u16::from_le_bytes([b[0], b[1]])) >> 5)
+            .sum()
+    };
+    assert!(sum(&spec) > sum(&smooth), "highlight brightens the surface");
+}
+
+#[test]
 fn device_diagnostics_reach_the_host_channel() {
     use mdc_core::{ConnectionState, DiagnosticRecord, Session};
     use mdc_simulator::{BoardProfile, FakeDevice};

@@ -256,6 +256,7 @@ pub fn raster_triangle_fan(
                 color,
                 255,
                 None,
+                None,
             );
         }
     }
@@ -287,7 +288,7 @@ pub(crate) fn raster_points(
             ) else {
                 continue;
             };
-            fill_triangle(&mut pixels, width, height, a, b, c, color, 255, None);
+            fill_triangle(&mut pixels, width, height, a, b, c, color, 255, None, None);
         }
     } else if points.len() >= 3 {
         let origin = points[0];
@@ -301,6 +302,7 @@ pub(crate) fn raster_points(
                 window[1],
                 color,
                 255,
+                None,
                 None,
             );
         }
@@ -350,6 +352,7 @@ fn fill_triangle(
     color: u16,
     blend: u8,
     vc: Option<([f32; 4], [f32; 4], [f32; 4])>,
+    normal_map: Option<(&crate::texture::NormalMap<'_>, [usize; 3])>,
 ) {
     let min_x = a.0.min(b.0).min(c.0).max(0) as u32;
     let max_x = a.0.max(b.0).max(c.0).max(0) as u32;
@@ -387,6 +390,11 @@ fn fill_triangle(
                     f0 * c0[3] + f1 * c1[3] + f2 * c2[3],
                 ];
                 value = crate::texture::rgb565_mul(value, crate::texture::rgba_to_rgb565(interp));
+            }
+            // N379/N387: per-pixel shading from interpolated normals.
+            if let Some((nm, tri)) = normal_map {
+                let (f0, f1, f2) = (w0 as f32 / area_f, w1 as f32 / area_f, w2 as f32 / area_f);
+                value = crate::texture::apply_normal_map(value, nm, tri, [f0, f1, f2], [0.5, 0.5]);
             }
             let index = ((y * width + x) * 2) as usize;
             crate::texture::write_pixel(pixels, index, value, blend);
