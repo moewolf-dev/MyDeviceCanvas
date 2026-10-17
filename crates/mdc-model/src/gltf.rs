@@ -169,7 +169,7 @@ impl GltfImporter {
                 .and_then(|b| b.get("index"))
                 .and_then(Value::as_u64)
                 .and_then(resolve_texture);
-            // N174: baseColorFactor -> 8-bit RGB (alpha ignored).
+            // N174: baseColorFactor -> 8-bit RGB. N333: index 3 is alpha.
             let color = pbr
                 .and_then(|p| p.get("baseColorFactor"))
                 .and_then(Value::as_array)
@@ -181,6 +181,12 @@ impl GltfImporter {
                     };
                     Some([channel(0)?, channel(1)?, channel(2)?])
                 });
+            let alpha = pbr
+                .and_then(|p| p.get("baseColorFactor"))
+                .and_then(Value::as_array)
+                .and_then(|list| list.get(3))
+                .and_then(Value::as_f64)
+                .map(|v| v.clamp(0.0, 1.0) as f32);
             materials.push(Material {
                 name: json_name(material, &format!("material{i}")),
                 texture,
@@ -193,6 +199,7 @@ impl GltfImporter {
                     .get("alphaCutoff")
                     .and_then(Value::as_f64)
                     .map(|v| v as f32),
+                alpha,
             });
         }
 
@@ -1972,6 +1979,9 @@ mod tests {
         assert_eq!(model.materials[0].color_rgb565(), Some(0xF800));
         assert_eq!(model.materials[1].color, None);
         assert_eq!(model.materials[1].color_rgb565(), None);
+        // N333: baseColorFactor alpha is imported.
+        assert_eq!(model.materials[0].alpha, Some(1.0));
+        assert_eq!(model.materials[1].alpha, None);
     }
 
     #[test]

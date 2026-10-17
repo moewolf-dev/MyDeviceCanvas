@@ -154,6 +154,45 @@ impl TextureMap {
     }
 }
 
+/// N333: source-over blend of `src` into `dst` with source alpha `a` (0..=255).
+/// `a == 255` returns `src`; `a == 0` returns `dst`.
+pub(crate) fn blend_rgb565(dst: u16, src: u16, a: u8) -> u16 {
+    if a == u8::MAX {
+        return src;
+    }
+    if a == 0 {
+        return dst;
+    }
+    let af = u32::from(a);
+    let kf = 255 - af;
+    let channel = |shift: u32, mask: u16| -> u16 {
+        let d = u32::from((dst >> shift) & mask);
+        let s = u32::from((src >> shift) & mask);
+        ((d * kf + s * af) / 255) as u16
+    };
+    (channel(11, 0x1f) << 11) | (channel(5, 0x3f) << 5) | channel(0, 0x1f)
+}
+
+/// N333: write `value` at `index`, blending over the existing pixel when `blend`
+/// is translucent (255 replaces).
+pub(crate) fn write_pixel(pixels: &mut [u8], index: usize, value: u16, blend: u8) {
+    if index + 1 >= pixels.len() {
+        return;
+    }
+    let out = if blend == u8::MAX {
+        value
+    } else {
+        blend_rgb565(
+            u16::from_le_bytes([pixels[index], pixels[index + 1]]),
+            value,
+            blend,
+        )
+    };
+    let bytes = out.to_le_bytes();
+    pixels[index] = bytes[0];
+    pixels[index + 1] = bytes[1];
+}
+
 /// N327: scale an RGB565 colour's channels by `factor` (0..=1) and repack.
 pub(crate) fn rgb565_scale(color: u16, factor: f32) -> u16 {
     let f = factor.clamp(0.0, 1.0);
@@ -229,6 +268,7 @@ pub(crate) fn raster_indexed(
         texture,
         tint,
         mask,
+        255,
         fallback,
         None,
         max_points,
@@ -251,6 +291,7 @@ pub(crate) fn draw_indexed(
     texture: Option<&TextureMap>,
     tint: Option<u16>,
     mask: bool,
+    blend: u8,
     fallback: u16,
     shade: Option<&[f32]>,
     max_points: usize,
@@ -295,8 +336,9 @@ pub(crate) fn draw_indexed(
                 texture,
                 tint,
                 mask,
+                blend,
             ),
-            _ => crate::fill_triangle(pixels, width, height, a, b, c, fill),
+            _ => crate::fill_triangle(pixels, width, height, a, b, c, fill, blend),
         }
     }
     Ok(())
@@ -313,6 +355,7 @@ fn fill_textured_triangle(
     texture: &TextureMap,
     tint: Option<u16>,
     mask: bool,
+    blend: u8,
 ) {
     let area = edge(a.0, b.0, c.0);
     if area == 0 {
@@ -351,12 +394,8 @@ fn fill_textured_triangle(
             if let Some(tint) = tint {
                 value = rgb565_mul(value, tint);
             }
-            let color = value.to_le_bytes();
             let index = ((y * width + x) * 2) as usize;
-            if index + 1 < pixels.len() {
-                pixels[index] = color[0];
-                pixels[index + 1] = color[1];
-            }
+            write_pixel(pixels, index, value, blend);
         }
     }
 }
@@ -371,6 +410,18 @@ mod tests {
             rgb565.extend_from_slice(&value.to_le_bytes());
         }
         TextureMap::from_rgb565(width, height, rgb565).unwrap()
+    }
+
+    #[test]
+    fn blend_rgb565_is_source_over() {
+        // Full alpha replaces, zero keeps, half is between.
+        assert_eq!(blend_rgb565(0xF800, 0x001F, 255), 0x001F);
+        assert_eq!(blend_rgb565(0xF800, 0x001F, 0), 0xF800);
+        let mid = blend_rgb565(0xF800, 0x001F, 128); // red source over blue dest
+        assert!(
+            ((mid >> 11) & 0x1f) > 0 && (mid & 0x1f) > 0,
+            "both channels"
+        );
     }
 
     #[test]

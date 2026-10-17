@@ -671,6 +671,14 @@ fn material_masked(model: &Model, mesh: &Mesh) -> bool {
     material_of(model, mesh).is_some_and(|material| material.is_masked())
 }
 
+/// N333: the source alpha for a mesh's material (255 when opaque).
+fn material_blend(model: &Model, mesh: &Mesh) -> u8 {
+    match material_of(model, mesh) {
+        Some(material) if material.is_blended() => material.alpha_u8(),
+        _ => 255,
+    }
+}
+
 /// N166: render one posed frame of the mesh's full geometry into `size` pixels.
 /// Falls back to the preview render when the mesh carries no geometry. N175: the
 /// mesh's material colour is preferred over `color` when no texture is sampled.
@@ -827,6 +835,8 @@ struct SceneDrawable<'a> {
     fill: u16,
     /// N327: per-triangle directional shading factor.
     shade: Vec<f32>,
+    /// N333: source alpha (255 = opaque).
+    blend: u8,
 }
 
 /// N327: default key light (straight down -z, i.e. toward +z-facing surfaces) and
@@ -911,6 +921,7 @@ fn draw_scene_sorted(
             texture,
             d.tint,
             d.mask,
+            d.blend,
             d.fill,
             Some(&d.shade),
             mdc_model::MAX_GEOMETRY_VERTICES,
@@ -991,6 +1002,7 @@ pub fn render_scene_at(
             mask,
             fill: tint.unwrap_or(fallback),
             shade: triangle_shades(&deformed, &geometry.normals, &geometry.indices, SHADE_LIGHT),
+            blend: material_blend(model, mesh),
         });
     }
     draw_scene_sorted(&mut pixels, size, texture, drawables)?;
@@ -1125,6 +1137,17 @@ pub fn render_package_mesh(
             &geometry.indices,
             SHADE_LIGHT,
         );
+        let blend = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .map(|material| {
+                if material.is_blended() {
+                    material.alpha_u8()
+                } else {
+                    255
+                }
+            })
+            .unwrap_or(255);
         crate::texture::draw_indexed(
             &mut pixels,
             &projected,
@@ -1135,6 +1158,7 @@ pub fn render_package_mesh(
             texture.as_ref(),
             tint,
             mask,
+            blend,
             fill,
             Some(&shade),
             mdc_model::MAX_GEOMETRY_VERTICES,
@@ -1280,6 +1304,17 @@ pub fn render_package_scene_clip(
             mask,
             fill: tint.unwrap_or(0xF800),
             shade: triangle_shades(&deformed, &geometry.normals, &geometry.indices, SHADE_LIGHT),
+            blend: mesh
+                .material
+                .and_then(|mi| package.materials.get(mi))
+                .map(|material| {
+                    if material.is_blended() {
+                        material.alpha_u8()
+                    } else {
+                        255
+                    }
+                })
+                .unwrap_or(255),
         });
     }
     draw_scene_sorted(&mut pixels, size, texture.as_ref(), drawables)?;
@@ -1965,6 +2000,47 @@ mod tests {
             shaded >> 11 < flat >> 11,
             "the red channel is reduced by shading"
         );
+    }
+
+    #[test]
+    fn blended_material_is_translucent() {
+        let render = |mode: &str| {
+            let model = Model {
+                source: "t".into(),
+                nodes: vec![Node {
+                    name: "n".into(),
+                    mesh: Some(0),
+                    ..Node::default()
+                }],
+                meshes: vec![mdc_model::Mesh {
+                    name: "q".into(),
+                    vertices: 4,
+                    indices: 6,
+                    material: Some(0),
+                    geometry: Some(quad_geometry()),
+                    ..mdc_model::Mesh::default()
+                }],
+                materials: vec![mdc_model::Material {
+                    name: "half".into(),
+                    color: Some([255, 0, 0]),
+                    alpha_mode: Some(mode.into()),
+                    alpha: Some(0.5),
+                    ..mdc_model::Material::default()
+                }],
+                ..Model::default()
+            };
+            render_scene_at(&model, 0, 0.0, (16, 16), None, 0x0000).unwrap()
+        };
+        let px = |f: &BakedTexture| {
+            u16::from_le_bytes([f.rgb565[(8 * 16 + 8) * 2], f.rgb565[(8 * 16 + 8) * 2 + 1]])
+        };
+        // OPAQUE ignores the alpha factor.
+        assert_eq!(px(&render("OPAQUE")), 0xF800);
+        // BLEND sources 50% red over the black background -> a quarter-bright red.
+        let blended = px(&render("BLEND"));
+        assert_ne!(blended, 0xF800);
+        let red = blended >> 11;
+        assert!(red > 0 && red < 0x1f, "half-alpha red channel: {red}");
     }
 
     #[test]

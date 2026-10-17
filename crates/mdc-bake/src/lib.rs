@@ -231,6 +231,7 @@ pub fn raster_triangle_fan(
                 window[0],
                 window[1],
                 color,
+                255,
             );
         }
     }
@@ -262,7 +263,7 @@ pub(crate) fn raster_points(
             ) else {
                 continue;
             };
-            fill_triangle(&mut pixels, width, height, a, b, c, color);
+            fill_triangle(&mut pixels, width, height, a, b, c, color, 255);
         }
     } else if points.len() >= 3 {
         let origin = points[0];
@@ -275,6 +276,7 @@ pub(crate) fn raster_points(
                 window[0],
                 window[1],
                 color,
+                255,
             );
         }
     }
@@ -312,6 +314,7 @@ pub fn bake_displaced_mesh(
     Ok(frames)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fill_triangle(
     pixels: &mut [u8],
     width: u32,
@@ -320,9 +323,8 @@ fn fill_triangle(
     b: (i16, i16),
     c: (i16, i16),
     color: u16,
+    blend: u8,
 ) {
-    let low = (color & 0xff) as u8;
-    let high = (color >> 8) as u8;
     let min_x = a.0.min(b.0).min(c.0).max(0) as u32;
     let max_x = a.0.max(b.0).max(c.0).max(0) as u32;
     let min_y = a.1.min(b.1).min(c.1).max(0) as u32;
@@ -348,10 +350,7 @@ fn fill_triangle(
                 continue;
             }
             let index = ((y * width + x) * 2) as usize;
-            if index + 1 < pixels.len() {
-                pixels[index] = low;
-                pixels[index + 1] = high;
-            }
+            crate::texture::write_pixel(pixels, index, color, blend);
         }
     }
 }

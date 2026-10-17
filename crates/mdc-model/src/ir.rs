@@ -240,6 +240,9 @@ pub struct Material {
     /// N283: glTF `alphaCutoff` (used by `MASK`; default 0.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alpha_cutoff: Option<f32>,
+    /// N333: `baseColorFactor` alpha (0..1). `None` means opaque.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alpha: Option<f32>,
 }
 
 impl Material {
@@ -252,6 +255,17 @@ impl Material {
     /// N283: the cutoff in 0..1 (default 0.5).
     pub fn cutoff(&self) -> f32 {
         self.alpha_cutoff.unwrap_or(0.5).clamp(0.0, 1.0)
+    }
+    /// N333: whether this material is alpha-blended (`alphaMode: BLEND`).
+    pub fn is_blended(&self) -> bool {
+        self.alpha_mode
+            .as_deref()
+            .is_some_and(|mode| mode.eq_ignore_ascii_case("BLEND"))
+    }
+    /// N333: the source alpha as 8 bits (255 when opaque or absent).
+    pub fn alpha_u8(&self) -> u8 {
+        let a = self.alpha.unwrap_or(1.0).clamp(0.0, 1.0);
+        (a * 255.0).round() as u8
     }
 }
 

@@ -89,7 +89,10 @@ A decode bomb is refused before any decode buffer is created.
   auto-uses a material's embedded `baseColorTexture` (`auto_texture_blob` /
   `resolve_texture_blob`); an explicit `--texture tex.png` still overrides, and an
   embedded image that fails to decode is reported (`textureError`) while the
-  package is still produced untextured.
+  package is still produced untextured. N333: `alphaMode: BLEND` with
+  `baseColorFactor` alpha (index 3) renders as source-over transparency in the
+  scene/package/single renders and the device double; `OPAQUE` ignores the alpha
+  factor and `MASK` still cuts out.
 - N123: a primitive's `targets[].POSITION` morph deltas (capped at
   `MAX_MORPH_TARGETS`, 16 per mesh) become `Mesh.morph_targets`, and
   `mesh.weights` becomes `Mesh.morph_weights`. N124: an animation channel with

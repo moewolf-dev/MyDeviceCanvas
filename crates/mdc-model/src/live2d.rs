@@ -254,6 +254,7 @@ impl Live2DImporter {
                 color: None,
                 alpha_mode: None,
                 alpha_cutoff: None,
+                alpha: None,
             });
             nodes.push(Node {
                 name: name.clone(),
