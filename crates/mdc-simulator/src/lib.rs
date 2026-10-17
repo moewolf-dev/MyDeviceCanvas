@@ -4262,6 +4262,7 @@ mod tests {
                 skin_weights: Vec::new(),
                 morph_targets: Vec::new(),
                 colors: Vec::new(),
+                tangents: Vec::new(),
             }),
             ..Mesh::default()
         };
@@ -4290,6 +4291,8 @@ mod tests {
                 emissive_strength: None,
                 occlusion_texture: None,
                 occlusion_strength: None,
+                normal_texture: None,
+                normal_scale: None,
             }],
             skeletons: Vec::new(),
             animations: Vec::new(),

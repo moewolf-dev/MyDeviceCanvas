@@ -372,6 +372,17 @@ impl GltfImporter {
                 .and_then(|o| o.get("strength"))
                 .and_then(Value::as_f64)
                 .map(|v| v.clamp(0.0, 1.0) as f32);
+            // N379: normalTexture (tangent-space normal map).
+            let normal_texture = material
+                .get("normalTexture")
+                .and_then(|n| n.get("index"))
+                .and_then(Value::as_u64)
+                .and_then(resolve_texture);
+            let normal_scale = material
+                .get("normalTexture")
+                .and_then(|n| n.get("scale"))
+                .and_then(Value::as_f64)
+                .map(|v| v.max(0.0) as f32);
             materials.push(Material {
                 name: json_name(material, &format!("material{i}")),
                 texture,
@@ -393,6 +404,8 @@ impl GltfImporter {
                 emissive_strength,
                 occlusion_texture,
                 occlusion_strength,
+                normal_texture,
+                normal_scale,
             });
         }
 
@@ -461,6 +474,10 @@ impl GltfImporter {
                                     let colors = pair(&attributes_value, "COLOR_0")
                                         .map(|(a, b)| decode_colors(a, b, MAX_GEOMETRY_VERTICES))
                                         .unwrap_or_default();
+                                    // N379: TANGENT.
+                                    let tangents = pair(&attributes_value, "TANGENT")
+                                        .map(|(a, b)| decode_tangents(a, b, MAX_GEOMETRY_VERTICES))
+                                        .unwrap_or_default();
                                     let skin_joints = pair(&attributes_value, "JOINTS_0")
                                         .map(|(a, b)| {
                                             decode_joints_mesh(a, b, MAX_GEOMETRY_VERTICES)
@@ -497,6 +514,7 @@ impl GltfImporter {
                                         uv,
                                         normals,
                                         colors,
+                                        tangents,
                                         skin_joints,
                                         skin_weights,
                                         morph_targets,
@@ -1089,6 +1107,33 @@ fn decode_colors(accessor: &Value, bytes: Option<&[u8]>, max: usize) -> Vec<[f32
             }
         }
         _ => {}
+    }
+    out
+}
+
+/// N379: TANGENT (VEC4 f32) per geometry vertex; `w` is the handedness sign.
+fn decode_tangents(accessor: &Value, bytes: Option<&[u8]>, max: usize) -> Vec<[f32; 4]> {
+    if accessor.get("componentType").and_then(Value::as_u64) != Some(5126) {
+        return Vec::new();
+    }
+    if accessor.get("type").and_then(Value::as_str) != Some("VEC4") {
+        return Vec::new();
+    }
+    let Some(bytes) = bytes else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    while offset + 16 <= bytes.len() && out.len() < max {
+        let read = |k: usize| {
+            f32::from_le_bytes(
+                bytes[offset + k * 4..offset + k * 4 + 4]
+                    .try_into()
+                    .unwrap_or([0; 4]),
+            )
+        };
+        out.push([read(0), read(1), read(2), read(3)]);
+        offset += 16;
     }
     out
 }

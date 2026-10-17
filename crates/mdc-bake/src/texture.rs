@@ -362,6 +362,7 @@ pub(crate) fn raster_indexed(
         None,
         None,
         mdc_model::UvTransform::default(),
+        None,
         max_points,
     )?;
     Ok(pixels)
@@ -369,6 +370,52 @@ pub(crate) fn raster_indexed(
 
 /// N183: draw a geometry's triangles into an existing framebuffer (so a scene of
 /// several meshes can share one target). Bounded by `max_points` vertices.
+/// N379: per-pixel tangent-space normal mapping inputs for a triangle.
+pub(crate) struct NormalMap<'a> {
+    /// Per-vertex normals, parallel to the points.
+    pub normals: &'a [[f32; 3]],
+    /// Per-vertex tangents (xyzw; `w` is the handedness sign).
+    pub tangents: &'a [[f32; 4]],
+    /// The tangent-space normal map.
+    pub map: &'a TextureMap,
+    /// `normalTexture.scale`.
+    pub scale: f32,
+    /// Directional key light.
+    pub light: [f32; 3],
+    /// Ambient floor for the Lambert term.
+    pub ambient: f32,
+}
+
+fn v3_dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn v3_normalize(v: [f32; 3]) -> [f32; 3] {
+    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if len > 1e-6 {
+        [v[0] / len, v[1] / len, v[2] / len]
+    } else {
+        [0.0, 0.0, 1.0]
+    }
+}
+
+fn v3_cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// N379: RGB565 -> linear (0..1) channels, for decoding a normal map texel.
+fn rgb565_channels(value: u16) -> [f32; 3] {
+    [
+        f32::from((value >> 11) & 0x1f) / 31.0,
+        f32::from((value >> 5) & 0x3f) / 63.0,
+        f32::from(value & 0x1f) / 31.0,
+    ]
+}
+
 /// N327: `shade` is an optional per-triangle factor (0..=1) applied to the
 /// tint/fallback colour.
 #[allow(clippy::too_many_arguments)]
@@ -387,6 +434,7 @@ pub(crate) fn draw_indexed(
     shade: Option<&[f32]>,
     colors: Option<&[[f32; 4]]>,
     uv_transform: mdc_model::UvTransform,
+    normal_map: Option<NormalMap<'_>>,
     max_points: usize,
 ) -> Result<(), BakeError> {
     if width == 0 || height == 0 || width > 1024 || height > 1024 {
@@ -436,6 +484,12 @@ pub(crate) fn draw_indexed(
                 blend,
                 vc,
                 uv_transform,
+                normal_map
+                    .as_ref()
+                    .filter(|nm| {
+                        nm.normals.len() >= points.len() && nm.tangents.len() >= points.len()
+                    })
+                    .map(|nm| (nm, triangle)),
             ),
             _ => crate::fill_triangle(pixels, width, height, a, b, c, fill, blend, vc),
         }
@@ -457,6 +511,7 @@ fn fill_textured_triangle(
     blend: u8,
     vc: Option<([f32; 4], [f32; 4], [f32; 4])>,
     uv_transform: mdc_model::UvTransform,
+    normal_map: Option<(&NormalMap<'_>, [usize; 3])>,
 ) {
     let area = edge(a.0, b.0, c.0);
     if area == 0 {
@@ -506,6 +561,42 @@ fn fill_textured_triangle(
                     w0 * c0[3] + w1 * c1[3] + w2 * c2[3],
                 ];
                 value = rgb565_mul(value, rgba_to_rgb565(interp));
+            }
+            // N379: per-pixel Lambert using the tangent-space normal map.
+            if let Some((nm, tri)) = normal_map {
+                let interp = |k: usize| {
+                    w0 * nm.tangents[tri[0]][k]
+                        + w1 * nm.tangents[tri[1]][k]
+                        + w2 * nm.tangents[tri[2]][k]
+                };
+                let n = v3_normalize([
+                    w0 * nm.normals[tri[0]][0]
+                        + w1 * nm.normals[tri[1]][0]
+                        + w2 * nm.normals[tri[2]][0],
+                    w0 * nm.normals[tri[0]][1]
+                        + w1 * nm.normals[tri[1]][1]
+                        + w2 * nm.normals[tri[2]][1],
+                    w0 * nm.normals[tri[0]][2]
+                        + w1 * nm.normals[tri[1]][2]
+                        + w2 * nm.normals[tri[2]][2],
+                ]);
+                let t = v3_normalize([interp(0), interp(1), interp(2)]);
+                let handed = interp(3).signum();
+                let cross = v3_cross(n, t);
+                let b = [cross[0] * handed, cross[1] * handed, cross[2] * handed];
+                let texel = rgb565_channels(nm.map.sample(u, v));
+                let nt = v3_normalize([
+                    (texel[0] * 2.0 - 1.0) * nm.scale,
+                    (texel[1] * 2.0 - 1.0) * nm.scale,
+                    texel[2] * 2.0 - 1.0,
+                ]);
+                let world = v3_normalize([
+                    t[0] * nt[0] + b[0] * nt[1] + n[0] * nt[2],
+                    t[1] * nt[0] + b[1] * nt[1] + n[1] * nt[2],
+                    t[2] * nt[0] + b[2] * nt[1] + n[2] * nt[2],
+                ]);
+                let lux = v3_dot(world, nm.light).clamp(nm.ambient, 1.0);
+                value = rgb565_scale(value, lux);
             }
             // N344: for a blended material, fold the per-texel alpha into the
             // material alpha so soft edges fade instead of cutting out.

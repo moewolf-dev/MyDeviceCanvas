@@ -134,6 +134,7 @@ fn multi_primitive_geometry_soak_is_bounded() {
                 skin_weights: Vec::new(),
                 morph_targets: Vec::new(),
                 colors: Vec::new(),
+                tangents: Vec::new(),
             }),
             ..Mesh::default()
         }],
@@ -266,6 +267,7 @@ fn geometry_morph_render_soak_is_bounded() {
                     [0.6, 0.0, 0.0],
                 ]],
                 colors: Vec::new(),
+                tangents: Vec::new(),
             }),
             morph_weights: vec![0.0],
             ..Mesh::default()
@@ -345,6 +347,7 @@ fn linear_filter_render_soak_is_bounded() {
                 skin_weights: Vec::new(),
                 morph_targets: Vec::new(),
                 colors: Vec::new(),
+                tangents: Vec::new(),
             }),
             ..Mesh::default()
         }],
@@ -396,6 +399,7 @@ fn device_mesh_scene_render_soak_is_bounded() {
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
             colors: Vec::new(),
+            tangents: Vec::new(),
         }),
         ..Mesh::default()
     };
@@ -487,6 +491,7 @@ fn multi_mesh_scene_render_soak_is_bounded() {
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
             colors: Vec::new(),
+            tangents: Vec::new(),
         }),
         ..Mesh::default()
     };
@@ -569,6 +574,7 @@ fn textured_mesh_package_soak_is_bounded() {
                 skin_weights: Vec::new(),
                 morph_targets: Vec::new(),
                 colors: Vec::new(),
+                tangents: Vec::new(),
             }),
             ..Mesh::default()
         }],
@@ -627,6 +633,7 @@ fn geometry_render_soak_is_bounded() {
             skin_weights: vec![[1.0, 0.0, 0.0, 0.0]; 4],
             morph_targets: Vec::new(),
             colors: Vec::new(),
+            tangents: Vec::new(),
         }),
         ..Mesh::default()
     };
@@ -1262,6 +1269,7 @@ fn multi_texture_package_soak_is_bounded() {
         skin_weights: Vec::new(),
         morph_targets: Vec::new(),
         colors: Vec::new(),
+        tangents: Vec::new(),
     };
     let model = Model {
         source: "soak".into(),

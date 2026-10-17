@@ -931,6 +931,16 @@ struct SceneDrawable<'a> {
     colors: Option<&'a [[f32; 4]]>,
     /// N373: the material's base-colour UV transform.
     uv_transform: mdc_model::UvTransform,
+    /// N379: per-vertex normals for per-pixel normal mapping.
+    normals: Option<Vec<[f32; 3]>>,
+    /// N379: per-vertex tangents (xyzw).
+    tangents: Option<Vec<[f32; 4]>>,
+    /// N379: the tangent-space normal map.
+    normal_map: Option<&'a crate::TextureMap>,
+    /// N379: `normalTexture.scale`.
+    normal_scale: f32,
+    /// N379: ambient floor for the per-pixel Lambert term.
+    normal_ambient: f32,
 }
 
 /// N327: default key light (straight down -z, i.e. toward +z-facing surfaces) and
@@ -1076,6 +1086,17 @@ fn draw_scene_sorted(
             Some(&d.shade),
             d.colors,
             d.uv_transform,
+            match (d.normals.as_deref(), d.tangents.as_deref(), d.normal_map) {
+                (Some(normals), Some(tangents), Some(map)) => Some(crate::texture::NormalMap {
+                    normals,
+                    tangents,
+                    map,
+                    scale: d.normal_scale,
+                    light: SHADE_LIGHT,
+                    ambient: d.normal_ambient,
+                }),
+                _ => None,
+            },
             mdc_model::MAX_GEOMETRY_VERTICES,
         )?;
     }
@@ -1188,6 +1209,11 @@ pub fn render_scene_at(
             uv_transform: material_of(model, mesh)
                 .map(|m| m.uv_transform())
                 .unwrap_or_default(),
+            normals: None,
+            tangents: None,
+            normal_map: None,
+            normal_scale: 1.0,
+            normal_ambient: 0.9,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -1377,6 +1403,7 @@ pub fn render_package_mesh(
                 .and_then(|mi| package.materials.get(mi))
                 .map(|m| m.uv_transform())
                 .unwrap_or_default(),
+            None,
             mdc_model::MAX_GEOMETRY_VERTICES,
         )?;
     }
@@ -1560,6 +1587,34 @@ pub fn render_package_scene_clip_filtered(
             .and_then(|index| textures.get(index))
             .and_then(|texture| texture.as_ref())
             .or(single.as_ref());
+        // N379: a tangent-space normal map turns shading per-pixel.
+        let (normal_index, normal_scale) = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .map(|material| material.normal_map())
+            .unwrap_or((None, 1.0));
+        let normal_map = normal_index
+            .and_then(|index| textures.get(index))
+            .and_then(|texture| texture.as_ref());
+        let normal_ambient = package_material_ambient(package, mesh);
+        let usable_normal_map = normal_map.is_some()
+            && geometry.tangents.len() >= geometry.positions.len()
+            && deformed_normals.len() >= deformed.len();
+        let occlusion = occlusion_factors(package, mesh, geometry, &textures);
+        let shade = if usable_normal_map {
+            // The per-pixel pass applies the Lambert term, so the per-triangle
+            // factor carries occlusion only.
+            occlusion.unwrap_or_else(|| vec![1.0; geometry.indices.len() / 3])
+        } else {
+            triangle_shades_ambients(
+                &deformed,
+                &deformed_normals,
+                &geometry.indices,
+                SHADE_LIGHT,
+                normal_ambient,
+                occlusion.as_deref(),
+            )
+        };
         drawables.push(SceneDrawable {
             depth,
             points,
@@ -1568,14 +1623,7 @@ pub fn render_package_scene_clip_filtered(
             tint,
             mask,
             fill: tint.unwrap_or(0xF800),
-            shade: triangle_shades_ambients(
-                &deformed,
-                &deformed_normals,
-                &geometry.indices,
-                SHADE_LIGHT,
-                package_material_ambient(package, mesh),
-                occlusion_factors(package, mesh, geometry, &textures).as_deref(),
-            ),
+            shade,
             texture: mesh_texture,
             blend: mesh
                 .material
@@ -1600,6 +1648,19 @@ pub fn render_package_scene_clip_filtered(
                 .and_then(|mi| package.materials.get(mi))
                 .map(|m| m.uv_transform())
                 .unwrap_or_default(),
+            normals: if usable_normal_map {
+                Some(deformed_normals)
+            } else {
+                None
+            },
+            tangents: if usable_normal_map {
+                Some(geometry.tangents.clone())
+            } else {
+                None
+            },
+            normal_map: if usable_normal_map { normal_map } else { None },
+            normal_scale,
+            normal_ambient,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -2051,6 +2112,7 @@ mod tests {
             skin_weights: vec![[1.0, 0.0, 0.0, 0.0]; 4],
             morph_targets: Vec::new(),
             colors: Vec::new(),
+            tangents: Vec::new(),
         });
         let frame = render_geometry_at(&model, 0, 0.0, (16, 16), None, 0xF800).unwrap();
         let covered = frame
@@ -2083,6 +2145,7 @@ mod tests {
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
             colors: Vec::new(),
+            tangents: Vec::new(),
         }
     }
 

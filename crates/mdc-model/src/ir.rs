@@ -51,6 +51,9 @@ pub struct MeshGeometry {
     /// N364: COLOR_0, parallel to `positions` (RGBA 0..1; empty when absent).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub colors: Vec<[f32; 4]>,
+    /// N379: TANGENT, parallel to `positions` (xyzw; w is the handedness sign).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tangents: Vec<[f32; 4]>,
     /// JOINTS_0, parallel to `positions` (empty when absent).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skin_joints: Vec<[u16; 4]>,
@@ -89,6 +92,12 @@ impl MeshGeometry {
                 self.colors.resize(base as usize, [1.0, 1.0, 1.0, 1.0]);
             }
             self.colors.extend(other.colors);
+        }
+        if !other.tangents.is_empty() {
+            if self.tangents.is_empty() {
+                self.tangents.resize(base as usize, [1.0, 0.0, 0.0, 1.0]);
+            }
+            self.tangents.extend(other.tangents);
         }
         if !other.skin_joints.is_empty() {
             if self.skin_joints.is_empty() {
@@ -279,6 +288,12 @@ pub struct Material {
     /// N378: `occlusionTexture.strength` (0..1; default 1.0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occlusion_strength: Option<f32>,
+    /// N379: `normalTexture.index` (tangent-space normal map).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normal_texture: Option<usize>,
+    /// N379: `normalTexture.scale` (default 1.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normal_scale: Option<f32>,
 }
 
 /// N373: glTF `KHR_texture_transform`. `rotation` is in radians; the transform is
@@ -382,6 +397,14 @@ impl Material {
         (
             self.occlusion_texture,
             self.occlusion_strength.unwrap_or(1.0).clamp(0.0, 1.0),
+        )
+    }
+
+    /// N379: the normal texture index and its scale (default 1.0).
+    pub fn normal_map(&self) -> (Option<usize>, f32) {
+        (
+            self.normal_texture,
+            self.normal_scale.unwrap_or(1.0).max(0.0),
         )
     }
 }

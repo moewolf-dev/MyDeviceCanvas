@@ -268,7 +268,10 @@ de-sparsed into a tight byte image before decoding, so POSITION/NORMAL/UV/COLOR_
 (`bufferView.byteStride` + accessor `byteOffset`) are de-strided into the same
 tight image, so shared-stride vertex layouts decode correctly. N378: `occlusionTexture`
 is imported and multiplies each triangle's shade (sampled at the triangle centroid)
-on the package/device renderer; `occlusionStrength` scales the effect.
+on the package/device renderer; `occlusionStrength` scales the effect. N379:
+`TANGENT` and `normalTexture` are imported and, on the package/device renderer,
+shade each pixel from the tangent-space normal map (per-pixel Lambert); without a
+normal map (or tangents) the per-triangle shade is used as before.
 
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a

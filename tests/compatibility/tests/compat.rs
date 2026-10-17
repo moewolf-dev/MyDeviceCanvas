@@ -645,6 +645,7 @@ fn full_geometry_reaches_the_device_and_renders() {
         skin_weights: Vec::new(),
         morph_targets: Vec::new(),
         colors: Vec::new(),
+        tangents: Vec::new(),
     };
     let mesh = mdc_model::Mesh {
         name: "quad".into(),
@@ -742,6 +743,7 @@ fn material_colour_tints_the_package_texture_on_the_device() {
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
             colors: Vec::new(),
+            tangents: Vec::new(),
         }),
         ..Mesh::default()
     };
@@ -824,6 +826,7 @@ fn packaged_masked_texture_cuts_out_on_render() {
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
             colors: Vec::new(),
+            tangents: Vec::new(),
         }),
         ..Mesh::default()
     };
@@ -852,6 +855,8 @@ fn packaged_masked_texture_cuts_out_on_render() {
             emissive_strength: None,
             occlusion_texture: None,
             occlusion_strength: None,
+            normal_texture: None,
+            normal_scale: None,
         }],
         skeletons: Vec::new(),
         animations: Vec::new(),
@@ -908,6 +913,7 @@ fn masked_material_cuts_out_transparent_texels() {
                 skin_weights: Vec::new(),
                 morph_targets: Vec::new(),
                 colors: Vec::new(),
+                tangents: Vec::new(),
             }),
             ..Mesh::default()
         }],
@@ -926,6 +932,8 @@ fn masked_material_cuts_out_transparent_texels() {
             emissive_strength: None,
             occlusion_texture: None,
             occlusion_strength: None,
+            normal_texture: None,
+            normal_scale: None,
         }],
         ..Model::default()
     };
@@ -978,6 +986,7 @@ fn merged_multi_primitive_geometry_renders_every_triangle() {
                 skin_weights: Vec::new(),
                 morph_targets: Vec::new(),
                 colors: Vec::new(),
+                tangents: Vec::new(),
             }),
             ..Mesh::default()
         }],
@@ -1078,6 +1087,7 @@ fn device_renders_a_morph_animated_geometry_package() {
                     [0.6, 0.0, 0.0],
                 ]],
                 colors: Vec::new(),
+                tangents: Vec::new(),
             }),
             morph_weights: vec![0.0],
             ..Mesh::default()
@@ -1161,6 +1171,7 @@ fn device_renders_an_animated_mesh_package_scene() {
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
             colors: Vec::new(),
+            tangents: Vec::new(),
         }),
         ..Mesh::default()
     };
@@ -1267,6 +1278,7 @@ fn device_mesh_package_selects_a_named_clip() {
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
             colors: Vec::new(),
+            tangents: Vec::new(),
         }),
         ..Mesh::default()
     };
@@ -1381,6 +1393,7 @@ fn multi_texture_mesh_package_renders_on_the_device() {
         skin_weights: Vec::new(),
         morph_targets: Vec::new(),
         colors: Vec::new(),
+        tangents: Vec::new(),
     };
     let model = Model {
         source: "test".into(),
@@ -1528,6 +1541,7 @@ fn unlit_material_and_vertex_colours_render_on_the_device() {
                 [0.0, 0.0, 1.0, 1.0],
                 [1.0, 0.0, 0.0, 1.0],
             ],
+            tangents: Vec::new(),
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
@@ -1555,6 +1569,8 @@ fn unlit_material_and_vertex_colours_render_on_the_device() {
                 emissive_strength: None,
                 occlusion_texture: None,
                 occlusion_strength: None,
+                normal_texture: None,
+                normal_scale: None,
                 ..Material::default()
             }],
             ..Model::default()
@@ -1626,6 +1642,7 @@ fn occlusion_texture_darkens_the_shadowed_triangles() {
         skin_weights: Vec::new(),
         morph_targets: Vec::new(),
         colors: Vec::new(),
+        tangents: Vec::new(),
     };
     let build = |occlusion: Option<usize>| Model {
         source: "test".into(),
@@ -1649,6 +1666,8 @@ fn occlusion_texture_darkens_the_shadowed_triangles() {
             // N378: occlusion map is texture 1 (left black, right white).
             occlusion_texture: occlusion,
             occlusion_strength: Some(1.0),
+            normal_texture: None,
+            normal_scale: None,
             ..Material::default()
         }],
         textures: vec![
@@ -1721,6 +1740,131 @@ fn occlusion_texture_darkens_the_shadowed_triangles() {
     assert!(
         with_ao < without,
         "occlusion darkens: with={with_ao:.2} without={without:.2}"
+    );
+}
+
+#[test]
+fn normal_map_perturbs_per_pixel_shading() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node, Texture};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let png = |w: u32, h: u32, pixels: Vec<u8>| {
+        let image = image::RgbImage::from_raw(w, h, pixels).unwrap();
+        let mut out = Vec::new();
+        image
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    };
+    let geometry = || MeshGeometry {
+        positions: vec![
+            [-0.5, -0.5, 0.0],
+            [0.5, -0.5, 0.0],
+            [0.5, 0.5, 0.0],
+            [-0.5, 0.5, 0.0],
+        ],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        normals: vec![[0.0, 0.0, 1.0]; 4],
+        // N379: tangent along +x, right-handed.
+        tangents: vec![[1.0, 0.0, 0.0, 1.0]; 4],
+        colors: Vec::new(),
+        skin_joints: Vec::new(),
+        skin_weights: Vec::new(),
+        morph_targets: Vec::new(),
+    };
+    let build = |normal: Option<usize>| Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(geometry()),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "lit".into(),
+            texture: Some(0),
+            color: Some([255, 255, 255]),
+            // N379: normal map is texture 1 (left tilts away, right faces the light).
+            normal_texture: normal,
+            normal_scale: Some(1.0),
+            ..Material::default()
+        }],
+        textures: vec![
+            Texture {
+                name: "white".into(),
+                width: 1,
+                height: 1,
+                format: "image/png".into(),
+                bytes: 0,
+                data: Some(png(1, 1, vec![255, 255, 255])),
+                wrap: None,
+            },
+            Texture {
+                name: "normal".into(),
+                width: 2,
+                height: 1,
+                format: "image/png".into(),
+                bytes: 0,
+                data: Some(png(2, 1, vec![255, 0, 0, 128, 128, 255])),
+                wrap: None,
+            },
+        ],
+        ..Model::default()
+    };
+    let render = |normal: Option<usize>| -> Vec<u8> {
+        let model = build(normal);
+        let blobs = mdc_bake::attach_model_textures(&model, &mdc_bake::BakeLimits::default());
+        let package = mdc_bake::mesh_package_with_textures(
+            &model,
+            &mdc_model::RendererCapability::full_3d(),
+            blobs,
+        )
+        .unwrap();
+        let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        session
+            .install_package(&package.to_bytes().unwrap())
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session.start_mirror("main", "full-frame", 30).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        device.clock.advance(0);
+        device.emit_mirror_frame().unwrap();
+        session.poll().unwrap();
+        session.take_mirror_frame().expect("mirror frame").bytes
+    };
+    let mean_drawn = |bytes: &[u8]| -> f64 {
+        let background = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let mut sum = 0.0f64;
+        let mut count = 0u32;
+        for i in (0..bytes.len()).step_by(2) {
+            let value = u16::from_le_bytes([bytes[i], bytes[i + 1]]);
+            if value != background {
+                sum += f64::from(value >> 5);
+                count += 1;
+            }
+        }
+        sum / f64::from(count.max(1))
+    };
+    let flat = mean_drawn(&render(None));
+    let mapped = mean_drawn(&render(Some(1)));
+    assert!(
+        mapped < flat,
+        "normal map darkens the tilted triangle: mapped={mapped:.2} flat={flat:.2}"
     );
 }
 
@@ -1855,6 +1999,7 @@ fn multi_mesh_scene_bakes_and_reaches_a_device() {
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
             colors: Vec::new(),
+            tangents: Vec::new(),
         }),
         ..Mesh::default()
     };
@@ -1940,6 +2085,7 @@ fn textured_geometry_package_renders_on_the_device() {
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
             colors: Vec::new(),
+            tangents: Vec::new(),
         }),
         ..Mesh::default()
     };

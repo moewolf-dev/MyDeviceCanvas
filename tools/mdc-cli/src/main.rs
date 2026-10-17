@@ -4195,6 +4195,7 @@ mod tests {
                     skin_weights: Vec::new(),
                     morph_targets: Vec::new(),
                     colors: Vec::new(),
+                    tangents: Vec::new(),
                 }),
                 ..mdc_model::Mesh::default()
             }],
