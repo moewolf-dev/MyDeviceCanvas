@@ -58,3 +58,9 @@ version readback, N339):
 cargo run -p mdc -- --board linux-virt provision ./model.mdcpkg
 ```
 
+OTA a simulator board end-to-end (N350):
+
+```sh
+cargo run -p mdc -- --board esp32-jc3248w535-sim ota 2.1.0
+```
+

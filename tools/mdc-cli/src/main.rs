@@ -565,6 +565,104 @@ fn cmd_provision(opts: &GlobalOpts, path: &str) -> Result<(), Box<dyn std::error
     }
     Ok(())
 }
+/// N350: drive an OTA against a simulator board end-to-end (begin → chunk →
+/// confirm) and read the firmware version back, with a rollback report on error.
+fn cmd_ota(
+    opts: &GlobalOpts,
+    version: &str,
+    extra: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut size: Option<u64> = None;
+    let mut sha256: Option<String> = None;
+    let mut iter = extra.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--size" => size = iter.next().and_then(|v| v.parse().ok()),
+            "--sha256" => sha256 = iter.next().cloned(),
+            _ => {}
+        }
+    }
+    let (mut session, mut device, _manager) = open_sim(&opts.board)?;
+    let ota = session
+        .device
+        .as_ref()
+        .map(|d| d.capabilities.ota)
+        .unwrap_or(false);
+    if !ota {
+        return Err(format!("board {} does not advertise OTA", opts.board).into());
+    }
+    let firmware_before = session
+        .device
+        .as_ref()
+        .map(|d| d.capabilities.firmware.clone())
+        .unwrap_or_default();
+    let step = |session: &mut Session<mdc_transport::MemoryLink>,
+                device: &mut FakeDevice,
+                command: mdc_protocol::OtaCommand|
+     -> Result<(), String> {
+        session.send_ota(command).map_err(|e| e.to_string())?;
+        device.poll().map_err(|e| e.to_string())?;
+        session.poll().map_err(|e| e.to_string()).map(|_| ())
+    };
+    let result = (|| -> Result<(), String> {
+        step(
+            &mut session,
+            &mut device,
+            mdc_protocol::OtaCommand {
+                action: "begin".into(),
+                version: Some(version.to_string()),
+                size,
+                sha256: None,
+            },
+        )?;
+        step(
+            &mut session,
+            &mut device,
+            mdc_protocol::OtaCommand {
+                action: "chunk".into(),
+                version: None,
+                size: None,
+                sha256: sha256.clone(),
+            },
+        )?;
+        step(
+            &mut session,
+            &mut device,
+            mdc_protocol::OtaCommand {
+                action: "confirm".into(),
+                version: None,
+                size: None,
+                sha256: None,
+            },
+        )
+    })();
+    // Version readback (also refreshes Capabilities after the install).
+    session.refresh_capabilities()?;
+    device.poll()?;
+    session.poll()?;
+    let firmware_after = session
+        .device
+        .as_ref()
+        .map(|d| d.capabilities.firmware.clone())
+        .unwrap_or_default();
+    let ok = result.is_ok() && firmware_after == version;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "board": opts.board,
+            "version": version,
+            "firmware_before": firmware_before,
+            "firmware_after": firmware_after,
+            "ok": ok,
+            "rolled_back": firmware_after != version,
+            "error": result.err(),
+        }))?
+    );
+    if !ok {
+        return Err("OTA did not confirm the requested version".into());
+    }
+    Ok(())
+}
 /// N55: set a scene from a JSON file, or clear it, on a simulator board.
 fn cmd_scene(opts: &GlobalOpts, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let (mut session, mut device, _manager) = open_sim(&opts.board)?;
@@ -2671,7 +2769,7 @@ fn usage() {
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME]|\
-package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg]|install-package <file.mdcpkg>|provision <file.mdcpkg>|\
+package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] --out f.ppm|\
@@ -2779,6 +2877,14 @@ fn main() {
                 std::process::exit(2);
             }
             cmd_provision(&opts, &path)
+        }
+        Some("ota") => {
+            let version = args.get(1).cloned().unwrap_or_default();
+            if version.is_empty() {
+                eprintln!("ota requires a firmware version");
+                std::process::exit(2);
+            }
+            cmd_ota(&opts, &version, &args[2..])
         }
         Some("config") => {
             let action = args.get(1).cloned().unwrap_or_default();
@@ -3309,6 +3415,29 @@ mod tests {
     #[test]
     fn tcp_scripted_input_reaches_manager() {
         run_tcp_input("esp32-jc3248w535-sim").unwrap();
+    }
+
+    #[test]
+    fn ota_command_confirms_and_reads_back() {
+        let opts = GlobalOpts {
+            sim: true,
+            address: None,
+            port: None,
+            board: "esp32-jc3248w535-sim".into(),
+        };
+        cmd_ota(&opts, "2.1.0", &[]).unwrap();
+    }
+
+    #[test]
+    fn ota_command_rolls_back_on_a_bad_image() {
+        let opts = GlobalOpts {
+            sim: true,
+            address: None,
+            port: None,
+            board: "esp32-jc3248w535-sim".into(),
+        };
+        let result = cmd_ota(&opts, "2.1.0", &["--sha256".to_string(), "bad".to_string()]);
+        assert!(result.is_err(), "a bad image must not confirm");
     }
 
     #[test]
