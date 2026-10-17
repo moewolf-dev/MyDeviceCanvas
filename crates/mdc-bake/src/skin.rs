@@ -1916,6 +1916,23 @@ pub fn render_package_scene_clip_filtered(
     render_package_scene_clip_mode(package, clip, time, size, filter, ShadeMode::Flat)
 }
 
+/// N429: like [`render_package_scene_clip_mode`] but selects the animation by name
+/// (an unknown name renders the static bind pose).
+pub fn render_package_scene_clip_named(
+    package: &mdc_model::DevicePackage,
+    name: &str,
+    time: f32,
+    size: (u32, u32),
+    filter: crate::Filter,
+    mode: ShadeMode,
+) -> Result<BakedTexture, BakeError> {
+    let clip = match package.animations.iter().position(|a| a.name == name) {
+        Some(index) => SceneClip::Index(index),
+        None => SceneClip::Static,
+    };
+    render_package_scene_clip_mode(package, clip, time, size, filter, mode)
+}
+
 /// N386: how the package renderer shades each surface. `Flat` is the historical
 /// per-triangle Lambert; `Smooth` shades per pixel from interpolated normals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

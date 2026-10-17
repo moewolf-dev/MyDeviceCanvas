@@ -1391,12 +1391,17 @@ fn cmd_render_package(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
     let mut out: Option<String> = None;
     let mut frame: u32 = 0;
     let mut sprite: u32 = 64;
+    let mut clip: Option<String> = None;
+    let mut time: f32 = 0.0;
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "--out" => out = iter.next().cloned(),
             "--frame" => frame = iter.next().and_then(|v| v.parse().ok()).unwrap_or(frame),
             "--sprite" => sprite = iter.next().and_then(|v| v.parse().ok()).unwrap_or(sprite),
+            // N429: select the animation clip by name at `--time` seconds.
+            "--clip" => clip = iter.next().cloned(),
+            "--time" => time = iter.next().and_then(|v| v.parse().ok()).unwrap_or(time),
             other => file = Some(other.to_string()),
         }
     }
@@ -1406,7 +1411,18 @@ fn cmd_render_package(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
     let package = mdc_model::MdcPackage::from_bytes(&bytes)?;
     // N187: a mesh package renders its geometry (with its texture) instead.
     if package.package.atlas.is_none() {
-        let frame = mdc_bake::render_package_mesh(&package.package, (sprite, sprite))?;
+        // N429: a named clip renders the posed scene, otherwise the static mesh.
+        let frame = match &clip {
+            Some(name) => mdc_bake::render_package_scene_clip_named(
+                &package.package,
+                name,
+                time,
+                (sprite, sprite),
+                mdc_bake::Filter::Nearest,
+                mdc_bake::ShadeMode::Flat,
+            )?,
+            None => mdc_bake::render_package_mesh(&package.package, (sprite, sprite))?,
+        };
         std::fs::write(
             &out,
             rgb565_frame_to_ppm(frame.width, frame.height, &frame.rgb565),
@@ -3287,7 +3303,7 @@ config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] [--srgb] --out f.ppm|\
 motion <motion3.json> [--param ID] [--samples N]|\
-render-package <file.mdcpkg> [--frame N] --out f.ppm|\
+render-package <file.mdcpkg> [--frame N] [--clip NAME] [--time T] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|\
 model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb>|verify <file.mdcpkg>|diff <a.mdcpkg> <b.mdcpkg>"
@@ -3569,6 +3585,74 @@ mod tests {
         let mut tampered = package.clone();
         tampered.manifest.checksum ^= 0xffff;
         assert!(!tampered.verify().valid, "a wrong checksum fails");
+    }
+
+    #[test]
+    fn named_clip_selection_falls_back_to_static() {
+        // N429: an unknown clip name renders the static bind pose.
+        use mdc_model::{Mesh, MeshGeometry, Model, Node};
+        let model = Model {
+            source: "t".into(),
+            nodes: vec![Node {
+                name: "root".into(),
+                mesh: Some(0),
+                ..Node::default()
+            }],
+            meshes: vec![Mesh {
+                name: "quad".into(),
+                vertices: 4,
+                indices: 6,
+                material: None,
+                geometry: Some(MeshGeometry {
+                    positions: vec![
+                        [-0.5, -0.5, 0.0],
+                        [0.5, -0.5, 0.0],
+                        [0.5, 0.5, 0.0],
+                        [-0.5, 0.5, 0.0],
+                    ],
+                    indices: vec![0, 1, 2, 0, 2, 3],
+                    uv: Vec::new(),
+                    uv2: Vec::new(),
+                    normals: Vec::new(),
+                    colors: Vec::new(),
+                    tangents: Vec::new(),
+                    skin_joints: Vec::new(),
+                    skin_weights: Vec::new(),
+                    skin_joints2: Vec::new(),
+                    skin_weights2: Vec::new(),
+                    morph_targets: Vec::new(),
+                }),
+                ..Mesh::default()
+            }],
+            animations: vec![mdc_model::Animation {
+                name: "idle".into(),
+                channels: 0,
+                tracks: Vec::new(),
+            }],
+            ..Model::default()
+        };
+        let package =
+            mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d())
+                .unwrap();
+        // A known name resolves to an index; an unknown name stays static.
+        assert!(mdc_bake::render_package_scene_clip_named(
+            &package.package,
+            "idle",
+            0.0,
+            (16, 16),
+            mdc_bake::Filter::Nearest,
+            mdc_bake::ShadeMode::Flat,
+        )
+        .is_ok());
+        assert!(mdc_bake::render_package_scene_clip_named(
+            &package.package,
+            "missing",
+            0.0,
+            (16, 16),
+            mdc_bake::Filter::Nearest,
+            mdc_bake::ShadeMode::Flat,
+        )
+        .is_ok());
     }
 
     #[test]
