@@ -40,11 +40,13 @@ mdc --board linux-virt mirror --frames 30 --write-dir ./mirror-out --format bmp
 
 # Serve the latest frame to an OBS Browser Source (live push + a scriptable still).
 mdc --board linux-virt mirror --frames 300 --http 127.0.0.1:8080
-#   http://127.0.0.1:8080/stream      -> live multipart/x-mixed-replace (N313)
+#   http://127.0.0.1:8080/stream      -> live multipart/x-mixed-replace (BMP parts, N313)
+#   http://127.0.0.1:8080/stream.jpg  -> live multipart/x-mixed-replace (JPEG parts, N337)
 #   http://127.0.0.1:8080/            -> auto-refreshing page
 #   http://127.0.0.1:8080/frame.bmp   -> image/bmp
 #   http://127.0.0.1:8080/frame.ppm   -> image/x-portable-pixmap
 #   http://127.0.0.1:8080/frame.png   -> image/png (N328)
+#   http://127.0.0.1:8080/frame.jpg   -> image/jpeg (N336)
 
 # Or fan out over TCP for a local consumer.
 mdc --board linux-virt mirror --frames 30 --serve 127.0.0.1:7777
@@ -58,10 +60,12 @@ caches the newest frame as BMP (bottom-up 24-bit) and PPM, accepts at most
 `max_clients`, and answers one short-lived request per connection. A slow reader
 never blocks `pump`; it simply receives the frame that is current when it asks.
 `/stream` (N313) keeps the connection open and pushes a BMP part per published
-frame (`Content-Type: multipart/x-mixed-replace; boundary=mdcframe`); each
-streaming client buffers at most one part, and frames that arrive while a slow
-client is still writing are dropped (`clipped_frames()`), so `pump` never blocks
-and memory stays bounded.
+frame (`Content-Type: multipart/x-mixed-replace; boundary=mdcframe`); `/stream.jpg`
+(N337) pushes JPEG parts instead. Each streaming client buffers at most one part,
+and frames that arrive while a slow client is still writing are dropped
+(`clipped_frames()`), so `pump` never blocks and memory stays bounded. N336 adds a
+dependency-free baseline JPEG encoder (`encode_jpeg`) served at `/frame.jpg` and
+`mdc mirror --format jpg`.
 
 ## Guarantees
 

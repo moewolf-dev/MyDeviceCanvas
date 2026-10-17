@@ -1056,6 +1056,8 @@ struct HttpClient {
     stream_part: Vec<u8>,
     /// A long-lived multipart consumer rather than a one-shot request.
     streaming: bool,
+    /// N337: this stream serves JPEG parts.
+    stream_jpeg: bool,
     /// The peer closed or errored; dropped on the next pump.
     dead: bool,
     /// Frames skipped because the previous part was still being written.
@@ -1066,7 +1068,7 @@ struct HttpClient {
 const MULTIPART_BOUNDARY: &str = "mdcframe";
 
 /// The path a request for a live stream uses.
-const STREAM_PATHS: [&str; 2] = ["/stream", "/stream.bmp"];
+const STREAM_PATHS: [&str; 3] = ["/stream", "/stream.bmp", "/stream.jpg"];
 
 fn multipart_headers() -> Vec<u8> {
     format!(
@@ -1077,16 +1079,16 @@ fn multipart_headers() -> Vec<u8> {
     .into_bytes()
 }
 
-fn multipart_part(bmp: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(bmp.len() + 96);
+fn multipart_part(content_type: &str, body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(body.len() + 96);
     out.extend_from_slice(
         format!(
-            "--{MULTIPART_BOUNDARY}\r\nContent-Type: image/bmp\r\nContent-Length: {}\r\n\r\n",
-            bmp.len()
+            "--{MULTIPART_BOUNDARY}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
+            body.len()
         )
         .as_bytes(),
     );
-    out.extend_from_slice(bmp);
+    out.extend_from_slice(body);
     out.extend_from_slice(b"\r\n");
     out
 }
@@ -1094,7 +1096,10 @@ fn multipart_part(bmp: &[u8]) -> Vec<u8> {
 /// What a request path resolves to.
 enum Served {
     Bytes(Vec<u8>),
-    Multipart,
+    Multipart {
+        /// N337: serve JPEG parts instead of BMP.
+        jpeg: bool,
+    },
 }
 
 impl HttpMirrorServer {
@@ -1131,13 +1136,20 @@ impl HttpMirrorServer {
         }
         self.frames = self.frames.saturating_add(1);
         if let Some(frame) = self.last.as_ref() {
-            let part = multipart_part(&frame.bmp);
+            let parts: Vec<(bool, Vec<u8>)> = vec![
+                (false, multipart_part("image/bmp", &frame.bmp)),
+                (true, multipart_part("image/jpeg", &frame.jpg)),
+            ];
             for client in &mut self.clients {
                 if !client.streaming {
                     continue;
                 }
                 if client.stream_part.is_empty() {
-                    client.stream_part = part.clone();
+                    client.stream_part = parts
+                        .iter()
+                        .find(|(jpeg, _)| *jpeg == client.stream_jpeg)
+                        .map(|(_, part)| part.clone())
+                        .unwrap_or_default();
                 } else {
                     client.clipped = client.clipped.saturating_add(1);
                 }
@@ -1157,6 +1169,7 @@ impl HttpMirrorServer {
                         stream_headers: Vec::new(),
                         stream_part: Vec::new(),
                         streaming: false,
+                        stream_jpeg: false,
                         dead: false,
                         clipped: 0,
                     });
@@ -1192,7 +1205,7 @@ impl HttpMirrorServer {
                         let path = request_path(&client.request[..end]);
                         match respond(last, &path) {
                             Served::Bytes(bytes) => client.response = Some(bytes),
-                            Served::Multipart => begin_stream(client, last),
+                            Served::Multipart { jpeg } => begin_stream(client, last, jpeg),
                         }
                     }
                 }
@@ -1253,13 +1266,23 @@ impl HttpMirrorServer {
 }
 
 /// N313: start a live multipart stream for a client, seeding it with the newest
-/// frame if one is already cached.
-fn begin_stream(client: &mut HttpClient, last: Option<&ServedFrame>) {
+/// frame if one is already cached. N337: `jpeg` selects JPEG parts.
+fn begin_stream(client: &mut HttpClient, last: Option<&ServedFrame>, jpeg: bool) {
     client.streaming = true;
+    client.stream_jpeg = jpeg;
     client.stream_headers = multipart_headers();
     client.stream_part = last
-        .map(|frame| multipart_part(&frame.bmp))
+        .map(|frame| stream_part(frame, jpeg))
         .unwrap_or_default();
+}
+
+/// N337: build a multipart part for the selected encoding.
+fn stream_part(frame: &ServedFrame, jpeg: bool) -> Vec<u8> {
+    if jpeg && !frame.jpg.is_empty() {
+        multipart_part("image/jpeg", &frame.jpg)
+    } else {
+        multipart_part("image/bmp", &frame.bmp)
+    }
 }
 
 /// Write the pending preamble and part. Never buffers more than one part; a
@@ -1312,7 +1335,10 @@ fn request_path(request: &[u8]) -> String {
 
 fn respond(last: Option<&ServedFrame>, path: &str) -> Served {
     if STREAM_PATHS.contains(&path) {
-        return Served::Multipart;
+        // N337: `/stream.jpg` serves JPEG parts; the others serve BMP.
+        return Served::Multipart {
+            jpeg: path == "/stream.jpg",
+        };
     }
     Served::Bytes(match path {
         "/" | "/index.html" => simple_response(
@@ -1984,5 +2010,38 @@ mod tests {
             "a BMP body must be streamed"
         );
         assert_eq!(server.frames_published(), 3);
+    }
+
+    #[test]
+    fn http_jpeg_stream_pushes_jpeg_parts() {
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(10)))
+            .unwrap();
+        client
+            .write_all(b"GET /stream.jpg HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+        let red = vec![0u8, 0, 255, 255]; // 1x1 BGRA red
+        server.publish(&ShadowFrame {
+            width: 1,
+            height: 1,
+            generation: 1,
+            frame_id: 1,
+            pixels: &red,
+        });
+        let mut response = Vec::new();
+        drain(&mut server, &mut client, &mut response);
+        let head = String::from_utf8_lossy(&response);
+        assert!(
+            head.contains("multipart/x-mixed-replace; boundary=mdcframe"),
+            "{head}"
+        );
+        assert!(head.contains("Content-Type: image/jpeg"));
+        assert!(
+            response.windows(2).any(|w| w == [0xFF, 0xD8]),
+            "a JPEG SOI is streamed"
+        );
     }
 }
