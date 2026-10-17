@@ -12,6 +12,44 @@ fn metrics_path() -> PathBuf {
     std::env::temp_dir().join("mdc-last-sim-metrics.json")
 }
 
+/// N370: the host process resident set size in bytes, when the platform exposes
+/// it (Linux: current RSS from `/proc`; other unix: peak RSS via `getrusage`).
+fn resident_bytes() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+        let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+        Some(pages * 4096)
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        // macOS/BSD `ru_maxrss` is a peak, measured in bytes.
+        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
+            return None;
+        }
+        Some(usage.ru_maxrss as u64)
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// N370: `ru_maxrss` is a high-water mark on non-Linux unix (bytes); on Linux
+/// `resident_bytes` returns the current value.
+fn rss_is_peak() -> bool {
+    cfg!(all(unix, not(target_os = "linux")))
+}
+
+/// N370: a one-sample host memory snapshot.
+fn rss_json() -> serde_json::Value {
+    serde_json::json!({
+        "rss_bytes": resident_bytes(),
+        "peak": rss_is_peak(),
+    })
+}
+
 fn fresh_metrics() -> Result<String, Box<dyn std::error::Error>> {
     let (host, mut device) = FakeDevice::pair(BoardProfile::default());
     let mut session = Session::new(host);
@@ -64,6 +102,7 @@ fn watch<W: Write>(
             "firmware": device.firmware(),
             "diagnostics": diagnostics,
             "diagnostics_total": device.metrics_snapshot().diagnostics_emitted,
+            "rss_bytes": resident_bytes(),
         });
         writeln!(out, "{}", serde_json::to_string(&line)?)?;
     }
@@ -79,6 +118,11 @@ fn main() {
             .cloned()
     };
     let board = flag_value("--board").unwrap_or_else(|| "default".into());
+    // N370: a single bounded host-memory sample (no lingering state).
+    if args.iter().any(|a| a == "--rss") {
+        println!("{}", rss_json());
+        return;
+    }
     if let Some(count) = flag_value("--jsonl").and_then(|v| v.parse::<u32>().ok()) {
         let interval = flag_value("--interval")
             .and_then(|v| v.parse::<u64>().ok())
@@ -147,5 +191,27 @@ mod tests {
         let mut out = Vec::new();
         watch(0, 10, "default", &mut out).unwrap();
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn jsonl_samples_carry_a_bounded_rss_reading() {
+        let mut out = Vec::new();
+        watch(2, 10, "default", &mut out).unwrap();
+        for line in parse_lines(&out) {
+            assert!(line.get("rss_bytes").is_some(), "rss present");
+        }
+    }
+
+    #[test]
+    fn rss_snapshot_is_well_formed() {
+        let snapshot = rss_json();
+        assert!(snapshot.get("rss_bytes").is_some());
+        assert_eq!(snapshot["peak"], serde_json::json!(rss_is_peak()));
+        // On the unix hosts this gate runs on, a reading is available and sane.
+        #[cfg(unix)]
+        {
+            let bytes = resident_bytes().expect("rss available");
+            assert!(bytes > 0, "rss is positive");
+        }
     }
 }

@@ -12,3 +12,6 @@ path = "src/main.rs"
 mdc-simulator = { path = "../../crates/mdc-simulator" }
 mdc-core = { path = "../../crates/mdc-core" }
 serde_json = "=1.0.100"
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.190"

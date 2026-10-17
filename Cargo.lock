@@ -338,6 +338,7 @@ name = "mdc"
 version = "0.1.0"
 dependencies = [
  "image",
+ "libc",
  "mdc-assets",
  "mdc-bake",
  "mdc-core",
@@ -422,6 +423,7 @@ dependencies = [
 name = "mdc-inspector"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "mdc-core",
  "mdc-simulator",
  "serde_json",

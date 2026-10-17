@@ -369,15 +369,41 @@ fn cmd_devices(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
     })
 }
 
+/// N370: the host process resident set size in bytes, when the platform exposes
+/// it (Linux: current RSS from `/proc`; other unix: peak RSS via `getrusage`).
+fn host_rss_bytes() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+        let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+        Some(pages * 4096)
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
+            return None;
+        }
+        Some(usage.ru_maxrss as u64)
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
 fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     // N57: bounded live stream (`--watch --count N --interval MS`).
     let mut watch = false;
+    let mut rss = false;
     let mut count: u32 = 3;
     let mut interval_ms: u64 = 200;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "--watch" => watch = true,
+            // N370: add the host process memory reading to each snapshot.
+            "--rss" => rss = true,
             "--count" => count = iter.next().and_then(|v| v.parse().ok()).unwrap_or(count),
             "--interval" => {
                 interval_ms = iter
@@ -395,17 +421,18 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
             let _ = device.poll();
             let snapshot = device.metrics_snapshot();
             let mgr = manager.lock().map_err(|e| e.to_string())?;
-            println!(
-                "{}",
-                serde_json::json!({
-                    "tick": tick,
-                    "board": opts.board,
-                    "scene_nodes": device.scene_node_count(),
-                    "atlas_frames": device.atlas_frames(),
-                    "diagnostics_emitted": snapshot.diagnostics_emitted,
-                    "config": inspect_json(&mgr, Some(&snapshot)),
-                })
-            );
+            let mut value = serde_json::json!({
+                "tick": tick,
+                "board": opts.board,
+                "scene_nodes": device.scene_node_count(),
+                "atlas_frames": device.atlas_frames(),
+                "diagnostics_emitted": snapshot.diagnostics_emitted,
+                "config": inspect_json(&mgr, Some(&snapshot)),
+            });
+            if rss {
+                value["host_rss_bytes"] = serde_json::json!(host_rss_bytes());
+            }
+            println!("{value}");
             if tick + 1 < count {
                 std::thread::sleep(std::time::Duration::from_millis(interval_ms));
             }
@@ -413,7 +440,14 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
         return Ok(());
     }
     with_sim_or_empty(opts, |mgr, metrics| {
-        println!("{}", inspect_json(mgr, metrics));
+        let json = inspect_json(mgr, metrics);
+        if rss {
+            let mut value: serde_json::Value = serde_json::from_str(&json)?;
+            value["host_rss_bytes"] = serde_json::json!(host_rss_bytes());
+            println!("{value}");
+        } else {
+            println!("{json}");
+        }
         Ok(())
     })
 }
@@ -2963,7 +2997,7 @@ bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animatio
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] --out f.ppm|\
 motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] --out f.ppm|\
-scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|raster-demo|preview-mesh|inspect [--watch --count N --interval MS]|\
+scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]"
     );
 }
@@ -3189,6 +3223,12 @@ mod tests {
         assert_eq!(std::fs::read(&out).unwrap(), vec![1, 2, 3, 4]);
         cmd_asset(&["prune".into(), store]).unwrap();
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn host_rss_bytes_is_positive_on_unix() {
+        assert!(host_rss_bytes().unwrap() > 0);
     }
 
     #[test]

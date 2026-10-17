@@ -13,6 +13,9 @@ default = ["serial"]
 serial = ["mdc-transport/serial"]
 websocket = ["mdc-transport/websocket"]
 
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.190"
+
 [dependencies]
 mdc-core = { path = "../../crates/mdc-core" }
 mdc-protocol = { path = "../../crates/mdc-protocol" }
