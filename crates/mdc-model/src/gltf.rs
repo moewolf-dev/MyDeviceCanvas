@@ -24,6 +24,8 @@ struct BufferView {
     buffer: u64,
     byte_offset: u64,
     byte_length: u64,
+    /// N377: `byteStride` for interleaved accessors (0/absent = tightly packed).
+    byte_stride: u64,
 }
 
 struct Buffer {
@@ -72,8 +74,8 @@ impl GltfImporter {
             data.get(start..start.checked_add(len)?)
         };
 
-        // N376: a tight, de-sparsed byte image per accessor (materialised once
-        // here, so every decoder below is sparse-aware).
+        // N376/N377: a tight, de-interleaved, de-sparsed byte image per accessor
+        // (materialised once here, so every decoder below is stride/sparse aware).
         let resolved: Vec<Option<Vec<u8>>> = (0..accessors.len())
             .map(|index| {
                 let accessor = accessors.get(index)?;
@@ -82,12 +84,31 @@ impl GltfImporter {
                 let component_size = accessor_component_size(component)?;
                 let components = accessor_components(ty)?;
                 let count = accessor.get("count").and_then(Value::as_u64)? as usize;
-                let stride = component_size.checked_mul(components)?;
-                let mut out = vec![0u8; count.checked_mul(stride)?];
+                let element_size = component_size.checked_mul(components)?;
+                let mut out = vec![0u8; count.checked_mul(element_size)?];
                 if let Some(view_index) = accessor.get("bufferView").and_then(Value::as_u64) {
                     if let Some(bytes) = view_bytes(view_index) {
-                        let n = bytes.len().min(out.len());
-                        out[..n].copy_from_slice(&bytes[..n]);
+                        let accessor_offset = accessor
+                            .get("byteOffset")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0) as usize;
+                        let src = bytes.get(accessor_offset..).unwrap_or(&[]);
+                        let stride = buffer_views
+                            .get(view_index as usize)
+                            .map(|view| view.byte_stride as usize)
+                            .unwrap_or(0);
+                        if stride == 0 || stride == element_size {
+                            let n = src.len().min(out.len());
+                            out[..n].copy_from_slice(&src[..n]);
+                        } else {
+                            // N377: de-interleave `count` elements from a strided view.
+                            for k in 0..count {
+                                let from = k.checked_mul(stride)?;
+                                let chunk = src.get(from..from.checked_add(element_size)?)?;
+                                let dst = k.checked_mul(element_size)?;
+                                out[dst..dst + element_size].copy_from_slice(chunk);
+                            }
+                        }
                     }
                 }
                 if let Some(sparse) = accessor.get("sparse") {
@@ -126,10 +147,10 @@ impl GltfImporter {
                         if target >= count {
                             continue;
                         }
-                        let src = value_offset.checked_add(k.checked_mul(stride)?)?;
-                        let value = value_data.get(src..src + stride)?;
-                        let dst = target.checked_mul(stride)?;
-                        out[dst..dst + stride].copy_from_slice(value);
+                        let src = value_offset.checked_add(k.checked_mul(element_size)?)?;
+                        let value = value_data.get(src..src + element_size)?;
+                        let dst = target.checked_mul(element_size)?;
+                        out[dst..dst + element_size].copy_from_slice(value);
                     }
                 }
                 Some(out)
@@ -895,10 +916,12 @@ fn read_buffer_views(doc: &Value, buffers: &[Buffer]) -> Result<Vec<BufferView>,
         let buffer = view.get("buffer").and_then(Value::as_u64).unwrap_or(0);
         let byte_offset = view.get("byteOffset").and_then(Value::as_u64).unwrap_or(0);
         let byte_length = view.get("byteLength").and_then(Value::as_u64).unwrap_or(0);
+        let byte_stride = view.get("byteStride").and_then(Value::as_u64).unwrap_or(0);
         let parsed = BufferView {
             buffer,
             byte_offset,
             byte_length,
+            byte_stride,
         };
         if !buffers.is_empty() {
             let target = buffers.get(buffer as usize).ok_or_else(|| {
@@ -1602,7 +1625,19 @@ fn validate_accessor(accessor: &Value, views: &[BufferView]) -> Result<u64, Mode
         .get("byteOffset")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let needed = accessor_offset.saturating_add(count.saturating_mul(element));
+    // N377: interleaved accessors advance by the bufferView's byteStride.
+    let stride = if view.byte_stride == 0 {
+        element
+    } else {
+        view.byte_stride
+    };
+    let needed = if count == 0 {
+        accessor_offset
+    } else {
+        accessor_offset
+            .saturating_add((count - 1).saturating_mul(stride))
+            .saturating_add(element)
+    };
     if needed > view.byte_length {
         return Err(ModelError::Unsupported(format!(
             "accessor {needed} bytes over bufferView {} bytes",
@@ -1890,6 +1925,38 @@ pub(crate) fn json_name(value: &Value, fallback: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn interleaved_accessors_are_de_strided() {
+        // N377: POSITION and NORMAL share a 24-byte stride (12-byte elements).
+        let mut bin = Vec::new();
+        for value in [
+            1.0f32, 2.0, 3.0, 0.0, 0.0, 1.0, // vertex 0: pos, normal
+            4.0, 5.0, 6.0, 0.0, 1.0, 0.0, // vertex 1: pos, normal
+        ] {
+            bin.extend_from_slice(&value.to_le_bytes());
+        }
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": bin.len()}],
+            "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 48, "byteStride": 24}],
+            "accessors": [
+                {"bufferView": 0, "byteOffset": 0, "componentType": 5126, "count": 2, "type": "VEC3"},
+                {"bufferView": 0, "byteOffset": 12, "componentType": 5126, "count": 2, "type": "VEC3"}
+            ],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1}}]}],
+            "nodes": [{"name": "root", "mesh": 0}]
+        });
+        let model = GltfImporter
+            .import(
+                &glb(&serde_json::to_vec(&doc).unwrap(), &bin),
+                &ImportLimits::default(),
+            )
+            .unwrap();
+        let geometry = model.meshes[0].geometry.as_ref().unwrap();
+        assert_eq!(geometry.positions, vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]);
+        assert_eq!(geometry.normals, vec![[0.0, 0.0, 1.0], [0.0, 1.0, 0.0]]);
+    }
 
     #[test]
     fn sparse_accessors_override_base_values() {

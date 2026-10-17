@@ -264,7 +264,9 @@ N373: `KHR_texture_transform` on the base-colour texture (`offset`/`rotation`/`s
 is imported and applied to the UV before sampling. N374: `KHR_materials_emissive_strength`
 scales `emissiveFactor` before it lifts the ambient. N376: sparse accessors are
 de-sparsed into a tight byte image before decoding, so POSITION/NORMAL/UV/COLOR_0
-(and indices) honour their `sparse` block.
+(and indices) honour their `sparse` block. N377: interleaved accessors
+(`bufferView.byteStride` + accessor `byteOffset`) are de-strided into the same
+tight image, so shared-stride vertex layouts decode correctly.
 
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a
