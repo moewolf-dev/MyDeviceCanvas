@@ -3184,6 +3184,22 @@ fn cmd_validate(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// N408: verify a sealed package's manifest against its body; exit non-zero when
+/// the checksum or sizes do not match.
+fn cmd_verify(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let path = args.first().cloned().unwrap_or_default();
+    if path.is_empty() {
+        return Err("verify <file.mdcpkg>".into());
+    }
+    let package = mdc_model::MdcPackage::from_bytes(&std::fs::read(&path)?)?;
+    let verification = package.verify();
+    println!("{}", serde_json::to_string_pretty(&verification)?);
+    if !verification.valid {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 fn usage() {
     println!(
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
@@ -3198,7 +3214,7 @@ motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|\
-model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb>|diff <a.mdcpkg> <b.mdcpkg>"
+model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb>|verify <file.mdcpkg>|diff <a.mdcpkg> <b.mdcpkg>"
     );
 }
 
@@ -3369,6 +3385,7 @@ fn main() {
         Some("asset") => cmd_asset(&args[1..]),
         Some("model-info") => cmd_model_info(&args[1..]),
         Some("validate") => cmd_validate(&args[1..]),
+        Some("verify") => cmd_verify(&args[1..]),
         Some("diff") => cmd_diff(&args[1..]),
         Some("switch-demo") => {
             let mut o = opts.clone();
@@ -3432,6 +3449,25 @@ mod tests {
     #[cfg(unix)]
     fn host_rss_bytes_is_positive_on_unix() {
         assert!(host_rss_bytes().unwrap() > 0);
+    }
+
+    #[test]
+    fn verify_accepts_a_fresh_package_and_rejects_tampering() {
+        // N408: the manifest checksum matches the body; a tampered body fails.
+        let gltf = br#"{"asset":{"version":"2.0"},"nodes":[{"name":"root","mesh":0}],
+            "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+            "accessors":[{"count":4,"type":"VEC3"}]}"#;
+        let model = mdc_model::GltfImporter
+            .import(gltf, &mdc_model::ImportLimits::default())
+            .unwrap();
+        let package =
+            mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d())
+                .unwrap();
+        assert!(package.verify().valid, "a fresh package verifies");
+
+        let mut tampered = package.clone();
+        tampered.manifest.checksum ^= 0xffff;
+        assert!(!tampered.verify().valid, "a wrong checksum fails");
     }
 
     #[test]

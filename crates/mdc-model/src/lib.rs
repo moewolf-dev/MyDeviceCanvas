@@ -33,8 +33,8 @@ pub use live2d::{
 };
 pub use optimizer::{plan as plan_optimization, OptimizerPlan, TexturePlan};
 pub use package::{
-    compile_to_package, fnv1a, MdcPackage, PackageAssembler, PackageManifest, MAX_PACKAGE_BYTES,
-    PACKAGE_VERSION,
+    compile_to_package, fnv1a, MdcPackage, PackageAssembler, PackageManifest, PackageVerification,
+    MAX_PACKAGE_BYTES, PACKAGE_VERSION,
 };
 
 #[cfg(test)]

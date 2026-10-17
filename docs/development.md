@@ -93,6 +93,10 @@ flag):
 cargo run -p mdc -- diff ./old.mdcpkg ./new.mdcpkg
 ```
 
+`mdc verify <file.mdcpkg>` (N408) checks a sealed package's manifest against its
+body (`MdcPackage::verify`), printing a JSON result and exiting non-zero on a
+checksum/size mismatch.
+
 `mdc bake --mipmaps` (N396) also writes a box-downsampled mip chain
 (`mip0.ppm` … ) beside the atlas, produced by `mdc_bake::bake_mipmaps`.
 `mdc bake --dither N` (N404) applies ordered (Bayer) dithering (strength `N` LSBs)

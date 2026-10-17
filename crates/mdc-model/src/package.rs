@@ -17,6 +17,19 @@ pub const MAX_PACKAGE_BYTES: usize = 16 * 1024 * 1024;
 /// Largest manifest accepted (it is small; guards a hostile length).
 pub const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 
+/// N408: the result of verifying a sealed package's manifest against its body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PackageVerification {
+    pub valid: bool,
+    pub checksum_ok: bool,
+    pub body_bytes_ok: bool,
+    pub target_ok: bool,
+    pub version_ok: bool,
+    pub checksum: u64,
+    pub body_bytes: u64,
+    pub manifest_checksum: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageManifest {
     pub version: u16,
@@ -55,6 +68,27 @@ impl MdcPackage {
             },
             package,
         })
+    }
+
+    /// N408: verify the manifest against the serialized body (checksum + sizes).
+    pub fn verify(&self) -> PackageVerification {
+        let body = body_bytes(&self.package).unwrap_or_default();
+        let checksum = fnv1a(&body);
+        let body_bytes = body.len() as u64;
+        let checksum_ok = checksum == self.manifest.checksum;
+        let body_bytes_ok = body_bytes == self.manifest.body_bytes;
+        let target_ok = self.package.target == self.manifest.target;
+        let version_ok = self.manifest.version == PACKAGE_VERSION;
+        PackageVerification {
+            valid: checksum_ok && body_bytes_ok && target_ok && version_ok,
+            checksum_ok,
+            body_bytes_ok,
+            target_ok,
+            version_ok,
+            checksum,
+            body_bytes,
+            manifest_checksum: self.manifest.checksum,
+        }
     }
 
     /// Serialize to the wire container bytes.
