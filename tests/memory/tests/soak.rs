@@ -1405,6 +1405,77 @@ fn http_stream_scale_requests_stay_bounded() {
 }
 
 #[test]
+fn pbr_textured_rendering_stays_bounded() {
+    // N401: repeatedly rendering a package with emissive/roughness/normal maps
+    // keeps a constant frame size.
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};
+    let model = Model {
+        source: "soak".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.5, 0.5, 0.0],
+                    [-0.5, 0.5, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                uv2: Vec::new(),
+                normals: vec![[0.3, 0.0, 0.95]; 4],
+                colors: Vec::new(),
+                tangents: vec![[1.0, 0.0, 0.0, 1.0]; 4],
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                skin_joints2: Vec::new(),
+                skin_weights2: Vec::new(),
+                morph_targets: Vec::new(),
+            }),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "pbr".into(),
+            texture: Some(0),
+            color: Some([255, 255, 255]),
+            roughness_texture: Some(1),
+            normal_texture: Some(2),
+            emissive_texture: Some(3),
+            emissive_strength: Some(0.5),
+            ..Material::default()
+        }],
+        ..Model::default()
+    };
+    let mut package =
+        mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d()).unwrap();
+    let blob = mdc_model::TextureBlob {
+        width: 2,
+        height: 2,
+        rgb565: vec![0xFFu8; 8],
+        alpha: Vec::new(),
+    };
+    package.package.texture_blobs = vec![blob.clone(), blob.clone(), blob.clone(), blob.clone()];
+    package.package.texture = Some(blob);
+    let mut size = None;
+    for _ in 0..100 {
+        let frame = mdc_bake::render_package_scene(&package.package, 0.0, (32, 32)).unwrap();
+        match size {
+            None => size = Some(frame.rgb565.len()),
+            Some(expected) => assert_eq!(frame.rgb565.len(), expected, "frame size is constant"),
+        }
+    }
+    assert!(size.unwrap() > 0);
+}
+
+#[test]
 fn quantized_import_stays_bounded() {
     // N390/N391: repeatedly importing a quantized GLB stays within the vertex
     // bound and produces a stable summary.

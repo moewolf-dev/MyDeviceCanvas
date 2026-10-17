@@ -2538,6 +2538,84 @@ fn roughness_texture_modulates_shading_per_texel() {
 }
 
 #[test]
+fn specular_factor_scales_the_highlight() {
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};
+
+    let build = |specular_factor: f32| Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.5, 0.5, 0.0],
+                    [-0.5, 0.5, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                uv: Vec::new(),
+                uv2: Vec::new(),
+                normals: vec![[0.0, 0.0, 1.0]; 4],
+                colors: Vec::new(),
+                tangents: Vec::new(),
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                skin_joints2: Vec::new(),
+                skin_weights2: Vec::new(),
+                morph_targets: Vec::new(),
+            }),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "shiny".into(),
+            color: Some([128, 128, 128]),
+            metallic: Some(1.0),
+            roughness: Some(0.1),
+            // N397: KHR_materials_specular factor.
+            specular_factor: Some(specular_factor),
+            ..Material::default()
+        }],
+        ..Model::default()
+    };
+    let render = |specular_factor: f32| {
+        let package = mdc_model::compile_to_package(
+            &build(specular_factor),
+            &mdc_model::RendererCapability::full_3d(),
+        )
+        .unwrap();
+        mdc_bake::render_package_scene_clip_mode(
+            &package.package,
+            mdc_bake::SceneClip::First,
+            0.0,
+            (32, 32),
+            mdc_bake::Filter::Nearest,
+            mdc_bake::ShadeMode::SmoothSpecular,
+        )
+        .unwrap()
+    };
+    let sum = |f: &mdc_bake::BakedTexture| -> u64 {
+        f.rgb565
+            .chunks_exact(2)
+            .map(|b| u64::from(u16::from_le_bytes([b[0], b[1]])) >> 5)
+            .sum()
+    };
+    let full = render(1.0);
+    let dim = render(0.1);
+    assert!(
+        sum(&full) > sum(&dim),
+        "a smaller factor dims the highlight"
+    );
+}
+
+#[test]
 fn device_diagnostics_reach_the_host_channel() {
     use mdc_core::{ConnectionState, DiagnosticRecord, Session};
     use mdc_simulator::{BoardProfile, FakeDevice};
