@@ -102,6 +102,12 @@ struct MdcSwiftHello {
         }
         gpu.close()
 
+        // N409: the host can send a pointer event to a touch-capable device.
+        if session.sendInput(pointerId: 1, phase: "down", x: 3, y: 4) != 0 {
+            fputs("sendInput failed\n", stderr)
+            exit(1)
+        }
+
         session.close()
         session.close()
         print("swift ok \(width)x\(height)")

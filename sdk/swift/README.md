@@ -41,7 +41,9 @@ Default session is **simulator FakeDevice** (same as CLI `--sim`). Physical tran
 Also: `mdc_session_current_frame_id`, `mdc_session_surface_size`, `mdc_session_needs_full_frame`.
 
 N366: `MdcSession(webSocket: "ws://host:port")` connects over WebSocket (C ABI
-`mdc_session_connect_ws`), alongside `MdcSession(tcp:)`.
+`mdc_session_connect_ws`), alongside `MdcSession(tcp:)`. N409:
+`session.sendInput(pointerId:phase:x:y:)` sends a pointer event to a touch-capable
+device (C ABI `mdc_session_send_input`).
 
 ## Pixel format (N307)
 

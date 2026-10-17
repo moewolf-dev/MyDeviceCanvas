@@ -242,6 +242,23 @@ public final class MdcSession {
         }
     }
 
+    /// N409: send a pointer event from the host to the device (requires the
+    /// `touch` capability). Returns 0 on success.
+    public func sendInput(
+        surfaceId: String = "main",
+        pointerId: UInt16,
+        phase: String,
+        x: UInt16,
+        y: UInt16
+    ) -> Int32 {
+        guard let raw else { return -1 }
+        return surfaceId.withCString { surface in
+            phase.withCString { text in
+                mdc_session_send_input(raw, surface, pointerId, text, x, y)
+            }
+        }
+    }
+
     public func pollEvent() -> MdcUiEvent? {
         guard let raw else { return nil }
         var kind: Int32 = 0
