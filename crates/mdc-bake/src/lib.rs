@@ -685,6 +685,110 @@ pub fn mesh_package_with_textures(
     mdc_model::MdcPackage::seal(package).map_err(|e| BakeError::Package(e.to_string()))
 }
 
+/// N405: a palette-quantized RGB565 image (one index byte per pixel).
+pub struct PaletteImage {
+    pub width: u32,
+    pub height: u32,
+    /// RGB565 palette entries (2..=256).
+    pub palette: Vec<u16>,
+    /// One palette index per pixel.
+    pub indices: Vec<u8>,
+}
+
+fn channel_of(color: u16, channel: usize) -> u16 {
+    match channel {
+        0 => (color >> 11) & 0x1f,
+        1 => (color >> 5) & 0x3f,
+        _ => color & 0x1f,
+    }
+}
+
+/// N405: the (channel, range) with the widest spread across `colors`.
+fn widest_channel(colors: &[u16]) -> (usize, i32) {
+    let mut best = (0usize, -1i32);
+    for channel in 0..3 {
+        let min = colors
+            .iter()
+            .map(|c| channel_of(*c, channel))
+            .min()
+            .unwrap_or(0);
+        let max = colors
+            .iter()
+            .map(|c| channel_of(*c, channel))
+            .max()
+            .unwrap_or(0);
+        let range = i32::from(max) - i32::from(min);
+        if range > best.1 {
+            best = (channel, range);
+        }
+    }
+    best
+}
+
+fn average_color(colors: &[u16]) -> u16 {
+    if colors.is_empty() {
+        return 0;
+    }
+    let n = colors.len() as u32;
+    let r: u32 = colors.iter().map(|c| u32::from((c >> 11) & 0x1f)).sum();
+    let g: u32 = colors.iter().map(|c| u32::from((c >> 5) & 0x3f)).sum();
+    let b: u32 = colors.iter().map(|c| u32::from(c & 0x1f)).sum();
+    ((((r / n) as u16) & 0x1f) << 11) | ((((g / n) as u16) & 0x3f) << 5) | ((b / n) as u16 & 0x1f)
+}
+
+/// N405: median-cut quantize an RGB565 image to at most `max_colors` (2..=256)
+/// palette entries, returning the palette and one index per pixel.
+pub fn quantize_palette(width: u32, height: u32, rgb565: &[u8], max_colors: u32) -> PaletteImage {
+    let max_colors = max_colors.clamp(2, 256) as usize;
+    let mut counts: std::collections::BTreeSet<u16> = std::collections::BTreeSet::new();
+    for chunk in rgb565.chunks_exact(2) {
+        counts.insert(u16::from_le_bytes([chunk[0], chunk[1]]));
+    }
+    let mut boxes: Vec<Vec<u16>> = vec![counts.into_iter().collect()];
+    while boxes.len() < max_colors {
+        // Split the box with the widest channel spread.
+        let candidate = boxes
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.len() > 1)
+            .map(|(i, b)| (i, widest_channel(b)))
+            .max_by_key(|(_, (_, range))| *range);
+        let Some((index, (channel, range))) = candidate else {
+            break;
+        };
+        if range <= 0 {
+            break;
+        }
+        let mut split = boxes.swap_remove(index);
+        split.sort_by_key(|c| channel_of(*c, channel));
+        let right = split.split_off(split.len() / 2);
+        boxes.push(split);
+        boxes.push(right);
+    }
+    let mut palette = Vec::with_capacity(boxes.len());
+    let mut map: std::collections::HashMap<u16, u8> = std::collections::HashMap::new();
+    for (i, b) in boxes.iter().enumerate() {
+        palette.push(average_color(b));
+        for color in b {
+            map.insert(*color, i as u8);
+        }
+    }
+    let indices = rgb565
+        .chunks_exact(2)
+        .map(|c| {
+            map.get(&u16::from_le_bytes([c[0], c[1]]))
+                .copied()
+                .unwrap_or(0)
+        })
+        .collect();
+    PaletteImage {
+        width,
+        height,
+        palette,
+        indices,
+    }
+}
+
 /// N404: a 4×4 Bayer threshold matrix (0..15).
 const BAYER4: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
 

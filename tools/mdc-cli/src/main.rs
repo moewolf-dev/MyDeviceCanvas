@@ -822,6 +822,7 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut package_path: Option<String> = None;
     let mut mipmaps = false;
     let mut dither: u8 = 0;
+    let mut palette: u32 = 0;
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -839,6 +840,8 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "--mipmaps" => mipmaps = true,
             // N404: ordered (Bayer) dithering strength in LSBs (0..=8).
             "--dither" => dither = iter.next().and_then(|v| v.parse().ok()).unwrap_or(4),
+            // N405: median-cut the atlas to at most N palette entries.
+            "--palette" => palette = iter.next().and_then(|v| v.parse().ok()).unwrap_or(16),
             other => images.push(other.to_string()),
         }
     }
@@ -917,6 +920,37 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let manifest_path = Path::new(&out_dir).join("atlas.json");
     std::fs::write(&manifest_path, package.manifest.to_json()?)?;
+    // N405: an optional median-cut palette reduction.
+    let mut palette_json = None;
+    if palette >= 2 {
+        let quantized = mdc_bake::quantize_palette(
+            package.atlas.width,
+            package.atlas.height,
+            &dithered,
+            palette,
+        );
+        let palette_path = Path::new(&out_dir).join("atlas.pal.json");
+        let colors: Vec<String> = quantized
+            .palette
+            .iter()
+            .map(|c| format!("{c:04x}"))
+            .collect();
+        std::fs::write(
+            &palette_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "width": quantized.width,
+                "height": quantized.height,
+                "colors": colors,
+            }))?,
+        )?;
+        let index_path = Path::new(&out_dir).join("atlas.idx");
+        std::fs::write(&index_path, &quantized.indices)?;
+        palette_json = Some(serde_json::json!({
+            "colors": quantized.palette.len(),
+            "palette_path": palette_path.display().to_string(),
+            "index_path": index_path.display().to_string(),
+        }));
+    }
     // N396: an optional box-downsampled mip chain (level 0 is the atlas).
     let mut mip_paths = Vec::new();
     if mipmaps {
@@ -944,6 +978,7 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "manifest_path": manifest_path.display().to_string(),
             "mips": mip_paths,
             "dither": dither,
+            "palette": palette_json,
         }))?
     );
     Ok(())
@@ -3152,7 +3187,7 @@ fn usage() {
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
-config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--dither N] [--package OUT.mdcpkg]|\
+config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] --out f.ppm|\
 motion <motion3.json> [--param ID] [--samples N]|\
@@ -3465,6 +3500,24 @@ mod tests {
         .unwrap();
         cmd_model_info(&[path.to_string_lossy().into_owned()]).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn palette_quantization_is_bounded() {
+        // N405: four colours reduced to two entries; indices stay in range.
+        let mut rgb565 = Vec::new();
+        for value in [0xF800u16, 0xF800, 0x07E0, 0x07E0] {
+            rgb565.extend_from_slice(&value.to_le_bytes());
+        }
+        let quantized = mdc_bake::quantize_palette(2, 2, &rgb565, 2);
+        assert!(quantized.palette.len() <= 2, "palette bounded");
+        assert_eq!(quantized.indices.len(), 4);
+        assert!(quantized
+            .indices
+            .iter()
+            .all(|i| (*i as usize) < quantized.palette.len()));
+        // A 1-entry request is clamped up to two.
+        assert!(mdc_bake::quantize_palette(2, 2, &rgb565, 1).palette.len() >= 2);
     }
 
     #[test]

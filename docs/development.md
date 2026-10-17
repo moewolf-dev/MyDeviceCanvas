@@ -97,6 +97,8 @@ cargo run -p mdc -- diff ./old.mdcpkg ./new.mdcpkg
 (`mip0.ppm` … ) beside the atlas, produced by `mdc_bake::bake_mipmaps`.
 `mdc bake --dither N` (N404) applies ordered (Bayer) dithering (strength `N` LSBs)
 to the atlas and its mip chain via `mdc_bake::bayer_dither_rgb565`.
+`mdc bake --palette N` (N405) median-cut quantizes the atlas to at most `N` palette
+entries (`mdc_bake::quantize_palette`), writing `atlas.pal.json` + `atlas.idx`.
 
 `Session::stats()` (N398) returns host counters (`packets_sent`, `bytes_sent`,
 `acks_received`, `frames_sent`); `mdc inspect --watch` reports them per tick.
