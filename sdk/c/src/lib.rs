@@ -719,6 +719,79 @@ pub unsafe extern "C" fn mdc_session_poll_event(
     1
 }
 
+/// N427: like [`mdc_session_poll_event`] but also writes the hit-tested scene node
+/// (empty when none) into `node`.
+///
+/// # Safety
+/// All pointers must be writable when non-null; `session` is from create/connect.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_poll_event_with_node(
+    session: *mut MdcSession,
+    kind: *mut c_int,
+    device_id: *mut c_char,
+    device_id_len: usize,
+    phase: *mut c_char,
+    phase_len: usize,
+    node: *mut c_char,
+    node_len: usize,
+    x: *mut u16,
+    y: *mut u16,
+) -> c_int {
+    if session.is_null() || kind.is_null() {
+        return -1;
+    }
+    let session = &mut *session;
+    let _ = pump(session);
+    if session.queued.is_empty() {
+        if let Ok(mut manager) = session.manager.lock() {
+            session.queued.extend(manager.drain_events());
+        }
+    }
+    if session.queued.is_empty() {
+        return 0;
+    }
+    let event = session.queued.remove(0);
+    let (code, id, phase_text, node_text, px, py) = match event {
+        ManagerEvent::Input { device_id, event } => (
+            1,
+            device_id,
+            event.phase,
+            event.node.unwrap_or_default(),
+            event.x,
+            event.y,
+        ),
+        ManagerEvent::Error { device_id, message } => (2, device_id, message, String::new(), 0, 0),
+        ManagerEvent::Connected(id) | ManagerEvent::Added(id) => {
+            (3, id, String::new(), String::new(), 0, 0)
+        }
+        ManagerEvent::Disconnected(id) | ManagerEvent::Removed(id) => {
+            (4, id, String::new(), String::new(), 0, 0)
+        }
+        ManagerEvent::EndpointSwitched { device_id } => {
+            (5, device_id, String::new(), String::new(), 0, 0)
+        }
+        ManagerEvent::Mirror {
+            device_id,
+            frame_id,
+            ..
+        } => (6, device_id, frame_id.to_string(), String::new(), 0, 0),
+        ManagerEvent::Telemetry {
+            device_id, name, ..
+        } => (7, device_id, name, String::new(), 0, 0),
+    };
+    *kind = code;
+    copy_cstr(device_id, device_id_len, &id);
+    copy_cstr(phase, phase_len, &phase_text);
+    copy_cstr(node, node_len, &node_text);
+    if !x.is_null() {
+        *x = px;
+    }
+    if !y.is_null() {
+        *y = py;
+    }
+    1
+}
+
 /// # Safety
 /// Same as [`mdc_session_poll_event`]. `pointer_id` may be null.
 #[no_mangle]
@@ -1112,6 +1185,58 @@ mod tests {
         let url = std::ffi::CString::new("ws://127.0.0.1:1").unwrap();
         let session = unsafe { mdc_session_connect_ws(url.as_ptr()) };
         assert!(session.is_null());
+    }
+
+    #[test]
+    fn c_abi_poll_event_with_node_writes_the_hit_node() {
+        // N427: the hit-tested scene node is available to C callers.
+        let session = mdc_session_create();
+        assert!(!session.is_null());
+        unsafe {
+            // A scene rect covering the whole surface, then a touch inside it.
+            let scene = std::ffi::CString::new(
+                r##"{"name":"root","kind":"rect","rect":[0,0,480,320],"value":"#fff"}"##,
+            )
+            .unwrap();
+            assert_eq!(mdc_set_scene(session, scene.as_ptr()), 0);
+            let phase = std::ffi::CString::new("down").unwrap();
+            // The device emits the input (so it hit-tests the scene).
+            assert!(mdc_session_simulate_input(session, phase.as_ptr(), 10, 10) >= 0);
+            // Drain the events until the input arrives.
+            let mut kind = -1;
+            let mut id = [0i8; 64];
+            let mut ph = [0i8; 16];
+            let mut node = [0i8; 64];
+            let (mut x, mut y) = (0u16, 0u16);
+            let mut found = None;
+            for _ in 0..8 {
+                let rc = mdc_session_poll_event_with_node(
+                    session,
+                    &mut kind,
+                    id.as_mut_ptr(),
+                    id.len(),
+                    ph.as_mut_ptr(),
+                    ph.len(),
+                    node.as_mut_ptr(),
+                    node.len(),
+                    &mut x,
+                    &mut y,
+                );
+                if rc <= 0 {
+                    break;
+                }
+                if kind == 1 {
+                    found = Some(
+                        std::ffi::CStr::from_ptr(node.as_ptr())
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
+                    break;
+                }
+            }
+            assert_eq!(found.as_deref(), Some("root"), "the hit node is reported");
+            mdc_session_destroy(session);
+        }
     }
 
     #[test]

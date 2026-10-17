@@ -115,6 +115,11 @@ MdcSession* mdc_session_connect_ws(const char* url);
 int mdc_session_poll_event(MdcSession* session, int* kind, char* device_id, size_t device_id_len,
                            char* phase, size_t phase_len, uint16_t* x, uint16_t* y);
 
+/** N427: like poll_event, and also writes the hit-tested scene node. */
+int mdc_session_poll_event_with_node(MdcSession* session, int* kind, char* device_id,
+                                     size_t device_id_len, char* phase, size_t phase_len,
+                                     char* node, size_t node_len, uint16_t* x, uint16_t* y);
+
 /** Same as poll_event, and writes the input pointer id when the event is a touch. */
 int mdc_session_poll_event_with_pointer(MdcSession* session, int* kind, char* device_id,
                                         size_t device_id_len, char* phase, size_t phase_len,
