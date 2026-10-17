@@ -682,10 +682,24 @@ fn material_blend(model: &Model, mesh: &Mesh) -> u8 {
 /// N343: the ambient floor for a mesh, raised by the material roughness (a
 /// rough surface shades flatter).
 fn material_ambient(model: &Model, mesh: &Mesh) -> f32 {
-    let roughness = material_of(model, mesh)
-        .map(|m| m.roughness())
-        .unwrap_or(1.0);
-    (SHADE_AMBIENT + 0.35 * roughness).min(0.9)
+    match material_of(model, mesh) {
+        Some(material) if material.is_unlit() => 1.0,
+        Some(material) => {
+            (SHADE_AMBIENT + 0.35 * material.roughness() + 0.3 * material.emissive_luma()).min(0.95)
+        }
+        None => 0.9,
+    }
+}
+
+/// N363: the same ambient rule for a package material.
+fn package_material_ambient(package: &mdc_model::DevicePackage, mesh: &Mesh) -> f32 {
+    match mesh.material.and_then(|mi| package.materials.get(mi)) {
+        Some(material) if material.is_unlit() => 1.0,
+        Some(material) => {
+            (SHADE_AMBIENT + 0.35 * material.roughness() + 0.3 * material.emissive_luma()).min(0.95)
+        }
+        None => 0.9,
+    }
 }
 
 /// N166: render one posed frame of the mesh's full geometry into `size` pixels.
@@ -1381,10 +1395,7 @@ pub fn render_package_scene_clip_filtered(
                 &geometry.normals,
                 &geometry.indices,
                 SHADE_LIGHT,
-                mesh.material
-                    .and_then(|mi| package.materials.get(mi))
-                    .map(|m| (SHADE_AMBIENT + 0.35 * m.roughness()).min(0.9))
-                    .unwrap_or(0.9),
+                package_material_ambient(package, mesh),
             ),
             texture: mesh_texture,
             blend: mesh
@@ -2137,6 +2148,46 @@ mod tests {
             shaded >> 11 < flat >> 11,
             "the red channel is reduced by shading"
         );
+    }
+
+    #[test]
+    fn unlit_material_ignores_shading() {
+        let render = |unlit: bool| {
+            let model = Model {
+                source: "t".into(),
+                nodes: vec![Node {
+                    name: "n".into(),
+                    mesh: Some(0),
+                    ..Node::default()
+                }],
+                meshes: vec![mdc_model::Mesh {
+                    name: "q".into(),
+                    vertices: 4,
+                    indices: 6,
+                    material: Some(0),
+                    geometry: Some(mdc_model::MeshGeometry {
+                        normals: vec![[1.0, 0.0, 0.0]; 4],
+                        ..quad_geometry()
+                    }),
+                    ..mdc_model::Mesh::default()
+                }],
+                materials: vec![mdc_model::Material {
+                    name: "m".into(),
+                    color: Some([255, 0, 0]),
+                    unlit: Some(unlit),
+                    ..mdc_model::Material::default()
+                }],
+                ..Model::default()
+            };
+            render_scene_at(&model, 0, 0.0, (16, 16), None, 0x0000).unwrap()
+        };
+        let px = |f: &BakedTexture| {
+            u16::from_le_bytes([f.rgb565[(8 * 16 + 8) * 2], f.rgb565[(8 * 16 + 8) * 2 + 1]])
+        };
+        let lit = px(&render(false));
+        let unlit = px(&render(true));
+        assert!(unlit >> 11 > lit >> 11, "unlit brighter: {unlit:#06x}");
+        assert_eq!(unlit, 0xF800, "unlit red is unshaded");
     }
 
     #[test]

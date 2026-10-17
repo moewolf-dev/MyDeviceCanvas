@@ -222,6 +222,22 @@ impl GltfImporter {
                 .and_then(|p| p.get("roughnessFactor"))
                 .and_then(Value::as_f64)
                 .map(|v| v.clamp(0.0, 1.0) as f32);
+            // N363: emissiveFactor (top-level) and KHR_materials_unlit.
+            let emissive = material
+                .get("emissiveFactor")
+                .and_then(Value::as_array)
+                .and_then(|list| {
+                    let channel = |k: usize| {
+                        list.get(k)
+                            .and_then(Value::as_f64)
+                            .map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+                    };
+                    Some([channel(0)?, channel(1)?, channel(2)?])
+                });
+            let unlit = material
+                .get("extensions")
+                .and_then(|e| e.get("KHR_materials_unlit"))
+                .map(|_| true);
             materials.push(Material {
                 name: json_name(material, &format!("material{i}")),
                 texture,
@@ -237,6 +253,8 @@ impl GltfImporter {
                 alpha,
                 metallic,
                 roughness,
+                emissive,
+                unlit,
             });
         }
 
@@ -2024,7 +2042,7 @@ mod tests {
             "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "material": 0}]}],
             "accessors": [{"count": 3, "type": "VEC3"}],
             "materials": [
-                {"name": "red", "pbrMetallicRoughness": {"baseColorFactor": [1.0, 0.0, 0.0, 1.0], "metallicFactor": 0.25, "roughnessFactor": 0.75}},
+                {"name": "red", "emissiveFactor": [1.0, 0.5, 0.0], "extensions": {"KHR_materials_unlit": {}}, "pbrMetallicRoughness": {"baseColorFactor": [1.0, 0.0, 0.0, 1.0], "metallicFactor": 0.25, "roughnessFactor": 0.75}},
                 {"name": "plain"}
             ]
         });
@@ -2037,6 +2055,11 @@ mod tests {
         assert_eq!(model.materials[0].roughness, Some(0.75));
         assert_eq!(model.materials[0].roughness(), 0.75);
         assert_eq!(model.materials[1].roughness(), 1.0);
+        // N363: emissive + unlit.
+        assert_eq!(model.materials[0].emissive, Some([255, 128, 0]));
+        assert!(model.materials[0].is_unlit());
+        assert!(model.materials[0].emissive_luma() > 0.0);
+        assert!(!model.materials[1].is_unlit());
         assert_eq!(model.materials[0].color_rgb565(), Some(0xF800));
         assert_eq!(model.materials[1].color, None);
         assert_eq!(model.materials[1].color_rgb565(), None);

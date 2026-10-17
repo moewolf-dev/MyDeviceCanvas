@@ -843,6 +843,8 @@ fn packaged_masked_texture_cuts_out_on_render() {
             alpha: None,
             metallic: None,
             roughness: None,
+            emissive: None,
+            unlit: None,
         }],
         skeletons: Vec::new(),
         animations: Vec::new(),
@@ -910,6 +912,8 @@ fn masked_material_cuts_out_transparent_texels() {
             alpha: None,
             metallic: None,
             roughness: None,
+            emissive: None,
+            unlit: None,
         }],
         ..Model::default()
     };

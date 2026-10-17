@@ -4176,6 +4176,8 @@ mod tests {
                 alpha: None,
                 metallic: None,
                 roughness: None,
+                emissive: None,
+                unlit: None,
             }],
             skeletons: Vec::new(),
             animations: Vec::new(),

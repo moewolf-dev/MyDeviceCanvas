@@ -252,6 +252,12 @@ pub struct Material {
     /// N343: glTF `roughnessFactor` (0..1; spec default 1.0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roughness: Option<f32>,
+    /// N363: glTF `emissiveFactor` as 8-bit RGB (lifts the shading ambient).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emissive: Option<[u8; 3]>,
+    /// N363: `KHR_materials_unlit` — draw without directional shading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unlit: Option<bool>,
 }
 
 impl Material {
@@ -284,6 +290,19 @@ impl Material {
     /// surface needs an environment to light, so the flat renderer only notes it.
     pub fn metallic(&self) -> f32 {
         self.metallic.unwrap_or(1.0).clamp(0.0, 1.0)
+    }
+    /// N363: `KHR_materials_unlit` is present and set.
+    pub fn is_unlit(&self) -> bool {
+        self.unlit.unwrap_or(false)
+    }
+    /// N363: emissive luminance in 0..1 (from `emissiveFactor`).
+    pub fn emissive_luma(&self) -> f32 {
+        match self.emissive {
+            Some([r, g, b]) => {
+                (0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b)) / 255.0
+            }
+            None => 0.0,
+        }
     }
 }
 

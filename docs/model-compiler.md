@@ -258,7 +258,8 @@ renders apply a per-triangle Lambert shade from a fixed key light (`+z`, ambient
 while a side-facing surface darkens. Skinned vertices use their bind-pose normals
 (no normal skinning). N343: glTF `metallicFactor`/`roughnessFactor` are imported;
 roughness raises the ambient floor (a rough surface shades flatter), while
-`metallicFactor` is recorded but unlit without an environment.
+`metallicFactor` is recorded but unlit without an environment. N363: `emissiveFactor`
+(lifts the ambient) and `KHR_materials_unlit` (no directional shading) are imported.
 
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a
