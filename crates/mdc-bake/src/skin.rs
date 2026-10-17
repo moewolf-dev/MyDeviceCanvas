@@ -102,11 +102,30 @@ pub fn skin_normals(
     skeleton: &Skeleton,
     worlds: &[Mat4],
 ) -> Vec<[f32; 3]> {
+    skin_normals_multi(joints, weights, &[], &[], normals, skeleton, worlds)
+}
+
+/// N384: skin normals with up to eight influences (see [`skin_arrays_multi`]).
+#[allow(clippy::too_many_arguments)]
+pub fn skin_normals_multi(
+    joints: &[[u16; 4]],
+    weights: &[[f32; 4]],
+    joints2: &[[u16; 4]],
+    weights2: &[[f32; 4]],
+    normals: &[[f32; 3]],
+    skeleton: &Skeleton,
+    worlds: &[Mat4],
+) -> Vec<[f32; 3]> {
     let mut out = Vec::with_capacity(normals.len());
     for (i, normal) in normals.iter().enumerate() {
         let mut acc = [0.0f32; 3];
         let mut total = 0.0f32;
-        if let (Some(vertex_joints), Some(vertex_weights)) = (joints.get(i), weights.get(i)) {
+        for (set_joints, set_weights) in [(joints, weights), (joints2, weights2)] {
+            let (Some(vertex_joints), Some(vertex_weights)) =
+                (set_joints.get(i), set_weights.get(i))
+            else {
+                continue;
+            };
             for k in 0..4 {
                 let weight = vertex_weights[k];
                 if weight == 0.0 {
@@ -456,13 +475,31 @@ pub fn skin_arrays(
     skeleton: &Skeleton,
     worlds: &[Mat4],
 ) -> Vec<[f32; 3]> {
+    skin_arrays_multi(joints, weights, &[], &[], positions, skeleton, worlds)
+}
+
+/// N384: skin positions with up to eight influences (JOINTS_0/WEIGHTS_0 plus
+/// JOINTS_1/WEIGHTS_1). The weights of both sets are averaged together.
+#[allow(clippy::too_many_arguments)]
+pub fn skin_arrays_multi(
+    joints: &[[u16; 4]],
+    weights: &[[f32; 4]],
+    joints2: &[[u16; 4]],
+    weights2: &[[f32; 4]],
+    positions: &[[f32; 3]],
+    skeleton: &Skeleton,
+    worlds: &[Mat4],
+) -> Vec<[f32; 3]> {
     let mut out = Vec::with_capacity(positions.len());
     for (i, position) in positions.iter().enumerate() {
-        let vertex_joints = joints.get(i);
-        let vertex_weights = weights.get(i);
         let mut acc = [0.0f32; 3];
         let mut total = 0.0f32;
-        if let (Some(vertex_joints), Some(vertex_weights)) = (vertex_joints, vertex_weights) {
+        for (set_joints, set_weights) in [(joints, weights), (joints2, weights2)] {
+            let (Some(vertex_joints), Some(vertex_weights)) =
+                (set_joints.get(i), set_weights.get(i))
+            else {
+                continue;
+            };
             for k in 0..4 {
                 let weight = vertex_weights[k];
                 if weight == 0.0 {
@@ -1138,9 +1175,11 @@ pub fn render_scene_at(
         );
         let deformed: Vec<[f32; 3]> = if !geometry.skin_joints.is_empty() {
             match skeleton {
-                Some(skeleton) => skin_arrays(
+                Some(skeleton) => skin_arrays_multi(
                     &geometry.skin_joints,
                     &geometry.skin_weights,
+                    &geometry.skin_joints2,
+                    &geometry.skin_weights2,
                     &morphed,
                     skeleton,
                     &worlds,
@@ -1163,9 +1202,11 @@ pub fn render_scene_at(
                 if !geometry.skin_joints.is_empty()
                     && geometry.normals.len() >= geometry.positions.len() =>
             {
-                skin_normals(
+                skin_normals_multi(
                     &geometry.skin_joints,
                     &geometry.skin_weights,
+                    &geometry.skin_joints2,
+                    &geometry.skin_weights2,
                     &geometry.normals,
                     skeleton,
                     &worlds,
@@ -1667,9 +1708,11 @@ pub fn render_package_scene_clip_filtered(
         let morphed = morphed_positions(geometry, mesh, animation, Some(index), time);
         let deformed: Vec<[f32; 3]> = if !geometry.skin_joints.is_empty() {
             match skeleton {
-                Some(skeleton) => skin_arrays(
+                Some(skeleton) => skin_arrays_multi(
                     &geometry.skin_joints,
                     &geometry.skin_weights,
+                    &geometry.skin_joints2,
+                    &geometry.skin_weights2,
                     &morphed,
                     skeleton,
                     &worlds,
@@ -1692,9 +1735,11 @@ pub fn render_package_scene_clip_filtered(
                 if !geometry.skin_joints.is_empty()
                     && geometry.normals.len() >= geometry.positions.len() =>
             {
-                skin_normals(
+                skin_normals_multi(
                     &geometry.skin_joints,
                     &geometry.skin_weights,
+                    &geometry.skin_joints2,
+                    &geometry.skin_weights2,
                     &geometry.normals,
                     skeleton,
                     &worlds,
@@ -2249,6 +2294,8 @@ mod tests {
             uv2: Vec::new(),
             normals: Vec::new(),
             skin_joints: vec![[1, 0, 0, 0]; 4],
+            skin_joints2: Vec::new(),
+            skin_weights2: Vec::new(),
             skin_weights: vec![[1.0, 0.0, 0.0, 0.0]; 4],
             morph_targets: Vec::new(),
             colors: Vec::new(),
@@ -2283,6 +2330,8 @@ mod tests {
             uv2: Vec::new(),
             normals: Vec::new(),
             skin_joints: Vec::new(),
+            skin_joints2: Vec::new(),
+            skin_weights2: Vec::new(),
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
             colors: Vec::new(),
@@ -2548,6 +2597,31 @@ mod tests {
     }
 
     #[test]
+    fn eight_influence_skinning_uses_both_sets() {
+        // N384: the second joint/weight set contributes to the same vertex.
+        let skeleton = mdc_model::Skeleton {
+            name: "s".into(),
+            bones: 2,
+            joint_nodes: vec![0, 1],
+            inverse_bind: vec![mat4_identity(), mat4_identity()],
+        };
+        let worlds = vec![
+            mat4_identity(),
+            mat4_from_trs([10.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0]),
+        ];
+        let out = skin_arrays_multi(
+            &[[0, 0, 0, 0]],
+            &[[0.5, 0.0, 0.0, 0.0]],
+            &[[1, 0, 0, 0]],
+            &[[0.5, 0.0, 0.0, 0.0]],
+            &[[0.0, 0.0, 0.0]],
+            &skeleton,
+            &worlds,
+        );
+        assert!((out[0][0] - 5.0).abs() < 1e-4, "blended: {:?}", out[0]);
+    }
+
+    #[test]
     fn material_uv_set_selects_the_second_uv_channel() {
         // N383: uv_set 1 samples TEXCOORD_1 (here the horizontal mirror).
         let texture = crate::TextureMap::from_rgb565(2, 1, vec![0x00, 0xF8, 0xE0, 0x07]).unwrap();
@@ -2618,6 +2692,8 @@ mod tests {
             colors: Vec::new(),
             tangents: Vec::new(),
             skin_joints: Vec::new(),
+            skin_joints2: Vec::new(),
+            skin_weights2: Vec::new(),
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
         };

@@ -509,6 +509,17 @@ impl GltfImporter {
                                             decode_weights_mesh(a, b, MAX_GEOMETRY_VERTICES)
                                         })
                                         .unwrap_or_default();
+                                    // N384: a second set of skinning influences.
+                                    let skin_joints2 = pair(&attributes_value, "JOINTS_1")
+                                        .map(|(a, b)| {
+                                            decode_joints_mesh(a, b, MAX_GEOMETRY_VERTICES)
+                                        })
+                                        .unwrap_or_default();
+                                    let skin_weights2 = pair(&attributes_value, "WEIGHTS_1")
+                                        .map(|(a, b)| {
+                                            decode_weights_mesh(a, b, MAX_GEOMETRY_VERTICES)
+                                        })
+                                        .unwrap_or_default();
                                     // N224: geometry morph targets (POSITION deltas).
                                     let mut morph_targets = Vec::new();
                                     if let Some(targets) =
@@ -539,6 +550,8 @@ impl GltfImporter {
                                         tangents,
                                         skin_joints,
                                         skin_weights,
+                                        skin_joints2,
+                                        skin_weights2,
                                         morph_targets,
                                     };
                                     match geometry.as_mut() {

@@ -4210,6 +4210,8 @@ mod tests {
                     uv2: Vec::new(),
                     normals: Vec::new(),
                     skin_joints: Vec::new(),
+                    skin_joints2: Vec::new(),
+                    skin_weights2: Vec::new(),
                     skin_weights: Vec::new(),
                     morph_targets: Vec::new(),
                     colors: Vec::new(),

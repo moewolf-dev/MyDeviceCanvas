@@ -274,7 +274,9 @@ shade each pixel from the tangent-space normal map (per-pixel Lambert); without 
 normal map (or tangents) the per-triangle shade is used as before. N383: a
 material's `texCoord` (`Material.uv_set`) selects the mesh UV set, and `TEXCOORD_1`
 is imported into `MeshGeometry.uv2`, so a mesh can sample its texture from the
-second UV channel (falling back to the first). N380:
+second UV channel (falling back to the first). N384: `JOINTS_1`/`WEIGHTS_1` are
+imported (`MeshGeometry.skin_joints2`/`skin_weights2`) and `skin_arrays_multi`/
+`skin_normals_multi` blend up to eight influences per vertex. N380:
 `pack_material_atlas` (and `mdc package --atlas MAX_PAGE`) shelf-packs a package's
 per-material textures into one bounded page, remapping material indices and mesh UVs.
 

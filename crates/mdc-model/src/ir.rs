@@ -57,6 +57,12 @@ pub struct MeshGeometry {
     /// N379: TANGENT, parallel to `positions` (xyzw; w is the handedness sign).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tangents: Vec<[f32; 4]>,
+    /// N384: JOINTS_1 (up to four more skinning influences).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skin_joints2: Vec<[u16; 4]>,
+    /// N384: WEIGHTS_1, parallel to `skin_joints2`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skin_weights2: Vec<[f32; 4]>,
     /// JOINTS_0, parallel to `positions` (empty when absent).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skin_joints: Vec<[u16; 4]>,
@@ -107,6 +113,19 @@ impl MeshGeometry {
                 self.tangents.resize(base as usize, [1.0, 0.0, 0.0, 1.0]);
             }
             self.tangents.extend(other.tangents);
+        }
+        if !other.skin_joints2.is_empty() {
+            if self.skin_joints2.is_empty() {
+                self.skin_joints2.resize(base as usize, [0, 0, 0, 0]);
+            }
+            self.skin_joints2.extend(other.skin_joints2);
+        }
+        if !other.skin_weights2.is_empty() {
+            if self.skin_weights2.is_empty() {
+                self.skin_weights2
+                    .resize(base as usize, [0.0, 0.0, 0.0, 0.0]);
+            }
+            self.skin_weights2.extend(other.skin_weights2);
         }
         if !other.skin_joints.is_empty() {
             if self.skin_joints.is_empty() {
