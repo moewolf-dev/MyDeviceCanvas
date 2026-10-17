@@ -1271,12 +1271,14 @@ fn cmd_diag(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::erro
     let mut metric = "fps".to_string();
     let mut value = 30.0_f64;
     let mut unit: Option<String> = Some("fps".to_string());
+    let mut telemetry: Option<String> = None;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "--metric" => metric = iter.next().cloned().unwrap_or(metric),
             "--value" => value = iter.next().and_then(|v| v.parse().ok()).unwrap_or(value),
             "--unit" => unit = iter.next().cloned(),
+            "--telemetry" => telemetry = iter.next().cloned(),
             _ => {}
         }
     }
@@ -1285,6 +1287,13 @@ fn cmd_diag(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::erro
     // transaction.
     device.emit_boot_info()?;
     device.emit_metric(&metric, value, unit.as_deref())?;
+    if let Some(name) = &telemetry {
+        // N335: a structured telemetry event with a couple of fields.
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("value".to_string(), format!("{value}"));
+        fields.insert("board".to_string(), opts.board.clone());
+        device.emit_telemetry(name, Some("info"), fields)?;
+    }
     session.poll()?;
     let records = session.take_diagnostics();
     let diagnostics: Vec<serde_json::Value> = records
@@ -1305,6 +1314,13 @@ fn cmd_diag(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::erro
                 "boot_id": b.boot_id,
                 "run_id": b.run_id,
                 "reset_reason": b.reset_reason,
+            }),
+            mdc_core::DiagnosticRecord::Telemetry(e) => serde_json::json!({
+                "kind": "telemetry",
+                "name": e.name,
+                "level": e.level,
+                "fields": e.fields,
+                "event_seq": e.event_seq,
             }),
         })
         .collect();
@@ -2553,7 +2569,7 @@ fn usage() {
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
-authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U]|\
+authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg]|install-package <file.mdcpkg>|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\

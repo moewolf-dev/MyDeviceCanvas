@@ -50,10 +50,10 @@ the message types now:
 
 | Type | Code | Status |
 |---|---|---|
+| `Telemetry` | `0x60` | **implemented** (N335: CBOR `TelemetryEvent`; `Session::take_diagnostics`) |
 | `Metric` | `0x61` | **implemented** (N316: CBOR `MetricReport`; `Session::take_diagnostics`) |
-| `BootInfo` | `0x63` | **implemented** (N316: CBOR `BootInfo`) |
-| `Telemetry` | `0x60` | **reserved, not implemented** — payload not decoded |
 | `Crash` | `0x62` | **reserved, not implemented** |
+| `BootInfo` | `0x63` | **implemented** (N316: CBOR `BootInfo`) |
 
 `MessageType::try_from` (Rust) and the C++ `Parser::known_type` accept all four
 values so a downstream pin of the wire enum is stable. `Metric`/`BootInfo` are

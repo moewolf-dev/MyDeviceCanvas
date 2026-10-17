@@ -21,13 +21,13 @@ Supported types are HELLO, CAPABILITIES, FRAME, TILE, MIRRORFRAME, INPUT, OTA, M
 ## Reserved diagnostics (N303) and diagnostics channel (N316)
 
 `TELEMETRY`/`METRIC`/`CRASH`/`BOOTINFO` are device → host types. `METRIC`
-(`MetricReport`) and `BOOTINFO` (`BootInfo`) now carry CBOR payloads (N316);
-`TELEMETRY` and `CRASH` remain **reserved** with no payload. Diagnostics travel
-on their own message types so they never mix with a frame transaction, and a
+(`MetricReport`), `BOOTINFO` (`BootInfo`) and `TELEMETRY` (`TelemetryEvent`, N335)
+now carry CBOR payloads; `CRASH` remains **reserved** with no payload. Diagnostics
+travel on their own message types so they never mix with a frame transaction, and a
 receiver keeps them in a bounded queue (`Session::take_diagnostics`, 64 records).
-A `MetricReport`/`BootInfo` `boot_id`/`run_id` also feeds the reboot detection of
-N304. Diagnostics should still use a channel **independent of the link under
-test**; see
+A `MetricReport`/`BootInfo`/`TelemetryEvent` `boot_id`/`run_id` also feeds the
+reboot detection of N304. Diagnostics should still use a channel **independent of
+the link under test**; see
 [transport-scope.md](transport-scope.md#reserved-diagnostics--telemetry-n303--not-implemented).
 
 ## Reboot semantics (N304)

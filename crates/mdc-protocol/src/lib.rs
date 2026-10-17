@@ -764,6 +764,24 @@ pub struct BootInfo {
     pub reset_reason: Option<String>,
 }
 
+/// N335: a structured diagnostic event (CBOR for `MessageType::Telemetry`). The
+/// payload is an event name, a level, and free-form string fields, so a HIL test
+/// can assert on named values without a bespoke opcode.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TelemetryEvent {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub fields: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub boot_id: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub run_id: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub event_seq: u64,
+}
+
 /// Decoded FRAME payload variants (leading phase byte).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FramePayload {
@@ -1563,6 +1581,21 @@ mod tests {
             .nth(1)
             .unwrap();
         assert_eq!(encode_control(&metric).unwrap(), parse_hex(hex));
+
+        // N335: the reserved Telemetry type carries a structured event.
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("fps".to_string(), "30".to_string());
+        let event = TelemetryEvent {
+            name: "soak".into(),
+            level: Some("info".into()),
+            fields,
+            boot_id: 7,
+            run_id: 2,
+            event_seq: 9,
+        };
+        let back: TelemetryEvent = decode_control(&encode_control(&event).unwrap()).unwrap();
+        assert_eq!(back, event);
+        assert_eq!(MessageType::try_from(0x60), Ok(MessageType::Telemetry));
     }
 
     #[test]

@@ -344,6 +344,13 @@ pub unsafe extern "C" fn mdc_session_take_diagnostic(
             *value = boot.boot_id as f64;
             copy_cstr(unit, unit_len, boot.reset_reason.as_deref().unwrap_or(""));
         }
+        DiagnosticRecord::Telemetry(event) => {
+            // N335: kind 2; name = event name, unit = level.
+            *kind = 2;
+            copy_cstr(name, name_len, &event.name);
+            *value = event.event_seq as f64;
+            copy_cstr(unit, unit_len, event.level.as_deref().unwrap_or(""));
+        }
     }
     1
 }

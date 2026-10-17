@@ -828,6 +828,7 @@ fn packaged_masked_texture_cuts_out_on_render() {
             color: Some([255, 255, 255]),
             alpha_mode: Some("MASK".into()),
             alpha_cutoff: Some(0.5),
+            alpha: None,
         }],
         skeletons: Vec::new(),
         animations: Vec::new(),
@@ -891,6 +892,7 @@ fn masked_material_cuts_out_transparent_texels() {
             color: Some([255, 255, 255]),
             alpha_mode: Some("MASK".into()),
             alpha_cutoff: Some(0.5),
+            alpha: None,
         }],
         ..Model::default()
     };
@@ -1328,10 +1330,14 @@ fn device_diagnostics_reach_the_host_channel() {
     // N316: metrics and boot info travel on their own types, not the frame path.
     device.emit_boot_info().unwrap();
     device.emit_metric("fps", 29.5, Some("fps")).unwrap();
+    let mut fields = std::collections::BTreeMap::new();
+    fields.insert("heap".to_string(), "1234".to_string());
+    device.emit_telemetry("soak", Some("info"), fields).unwrap();
     session.poll().unwrap();
     let records = session.take_diagnostics();
-    assert_eq!(records.len(), 2);
+    assert_eq!(records.len(), 3);
     assert!(matches!(records[0], DiagnosticRecord::BootInfo(_)));
+    assert!(matches!(records[2], DiagnosticRecord::Telemetry(_)));
     match &records[1] {
         DiagnosticRecord::Metric(metric) => {
             assert_eq!(metric.name, "fps");

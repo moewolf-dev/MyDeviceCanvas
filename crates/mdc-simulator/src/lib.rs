@@ -4,7 +4,7 @@ use mdc_protocol::{
     decode_control, decode_frame_payload, decode_package_payload, decode_tile_payload,
     encode_control, Ack, BootInfo, Capabilities, ConfigCommand, ConfigReply, ErrorPayload,
     FramePayload, Hello, InputEvent, MessageType, MetricReport, MirrorCommand, OtaCommand,
-    PackagePayload, Packet, Surface, VERSION,
+    PackagePayload, Packet, Surface, TelemetryEvent, VERSION,
 };
 use mdc_transport::{MemoryLink, Transport, TransportError};
 use serde::{Deserialize, Serialize};
@@ -1361,6 +1361,24 @@ impl FakeDevice {
             reset_reason: Some("power-on".into()),
         };
         self.write_control(MessageType::BootInfo, 0, &boot)
+    }
+    /// N335: emit a structured telemetry event (name + level + string fields).
+    pub fn emit_telemetry(
+        &mut self,
+        name: &str,
+        level: Option<&str>,
+        fields: std::collections::BTreeMap<String, String>,
+    ) -> Result<(), SimError> {
+        self.metrics.diagnostics_emitted = self.metrics.diagnostics_emitted.saturating_add(1);
+        let event = TelemetryEvent {
+            name: name.to_string(),
+            level: level.map(str::to_string),
+            fields,
+            boot_id: self.boot_id,
+            run_id: self.run_id,
+            event_seq: self.metrics.diagnostics_emitted,
+        };
+        self.write_control(MessageType::Telemetry, 0, &event)
     }
     /// Emit a touch/input event toward the host session (capability-gated).
     pub fn emit_input(&mut self, event: InputEvent) -> Result<(), SimError> {
@@ -3859,6 +3877,7 @@ mod tests {
                 color: Some([255, 255, 255]),
                 alpha_mode: Some("MASK".into()),
                 alpha_cutoff: Some(0.5),
+                alpha: None,
             }],
             skeletons: Vec::new(),
             animations: Vec::new(),

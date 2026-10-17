@@ -28,6 +28,8 @@ pub const MAX_DIAGNOSTICS: usize = 64;
 pub enum DiagnosticRecord {
     Metric(MetricReport),
     BootInfo(BootInfo),
+    /// N335: structured telemetry event.
+    Telemetry(mdc_protocol::TelemetryEvent),
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -2025,6 +2027,15 @@ impl<T: Transport> Session<T> {
                     .map_err(|e| CoreError::Protocol(e.to_string()))?;
                 self.note_run_identity(boot.boot_id, boot.run_id);
                 self.push_diagnostic(DiagnosticRecord::BootInfo(boot));
+                Ok(())
+            }
+            MessageType::Telemetry => {
+                // N335: the reserved telemetry type now carries a structured event.
+                let event: mdc_protocol::TelemetryEvent =
+                    mdc_protocol::decode_control(&packet.payload)
+                        .map_err(|e| CoreError::Protocol(e.to_string()))?;
+                self.note_run_identity(event.boot_id, event.run_id);
+                self.push_diagnostic(DiagnosticRecord::Telemetry(event));
                 Ok(())
             }
             MessageType::MirrorCtrl => Ok(()),
