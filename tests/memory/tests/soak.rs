@@ -1370,3 +1370,30 @@ fn http_stream_scale_requests_stay_bounded() {
     assert_eq!(server.client_count(), 0);
     assert_eq!(server.streaming_clients(), 0);
 }
+
+#[test]
+fn disk_asset_cache_stays_within_quota() {
+    // N369/N371: the on-disk asset store never exceeds its byte quota, however
+    // many payloads are inserted.
+    let dir = std::env::temp_dir().join(format!("mdc-assets-soak-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (max_entry, max_total) = (4096usize, 8192usize);
+    let cache = mdc_assets::DiskCache::open(&dir, max_entry, max_total).unwrap();
+    for i in 0..1000usize {
+        // Payloads vary in size and content so keys differ.
+        let len = 64 + (i % 8) * 500;
+        let mut bytes = vec![0u8; len];
+        bytes[0] = i as u8;
+        bytes[1] = (i >> 8) as u8;
+        let _ = cache.put(&bytes);
+        assert!(
+            cache.total_bytes().unwrap() <= max_total,
+            "quota held at iteration {i}"
+        );
+    }
+    // Pruning to a quarter of the quota removes entries and stays bounded.
+    let small = mdc_assets::DiskCache::open(&dir, max_entry, max_total / 4).unwrap();
+    small.prune().unwrap();
+    assert!(small.total_bytes().unwrap() <= max_total / 4);
+    let _ = std::fs::remove_dir_all(&dir);
+}

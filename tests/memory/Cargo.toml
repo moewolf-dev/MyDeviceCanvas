@@ -13,6 +13,7 @@ path = "src/lib.rs"
 mdc-core = { path = "../../crates/mdc-core" }
 mdc-protocol = { path = "../../crates/mdc-protocol" }
 mdc-model = { path = "../../crates/mdc-model" }
+mdc-assets = { path = "../../crates/mdc-assets" }
 mdc-mirror = { path = "../../crates/mdc-mirror" }
 mdc-simulator = { path = "../../crates/mdc-simulator" }
 mdc-bake = { path = "../../crates/mdc-bake" }

@@ -1495,6 +1495,98 @@ fn multi_texture_mesh_package_renders_on_the_device() {
 }
 
 #[test]
+fn unlit_material_and_vertex_colours_render_on_the_device() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    /// Render a single white quad (side-facing normals, per-vertex red→blue
+    /// colour) and return the top-left pixel, which is dominated by the
+    /// vertex-coloured red edge.
+    fn render_quad(unlit: bool) -> u16 {
+        let geometry = MeshGeometry {
+            positions: vec![
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            normals: vec![[1.0, 0.0, 0.0]; 4],
+            colors: vec![
+                [1.0, 0.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0, 1.0],
+                [0.0, 0.0, 1.0, 1.0],
+                [1.0, 0.0, 0.0, 1.0],
+            ],
+            skin_joints: Vec::new(),
+            skin_weights: Vec::new(),
+            morph_targets: Vec::new(),
+        };
+        let model = Model {
+            source: "test".into(),
+            nodes: vec![Node {
+                name: "root".into(),
+                mesh: Some(0),
+                ..Node::default()
+            }],
+            meshes: vec![Mesh {
+                name: "quad".into(),
+                vertices: 4,
+                indices: 6,
+                material: Some(0),
+                geometry: Some(geometry),
+                ..Mesh::default()
+            }],
+            materials: vec![Material {
+                name: "flat".into(),
+                color: Some([255, 255, 255]),
+                unlit: Some(unlit),
+                ..Material::default()
+            }],
+            ..Model::default()
+        };
+        let package = mdc_bake::mesh_package_with_textures(
+            &model,
+            &mdc_model::RendererCapability::full_3d(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        session
+            .install_package(&package.to_bytes().unwrap())
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session.start_mirror("main", "full-frame", 30).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        device.clock.advance(0);
+        device.emit_mirror_frame().unwrap();
+        session.poll().unwrap();
+        let frame = session.take_mirror_frame().expect("mirror frame");
+        let index = (240 * 800 + 240) * 2;
+        u16::from_le_bytes([frame.bytes[index], frame.bytes[index + 1]])
+    }
+
+    let lit = render_quad(false);
+    let unlit = render_quad(true);
+    // N363: the unlit surface keeps its full brightness while the lit one darkens.
+    assert!(
+        unlit >> 11 > lit >> 11,
+        "unlit brighter: lit={lit:#06x} unlit={unlit:#06x}"
+    );
+    // N364: the left edge is tinted red by the vertex colour.
+    assert!(unlit >> 11 > (unlit & 0x1f), "left is red: {unlit:#06x}");
+}
+
+#[test]
 fn device_diagnostics_reach_the_host_channel() {
     use mdc_core::{ConnectionState, DiagnosticRecord, Session};
     use mdc_simulator::{BoardProfile, FakeDevice};
