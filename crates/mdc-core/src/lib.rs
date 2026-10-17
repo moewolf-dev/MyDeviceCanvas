@@ -786,6 +786,8 @@ pub struct Session<T: Transport> {
     pacing_dropped: u64,
     /// N398: host-side session counters.
     stats: SessionStats,
+    /// N419: the highest OTA phase sent (0 none, 1 begin, 2 chunk, 3 confirm).
+    ota_phase: u8,
 }
 impl<T: Transport> Session<T> {
     pub fn new(transport: T) -> Self {
@@ -843,6 +845,7 @@ impl<T: Transport> Session<T> {
             pacing: None,
             pacing_dropped: 0,
             stats: SessionStats::default(),
+            ota_phase: 0,
         }
     }
     pub fn set_manager(&mut self, manager: Arc<Mutex<DeviceManager>>) {
@@ -1439,7 +1442,26 @@ impl<T: Transport> Session<T> {
         let device = self.device.as_ref().ok_or(CoreError::NotReady)?;
         device.ota()?;
         let payload = encode_control(&command).map_err(|e| CoreError::Protocol(e.to_string()))?;
-        self.write_packet(MessageType::Ota, payload)
+        let request_id = self.write_packet(MessageType::Ota, payload)?;
+        // N419: checkpoint the phase so a driver can resume after a reconnect.
+        self.ota_phase = match command.action.as_str() {
+            "begin" => 1,
+            "chunk" => 2,
+            "confirm" => 3,
+            "abort" => 0,
+            _ => self.ota_phase,
+        };
+        Ok(request_id)
+    }
+
+    /// N419: the highest OTA phase sent (0 none, 1 begin, 2 chunk, 3 confirm).
+    pub fn ota_phase(&self) -> u8 {
+        self.ota_phase
+    }
+
+    /// N419: clear the OTA checkpoint (a fresh update or an abort).
+    pub fn reset_ota(&mut self) {
+        self.ota_phase = 0;
     }
     /// 在同一条连接上再发 HELLO，用对端当前 Capabilities 覆盖缓存。
     /// OTA 失败后用它读回固件版本；会重置 surface 队列，调用前不要留在途帧。
@@ -4476,6 +4498,52 @@ mod tests {
             node: None,
         };
         assert_eq!(session.send_input(event), Err(CoreError::Unsupported));
+    }
+
+    #[test]
+    fn ota_phase_checkpoint_resumes_across_reconnect() {
+        // N419: the OTA phase survives a reconnect so a driver can resume.
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        // `caps()` disables OTA; advertise it so `send_ota` is allowed.
+        let mut advertised = caps();
+        advertised.ota = true;
+        let hello = Packet::decode(&device.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: hello.request_id,
+                    payload: encode_control(&advertised).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        assert_eq!(session.state, ConnectionState::Ready);
+        assert_eq!(session.ota_phase(), 0);
+
+        let command = |action: &str| mdc_protocol::OtaCommand {
+            action: action.into(),
+            version: None,
+            size: None,
+            sha256: None,
+        };
+        session.send_ota(command("begin")).unwrap();
+        assert_eq!(session.ota_phase(), 1);
+        session.send_ota(command("chunk")).unwrap();
+        assert_eq!(session.ota_phase(), 2);
+        // A reconnect edge must not clear the checkpoint.
+        session.enable_reconnect(true);
+        assert_eq!(session.ota_phase(), 2, "phase survives reconnect");
+        session.reset_ota();
+        assert_eq!(session.ota_phase(), 0);
     }
 
     #[test]

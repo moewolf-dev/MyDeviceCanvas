@@ -115,6 +115,8 @@ entries (`mdc_bake::quantize_palette`), writing `atlas.pal.json` + `atlas.idx`.
 
 `Session::stats()` (N398) returns host counters (`packets_sent`, `bytes_sent`,
 `acks_received`, `frames_sent`); `mdc inspect --watch` reports them per tick.
+`Session::ota_phase()` / `reset_ota()` (N419) checkpoint the OTA phase
+(begin/chunk/confirm) so a driver can resume after a reconnect.
 
 `Session::send_input(event)` (N400) sends a pointer event to the device when it
 advertises the `touch` capability; the C ABI `mdc_session_send_input(...)` and the
