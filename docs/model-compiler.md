@@ -271,7 +271,9 @@ is imported and multiplies each triangle's shade (sampled at the triangle centro
 on the package/device renderer; `occlusionStrength` scales the effect. N379:
 `TANGENT` and `normalTexture` are imported and, on the package/device renderer,
 shade each pixel from the tangent-space normal map (per-pixel Lambert); without a
-normal map (or tangents) the per-triangle shade is used as before.
+normal map (or tangents) the per-triangle shade is used as before. N380:
+`pack_material_atlas` (and `mdc package --atlas MAX_PAGE`) shelf-packs a package's
+per-material textures into one bounded page, remapping material indices and mesh UVs.
 
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a

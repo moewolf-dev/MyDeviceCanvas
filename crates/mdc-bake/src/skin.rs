@@ -1414,6 +1414,109 @@ pub fn render_package_mesh(
     })
 }
 
+/// N380: pack a package's per-material textures into one bounded atlas page,
+/// remapping each packed material's texture index and the UVs of the meshes that
+/// use it. Returns `false` (leaving the package untouched) when the blobs do not
+/// fit in `max_page`, when there are fewer than two, or when any carries an alpha
+/// mask.
+pub fn pack_material_atlas(package: &mut mdc_model::DevicePackage, max_page: u32) -> bool {
+    // Only fully valid, opaque blobs are packed.
+    let mut parts: Vec<(usize, u32, u32)> = Vec::new();
+    for (index, blob) in package.texture_blobs.iter().enumerate() {
+        if !blob.validate()
+            || !blob.alpha.is_empty()
+            || blob.width > max_page
+            || blob.height > max_page
+        {
+            continue;
+        }
+        parts.push((index, blob.width, blob.height));
+    }
+    if parts.len() < 2 {
+        return false;
+    }
+    // Shelf pack, tallest first, within a page `max_page` wide.
+    parts.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
+    let mut placements: Vec<(usize, u32, u32, u32, u32)> = Vec::new(); // index,x,y,w,h
+    let (mut x, mut y, mut row_h) = (0u32, 0u32, 0u32);
+    for (index, w, h) in &parts {
+        if x + w > max_page {
+            y += row_h;
+            x = 0;
+            row_h = 0;
+        }
+        if y + h > max_page {
+            return false;
+        }
+        placements.push((*index, x, y, *w, *h));
+        x += w;
+        row_h = row_h.max(*h);
+    }
+    let page_h = y + row_h;
+    if page_h == 0 {
+        return false;
+    }
+    // Blit each blob into the page.
+    let mut page = vec![0u8; (max_page as usize) * (page_h as usize) * 2];
+    for (index, px, py, w, h) in &placements {
+        let Some(blob) = package.texture_blobs.get(*index) else {
+            return false;
+        };
+        for row in 0..*h {
+            let src = ((row * *w) * 2) as usize;
+            let dst = (((py + row) * max_page + px) * 2) as usize;
+            let len = (*w * 2) as usize;
+            page[dst..dst + len].copy_from_slice(&blob.rgb565[src..src + len]);
+        }
+    }
+    // Remap each placed material and the UVs of the meshes that use it.
+    let rect_of = |index: usize| -> Option<(u32, u32, u32, u32)> {
+        placements
+            .iter()
+            .find(|(i, _, _, _, _)| *i == index)
+            .map(|(_, px, py, w, h)| (*px, *py, *w, *h))
+    };
+    // The rect each material should sample from, based on its original blob.
+    let material_rects: Vec<Option<(u32, u32, u32, u32)>> = package
+        .materials
+        .iter()
+        .map(|material| material.texture.and_then(rect_of))
+        .collect();
+    for material in &mut package.materials {
+        if material.texture.and_then(rect_of).is_some() {
+            material.texture = Some(0);
+        }
+    }
+    let page_w = max_page as f32;
+    let page_hf = page_h as f32;
+    for mesh in &mut package.meshes {
+        let Some(material_index) = mesh.material else {
+            continue;
+        };
+        let Some((px, py, w, h)) = material_rects.get(material_index).copied().flatten() else {
+            continue;
+        };
+        let Some(geometry) = mesh.geometry.as_mut() else {
+            continue;
+        };
+        if geometry.uv.len() < geometry.positions.len() || geometry.uv.is_empty() {
+            continue;
+        }
+        for uv in &mut geometry.uv {
+            uv[0] = (px as f32 + uv[0] * w as f32) / page_w;
+            uv[1] = (py as f32 + uv[1] * h as f32) / page_hf;
+        }
+    }
+    package.texture_blobs = vec![mdc_model::TextureBlob {
+        width: max_page,
+        height: page_h,
+        rgb565: page,
+        alpha: Vec::new(),
+    }];
+    package.texture = package.texture_blobs.first().cloned();
+    true
+}
+
 /// N194: the bind-pose XY box of every mesh node in a package.
 fn package_bind_bbox(package: &mdc_model::DevicePackage) -> Option<([f32; 2], [f32; 2])> {
     let worlds = node_world_matrices(&package.nodes);
@@ -2404,6 +2507,94 @@ mod tests {
             shaded >> 11 < flat >> 11,
             "the red channel is reduced by shading"
         );
+    }
+
+    #[test]
+    fn material_atlas_pack_remaps_uvs() {
+        // N380: two per-material textures collapse into one page and each mesh's
+        // UVs move into its packed sub-rect.
+        use mdc_model::{Material, MeshGeometry};
+        let quad = || MeshGeometry {
+            positions: vec![
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            normals: Vec::new(),
+            colors: Vec::new(),
+            tangents: Vec::new(),
+            skin_joints: Vec::new(),
+            skin_weights: Vec::new(),
+            morph_targets: Vec::new(),
+        };
+        let model = Model {
+            source: "t".into(),
+            nodes: vec![
+                Node {
+                    name: "a".into(),
+                    mesh: Some(0),
+                    ..Node::default()
+                },
+                Node {
+                    name: "b".into(),
+                    mesh: Some(1),
+                    ..Node::default()
+                },
+            ],
+            meshes: vec![
+                mdc_model::Mesh {
+                    name: "a".into(),
+                    vertices: 4,
+                    indices: 6,
+                    material: Some(0),
+                    geometry: Some(quad()),
+                    ..mdc_model::Mesh::default()
+                },
+                mdc_model::Mesh {
+                    name: "b".into(),
+                    vertices: 4,
+                    indices: 6,
+                    material: Some(1),
+                    geometry: Some(quad()),
+                    ..mdc_model::Mesh::default()
+                },
+            ],
+            materials: vec![
+                Material {
+                    name: "a".into(),
+                    texture: Some(0),
+                    ..Material::default()
+                },
+                Material {
+                    name: "b".into(),
+                    texture: Some(1),
+                    ..Material::default()
+                },
+            ],
+            ..Model::default()
+        };
+        let mut package =
+            mdc_model::compile_auto(&model, &mdc_model::RendererCapability::full_3d()).unwrap();
+        let blob = |rgb565: Vec<u8>| mdc_model::TextureBlob {
+            width: 2,
+            height: 1,
+            rgb565,
+            alpha: Vec::new(),
+        };
+        package.texture_blobs = vec![
+            blob(vec![0x00, 0xF8, 0xE0, 0x07]), // red, green
+            blob(vec![0x1F, 0x00, 0xFF, 0xFF]), // blue, white
+        ];
+        assert!(pack_material_atlas(&mut package, 64));
+        assert_eq!(package.texture_blobs.len(), 1, "one page");
+        assert!(package.materials.iter().all(|m| m.texture == Some(0)));
+        let uv0 = package.meshes[0].geometry.as_ref().unwrap().uv[1];
+        let uv1 = package.meshes[1].geometry.as_ref().unwrap().uv[1];
+        assert_ne!(uv0, uv1, "each mesh samples its own packed sub-rect");
+        assert!(uv0[0] < 1.0 && uv1[0] <= 1.0 && uv0[0] >= 0.0 && uv1[1] >= 0.0);
     }
 
     #[test]

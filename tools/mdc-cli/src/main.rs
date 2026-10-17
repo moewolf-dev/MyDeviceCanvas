@@ -460,11 +460,16 @@ fn cmd_package(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut out: Option<String> = None;
     let mut texture_path: Option<String> = None;
+    let mut atlas_page: Option<u32> = None;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "--texture" => texture_path = iter.next().cloned(),
             "--out" => out = iter.next().cloned(),
+            // N380: pack per-material textures into one bounded page.
+            "--atlas" => {
+                atlas_page = Some(iter.next().and_then(|v| v.parse().ok()).unwrap_or(2048))
+            }
             other => out = Some(other.to_string()),
         }
     }
@@ -505,6 +510,18 @@ fn cmd_package(
         }
     };
     let texture_error: Option<String> = None;
+    // N380: optionally collapse the per-material textures into one page.
+    let package = match atlas_page {
+        Some(page) => {
+            let mut inner = package.package.clone();
+            if mdc_bake::pack_material_atlas(&mut inner, page) {
+                mdc_model::MdcPackage::seal(inner)?
+            } else {
+                package
+            }
+        }
+        None => package,
+    };
     let bytes = package.to_bytes()?;
     let out = out.unwrap_or_else(|| format!("{model_path}.mdcpkg"));
     std::fs::write(&out, &bytes)?;
@@ -2991,7 +3008,7 @@ fn usage() {
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
-package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
+package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] --out f.ppm|\
