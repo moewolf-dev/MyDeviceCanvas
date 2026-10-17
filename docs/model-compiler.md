@@ -92,7 +92,10 @@ A decode bomb is refused before any decode buffer is created.
   package is still produced untextured. N333: `alphaMode: BLEND` with
   `baseColorFactor` alpha (index 3) renders as source-over transparency in the
   scene/package/single renders and the device double; `OPAQUE` ignores the alpha
-  factor and `MASK` still cuts out.
+  factor and `MASK` still cuts out. N334: glTF sampler `wrapS`/`wrapT`
+  (`CLAMP_TO_EDGE` → `clamp`) is recorded on `Texture.wrap`
+  (`Model::material_texture_wrap`) and applied by `TextureMap::with_wrap`; `mdc
+  render-mesh --wrap` overrides.
 - N123: a primitive's `targets[].POSITION` morph deltas (capped at
   `MAX_MORPH_TARGETS`, 16 per mesh) become `Mesh.morph_targets`, and
   `mesh.weights` becomes `Mesh.morph_weights`. N124: an animation channel with

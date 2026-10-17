@@ -91,6 +91,7 @@ mod tests {
                 format: "image/png".into(),
                 bytes: 0,
                 data: None,
+                wrap: None,
             }],
             ..Model::default()
         }

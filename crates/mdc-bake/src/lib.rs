@@ -24,7 +24,7 @@ pub use skin::{
     render_scene_at, sample_channel, sample_channel_looped, skin_arrays, skin_points, skin_preview,
     transform_point, Mat4, SceneClip,
 };
-pub use texture::{Filter, TextureMap};
+pub use texture::{Filter, TextureMap, Wrap};
 
 /// Largest source file accepted (8 MiB) before decoding.
 pub const MAX_BAKE_INPUT_BYTES: usize = 8 * 1024 * 1024;
@@ -665,6 +665,7 @@ mod tests {
                 format: "image/png".into(),
                 bytes: png.len() as u32,
                 data: Some(png.clone()),
+                wrap: None,
             }],
             ..Default::default()
         };

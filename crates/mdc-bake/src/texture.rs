@@ -17,6 +17,14 @@ pub enum Filter {
     Linear,
 }
 
+/// N334: texture wrap mode outside `[0, 1]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Wrap {
+    #[default]
+    Repeat,
+    Clamp,
+}
+
 /// N204: multiply two RGB565 colours channel-wise (each channel scaled to 8 bits
 /// and back, so `0xFFFF` is the identity).
 pub fn rgb565_mul(a: u16, b: u16) -> u16 {
@@ -36,6 +44,8 @@ pub struct TextureMap {
     pub rgb565: Vec<u8>,
     /// N203: sampling filter (defaults to nearest).
     pub filter: Filter,
+    /// N334: wrap mode outside `[0, 1]` (defaults to repeat).
+    pub wrap: Wrap,
     /// N285: optional bit-packed alpha mask (1 = opaque). `None` = fully opaque.
     pub alpha: Option<Vec<u8>>,
 }
@@ -55,6 +65,7 @@ impl TextureMap {
             height,
             rgb565,
             filter: Filter::Nearest,
+            wrap: Wrap::Repeat,
             alpha: None,
         })
     }
@@ -68,6 +79,39 @@ impl TextureMap {
     pub fn with_filter(mut self, filter: Filter) -> Self {
         self.filter = filter;
         self
+    }
+
+    /// N334: set the wrap mode.
+    pub fn with_wrap(mut self, wrap: Wrap) -> Self {
+        self.wrap = wrap;
+        self
+    }
+
+    /// N334: wrap a UV coordinate into `[0, dimension)` (repeat) or clamp it.
+    fn wrap_u(&self, value: f32) -> u32 {
+        self.wrap_axis(value, self.width)
+    }
+    fn wrap_v(&self, value: f32) -> u32 {
+        self.wrap_axis(value, self.height)
+    }
+    fn wrap_axis(&self, value: f32, dimension: u32) -> u32 {
+        if dimension == 0 {
+            return 0;
+        }
+        match self.wrap {
+            Wrap::Repeat => wrap(value, dimension),
+            Wrap::Clamp => clamp_coord(value, dimension),
+        }
+    }
+    /// N334: wrap an already-floored integer neighbour index.
+    fn wrap_index(&self, index: i64, dimension: u32) -> u32 {
+        if dimension == 0 {
+            return 0;
+        }
+        match self.wrap {
+            Wrap::Repeat => index.rem_euclid(dimension as i64) as u32,
+            Wrap::Clamp => index.clamp(0, dimension as i64 - 1) as u32,
+        }
     }
 
     /// N285: attach a bit-packed alpha mask (1 = opaque).
@@ -84,8 +128,8 @@ impl TextureMap {
         if self.width == 0 || self.height == 0 {
             return true;
         }
-        let x = wrap(u * self.width as f32, self.width);
-        let y = wrap(v * self.height as f32, self.height);
+        let x = self.wrap_u(u * self.width as f32);
+        let y = self.wrap_v(v * self.height as f32);
         let index = y as usize * self.width as usize + x as usize;
         match alpha.get(index / 8) {
             Some(byte) => byte & (1 << (index % 8)) != 0,
@@ -117,8 +161,8 @@ impl TextureMap {
         if self.width == 0 || self.height == 0 {
             return 0;
         }
-        let x = wrap(u * self.width as f32, self.width);
-        let y = wrap(v * self.height as f32, self.height);
+        let x = self.wrap_u(u * self.width as f32);
+        let y = self.wrap_v(v * self.height as f32);
         self.texel(x, y)
     }
 
@@ -133,10 +177,10 @@ impl TextureMap {
         let y0 = fy.floor();
         let tx = fx - x0;
         let ty = fy - y0;
-        let x0 = wrap(x0, self.width);
-        let y0 = wrap(y0, self.height);
-        let x1 = (x0 + 1) % self.width;
-        let y1 = (y0 + 1) % self.height;
+        let x0 = self.wrap_index(fx.floor() as i64, self.width);
+        let y0 = self.wrap_index(fy.floor() as i64, self.height);
+        let x1 = self.wrap_index(i64::from(x0) + 1, self.width);
+        let y1 = self.wrap_index(i64::from(y0) + 1, self.height);
         let samples = [
             (self.texel(x0, y0), (1.0 - tx) * (1.0 - ty)),
             (self.texel(x1, y0), tx * (1.0 - ty)),
@@ -202,6 +246,14 @@ pub(crate) fn rgb565_scale(color: u16, factor: f32) -> u16 {
     (((r.round() as u16) & 0x1f) << 11)
         | (((g.round() as u16) & 0x3f) << 5)
         | ((b.round() as u16) & 0x1f)
+}
+
+/// N334: clamp a UV coordinate into `[0, dimension)`.
+fn clamp_coord(value: f32, dimension: u32) -> u32 {
+    if !value.is_finite() || dimension == 0 {
+        return 0;
+    }
+    (value.floor().max(0.0) as u32).min(dimension - 1)
 }
 
 /// Map a possibly out-of-range coordinate onto `[0, dimension)` with repeat.
@@ -410,6 +462,20 @@ mod tests {
             rgb565.extend_from_slice(&value.to_le_bytes());
         }
         TextureMap::from_rgb565(width, height, rgb565).unwrap()
+    }
+
+    #[test]
+    fn clamp_wrap_repeats_the_edge_texel() {
+        let mut rgb = Vec::new();
+        rgb.extend_from_slice(&0xF800u16.to_le_bytes()); // red
+        rgb.extend_from_slice(&0x001Fu16.to_le_bytes()); // blue
+        let map = TextureMap::from_rgb565(2, 1, rgb).unwrap();
+        assert_eq!(map.sample_nearest(0.0, 0.0), 0xF800);
+        assert_eq!(
+            map.clone().with_wrap(Wrap::Repeat).sample_nearest(2.0, 0.0),
+            0xF800
+        );
+        assert_eq!(map.with_wrap(Wrap::Clamp).sample_nearest(2.0, 0.0), 0x001F);
     }
 
     #[test]

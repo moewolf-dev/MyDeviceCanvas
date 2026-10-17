@@ -841,6 +841,7 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut sprite: u32 = 64;
     let mut single = false;
     let mut filter = mdc_bake::Filter::Nearest;
+    let mut wrap_arg: Option<mdc_bake::Wrap> = None;
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -861,6 +862,13 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                     _ => mdc_bake::Filter::Nearest,
                 }
             }
+            "--wrap" => {
+                wrap_arg = match iter.next().map(String::as_str) {
+                    Some("clamp") => Some(mdc_bake::Wrap::Clamp),
+                    Some("repeat") => Some(mdc_bake::Wrap::Repeat),
+                    _ => None,
+                }
+            }
             other => model_path = Some(other.to_string()),
         }
     }
@@ -869,15 +877,30 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let bytes = std::fs::read(&model_path)?;
     let model = mdc_model::GltfImporter.import(&bytes, &mdc_model::ImportLimits::default())?;
     let has_uv = model.meshes.iter().any(|m| !m.preview_uv.is_empty());
+    // N334: wrap mode from `--wrap`, else the model's own sampler, else repeat.
+    let wrap = wrap_arg.unwrap_or_else(|| match model.material_texture_wrap(0) {
+        Some("clamp") => mdc_bake::Wrap::Clamp,
+        _ => mdc_bake::Wrap::Repeat,
+    });
+    // N324/N334: an explicit `--texture` wins; otherwise use the model's own
+    // embedded base-colour texture.
     let texture = match &texture_path {
         Some(path) => {
             let image = std::fs::read(path)?;
             Some(
                 mdc_bake::texture_map_with_alpha(&image, &mdc_bake::BakeLimits::default())?
-                    .with_filter(filter),
+                    .with_filter(filter)
+                    .with_wrap(wrap),
             )
         }
-        None => None,
+        None => match model.material_texture(0) {
+            Some(image) => Some(
+                mdc_bake::texture_map_with_alpha(image, &mdc_bake::BakeLimits::default())?
+                    .with_filter(filter)
+                    .with_wrap(wrap),
+            ),
+            None => None,
+        },
     };
     let textured = texture.is_some() && has_uv;
     let has_geometry = model.meshes.iter().any(|m| m.geometry.is_some());
@@ -2534,7 +2557,7 @@ authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--wr
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg]|install-package <file.mdcpkg>|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
-render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] --out f.ppm|\
+render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] --out f.ppm|\
 motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|raster-demo|preview-mesh|inspect [--watch --count N --interval MS]"

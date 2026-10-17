@@ -135,6 +135,7 @@ impl GltfImporter {
                     .to_string(),
                 bytes: bytes_len.min(u64::from(u32::MAX)) as u32,
                 data,
+                wrap: None,
             });
         }
         let declared_bytes: u64 = textures.iter().map(|t| u64::from(t.bytes)).sum();
@@ -156,6 +157,31 @@ impl GltfImporter {
                 .and_then(Value::as_u64)
                 .map(|source| source as usize)
         };
+
+        // N334: record the sampler wrap on the image-indexed texture.
+        let samplers_json = doc.get("samplers").and_then(Value::as_array);
+        for texture in textures_json {
+            let Some(source) = texture.get("source").and_then(Value::as_u64) else {
+                continue;
+            };
+            let wrap = texture
+                .get("sampler")
+                .and_then(Value::as_u64)
+                .and_then(|s| samplers_json.and_then(|list| list.get(s as usize)))
+                .map(|sampler| {
+                    let clamp = |key: &str| sampler.get(key).and_then(Value::as_u64) == Some(33071);
+                    if clamp("wrapS") || clamp("wrapT") {
+                        "clamp"
+                    } else {
+                        "repeat"
+                    }
+                });
+            if let Some(wrap) = wrap {
+                if let Some(texture) = textures.get_mut(source as usize) {
+                    texture.wrap = Some(wrap.to_string());
+                }
+            }
+        }
 
         let materials_json = doc
             .get("materials")
@@ -1958,6 +1984,25 @@ mod tests {
             (normals[2][2] - 1.0).abs() < 1e-6,
             "i8 normal normalized to +z"
         );
+    }
+
+    #[test]
+    fn sampler_wrap_is_recorded_on_the_texture() {
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "samplers": [{"wrapS": 33071, "wrapT": 33071}],
+            "images": [{"mimeType": "image/png"}],
+            "textures": [{"source": 0, "sampler": 0}],
+            "materials": [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}],
+            "nodes": [{"mesh": 0}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "material": 0}]}],
+            "accessors": [{"count": 3, "type": "VEC3"}]
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        assert_eq!(model.textures[0].wrap.as_deref(), Some("clamp"));
+        assert_eq!(model.material_texture_wrap(0), Some("clamp"));
     }
 
     #[test]

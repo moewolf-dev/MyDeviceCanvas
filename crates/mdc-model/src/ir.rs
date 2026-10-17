@@ -224,6 +224,9 @@ pub struct Texture {
     /// not on disk or would exceed the budget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<Vec<u8>>,
+    /// N334: glTF sampler wrap ("repeat" | "clamp") for this texture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrap: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -363,5 +366,11 @@ impl Model {
     pub fn material_texture(&self, material: usize) -> Option<&[u8]> {
         let index = self.materials.get(material)?.texture?;
         self.embedded_texture(index)
+    }
+    /// N334: the wrap mode name of the material's texture ("clamp" when either
+    /// axis is `CLAMP_TO_EDGE`, else "repeat"), if a texture is referenced.
+    pub fn material_texture_wrap(&self, material: usize) -> Option<&str> {
+        let index = self.materials.get(material)?.texture?;
+        self.textures.get(index)?.wrap.as_deref()
     }
 }
