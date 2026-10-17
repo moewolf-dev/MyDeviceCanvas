@@ -2,6 +2,23 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.55] — Generated/skinned tangents, sheen, transmission, C node out-param, `--tangents`, clip-by-name, Node serial (N423–N432)
+
+### Added
+
+- `generate_tangents` derives tangents from the UV gradient when a mesh omits
+  `TANGENT`, so normal maps work without authored tangents; untextured meshes with
+  maps now sample them per pixel via a flat white fallback texture (N423)
+- `skin_tangents_multi` rotates tangents with the pose (handedness preserved) (N424)
+- `KHR_materials_sheen` import plus a rim highlight in the per-pixel pass (N425)
+- `KHR_materials_transmission` folds into the blend alpha (N426)
+- C ABI `mdc_session_poll_event_with_node` reports the hit-tested scene node (N427)
+- `mdc package --tangents` fills in missing tangents at compile time (N428)
+- `render_package_scene_clip_named` and `mdc render-package --clip NAME --time T`
+  select an animation clip by name (N429)
+- Node `connectSerial(path, baud)` transport (N430)
+- compatibility/memory coverage for tangent generation and skinning (N431)
+
 ## [0.1.54] — Specular-glossiness, clearcoat, indexed textures, dithering, scene-lint, hit-testing, OTA checkpoint, variants (N413–N422)
 
 ### Added

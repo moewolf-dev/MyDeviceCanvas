@@ -188,6 +188,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Scene hit-testing (N418) | sim-verified (`InputEvent.node`) | physical: pending |
 | OTA phase checkpoint (N419) | sim-verified (`Session::ota_phase`) | physical: pending |
 | `KHR_materials_variants` (N420) | sim-verified (`Model.variants`) | n/a |
+| Generated tangents (N423) | sim-verified (UV-gradient tangents) | physical: pending |
+| Skinned tangents (N424) | sim-verified (rotated with the pose) | physical: pending |
+| `KHR_materials_sheen` (N425) | sim-verified (rim highlight) | physical: pending |
+| `KHR_materials_transmission` (N426) | sim-verified (blend alpha) | physical: pending |
+| C hit-node out-param (N427) | sim-verified (`poll_event_with_node`) | physical: pending |
+| `package --tangents` (N428) | sim-verified (fills missing tangents) | n/a |
+| Clip by name (N429) | sim-verified (`render_package_scene_clip_named`) | n/a |
+| Node `connectSerial` (N430) | sim-verified (rejects an unusable path) | physical: pending |
 
 ## G03 sim exit
 
