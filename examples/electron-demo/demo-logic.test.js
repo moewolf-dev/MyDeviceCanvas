@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { colorBarsRgb565, decodeMirrorFrame, formatError, mirrorPanelStatus, mirrorStreamUrl, normalizeBrightness, normalizeClip, originTile, packageMagicOk, parseMultipartBoundary, sceneRect, planConnection, rejectNonSimEndpoint, streamPanelStatus } from "./demo-logic.js";
+import { colorBarsRgb565, decodeMirrorFrame, formatError, jpegStreamUrl, mirrorPanelStatus, mirrorStreamUrl, normalizeBrightness, normalizeClip, normalizeOpacity, originTile, packageMagicOk, parseMultipartBoundary, sceneRect, planConnection, rejectNonSimEndpoint, streamPanelStatus } from "./demo-logic.js";
 
 test("color bars are RGB565 little-endian and start with red", () => {
   const frame = colorBarsRgb565(8, 1);
@@ -108,4 +108,16 @@ test("streamPanelStatus reports frames and clipping", () => {
     streamPanelStatus({ connected: true, frames: 5, dropped: 2 }),
     /5 frames, 2 clipped/,
   );
+});
+
+test("jpegStreamUrl builds the JPEG live stream endpoint", () => {
+  assert.equal(jpegStreamUrl("http://127.0.0.1:8080"), "http://127.0.0.1:8080/stream.jpg");
+});
+
+test("normalizeOpacity accepts 0..255 and rejects the rest", () => {
+  assert.equal(normalizeOpacity(128), 128);
+  assert.equal(normalizeOpacity(0), 0);
+  assert.equal(normalizeOpacity(255), 255);
+  assert.throws(() => normalizeOpacity(256), /0\.\.255/);
+  assert.throws(() => normalizeOpacity(-1), /0\.\.255/);
 });

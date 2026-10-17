@@ -164,6 +164,20 @@ export function mirrorStreamUrl(base) {
   return `${text}/stream`;
 }
 
+/** N341: the JPEG variant of the live stream (`/stream.jpg`, N337). */
+export function jpegStreamUrl(base) {
+  return `${mirrorStreamUrl(base)}.jpg`;
+}
+
+/** N341: validate a scene node opacity before it reaches the device. */
+export function normalizeOpacity(value) {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0 || n > 255) {
+    throw new RangeError("opacity must be an integer 0..255");
+  }
+  return n;
+}
+
 /** N320: boundary of a multipart/x-mixed-replace content type, or null. */
 export function parseMultipartBoundary(contentType) {
   const text = String(contentType ?? "");
