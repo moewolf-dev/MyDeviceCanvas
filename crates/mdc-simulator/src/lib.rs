@@ -4288,6 +4288,8 @@ mod tests {
                 unlit: None,
                 uv_transform: None,
                 emissive_strength: None,
+                occlusion_texture: None,
+                occlusion_strength: None,
             }],
             skeletons: Vec::new(),
             animations: Vec::new(),

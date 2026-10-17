@@ -951,10 +951,28 @@ fn triangle_shades(
     if indices.len() < 3 {
         return Vec::new();
     }
+    triangle_shades_ambients(positions, normals, indices, light, ambient, None)
+}
+
+/// N378: like [`triangle_shades`] but an optional per-triangle occlusion factor
+/// (0..=1) multiplies the result, darkening shadowed triangles regardless of the
+/// light direction.
+fn triangle_shades_ambients(
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    indices: &[u32],
+    light: [f32; 3],
+    ambient: f32,
+    factors: Option<&[f32]>,
+) -> Vec<f32> {
+    if indices.len() < 3 {
+        return Vec::new();
+    }
     let use_normals = !normals.is_empty() && normals.len() >= positions.len();
     indices
         .chunks_exact(3)
-        .map(|tri| {
+        .enumerate()
+        .map(|(ti, tri)| {
             let normal = if use_normals {
                 let mut acc = [0.0f32; 3];
                 for &i in tri {
@@ -969,13 +987,51 @@ fn triangle_shades(
             };
             let len =
                 (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
-            if len <= 1e-6 {
-                return 1.0;
-            }
-            let dot = (normal[0] * light[0] + normal[1] * light[1] + normal[2] * light[2]) / len;
-            dot.clamp(ambient, 1.0)
+            let base = if len <= 1e-6 {
+                1.0
+            } else {
+                let dot =
+                    (normal[0] * light[0] + normal[1] * light[1] + normal[2] * light[2]) / len;
+                dot.clamp(ambient, 1.0)
+            };
+            let occlusion = factors.and_then(|f| f.get(ti)).copied().unwrap_or(1.0);
+            (base * occlusion).clamp(0.0, 1.0)
         })
         .collect()
+}
+
+/// N378: per-triangle occlusion factor from the occlusion texture's red channel
+/// at each triangle's centroid UV (`None` when the material has no usable map).
+fn occlusion_factors(
+    package: &mdc_model::DevicePackage,
+    mesh: &Mesh,
+    geometry: &mdc_model::MeshGeometry,
+    textures: &[Option<crate::TextureMap>],
+) -> Option<Vec<f32>> {
+    let (index, strength) = mesh
+        .material
+        .and_then(|mi| package.materials.get(mi))
+        .map(|material| material.occlusion())?;
+    let index = index?;
+    let map = textures.get(index).and_then(|texture| texture.as_ref())?;
+    if geometry.indices.len() < 3 || geometry.uv.len() < geometry.positions.len() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(geometry.indices.len() / 3);
+    for tri in geometry.indices.chunks_exact(3) {
+        let mut u = 0.0f32;
+        let mut v = 0.0f32;
+        for &i in tri {
+            let uv = geometry.uv.get(i as usize).copied().unwrap_or([0.0, 0.0]);
+            u += uv[0] / 3.0;
+            v += uv[1] / 3.0;
+        }
+        let sample = map.sample(u, v);
+        let red = f32::from((sample >> 11) & 0x1f) / 31.0;
+        let ao = 1.0 - strength * (1.0 - red);
+        out.push(ao.clamp(0.2, 1.0));
+    }
+    Some(out)
 }
 
 /// Geometric (unnormalized) normal of one triangle.
@@ -1512,12 +1568,13 @@ pub fn render_package_scene_clip_filtered(
             tint,
             mask,
             fill: tint.unwrap_or(0xF800),
-            shade: triangle_shades(
+            shade: triangle_shades_ambients(
                 &deformed,
                 &deformed_normals,
                 &geometry.indices,
                 SHADE_LIGHT,
                 package_material_ambient(package, mesh),
+                occlusion_factors(package, mesh, geometry, &textures).as_deref(),
             ),
             texture: mesh_texture,
             blend: mesh

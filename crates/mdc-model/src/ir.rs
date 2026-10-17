@@ -273,6 +273,12 @@ pub struct Material {
     /// N374: `KHR_materials_emissive_strength` (`emissiveStrength`, default 1.0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emissive_strength: Option<f32>,
+    /// N378: `occlusionTexture.index` (ambient occlusion map).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occlusion_texture: Option<usize>,
+    /// N378: `occlusionTexture.strength` (0..1; default 1.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occlusion_strength: Option<f32>,
 }
 
 /// N373: glTF `KHR_texture_transform`. `rotation` is in radians; the transform is
@@ -369,6 +375,14 @@ impl Material {
     /// N374: `KHR_materials_emissive_strength` (default 1.0; non-negative).
     pub fn emissive_strength(&self) -> f32 {
         self.emissive_strength.unwrap_or(1.0).max(0.0)
+    }
+
+    /// N378: the occlusion texture index and its strength (default 1.0).
+    pub fn occlusion(&self) -> (Option<usize>, f32) {
+        (
+            self.occlusion_texture,
+            self.occlusion_strength.unwrap_or(1.0).clamp(0.0, 1.0),
+        )
     }
 }
 

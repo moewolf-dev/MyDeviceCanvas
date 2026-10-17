@@ -266,7 +266,9 @@ scales `emissiveFactor` before it lifts the ambient. N376: sparse accessors are
 de-sparsed into a tight byte image before decoding, so POSITION/NORMAL/UV/COLOR_0
 (and indices) honour their `sparse` block. N377: interleaved accessors
 (`bufferView.byteStride` + accessor `byteOffset`) are de-strided into the same
-tight image, so shared-stride vertex layouts decode correctly.
+tight image, so shared-stride vertex layouts decode correctly. N378: `occlusionTexture`
+is imported and multiplies each triangle's shade (sampled at the triangle centroid)
+on the package/device renderer; `occlusionStrength` scales the effect.
 
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a

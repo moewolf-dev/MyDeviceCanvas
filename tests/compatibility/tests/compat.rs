@@ -850,6 +850,8 @@ fn packaged_masked_texture_cuts_out_on_render() {
             unlit: None,
             uv_transform: None,
             emissive_strength: None,
+            occlusion_texture: None,
+            occlusion_strength: None,
         }],
         skeletons: Vec::new(),
         animations: Vec::new(),
@@ -922,6 +924,8 @@ fn masked_material_cuts_out_transparent_texels() {
             unlit: None,
             uv_transform: None,
             emissive_strength: None,
+            occlusion_texture: None,
+            occlusion_strength: None,
         }],
         ..Model::default()
     };
@@ -1549,6 +1553,8 @@ fn unlit_material_and_vertex_colours_render_on_the_device() {
                 unlit: Some(unlit),
                 uv_transform: None,
                 emissive_strength: None,
+                occlusion_texture: None,
+                occlusion_strength: None,
                 ..Material::default()
             }],
             ..Model::default()
@@ -1590,6 +1596,132 @@ fn unlit_material_and_vertex_colours_render_on_the_device() {
     );
     // N364: the left edge is tinted red by the vertex colour.
     assert!(unlit >> 11 > (unlit & 0x1f), "left is red: {unlit:#06x}");
+}
+
+#[test]
+fn occlusion_texture_darkens_the_shadowed_triangles() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node, Texture};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let png = |w: u32, h: u32, pixels: Vec<u8>| {
+        let image = image::RgbImage::from_raw(w, h, pixels).unwrap();
+        let mut out = Vec::new();
+        image
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    };
+    let geometry = || MeshGeometry {
+        positions: vec![
+            [-0.5, -0.5, 0.0],
+            [0.5, -0.5, 0.0],
+            [0.5, 0.5, 0.0],
+            [-0.5, 0.5, 0.0],
+        ],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        normals: Vec::new(),
+        skin_joints: Vec::new(),
+        skin_weights: Vec::new(),
+        morph_targets: Vec::new(),
+        colors: Vec::new(),
+    };
+    let build = |occlusion: Option<usize>| Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(geometry()),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "lit".into(),
+            texture: Some(0),
+            color: Some([255, 255, 255]),
+            // N378: occlusion map is texture 1 (left black, right white).
+            occlusion_texture: occlusion,
+            occlusion_strength: Some(1.0),
+            ..Material::default()
+        }],
+        textures: vec![
+            Texture {
+                name: "white".into(),
+                width: 1,
+                height: 1,
+                format: "image/png".into(),
+                bytes: 0,
+                data: Some(png(1, 1, vec![255, 255, 255])),
+                wrap: None,
+            },
+            Texture {
+                name: "ao".into(),
+                width: 2,
+                height: 1,
+                format: "image/png".into(),
+                bytes: 0,
+                data: Some(png(2, 1, vec![0, 0, 0, 255, 255, 255])),
+                wrap: None,
+            },
+        ],
+        ..Model::default()
+    };
+
+    // Render the model on the device and return the mirrored frame.
+    let render = |occlusion: Option<usize>| -> Vec<u8> {
+        let model = build(occlusion);
+        let blobs = mdc_bake::attach_model_textures(&model, &mdc_bake::BakeLimits::default());
+        let package = mdc_bake::mesh_package_with_textures(
+            &model,
+            &mdc_model::RendererCapability::full_3d(),
+            blobs,
+        )
+        .unwrap();
+        let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        session
+            .install_package(&package.to_bytes().unwrap())
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session.start_mirror("main", "full-frame", 30).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        device.clock.advance(0);
+        device.emit_mirror_frame().unwrap();
+        session.poll().unwrap();
+        session.take_mirror_frame().expect("mirror frame").bytes
+    };
+    // Mean brightness of the drawn (non-background) pixels.
+    let mean_drawn = |bytes: &[u8]| -> f64 {
+        let background = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let mut sum = 0.0f64;
+        let mut count = 0u32;
+        for i in (0..bytes.len()).step_by(2) {
+            let value = u16::from_le_bytes([bytes[i], bytes[i + 1]]);
+            if value != background {
+                sum += f64::from(value >> 5);
+                count += 1;
+            }
+        }
+        sum / f64::from(count.max(1))
+    };
+    let without = mean_drawn(&render(None));
+    let with_ao = mean_drawn(&render(Some(1)));
+    assert!(
+        with_ao < without,
+        "occlusion darkens: with={with_ao:.2} without={without:.2}"
+    );
 }
 
 #[test]

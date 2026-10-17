@@ -361,6 +361,17 @@ impl GltfImporter {
                 .and_then(|s| s.get("emissiveStrength"))
                 .and_then(Value::as_f64)
                 .map(|v| v.max(0.0) as f32);
+            // N378: occlusionTexture (ambient occlusion).
+            let occlusion_texture = material
+                .get("occlusionTexture")
+                .and_then(|o| o.get("index"))
+                .and_then(Value::as_u64)
+                .and_then(resolve_texture);
+            let occlusion_strength = material
+                .get("occlusionTexture")
+                .and_then(|o| o.get("strength"))
+                .and_then(Value::as_f64)
+                .map(|v| v.clamp(0.0, 1.0) as f32);
             materials.push(Material {
                 name: json_name(material, &format!("material{i}")),
                 texture,
@@ -380,6 +391,8 @@ impl GltfImporter {
                 unlit,
                 uv_transform,
                 emissive_strength,
+                occlusion_texture,
+                occlusion_strength,
             });
         }
 
