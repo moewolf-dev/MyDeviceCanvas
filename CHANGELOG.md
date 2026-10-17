@@ -2,6 +2,28 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.54] — Specular-glossiness, clearcoat, indexed textures, dithering, scene-lint, hit-testing, OTA checkpoint, variants (N413–N422)
+
+### Added
+
+- `KHR_materials_pbrSpecularGlossiness` is converted to metallic-roughness
+  (diffuse → base colour, `1 - glossiness` → roughness, specular luminance →
+  metallic) (N413)
+- `KHR_materials_clearcoat` import plus a second specular lobe from the smooth
+  surface normal (N414)
+- palette-indexed texture blobs (`TextureBlob.palette`/`indices`,
+  `TextureMap::from_indexed`) and `mdc package --indexed N` (N415)
+- ordered-dither texture blobs (`dither_texture_blob`) and `mdc package --dither N`
+  (N416)
+- `mdc scene-lint <scene.json>` (`SceneNode::lint`): unknown kinds, missing
+  geometry/values, zero extents, duplicate names, and node/depth limits (N417)
+- scene hit-testing (`FakeDevice::hit_test`) with the hit node carried on input
+  events (`InputEvent.node`, Node SDK `input.node`) (N418)
+- `Session::ota_phase`/`reset_ota` OTA phase checkpoint (survives reconnect) (N419)
+- `KHR_materials_variants` import (`Model.variants`, `model-info` field) (N420)
+- compatibility/memory coverage for indexed textures and the package round trip
+  (N421)
+
 ## [0.1.53] — Per-slot UV sets, dithering, palette quantization, per-pixel occlusion, sRGB filtering, verify, Swift sendInput, RSS delta (N403–N412)
 
 ### Added

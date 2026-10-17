@@ -180,6 +180,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | `mdc verify` (N408) | sim-verified (checksum + size) | n/a |
 | Swift `sendInput` (N409) | sim-verified (C ABI wrapper + smoke) | physical: pending |
 | RSS-delta sampler (N410) | sim-verified (`--rss-delta`) | n/a |
+| `pbrSpecularGlossiness` (N413) | sim-verified (converted to metallic-roughness) | physical: pending |
+| Clearcoat (N414) | sim-verified (second specular lobe) | physical: pending |
+| Indexed palette textures (N415) | sim-verified (`TextureBlob.palette`/`indices`) | physical: pending |
+| Texture dithering (N416) | sim-verified (`dither_texture_blob`) | n/a |
+| `mdc scene-lint` (N417) | sim-verified (reference + limit checks) | n/a |
+| Scene hit-testing (N418) | sim-verified (`InputEvent.node`) | physical: pending |
+| OTA phase checkpoint (N419) | sim-verified (`Session::ota_phase`) | physical: pending |
+| `KHR_materials_variants` (N420) | sim-verified (`Model.variants`) | n/a |
 
 ## G03 sim exit
 
