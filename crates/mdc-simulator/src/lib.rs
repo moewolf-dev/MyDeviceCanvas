@@ -4332,6 +4332,8 @@ mod tests {
                 height: 1,
                 rgb565: vec![0x00, 0xF8, 0xE0, 0x07],
                 alpha: vec![0b01],
+                palette: Vec::new(),
+                indices: Vec::new(),
             }),
             texture_blobs: Vec::new(),
         };

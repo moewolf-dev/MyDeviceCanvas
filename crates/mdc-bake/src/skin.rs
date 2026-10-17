@@ -1401,7 +1401,12 @@ pub fn render_package_mesh(
         return Err(BakeError::Budget(size.0, size.1));
     }
     let build = |blob: &mdc_model::TextureBlob| -> Result<crate::TextureMap, BakeError> {
-        let map = crate::TextureMap::from_rgb565(blob.width, blob.height, blob.rgb565.clone())?;
+        // N415: expand a palette-indexed blob, otherwise use the RGB565 buffer.
+        let map = if blob.is_indexed() {
+            crate::TextureMap::from_indexed(blob.width, blob.height, &blob.palette, &blob.indices)?
+        } else {
+            crate::TextureMap::from_rgb565(blob.width, blob.height, blob.rgb565.clone())?
+        };
         Ok(if blob.alpha.is_empty() {
             map
         } else {
@@ -1645,6 +1650,8 @@ pub fn pack_material_atlas(package: &mut mdc_model::DevicePackage, max_page: u32
         height: page_h,
         rgb565: page,
         alpha: if has_alpha { page_alpha } else { Vec::new() },
+        palette: Vec::new(),
+        indices: Vec::new(),
     }];
     package.texture = package.texture_blobs.first().cloned();
     true
@@ -1777,8 +1784,13 @@ pub fn render_package_scene_clip_mode(
         return Err(BakeError::Decode("package has no mesh geometry".into()));
     };
     let build_texture = |blob: &mdc_model::TextureBlob| -> Result<crate::TextureMap, BakeError> {
-        let map = crate::TextureMap::from_rgb565(blob.width, blob.height, blob.rgb565.clone())?
-            .with_filter(filter);
+        // N415: expand a palette-indexed blob, otherwise use the RGB565 buffer.
+        let map = if blob.is_indexed() {
+            crate::TextureMap::from_indexed(blob.width, blob.height, &blob.palette, &blob.indices)?
+        } else {
+            crate::TextureMap::from_rgb565(blob.width, blob.height, blob.rgb565.clone())?
+        }
+        .with_filter(filter);
         Ok(if blob.alpha.is_empty() {
             map
         } else {
@@ -3030,6 +3042,8 @@ mod tests {
             height: 1,
             rgb565,
             alpha: Vec::new(),
+            palette: Vec::new(),
+            indices: Vec::new(),
         };
         package.texture_blobs = vec![
             blob(vec![0x00, 0xF8, 0xE0, 0x07]), // red, green

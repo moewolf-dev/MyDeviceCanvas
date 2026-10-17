@@ -119,6 +119,13 @@ pub struct TextureBlob {
     /// N293: optional bit-packed alpha mask (1 = opaque), `ceil(w*h/8)` bytes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alpha: Vec<u8>,
+    /// N415: an optional RGB565 palette. When `indices` is non-empty the blob is
+    /// indexed and `rgb565` may be empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub palette: Vec<u16>,
+    /// N415: one palette index per pixel (`width * height` bytes).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub indices: Vec<u8>,
 }
 
 impl TextureBlob {
@@ -126,13 +133,24 @@ impl TextureBlob {
     /// mask length when present).
     pub fn validate(&self) -> bool {
         let pixels = u64::from(self.width).saturating_mul(u64::from(self.height));
-        if self.width == 0
-            || self.height == 0
-            || self.rgb565.len() as u64 != pixels.saturating_mul(2)
-        {
+        if self.width == 0 || self.height == 0 {
+            return false;
+        }
+        // N415: an indexed blob carries palette + one byte per pixel instead.
+        let pixels_ok = if self.indices.is_empty() {
+            self.rgb565.len() as u64 == pixels.saturating_mul(2)
+        } else {
+            !self.palette.is_empty() && self.indices.len() as u64 == pixels
+        };
+        if !pixels_ok {
             return false;
         }
         self.alpha.is_empty() || self.alpha.len() as u64 == pixels.div_ceil(8)
+    }
+
+    /// N415: whether this blob is palette-indexed.
+    pub fn is_indexed(&self) -> bool {
+        !self.indices.is_empty()
     }
 
     /// N178: nearest texel with wrapping UVs, as RGB565.
@@ -148,7 +166,17 @@ impl TextureBlob {
         };
         let x = wrap(u * self.width as f32, self.width) as usize;
         let y = wrap(v * self.height as f32, self.height) as usize;
-        let index = (y * self.width as usize + x) * 2;
+        let pixel = y * self.width as usize + x;
+        // N415: an indexed blob looks the texel up in its palette.
+        if self.is_indexed() {
+            return self
+                .indices
+                .get(pixel)
+                .and_then(|i| self.palette.get(*i as usize))
+                .copied()
+                .unwrap_or(0);
+        }
+        let index = pixel * 2;
         match self.rgb565.get(index..index + 2) {
             Some(bytes) => u16::from_le_bytes([bytes[0], bytes[1]]),
             None => 0,

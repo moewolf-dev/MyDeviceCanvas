@@ -609,6 +609,8 @@ fn textured_mesh_package_soak_is_bounded() {
         height: 1,
         rgb565: vec![0x00, 0xF8, 0xE0, 0x07],
         alpha: Vec::new(),
+        palette: Vec::new(),
+        indices: Vec::new(),
     };
     let caps = mdc_model::RendererCapability::full_3d();
     let mut size = 0usize;
@@ -1483,6 +1485,8 @@ fn pbr_textured_rendering_stays_bounded() {
         height: 2,
         rgb565: vec![0xFFu8; 8],
         alpha: Vec::new(),
+        palette: Vec::new(),
+        indices: Vec::new(),
     };
     package.package.texture_blobs = vec![blob.clone(), blob.clone(), blob.clone(), blob.clone()];
     package.package.texture = Some(blob);
@@ -1571,6 +1575,8 @@ fn material_atlas_pack_stays_within_the_page() {
             height: h,
             rgb565,
             alpha: Vec::new(),
+            palette: Vec::new(),
+            indices: Vec::new(),
         }
     };
     for _ in 0..200 {

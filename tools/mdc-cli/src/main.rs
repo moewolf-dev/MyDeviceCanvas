@@ -467,6 +467,7 @@ fn cmd_package(
     let mut out: Option<String> = None;
     let mut texture_path: Option<String> = None;
     let mut atlas_page: Option<u32> = None;
+    let mut indexed: u32 = 0;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -476,6 +477,8 @@ fn cmd_package(
             "--atlas" => {
                 atlas_page = Some(iter.next().and_then(|v| v.parse().ok()).unwrap_or(2048))
             }
+            // N415: quantize each texture blob to a palette.
+            "--indexed" => indexed = iter.next().and_then(|v| v.parse().ok()).unwrap_or(16),
             other => out = Some(other.to_string()),
         }
     }
@@ -516,6 +519,22 @@ fn cmd_package(
         }
     };
     let texture_error: Option<String> = None;
+    // N415: optionally quantize the textures to a palette (form-A devices).
+    let package = if indexed >= 2 {
+        let mut inner = package.package.clone();
+        inner.texture_blobs = inner
+            .texture_blobs
+            .iter()
+            .map(|blob| mdc_bake::index_texture_blob(blob, indexed))
+            .collect();
+        inner.texture = inner
+            .texture
+            .as_ref()
+            .map(|blob| mdc_bake::index_texture_blob(blob, indexed));
+        mdc_model::MdcPackage::seal(inner)?
+    } else {
+        package
+    };
     // N380: optionally collapse the per-material textures into one page.
     let package = match atlas_page {
         Some(page) => {
@@ -3206,7 +3225,7 @@ fn usage() {
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
-package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
+package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] [--srgb] --out f.ppm|\
@@ -3540,6 +3559,29 @@ mod tests {
         .unwrap();
         cmd_model_info(&[path.to_string_lossy().into_owned()]).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn indexed_blob_samples_its_palette() {
+        // N415: a blob can carry a palette + one index per pixel.
+        let blob = mdc_model::TextureBlob {
+            width: 2,
+            height: 1,
+            rgb565: vec![0x00, 0xF8, 0xE0, 0x07],
+            alpha: Vec::new(),
+            palette: Vec::new(),
+            indices: Vec::new(),
+        };
+        let indexed = mdc_bake::index_texture_blob(&blob, 4);
+        assert!(indexed.is_indexed());
+        assert!(indexed.validate());
+        assert!(indexed.palette.len() <= 4);
+        assert_eq!(indexed.indices.len(), 2);
+        // The sampled colours come from the palette.
+        let left = indexed.sample(0.1, 0.5);
+        let right = indexed.sample(0.9, 0.5);
+        assert!(indexed.palette.contains(&left));
+        assert!(indexed.palette.contains(&right));
     }
 
     #[test]

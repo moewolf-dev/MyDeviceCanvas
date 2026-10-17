@@ -77,6 +77,25 @@ impl TextureMap {
         })
     }
 
+    /// N415: expand a palette-indexed image (one index byte per pixel) into an
+    /// RGB565 texture.
+    pub fn from_indexed(
+        width: u32,
+        height: u32,
+        palette: &[u16],
+        indices: &[u8],
+    ) -> Result<Self, BakeError> {
+        if width == 0 || height == 0 || indices.len() != (width as usize) * (height as usize) {
+            return Err(BakeError::Budget(width, height));
+        }
+        let mut rgb565 = Vec::with_capacity(indices.len() * 2);
+        for index in indices {
+            let color = palette.get(*index as usize).copied().unwrap_or(0);
+            rgb565.extend_from_slice(&color.to_le_bytes());
+        }
+        Self::from_rgb565(width, height, rgb565)
+    }
+
     /// Build from a decoded texture (the output of `decode_resize_rgb565`).
     pub fn from_baked(baked: &crate::BakedTexture) -> Result<Self, BakeError> {
         Self::from_rgb565(baked.width, baked.height, baked.rgb565.clone())

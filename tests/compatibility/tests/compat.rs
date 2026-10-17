@@ -785,6 +785,8 @@ fn material_colour_tints_the_package_texture_on_the_device() {
             height: 1,
             rgb565: vec![0x00, 0xF8], // 1×1 red
             alpha: Vec::new(),
+            palette: Vec::new(),
+            indices: Vec::new(),
         }),
         texture_blobs: Vec::new(),
     };
@@ -896,6 +898,8 @@ fn packaged_masked_texture_cuts_out_on_render() {
             height: 1,
             rgb565: vec![0x00, 0xF8, 0xE0, 0x07],
             alpha: vec![0b01],
+            palette: Vec::new(),
+            indices: Vec::new(),
         }),
         texture_blobs: Vec::new(),
     };
@@ -3250,6 +3254,8 @@ fn textured_geometry_package_renders_on_the_device() {
         height: 1,
         rgb565: vec![0x00, 0xF8, 0xE0, 0x07],
         alpha: Vec::new(),
+        palette: Vec::new(),
+        indices: Vec::new(),
     };
     let package = DevicePackage {
         target: "linux-mesh".into(),

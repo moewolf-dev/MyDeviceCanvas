@@ -600,6 +600,8 @@ pub fn bake_texture_blob(
         height: baked.height,
         rgb565: baked.rgb565,
         alpha: if has_transparency { alpha } else { Vec::new() },
+        palette: Vec::new(),
+        indices: Vec::new(),
     })
 }
 
@@ -657,6 +659,8 @@ pub fn empty_texture_blob() -> mdc_model::TextureBlob {
         height: 0,
         rgb565: Vec::new(),
         alpha: Vec::new(),
+        palette: Vec::new(),
+        indices: Vec::new(),
     }
 }
 
@@ -793,6 +797,27 @@ pub fn quantize_palette(width: u32, height: u32, rgb565: &[u8], max_colors: u32)
         height,
         palette,
         indices,
+    }
+}
+
+/// N415: quantize a blob's RGB565 to a palette, returning a palette-indexed blob
+/// (the 1-bit alpha mask is preserved). An already-indexed or invalid blob is
+/// returned unchanged.
+pub fn index_texture_blob(
+    blob: &mdc_model::TextureBlob,
+    max_colors: u32,
+) -> mdc_model::TextureBlob {
+    if blob.is_indexed() || !blob.validate() {
+        return blob.clone();
+    }
+    let quantized = quantize_palette(blob.width, blob.height, &blob.rgb565, max_colors);
+    mdc_model::TextureBlob {
+        width: blob.width,
+        height: blob.height,
+        rgb565: Vec::new(),
+        alpha: blob.alpha.clone(),
+        palette: quantized.palette,
+        indices: quantized.indices,
     }
 }
 
