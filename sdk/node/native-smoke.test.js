@@ -162,9 +162,14 @@ test("native dual-sim lists overlay and disconnect cancel keeps the pointer", { 
   assert.equal(cancel.input.y, 7);
   touch.dispose();
 
-  // N400: the host can also send a pointer event to the device.
+  // N430: the host can also send a pointer event to the device.
   const hostInput = await MyDeviceCanvas.create();
   await hostInput.devices();
   await hostInput._native.sendInput("main", 9, "down", 12, 13);
   hostInput.dispose();
+
+  // N430: connectSerial rejects an unusable path cleanly.
+  const serial = await MyDeviceCanvas.create();
+  assert.throws(() => serial._native.connectSerial("/no/such/port", 115200));
+  serial.dispose();
 });

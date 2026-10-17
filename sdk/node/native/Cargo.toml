@@ -12,7 +12,7 @@ napi = { version = "=2.16.13", features = ["napi8"] }
 napi-derive = "=2.16.13"
 mdc-core = { path = "../../../crates/mdc-core" }
 mdc-protocol = { path = "../../../crates/mdc-protocol" }
-mdc-transport = { path = "../../../crates/mdc-transport", features = ["websocket"] }
+mdc-transport = { path = "../../../crates/mdc-transport", features = ["websocket", "serial"] }
 mdc-simulator = { path = "../../../crates/mdc-simulator" }
 serde_json = { workspace = true }
 

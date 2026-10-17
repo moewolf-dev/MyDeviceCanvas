@@ -893,6 +893,25 @@ impl NativeManager {
         connect_transport(&mut state, Box::new(tcp), address.trim(), "tcp")
     }
 
+    /// N430: replace the session with a serial connection (`/dev/...`).
+    #[napi(js_name = "connectSerial")]
+    pub fn connect_serial(&self, path: String, baud: u32) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        let serial = mdc_transport::SerialTransport::open(
+            path.trim(),
+            if baud == 0 { 115_200 } else { baud },
+            Duration::from_millis(400),
+        )
+        .map_err(|e| Error::from_reason(e.to_string()))?;
+        connect_transport(&mut state, Box::new(serial), path.trim(), "serial")
+    }
+
     /// N340: replace the session with a WebSocket connection (`ws://host:port`).
     #[napi(js_name = "connectWebSocket")]
     pub fn connect_web_socket(&self, url: String) -> Result<()> {
