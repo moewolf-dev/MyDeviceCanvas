@@ -2177,6 +2177,105 @@ fn smooth_specular_adds_a_highlight() {
 }
 
 #[test]
+fn imported_directional_light_reaches_the_device_render() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_model::{Light, Material, Mesh, MeshGeometry, Model, Node};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let build = |lights: Vec<Light>| Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.5, 0.5, 0.0],
+                    [-0.5, 0.5, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                uv: Vec::new(),
+                uv2: Vec::new(),
+                normals: vec![[0.0, 0.0, 1.0]; 4],
+                colors: Vec::new(),
+                tangents: Vec::new(),
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                skin_joints2: Vec::new(),
+                skin_weights2: Vec::new(),
+                morph_targets: Vec::new(),
+            }),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "m".into(),
+            color: Some([255, 255, 255]),
+            ..Material::default()
+        }],
+        lights,
+        ..Model::default()
+    };
+    let render = |lights: Vec<Light>| -> Vec<u8> {
+        let package = mdc_bake::mesh_package_with_textures(
+            &build(lights),
+            &mdc_model::RendererCapability::full_3d(),
+            Vec::new(),
+        )
+        .unwrap();
+        let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        session
+            .install_package(&package.to_bytes().unwrap())
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session.start_mirror("main", "full-frame", 30).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        device.clock.advance(0);
+        device.emit_mirror_frame().unwrap();
+        session.poll().unwrap();
+        session.take_mirror_frame().expect("mirror frame").bytes
+    };
+    let mean_drawn = |bytes: &[u8]| -> f64 {
+        let background = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let mut sum = 0.0f64;
+        let mut count = 0u32;
+        for i in (0..bytes.len()).step_by(2) {
+            let value = u16::from_le_bytes([bytes[i], bytes[i + 1]]);
+            if value != background {
+                sum += f64::from(value >> 5);
+                count += 1;
+            }
+        }
+        sum / f64::from(count.max(1))
+    };
+    let lit = mean_drawn(&render(Vec::new()));
+    let backlit = mean_drawn(&render(vec![Light {
+        name: "back".into(),
+        kind: "directional".into(),
+        color: [255, 255, 255],
+        intensity: 1.0,
+        direction: [0.0, 0.0, 1.0],
+    }]));
+    assert!(
+        backlit < lit,
+        "the imported light darkens the device frame: lit={lit:.2} backlit={backlit:.2}"
+    );
+}
+
+#[test]
 fn device_diagnostics_reach_the_host_channel() {
     use mdc_core::{ConnectionState, DiagnosticRecord, Session};
     use mdc_simulator::{BoardProfile, FakeDevice};

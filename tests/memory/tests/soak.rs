@@ -1405,6 +1405,54 @@ fn http_stream_scale_requests_stay_bounded() {
 }
 
 #[test]
+fn quantized_import_stays_bounded() {
+    // N390/N391: repeatedly importing a quantized GLB stays within the vertex
+    // bound and produces a stable summary.
+    let count = 300u32;
+    let mut bin = Vec::new();
+    for i in 0..count * 3 {
+        bin.extend_from_slice(&(i as i16).to_le_bytes());
+    }
+    let mut json = format!(
+        r#"{{"asset":{{"version":"2.0"}},"extensionsUsed":["KHR_mesh_quantization"],
+        "buffers":[{{"byteLength":{len}}}],
+        "bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":{len}}}],
+        "accessors":[{{"bufferView":0,"componentType":5122,"count":{count},"type":"VEC3"}}],
+        "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}}}}]}}],
+        "nodes":[{{"name":"root","mesh":0}}]}}"#,
+        len = bin.len(),
+        count = count
+    )
+    .into_bytes();
+    while json.len() % 4 != 0 {
+        json.push(b' ');
+    }
+    let mut bin_padded = bin.clone();
+    while bin_padded.len() % 4 != 0 {
+        bin_padded.push(0);
+    }
+    let total = 12 + 8 + json.len() + 8 + bin_padded.len();
+    let mut glb = Vec::new();
+    glb.extend_from_slice(b"glTF");
+    glb.extend_from_slice(&2u32.to_le_bytes());
+    glb.extend_from_slice(&(total as u32).to_le_bytes());
+    glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+    glb.extend_from_slice(b"JSON");
+    glb.extend_from_slice(&json);
+    glb.extend_from_slice(&(bin_padded.len() as u32).to_le_bytes());
+    glb.extend_from_slice(&[0x42, 0x49, 0x4E, 0x00]);
+    glb.extend_from_slice(&bin_padded);
+    for _ in 0..100 {
+        let model = mdc_model::GltfImporter
+            .import(&glb, &mdc_model::ImportLimits::default())
+            .unwrap();
+        let summary = model.summary();
+        assert_eq!(summary.meshes, 1);
+        assert!(summary.vertices <= mdc_model::MAX_GEOMETRY_VERTICES as u64);
+    }
+}
+
+#[test]
 fn material_atlas_pack_stays_within_the_page() {
     // N381: repeatedly packing a package's per-material textures keeps a single
     // bounded page, whatever the blob sizes.
