@@ -37,6 +37,7 @@ is idempotent and cancels listeners; every method rejects after dispose.
 | `installPackage(bytes)` | N234: upload `.mdcpkg` bytes (`Uint8Array`); resolves `true` when ready |
 | `packageReady()` | N238: whether the last accepted package is render-ready |
 | `connectTcp(address)` | remote peer instead of the in-process simulator |
+| `connectWebSocket(url)` | N340: WebSocket peer (`ws://host:port`) |
 
 ### installPackage
 
@@ -57,6 +58,6 @@ A malformed package rejects with the device error; `packageReady()` stays false.
 
 ## Non-goals
 
-- No serial/WebSocket transport in the Node binding yet (TCP + in-process sim).
+- No serial transport in the Node binding yet (TCP + in-process simulator; N340 adds WebSocket).
 - No native artifact vendored: build per platform (see `sdk/node/package.json`).
 - No physical-board claim; D05/G03 remain open.

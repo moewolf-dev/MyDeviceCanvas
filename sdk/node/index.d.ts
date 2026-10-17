@@ -69,6 +69,8 @@ export declare class MyDeviceCanvas {
   nativeLoaded(): boolean;
   currentFrameId(): Promise<number>;
   connectTcp(address: string): Promise<void>;
+  /** N340: connect over WebSocket (`ws://host:port`). */
+  connectWebSocket(url: string): Promise<void>;
   devices(): Promise<Device[]>;
   pollEvents(): Promise<NativeEvent[]>;
   onMirrorFrame(listener: (frame: MirrorInfo) => void): () => void;

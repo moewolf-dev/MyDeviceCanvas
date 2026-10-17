@@ -76,6 +76,14 @@ export class MyDeviceCanvas {
     }
     return this._native.connectTcp(address);
   }
+  /** N340: connect over WebSocket (`ws://host:port`). */
+  async connectWebSocket(url) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.connectWebSocket !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.connectWebSocket(url);
+  }
   async devices() {
     if (this._disposed) throw new Error("manager is disposed");
     return (await (this._native.devices?.() ?? [])).map(

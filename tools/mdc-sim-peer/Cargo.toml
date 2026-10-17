@@ -11,4 +11,4 @@ path = "src/main.rs"
 
 [dependencies]
 mdc-simulator = { path = "../../crates/mdc-simulator" }
-mdc-transport = { path = "../../crates/mdc-transport" }
+mdc-transport = { path = "../../crates/mdc-transport", features = ["websocket"] }

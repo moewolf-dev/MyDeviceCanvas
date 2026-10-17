@@ -180,6 +180,43 @@ fn ensure_sim(state: &mut State) -> Result<()> {
     Ok(())
 }
 
+/// N340: wire a fresh transport into a session, handshake it, and register the endpoint.
+fn connect_transport(
+    state: &mut State,
+    transport: Box<dyn Transport>,
+    endpoint: &str,
+    label: &str,
+) -> Result<()> {
+    if let Some(mut previous) = state.sim.take() {
+        previous.session.disconnect();
+    }
+    let manager = Arc::new(Mutex::new(DeviceManager::new()));
+    let mut session = Session::new(transport);
+    session.set_manager(manager.clone());
+    session
+        .connect()
+        .map_err(|e| Error::from_reason(e.to_string()))?;
+    let mut live = SimSession {
+        session,
+        device: None,
+        manager,
+    };
+    pump_link(&mut live)?;
+    if live.session.state != ConnectionState::Ready {
+        return Err(Error::from_reason(format!(
+            "{label} peer did not finish HELLO"
+        )));
+    }
+    if let Some(device) = live.session.device.as_ref() {
+        live.manager
+            .lock()
+            .map_err(|_| Error::from_reason("manager lock poisoned"))?
+            .connect_session(&device.capabilities.device_id, endpoint);
+    }
+    state.sim = Some(live);
+    Ok(())
+}
+
 fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<NativeEvent>> {
     let mut mgr = manager
         .lock()
@@ -786,34 +823,24 @@ impl NativeManager {
         if state.disposed {
             return Err(Error::from_reason("manager is disposed"));
         }
-        if let Some(mut previous) = state.sim.take() {
-            previous.session.disconnect();
-        }
         let tcp = TcpTransport::connect(address.trim(), Duration::from_millis(400))
             .map_err(|e| Error::from_reason(e.to_string()))?;
-        let manager = Arc::new(Mutex::new(DeviceManager::new()));
-        let mut session = Session::new(Box::new(tcp) as Box<dyn Transport>);
-        session.set_manager(manager.clone());
-        session
-            .connect()
+        connect_transport(&mut state, Box::new(tcp), address.trim(), "tcp")
+    }
+
+    /// N340: replace the session with a WebSocket connection (`ws://host:port`).
+    #[napi(js_name = "connectWebSocket")]
+    pub fn connect_web_socket(&self, url: String) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        let ws = mdc_transport::WebSocketTransport::connect(url.trim(), Duration::from_millis(400))
             .map_err(|e| Error::from_reason(e.to_string()))?;
-        let mut live = SimSession {
-            session,
-            device: None,
-            manager,
-        };
-        pump_link(&mut live)?;
-        if live.session.state != ConnectionState::Ready {
-            return Err(Error::from_reason("tcp peer did not finish HELLO"));
-        }
-        if let Some(device) = live.session.device.as_ref() {
-            live.manager
-                .lock()
-                .map_err(|_| Error::from_reason("manager lock poisoned"))?
-                .connect_session(&device.capabilities.device_id, address.trim());
-        }
-        state.sim = Some(live);
-        Ok(())
+        connect_transport(&mut state, Box::new(ws), url.trim(), "websocket")
     }
 
     #[napi(js_name = "lastFrame")]

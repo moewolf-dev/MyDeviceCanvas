@@ -89,6 +89,42 @@ test("native connectTcp sends an RGB565 frame to mdc-sim-peer", {
   }
 });
 
+test("native connectWebSocket sends an RGB565 frame to mdc-sim-peer", {
+  skip: !native || !fs.existsSync(peerBin),
+}, async () => {
+  const port = await reservePort();
+  const address = `127.0.0.1:${port}`;
+  const peer = spawn(peerBin, [address, "esp32-jc3248w535-sim", "--ws"], { stdio: "ignore" });
+  const mdc = await MyDeviceCanvas.create();
+  try {
+    let connected = false;
+    let last = "not attempted";
+    for (let i = 0; i < 40; i += 1) {
+      try {
+        await mdc.connectWebSocket(`ws://${address}`);
+        connected = true;
+        break;
+      } catch (error) {
+        last = error instanceof Error ? error.message : String(error);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
+    assert.equal(connected, true, last);
+    const devices = await mdc.devices();
+    assert.equal(devices.length, 1);
+    const surface = devices[0].surface("main");
+    const bytes = new Uint8Array(surface.info.width * surface.info.height * 2);
+    bytes[0] = 0x00;
+    bytes[1] = 0xf8;
+    const request = await surface.sendFrame(bytes);
+    assert.equal(typeof request, "number");
+    mdc.dispose();
+    await assert.rejects(mdc.devices(), /disposed/);
+  } finally {
+    peer.kill();
+  }
+});
+
 test("native dual-sim lists overlay and disconnect cancel keeps the pointer", { skip: !native }, async () => {
   const mdc = await MyDeviceCanvas.create();
   const devices = await mdc.openBoard("dual-sim");
