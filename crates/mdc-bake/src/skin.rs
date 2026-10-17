@@ -78,6 +78,71 @@ pub fn transform_point(m: &Mat4, p: [f32; 3]) -> [f32; 3] {
     ]
 }
 
+/// N365: transform a direction (normal) by the linear part of `m` (no translation).
+pub fn transform_direction(m: &Mat4, v: [f32; 3]) -> [f32; 3] {
+    let out = [
+        m[0] * v[0] + m[4] * v[1] + m[8] * v[2],
+        m[1] * v[0] + m[5] * v[1] + m[9] * v[2],
+        m[2] * v[0] + m[6] * v[1] + m[10] * v[2],
+    ];
+    let len = (out[0] * out[0] + out[1] * out[1] + out[2] * out[2]).sqrt();
+    if len > 1e-6 {
+        [out[0] / len, out[1] / len, out[2] / len]
+    } else {
+        [0.0, 0.0, 1.0]
+    }
+}
+
+/// N365: skin normals with the same joints as the positions (the linear part of
+/// `world · inverseBind`; no inverse-transpose, so non-uniform scale is approximate).
+pub fn skin_normals(
+    joints: &[[u16; 4]],
+    weights: &[[f32; 4]],
+    normals: &[[f32; 3]],
+    skeleton: &Skeleton,
+    worlds: &[Mat4],
+) -> Vec<[f32; 3]> {
+    let mut out = Vec::with_capacity(normals.len());
+    for (i, normal) in normals.iter().enumerate() {
+        let mut acc = [0.0f32; 3];
+        let mut total = 0.0f32;
+        if let (Some(vertex_joints), Some(vertex_weights)) = (joints.get(i), weights.get(i)) {
+            for k in 0..4 {
+                let weight = vertex_weights[k];
+                if weight == 0.0 {
+                    continue;
+                }
+                let joint = vertex_joints[k] as usize;
+                let (Some(&node), Some(bind)) = (
+                    skeleton.joint_nodes.get(joint),
+                    skeleton.inverse_bind.get(joint),
+                ) else {
+                    continue;
+                };
+                let Some(world) = worlds.get(node) else {
+                    continue;
+                };
+                let skinned = transform_direction(&mat4_mul(world, bind), *normal);
+                acc[0] += skinned[0] * weight;
+                acc[1] += skinned[1] * weight;
+                acc[2] += skinned[2] * weight;
+                total += weight;
+            }
+        }
+        if total > 0.0 {
+            let len = (acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2]).sqrt();
+            out.push(if len > 1e-6 {
+                [acc[0] / len, acc[1] / len, acc[2] / len]
+            } else {
+                *normal
+            });
+        } else {
+            out.push(*normal);
+        }
+    }
+    out
+}
+
 /// World matrices from each node's own local transform.
 pub fn node_world_matrices(nodes: &[Node]) -> Vec<Mat4> {
     let locals: Vec<Mat4> = nodes
@@ -1012,6 +1077,22 @@ pub fn render_scene_at(
                 .collect()
         };
         let depth = mean_z(&deformed);
+        // N365: skin the normals so shading follows the pose.
+        let deformed_normals: Vec<[f32; 3]> = match skeleton {
+            Some(skeleton)
+                if !geometry.skin_joints.is_empty()
+                    && geometry.normals.len() >= geometry.positions.len() =>
+            {
+                skin_normals(
+                    &geometry.skin_joints,
+                    &geometry.skin_weights,
+                    &geometry.normals,
+                    skeleton,
+                    &worlds,
+                )
+            }
+            _ => geometry.normals.clone(),
+        };
         let points = fit_to_box(&deformed, min, max, size.0, size.1);
         let uvs: Option<&[[f32; 2]]> =
             if geometry.uv.len() >= geometry.positions.len() && !geometry.uv.is_empty() {
@@ -1031,7 +1112,7 @@ pub fn render_scene_at(
             fill: tint.unwrap_or(fallback),
             shade: triangle_shades(
                 &deformed,
-                &geometry.normals,
+                &deformed_normals,
                 &geometry.indices,
                 SHADE_LIGHT,
                 material_ambient(model, mesh),
@@ -1374,6 +1455,22 @@ pub fn render_package_scene_clip_filtered(
                 .collect()
         };
         let depth = mean_z(&deformed);
+        // N365: skin the normals so shading follows the pose.
+        let deformed_normals: Vec<[f32; 3]> = match skeleton {
+            Some(skeleton)
+                if !geometry.skin_joints.is_empty()
+                    && geometry.normals.len() >= geometry.positions.len() =>
+            {
+                skin_normals(
+                    &geometry.skin_joints,
+                    &geometry.skin_weights,
+                    &geometry.normals,
+                    skeleton,
+                    &worlds,
+                )
+            }
+            _ => geometry.normals.clone(),
+        };
         let points = fit_to_box(&deformed, min, max, size.0, size.1);
         let uvs: Option<&[[f32; 2]]> =
             if geometry.uv.len() >= geometry.positions.len() && !geometry.uv.is_empty() {
@@ -1407,7 +1504,7 @@ pub fn render_package_scene_clip_filtered(
             fill: tint.unwrap_or(0xF800),
             shade: triangle_shades(
                 &deformed,
-                &geometry.normals,
+                &deformed_normals,
                 &geometry.indices,
                 SHADE_LIGHT,
                 package_material_ambient(package, mesh),
@@ -2171,6 +2268,31 @@ mod tests {
         assert!(
             shaded >> 11 < flat >> 11,
             "the red channel is reduced by shading"
+        );
+    }
+
+    #[test]
+    fn skin_normals_rotate_with_the_joint() {
+        let skeleton = mdc_model::Skeleton {
+            name: "s".into(),
+            bones: 1,
+            joint_nodes: vec![0],
+            inverse_bind: vec![mat4_identity()],
+        };
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        // A 90° rotation about X.
+        let world = mat4_from_trs([0.0, 0.0, 0.0], [s, 0.0, 0.0, s], [1.0, 1.0, 1.0]);
+        let out = skin_normals(
+            &[[0, 0, 0, 0]],
+            &[[1.0, 0.0, 0.0, 0.0]],
+            &[[0.0, 0.0, 1.0]],
+            &skeleton,
+            &[world],
+        );
+        assert!(
+            out[0][2].abs() < 1e-3 && out[0][1].abs() > 0.9,
+            "normal tilted to y: {:?}",
+            out[0]
         );
     }
 

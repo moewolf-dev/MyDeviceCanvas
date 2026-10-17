@@ -22,8 +22,8 @@ pub use skin::{
     mat4_identity, mat4_mul, morph_weights_at, node_world_matrices, pose_world_matrices,
     render_frame_at, render_geometry_at, render_package_mesh, render_package_scene,
     render_package_scene_clip, render_package_scene_clip_filtered, render_scene_at, sample_channel,
-    sample_channel_looped, skin_arrays, skin_points, skin_preview, transform_point, Mat4,
-    SceneClip,
+    sample_channel_looped, skin_arrays, skin_normals, skin_points, skin_preview,
+    transform_direction, transform_point, Mat4, SceneClip,
 };
 pub use texture::{Filter, TextureMap, Wrap};
 

@@ -255,8 +255,8 @@ both `render_scene_at` and `render_package_scene`; there is no z-buffer.
 N326/N327: glTF `NORMAL` is imported into `MeshGeometry.normals`, and scene
 renders apply a per-triangle Lambert shade from a fixed key light (`+z`, ambient
 0.45) — a surface facing the light is unshaded, so a flat +z quad is unchanged,
-while a side-facing surface darkens. Skinned vertices use their bind-pose normals
-(no normal skinning). N343: glTF `metallicFactor`/`roughnessFactor` are imported;
+while a side-facing surface darkens. N365: skinned vertices also transform their
+normals by the joint matrices (linear part; approximate under non-uniform scale). N343: glTF `metallicFactor`/`roughnessFactor` are imported;
 roughness raises the ambient floor (a rough surface shades flatter), while
 `metallicFactor` is recorded but unlit without an environment. N363: `emissiveFactor`
 (lifts the ambient) and `KHR_materials_unlit` (no directional shading) are imported.
