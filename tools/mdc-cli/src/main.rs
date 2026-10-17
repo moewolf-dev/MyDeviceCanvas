@@ -3238,6 +3238,25 @@ fn cmd_verify(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// N417: lint a scene JSON file (a `SceneNode` or a `SceneCommand` with `scene`).
+fn cmd_scene_lint(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let path = args.first().cloned().unwrap_or_default();
+    if path.is_empty() {
+        return Err("scene-lint <scene.json>".into());
+    }
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+    let node: mdc_protocol::SceneNode = match value.get("scene") {
+        Some(scene) => serde_json::from_value(scene.clone())?,
+        None => serde_json::from_value(value)?,
+    };
+    let report = node.lint();
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    if !report.valid {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 fn usage() {
     println!(
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
@@ -3250,7 +3269,7 @@ bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animatio
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] [--srgb] --out f.ppm|\
 motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] --out f.ppm|\
-scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss]|\
+scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|\
 model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb>|verify <file.mdcpkg>|diff <a.mdcpkg> <b.mdcpkg>"
     );
@@ -3424,6 +3443,7 @@ fn main() {
         Some("model-info") => cmd_model_info(&args[1..]),
         Some("validate") => cmd_validate(&args[1..]),
         Some("verify") => cmd_verify(&args[1..]),
+        Some("scene-lint") => cmd_scene_lint(&args[1..]),
         Some("diff") => cmd_diff(&args[1..]),
         Some("switch-demo") => {
             let mut o = opts.clone();
@@ -3487,6 +3507,30 @@ mod tests {
     #[cfg(unix)]
     fn host_rss_bytes_is_positive_on_unix() {
         assert!(host_rss_bytes().unwrap() > 0);
+    }
+
+    #[test]
+    fn scene_lint_flags_missing_geometry() {
+        // N417: a rect without a rect, and a text node without a value, fail.
+        let bad: mdc_protocol::SceneNode = serde_json::from_value(serde_json::json!({
+            "name": "root", "kind": "group",
+            "children": [
+                {"name": "a", "kind": "rect"},
+                {"name": "b", "kind": "text", "rect": [0, 0, 4, 7]}
+            ]
+        }))
+        .unwrap();
+        let report = bad.lint();
+        assert!(!report.valid);
+        assert!(report.problems.iter().any(|p| p.contains("'a'")));
+        assert!(report.problems.iter().any(|p| p.contains("'b'")));
+
+        let good: mdc_protocol::SceneNode = serde_json::from_value(serde_json::json!({
+            "name": "root", "kind": "rect", "rect": [0, 0, 4, 4], "value": "#fff"
+        }))
+        .unwrap();
+        assert!(good.lint().valid);
+        assert_eq!(good.lint().nodes, 1);
     }
 
     #[test]

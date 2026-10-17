@@ -478,7 +478,98 @@ pub struct SceneNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<u8>,
 }
+/// N417: the default scene limits used by [`SceneNode::lint`] (matching a typical
+/// `SceneCapability`).
+pub const SCENE_MAX_NODES: u32 = 512;
+pub const SCENE_MAX_DEPTH: u32 = 16;
+
+/// N417: the result of linting a scene tree.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SceneLint {
+    pub valid: bool,
+    pub problems: Vec<String>,
+    pub warnings: Vec<String>,
+    pub nodes: u32,
+    pub depth: u32,
+}
+
 impl SceneNode {
+    /// N417: lint the scene tree (unknown kinds, missing geometry/values, zero
+    /// extents, duplicate names, and capability limits).
+    pub fn lint(&self) -> SceneLint {
+        let mut report = SceneLint {
+            valid: true,
+            problems: Vec::new(),
+            warnings: Vec::new(),
+            nodes: self.count(),
+            depth: self.depth(),
+        };
+        if report.nodes > SCENE_MAX_NODES {
+            report.problems.push(format!(
+                "{} nodes over the {SCENE_MAX_NODES} limit",
+                report.nodes
+            ));
+        }
+        if report.depth > SCENE_MAX_DEPTH {
+            report.problems.push(format!(
+                "depth {} over the {SCENE_MAX_DEPTH} limit",
+                report.depth
+            ));
+        }
+        let mut names = std::collections::BTreeSet::new();
+        self.lint_into(&mut report, &mut names);
+        report.valid = report.problems.is_empty();
+        report
+    }
+
+    fn lint_into(&self, report: &mut SceneLint, names: &mut std::collections::BTreeSet<String>) {
+        const KINDS: [&str; 10] = [
+            "group",
+            "rect",
+            "text",
+            "sprite",
+            "image",
+            "circle",
+            "line",
+            "gradient",
+            "rounded-rect",
+            "clip",
+        ];
+        let drawable = !matches!(self.kind.as_str(), "group" | "clip");
+        if !KINDS.contains(&self.kind.as_str()) {
+            report.warnings.push(format!(
+                "node '{}' has unknown kind '{}'",
+                self.name, self.kind
+            ));
+        }
+        if drawable && self.rect.is_none() {
+            report
+                .problems
+                .push(format!("node '{}' ({}) has no rect", self.name, self.kind));
+        }
+        if let Some(rect) = self.rect {
+            if drawable && (rect[2] == 0 || rect[3] == 0) {
+                report
+                    .warnings
+                    .push(format!("node '{}' has a zero width or height", self.name));
+            }
+        }
+        match self.kind.as_str() {
+            "text" | "sprite" | "image" if self.value.is_none() => report
+                .problems
+                .push(format!("node '{}' ({}) has no value", self.name, self.kind)),
+            _ => {}
+        }
+        if !self.name.is_empty() && !names.insert(self.name.clone()) {
+            report
+                .warnings
+                .push(format!("duplicate node name '{}'", self.name));
+        }
+        for child in &self.children {
+            child.lint_into(report, names);
+        }
+    }
+
     /// Total node count including this one.
     pub fn count(&self) -> u32 {
         self.children

@@ -98,6 +98,10 @@ cargo run -p mdc -- diff ./old.mdcpkg ./new.mdcpkg
 body (`MdcPackage::verify`), printing a JSON result and exiting non-zero on a
 checksum/size mismatch.
 
+`mdc scene-lint <scene.json>` (N417) lints a scene tree (`SceneNode::lint`):
+unknown kinds, missing `rect`/`value`, zero extents, duplicate names, and
+node/depth limits, exiting non-zero on a fatal problem.
+
 `mdc bake --mipmaps` (N396) also writes a box-downsampled mip chain
 (`mip0.ppm` … ) beside the atlas, produced by `mdc_bake::bake_mipmaps`.
 `mdc bake --dither N` (N404) applies ordered (Bayer) dithering (strength `N` LSBs)
