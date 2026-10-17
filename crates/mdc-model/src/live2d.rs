@@ -277,6 +277,8 @@ impl Live2DImporter {
                 specular_factor: None,
                 specular_color: None,
                 ior: None,
+                clearcoat_factor: None,
+                clearcoat_roughness: None,
             });
             nodes.push(Node {
                 name: name.clone(),

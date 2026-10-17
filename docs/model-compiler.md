@@ -288,7 +288,9 @@ shading now also applies to untextured (solid) triangles. N390:
 `KHR_mesh_quantization` integer POSITION and normalized byte/short TANGENT decode
 (raw integer positions are dequantized by the node transform). N413: the legacy
 `KHR_materials_pbrSpecularGlossiness` extension is converted to metallic-roughness
-(diffuse → base colour, `1 - glossiness` → roughness, specular luminance → metallic). N403: `texCoord` is
+(diffuse → base colour, `1 - glossiness` → roughness, specular luminance → metallic).
+N414: `KHR_materials_clearcoat` adds a second specular lobe from the smooth surface
+normal in the per-pixel pass. N403: `texCoord` is
 honoured per slot — `Material.uv_set` selects the base-colour UV set and
 `uv_set2` (defaulting to `uv_set`) selects the secondary maps' set, so normal/
 occlusion/emissive/metallicRoughness maps can sample `TEXCOORD_1`. N393:

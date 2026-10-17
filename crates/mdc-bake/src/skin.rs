@@ -1006,6 +1006,9 @@ struct SceneDrawable<'a> {
     occlusion_strength: f32,
     /// N395: the occlusion texture's own UV transform.
     occlusion_uv_transform: mdc_model::UvTransform,
+    /// N414: clearcoat factor (0 = none) and its shininess.
+    clearcoat: f32,
+    clearcoat_shininess: f32,
 }
 
 /// N327: default key light (straight down -z, i.e. toward +z-facing surfaces) and
@@ -1169,6 +1172,8 @@ fn draw_scene_sorted(
                     occlusion_map: d.occlusion_map,
                     occlusion_strength: d.occlusion_strength,
                     occlusion_uv_transform: d.occlusion_uv_transform,
+                    clearcoat: d.clearcoat,
+                    clearcoat_shininess: d.clearcoat_shininess,
                 }),
                 _ => None,
             },
@@ -1315,6 +1320,8 @@ pub fn render_scene_at(
             occlusion_map: None,
             occlusion_strength: 1.0,
             occlusion_uv_transform: mdc_model::UvTransform::default(),
+            clearcoat: 0.0,
+            clearcoat_shininess: 1.0,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -1944,6 +1951,13 @@ pub fn render_package_scene_clip_mode(
         } else {
             (0.0, 1.0)
         };
+        // N414: a clearcoat lobe (present in both specular modes).
+        let (clearcoat, clearcoat_roughness) = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .map(|material| material.clearcoat())
+            .unwrap_or((0.0, 0.0));
+        let clearcoat_shininess = 8.0 + 120.0 * (1.0 - clearcoat_roughness);
         // N393/N395: the emissive texture and per-slot UV transforms.
         let (emissive_index, emissive_strength) = mesh
             .material
@@ -2056,6 +2070,8 @@ pub fn render_package_scene_clip_mode(
             occlusion_map,
             occlusion_strength,
             occlusion_uv_transform,
+            clearcoat,
+            clearcoat_shininess,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;

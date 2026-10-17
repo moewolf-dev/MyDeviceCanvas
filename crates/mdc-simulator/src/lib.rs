@@ -4317,6 +4317,8 @@ mod tests {
                 specular_factor: None,
                 specular_color: None,
                 ior: None,
+                clearcoat_factor: None,
+                clearcoat_roughness: None,
             }],
             lights: Vec::new(),
             skeletons: Vec::new(),

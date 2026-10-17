@@ -381,6 +381,12 @@ pub struct Material {
     /// N397: `KHR_materials_ior` index of refraction (default 1.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ior: Option<f32>,
+    /// N414: `KHR_materials_clearcoat` `clearcoatFactor` (0..1; default 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clearcoat_factor: Option<f32>,
+    /// N414: `KHR_materials_clearcoat` `clearcoatRoughnessFactor` (default 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clearcoat_roughness: Option<f32>,
 }
 
 /// N373: glTF `KHR_texture_transform`. `rotation` is in radians; the transform is
@@ -543,6 +549,14 @@ impl Material {
     /// N397: `KHR_materials_ior` (default 1.5).
     pub fn ior(&self) -> f32 {
         self.ior.unwrap_or(1.5).max(1.0)
+    }
+
+    /// N414: `KHR_materials_clearcoat` factor and roughness (both default 0).
+    pub fn clearcoat(&self) -> (f32, f32) {
+        (
+            self.clearcoat_factor.unwrap_or(0.0).clamp(0.0, 1.0),
+            self.clearcoat_roughness.unwrap_or(0.0).clamp(0.0, 1.0),
+        )
     }
 }
 

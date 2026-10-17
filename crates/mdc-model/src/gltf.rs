@@ -402,6 +402,16 @@ impl GltfImporter {
                 .and_then(|i| i.get("ior"))
                 .and_then(Value::as_f64)
                 .map(|v| v.max(1.0) as f32);
+            // N414: KHR_materials_clearcoat.
+            let clearcoat_ext = material_ext.and_then(|e| e.get("KHR_materials_clearcoat"));
+            let clearcoat_factor = clearcoat_ext
+                .and_then(|c| c.get("clearcoatFactor"))
+                .and_then(Value::as_f64)
+                .map(|v| v.clamp(0.0, 1.0) as f32);
+            let clearcoat_roughness = clearcoat_ext
+                .and_then(|c| c.get("clearcoatRoughnessFactor"))
+                .and_then(Value::as_f64)
+                .map(|v| v.clamp(0.0, 1.0) as f32);
             // N379: normalTexture (tangent-space normal map).
             let normal_texture = material
                 .get("normalTexture")
@@ -487,6 +497,8 @@ impl GltfImporter {
                 specular_factor,
                 specular_color,
                 ior,
+                clearcoat_factor,
+                clearcoat_roughness,
             });
         }
 
