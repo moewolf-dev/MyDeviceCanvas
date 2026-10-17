@@ -96,4 +96,7 @@ cargo run -p mdc -- diff ./old.mdcpkg ./new.mdcpkg
 `mdc bake --mipmaps` (N396) also writes a box-downsampled mip chain
 (`mip0.ppm` … ) beside the atlas, produced by `mdc_bake::bake_mipmaps`.
 
+`Session::stats()` (N398) returns host counters (`packets_sent`, `bytes_sent`,
+`acks_received`, `frames_sent`); `mdc inspect --watch` reports them per tick.
+
 

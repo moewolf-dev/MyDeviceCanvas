@@ -427,6 +427,12 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
                 "scene_nodes": device.scene_node_count(),
                 "atlas_frames": device.atlas_frames(),
                 "diagnostics_emitted": snapshot.diagnostics_emitted,
+                "session": {
+                    "packets_sent": session.stats().packets_sent,
+                    "bytes_sent": session.stats().bytes_sent,
+                    "acks_received": session.stats().acks_received,
+                    "frames_sent": session.stats().frames_sent,
+                },
                 "config": inspect_json(&mgr, Some(&snapshot)),
             });
             if rss {

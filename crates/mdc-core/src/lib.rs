@@ -231,6 +231,15 @@ impl Default for SessionConfig {
     }
 }
 
+/// N398: host-side session counters.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionStats {
+    pub packets_sent: u64,
+    pub bytes_sent: u64,
+    pub acks_received: u64,
+    pub frames_sent: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct Frame {
     pub surface_id: String,
@@ -775,6 +784,8 @@ pub struct Session<T: Transport> {
     pacing: Option<mdc_schedule::Scheduler>,
     /// N329: frames refused by the pacing budget.
     pacing_dropped: u64,
+    /// N398: host-side session counters.
+    stats: SessionStats,
 }
 impl<T: Transport> Session<T> {
     pub fn new(transport: T) -> Self {
@@ -831,6 +842,7 @@ impl<T: Transport> Session<T> {
             diagnostics: std::collections::VecDeque::new(),
             pacing: None,
             pacing_dropped: 0,
+            stats: SessionStats::default(),
         }
     }
     pub fn set_manager(&mut self, manager: Arc<Mutex<DeviceManager>>) {
@@ -942,6 +954,11 @@ impl<T: Transport> Session<T> {
         self.write_packet(MessageType::Hello, hello)?;
         Ok(())
     }
+    /// N398: the host-side session counters.
+    pub fn stats(&self) -> SessionStats {
+        self.stats
+    }
+
     pub fn poll(&mut self) -> Result<ConnectionState, CoreError> {
         // 已经进缓冲区的包先处理。对端先写下 cancel 再关闭时，不能让关闭错误吞掉这些包。
         loop {
@@ -1197,6 +1214,7 @@ impl<T: Transport> Session<T> {
         self.write_bytes(&rest)
     }
     pub fn send_frame(&mut self, frame: Frame) -> Result<u32, CoreError> {
+        self.stats.frames_sent = self.stats.frames_sent.saturating_add(1);
         if self.unsent.is_some() {
             return Err(CoreError::ShortWrite);
         }
@@ -1879,6 +1897,9 @@ impl<T: Transport> Session<T> {
         let bytes = packet
             .encode(self.max_message)
             .map_err(|e| CoreError::Protocol(e.to_string()))?;
+        // N398: count outbound packets/bytes.
+        self.stats.packets_sent = self.stats.packets_sent.saturating_add(1);
+        self.stats.bytes_sent = self.stats.bytes_sent.saturating_add(bytes.len() as u64);
         let write_result = self.write_bytes(&bytes);
         if matches!(write_result, Ok(()) | Err(CoreError::ShortWrite)) && track {
             self.pending_requests.insert(id);
@@ -1964,6 +1985,7 @@ impl<T: Transport> Session<T> {
                         return Ok(());
                     }
                     self.finished_acks.insert(packet.request_id);
+                    self.stats.acks_received = self.stats.acks_received.saturating_add(1);
                     self.note_displayed(packet.request_id);
                     self.release_request(packet.request_id);
                     let was_frame = self.pending_frames.contains_key(&packet.request_id);
@@ -4364,6 +4386,54 @@ mod tests {
             .unwrap();
         session.poll().unwrap();
         assert_eq!(session.pending_request_count(), 1);
+    }
+
+    #[test]
+    fn session_stats_count_frames_and_acks() {
+        // N398: the host counters track outbound packets, frames, and received acks.
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        assert_eq!(session.state, ConnectionState::Ready);
+        assert!(session.stats().packets_sent >= 1, "hello counted");
+
+        let before = session.stats();
+        let request = session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![0u8; 8],
+            })
+            .unwrap();
+        assert_eq!(session.stats().frames_sent, before.frames_sent + 1);
+        assert!(session.stats().bytes_sent > before.bytes_sent);
+
+        // The peer acknowledges (received + displayed).
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Ack,
+                    flags: 0,
+                    request_id: request,
+                    payload: encode_control(&mdc_protocol::Ack {
+                        received: true,
+                        displayed: true,
+                        frame_id: 0,
+                        error: None,
+                        run_id: 0,
+                        event_seq: 1,
+                    })
+                    .unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        assert!(session.stats().acks_received >= 1, "the frame was acked");
     }
 
     #[test]
