@@ -3114,6 +3114,27 @@ fn cmd_diff(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// N399: import a model and print a validation report; exit non-zero when invalid.
+fn cmd_validate(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let path = args.first().cloned().unwrap_or_default();
+    if path.is_empty() {
+        return Err("validate <model.json|.gltf|.glb>".into());
+    }
+    let bytes = std::fs::read(&path)?;
+    let limits = mdc_model::ImportLimits::default();
+    let model = if path.to_ascii_lowercase().ends_with(".json") {
+        mdc_model::Live2DImporter.import(&bytes, &limits)?
+    } else {
+        mdc_model::GltfImporter.import(&bytes, &limits)?
+    };
+    let report = model.validate();
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    if !report.valid {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 fn usage() {
     println!(
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
@@ -3128,7 +3149,7 @@ motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|\
-model-info <model.json|.gltf|.glb>|diff <a.mdcpkg> <b.mdcpkg>"
+model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb>|diff <a.mdcpkg> <b.mdcpkg>"
     );
 }
 
@@ -3298,6 +3319,7 @@ fn main() {
         Some("render-package") => cmd_render_package(&args[1..]),
         Some("asset") => cmd_asset(&args[1..]),
         Some("model-info") => cmd_model_info(&args[1..]),
+        Some("validate") => cmd_validate(&args[1..]),
         Some("diff") => cmd_diff(&args[1..]),
         Some("switch-demo") => {
             let mut o = opts.clone();
@@ -3361,6 +3383,29 @@ mod tests {
     #[cfg(unix)]
     fn host_rss_bytes_is_positive_on_unix() {
         assert!(host_rss_bytes().unwrap() > 0);
+    }
+
+    #[test]
+    fn validate_flags_out_of_range_references() {
+        // N399: a mesh referencing a missing material is a problem.
+        let gltf = br#"{"asset":{"version":"2.0"},"nodes":[{"name":"root","mesh":0}],
+            "meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":5}]}],
+            "accessors":[{"count":4,"type":"VEC3"}]}"#;
+        let model = mdc_model::GltfImporter
+            .import(gltf, &mdc_model::ImportLimits::default())
+            .unwrap();
+        let report = model.validate();
+        assert!(report.problems.iter().any(|p| p.contains("material 5")));
+        assert!(!report.valid);
+
+        // A well-formed model validates.
+        let ok = br#"{"asset":{"version":"2.0"},"nodes":[{"name":"root","mesh":0}],
+            "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+            "accessors":[{"count":4,"type":"VEC3"}]}"#;
+        let model = mdc_model::GltfImporter
+            .import(ok, &mdc_model::ImportLimits::default())
+            .unwrap();
+        assert!(model.validate().valid, "well-formed model validates");
     }
 
     #[test]

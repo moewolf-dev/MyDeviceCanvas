@@ -689,6 +689,16 @@ impl Light {
     }
 }
 
+/// N399: a validation report for an imported model (problems are fatal, warnings
+/// are advisory).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ValidationReport {
+    pub valid: bool,
+    pub problems: Vec<String>,
+    pub warnings: Vec<String>,
+    pub summary: ModelSummary,
+}
+
 impl Model {
     pub fn total_vertices(&self) -> u64 {
         self.meshes.iter().map(|m| u64::from(m.vertices)).sum()
@@ -723,9 +733,80 @@ impl Model {
         }
         summary
     }
+
+    /// N399: check the model's internal references and flag suspicious data.
+    pub fn validate(&self) -> ValidationReport {
+        let mut problems = Vec::new();
+        let mut warnings = Vec::new();
+        let node_count = self.nodes.len();
+        let mesh_count = self.meshes.len();
+        let texture_count = self.textures.len();
+        for (i, node) in self.nodes.iter().enumerate() {
+            if let Some(mesh) = node.mesh {
+                if mesh >= mesh_count {
+                    problems.push(format!("node {i} references mesh {mesh} out of range"));
+                }
+            }
+            for child in &node.children {
+                if *child >= node_count {
+                    problems.push(format!("node {i} references child {child} out of range"));
+                }
+            }
+        }
+        for (i, mesh) in self.meshes.iter().enumerate() {
+            if let Some(material) = mesh.material {
+                if material >= self.materials.len() {
+                    problems.push(format!(
+                        "mesh {i} references material {material} out of range"
+                    ));
+                }
+            }
+            if mesh.geometry.is_none() && mesh.preview_positions.is_empty() {
+                warnings.push(format!("mesh {i} has no geometry"));
+            }
+        }
+        for (i, material) in self.materials.iter().enumerate() {
+            for (kind, index) in [
+                ("base colour", material.texture),
+                ("emissive", material.emissive_texture),
+                ("occlusion", material.occlusion_texture),
+                ("normal", material.normal_texture),
+                ("metallicRoughness", material.roughness_texture),
+            ] {
+                if let Some(index) = index {
+                    if index >= texture_count {
+                        problems.push(format!("material {i} {kind} texture {index} out of range"));
+                    }
+                }
+            }
+        }
+        for (i, texture) in self.textures.iter().enumerate() {
+            if texture.data.is_none() && texture.bytes == 0 {
+                warnings.push(format!("texture {i} has no embedded bytes"));
+            }
+        }
+        for (i, skeleton) in self.skeletons.iter().enumerate() {
+            for joint in &skeleton.joint_nodes {
+                if *joint >= node_count {
+                    problems.push(format!("skeleton {i} joint {joint} out of range"));
+                }
+            }
+        }
+        if self.nodes.is_empty() && self.meshes.is_empty() && self.sprites.is_empty() {
+            problems.push("model has no nodes, meshes, or sprites".into());
+        }
+        let valid = problems.is_empty();
+        ValidationReport {
+            valid,
+            problems,
+            warnings,
+            summary: self.summary(),
+        }
+    }
     pub fn texture_bytes(&self) -> u64 {
         self.textures.iter().map(|t| u64::from(t.bytes)).sum()
     }
+
     /// N323: the raw embedded bytes of the texture at `index`, if retained.
     pub fn embedded_texture(&self, index: usize) -> Option<&[u8]> {
         self.textures.get(index)?.data.as_deref()
