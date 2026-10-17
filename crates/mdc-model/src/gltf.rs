@@ -1125,11 +1125,74 @@ fn decode_preview_positions(accessor: &Value, bytes: Option<&[u8]>) -> Vec<[f32;
 }
 
 /// N163: read up to `max` VEC3 float positions (the full-mesh variant).
+/// N390: read one accessor component as `f32` (raw value, or normalized).
+fn read_component(bytes: &[u8], offset: usize, component: u64, normalized: bool) -> Option<f32> {
+    Some(match component {
+        5126 => f32::from_le_bytes(bytes.get(offset..offset + 4)?.try_into().ok()?),
+        5120 => {
+            let v = f32::from(i8::from_le_bytes([*bytes.get(offset)?]));
+            if normalized {
+                (v / 127.0).clamp(-1.0, 1.0)
+            } else {
+                v
+            }
+        }
+        5121 => {
+            let v = f32::from(*bytes.get(offset)?);
+            if normalized {
+                v / 255.0
+            } else {
+                v
+            }
+        }
+        5122 => {
+            let b = bytes.get(offset..offset + 2)?;
+            let v = f32::from(i16::from_le_bytes([b[0], b[1]]));
+            if normalized {
+                (v / 32767.0).clamp(-1.0, 1.0)
+            } else {
+                v
+            }
+        }
+        5123 => {
+            let b = bytes.get(offset..offset + 2)?;
+            let v = f32::from(u16::from_le_bytes([b[0], b[1]]));
+            if normalized {
+                v / 65535.0
+            } else {
+                v
+            }
+        }
+        5125 => {
+            let b = bytes.get(offset..offset + 4)?;
+            f64::from(u32::from_le_bytes([b[0], b[1], b[2], b[3]])) as f32
+        }
+        _ => return None,
+    })
+}
+
+/// N390: the byte size of a component type (0 when unknown).
+fn component_size(component: u64) -> usize {
+    match component {
+        5120 | 5121 => 1,
+        5122 | 5123 => 2,
+        5125 | 5126 => 4,
+        _ => 0,
+    }
+}
+
 fn decode_positions(accessor: &Value, bytes: Option<&[u8]>, max: usize) -> Vec<[f32; 3]> {
-    if accessor.get("componentType").and_then(Value::as_u64) != Some(5126) {
+    if accessor.get("type").and_then(Value::as_str) != Some("VEC3") {
         return Vec::new();
     }
-    if accessor.get("type").and_then(Value::as_str) != Some("VEC3") {
+    let component = accessor
+        .get("componentType")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    // N390: KHR_mesh_quantization allows integer POSITION (raw, dequantized by
+    // the node transform).
+    let size = component_size(component);
+    if size == 0 {
         return Vec::new();
     }
     let Some(bytes) = bytes else {
@@ -1137,12 +1200,16 @@ fn decode_positions(accessor: &Value, bytes: Option<&[u8]>, max: usize) -> Vec<[
     };
     let mut out = Vec::new();
     let mut offset = 0usize;
-    while offset + 12 <= bytes.len() && out.len() < max {
-        let x = f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap_or([0; 4]));
-        let y = f32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap_or([0; 4]));
-        let z = f32::from_le_bytes(bytes[offset + 8..offset + 12].try_into().unwrap_or([0; 4]));
+    while offset + size * 3 <= bytes.len() && out.len() < max {
+        let (Some(x), Some(y), Some(z)) = (
+            read_component(bytes, offset, component, false),
+            read_component(bytes, offset + size, component, false),
+            read_component(bytes, offset + size * 2, component, false),
+        ) else {
+            break;
+        };
         out.push([x, y, z]);
-        offset += 12;
+        offset += size * 3;
     }
     out
 }
@@ -1223,11 +1290,22 @@ fn decode_colors(accessor: &Value, bytes: Option<&[u8]>, max: usize) -> Vec<[f32
 }
 
 /// N379: TANGENT (VEC4 f32) per geometry vertex; `w` is the handedness sign.
+/// N379: TANGENT (VEC4; f32, or normalized i8/i16) per geometry vertex; `w` is
+/// the handedness sign. N390: quantized byte/short tangents are normalized.
 fn decode_tangents(accessor: &Value, bytes: Option<&[u8]>, max: usize) -> Vec<[f32; 4]> {
-    if accessor.get("componentType").and_then(Value::as_u64) != Some(5126) {
+    if accessor.get("type").and_then(Value::as_str) != Some("VEC4") {
         return Vec::new();
     }
-    if accessor.get("type").and_then(Value::as_str) != Some("VEC4") {
+    let component = accessor
+        .get("componentType")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let normalized = accessor
+        .get("normalized")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let size = component_size(component);
+    if size == 0 {
         return Vec::new();
     }
     let Some(bytes) = bytes else {
@@ -1235,16 +1313,13 @@ fn decode_tangents(accessor: &Value, bytes: Option<&[u8]>, max: usize) -> Vec<[f
     };
     let mut out = Vec::new();
     let mut offset = 0usize;
-    while offset + 16 <= bytes.len() && out.len() < max {
-        let read = |k: usize| {
-            f32::from_le_bytes(
-                bytes[offset + k * 4..offset + k * 4 + 4]
-                    .try_into()
-                    .unwrap_or([0; 4]),
-            )
+    while offset + size * 4 <= bytes.len() && out.len() < max {
+        let read = |k: usize| read_component(bytes, offset + size * k, component, normalized);
+        let (Some(x), Some(y), Some(z), Some(w)) = (read(0), read(1), read(2), read(3)) else {
+            break;
         };
-        out.push([read(0), read(1), read(2), read(3)]);
-        offset += 16;
+        out.push([x, y, z, w]);
+        offset += size * 4;
     }
     out
 }
@@ -2094,6 +2169,47 @@ pub(crate) fn json_name(value: &Value, fallback: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn quantized_attributes_decode() {
+        // N390: integer POSITION (SHORT, raw) and byte-normalized TANGENT.
+        let mut bin = Vec::new();
+        for value in [1i16, 2, 3, 4, 5, 6, 7, 8, 9] {
+            bin.extend_from_slice(&value.to_le_bytes());
+        }
+        for _ in 0..3 {
+            bin.extend_from_slice(&[127i8, 0, 0, 127].map(|v| v as u8));
+        }
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "extensionsUsed": ["KHR_mesh_quantization"],
+            "buffers": [{"byteLength": bin.len()}],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": 18},
+                {"buffer": 0, "byteOffset": 18, "byteLength": 12}
+            ],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5122, "count": 3, "type": "VEC3"},
+                {"bufferView": 1, "componentType": 5120, "normalized": true, "count": 3, "type": "VEC4"}
+            ],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "TANGENT": 1}}]}],
+            "nodes": [{"name": "root", "mesh": 0}]
+        });
+        let model = GltfImporter
+            .import(
+                &glb(&serde_json::to_vec(&doc).unwrap(), &bin),
+                &ImportLimits::default(),
+            )
+            .unwrap();
+        let geometry = model.meshes[0].geometry.as_ref().unwrap();
+        assert_eq!(
+            geometry.positions,
+            vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]
+        );
+        let tangent = geometry.tangents[0];
+        assert!((tangent[0] - 1.0).abs() < 1e-3 && tangent[1].abs() < 1e-3);
+        assert!((tangent[3] - 1.0).abs() < 1e-3);
+    }
 
     #[test]
     fn interleaved_accessors_are_de_strided() {

@@ -284,7 +284,9 @@ renderer per pixel from interpolated normals (Gouraud) instead of one factor per
 triangle; `render_package_scene_clip_mode` selects the mode and the device keeps
 `Flat`. N387: `ShadeMode::SmoothSpecular` adds a Blinn-Phong specular highlight,
 its strength/shininess derived from the material's `roughness`/`metallic`. Per-pixel
-shading now also applies to untextured (solid) triangles. N380:
+shading now also applies to untextured (solid) triangles. N390:
+`KHR_mesh_quantization` integer POSITION and normalized byte/short TANGENT decode
+(raw integer positions are dequantized by the node transform). N380:
 `pack_material_atlas` (and `mdc package --atlas MAX_PAGE`) shelf-packs a package's
 per-material textures into one bounded page, remapping material indices and mesh UVs.
 
