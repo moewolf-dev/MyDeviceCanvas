@@ -45,6 +45,9 @@ pub struct MeshGeometry {
     /// TEXCOORD_0, parallel to `positions` (empty when absent).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uv: Vec<[f32; 2]>,
+    /// N383: TEXCOORD_1, a second UV set (empty when absent).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uv2: Vec<[f32; 2]>,
     /// N326: NORMAL, parallel to `positions` (empty when absent).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub normals: Vec<[f32; 3]>,
@@ -80,6 +83,12 @@ impl MeshGeometry {
                 self.uv.resize(base as usize, [0.0, 0.0]);
             }
             self.uv.extend(other.uv);
+        }
+        if !other.uv2.is_empty() {
+            if self.uv2.is_empty() {
+                self.uv2.resize(base as usize, [0.0, 0.0]);
+            }
+            self.uv2.extend(other.uv2);
         }
         if !other.normals.is_empty() {
             if self.normals.is_empty() {
@@ -294,6 +303,9 @@ pub struct Material {
     /// N379: `normalTexture.scale` (default 1.0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub normal_scale: Option<f32>,
+    /// N383: which mesh UV set this material samples (`texCoord`; default 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uv_set: Option<u8>,
 }
 
 /// N373: glTF `KHR_texture_transform`. `rotation` is in radians; the transform is
@@ -406,6 +418,11 @@ impl Material {
             self.normal_texture,
             self.normal_scale.unwrap_or(1.0).max(0.0),
         )
+    }
+
+    /// N383: which mesh UV set this material samples (default 0).
+    pub fn uv_set(&self) -> u8 {
+        self.uv_set.unwrap_or(0)
     }
 }
 

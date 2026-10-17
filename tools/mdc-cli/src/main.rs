@@ -4207,6 +4207,7 @@ mod tests {
                     ],
                     indices: vec![0, 1, 2, 0, 2, 3],
                     uv: Vec::new(),
+                    uv2: Vec::new(),
                     normals: Vec::new(),
                     skin_joints: Vec::new(),
                     skin_weights: Vec::new(),

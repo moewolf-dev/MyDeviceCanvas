@@ -1174,12 +1174,10 @@ pub fn render_scene_at(
             _ => geometry.normals.clone(),
         };
         let points = fit_to_box(&deformed, min, max, size.0, size.1);
-        let uvs: Option<&[[f32; 2]]> =
-            if geometry.uv.len() >= geometry.positions.len() && !geometry.uv.is_empty() {
-                Some(&geometry.uv)
-            } else {
-                None
-            };
+        let uvs = select_uvs(
+            geometry,
+            material_of(model, mesh).map(|m| m.uv_set()).unwrap_or(0),
+        );
         let tint = material_color(model, mesh);
         let mask = material_masked(model, mesh);
         drawables.push(SceneDrawable {
@@ -1338,12 +1336,13 @@ pub fn render_package_mesh(
             continue;
         };
         let projected = fit_to_box(&geometry.positions, min, max, size.0, size.1);
-        let uvs: Option<&[[f32; 2]]> =
-            if geometry.uv.len() >= geometry.positions.len() && !geometry.uv.is_empty() {
-                Some(&geometry.uv)
-            } else {
-                None
-            };
+        let uvs = select_uvs(
+            geometry,
+            mesh.material
+                .and_then(|mi| package.materials.get(mi))
+                .map(|m| m.uv_set())
+                .unwrap_or(0),
+        );
         let tint = mesh
             .material
             .and_then(|mi| package.materials.get(mi))
@@ -1537,6 +1536,22 @@ pub fn pack_material_atlas(package: &mut mdc_model::DevicePackage, max_page: u32
     true
 }
 
+/// N383: the mesh UV set a material samples (falls back to the first set).
+fn select_uvs<'a>(geometry: &'a mdc_model::MeshGeometry, set: u8) -> Option<&'a [[f32; 2]]> {
+    let usable = |uv: &'a [[f32; 2]]| {
+        if uv.len() >= geometry.positions.len() && !uv.is_empty() {
+            Some(uv)
+        } else {
+            None
+        }
+    };
+    if set == 1 {
+        usable(&geometry.uv2).or_else(|| usable(&geometry.uv))
+    } else {
+        usable(&geometry.uv)
+    }
+}
+
 /// N194: the bind-pose XY box of every mesh node in a package.
 fn package_bind_bbox(package: &mdc_model::DevicePackage) -> Option<([f32; 2], [f32; 2])> {
     let worlds = node_world_matrices(&package.nodes);
@@ -1688,12 +1703,13 @@ pub fn render_package_scene_clip_filtered(
             _ => geometry.normals.clone(),
         };
         let points = fit_to_box(&deformed, min, max, size.0, size.1);
-        let uvs: Option<&[[f32; 2]]> =
-            if geometry.uv.len() >= geometry.positions.len() && !geometry.uv.is_empty() {
-                Some(&geometry.uv)
-            } else {
-                None
-            };
+        let uvs = select_uvs(
+            geometry,
+            mesh.material
+                .and_then(|mi| package.materials.get(mi))
+                .map(|m| m.uv_set())
+                .unwrap_or(0),
+        );
         let tint = mesh
             .material
             .and_then(|mi| package.materials.get(mi))
@@ -2230,6 +2246,7 @@ mod tests {
             ],
             indices: vec![0, 1, 2, 0, 2, 3],
             uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            uv2: Vec::new(),
             normals: Vec::new(),
             skin_joints: vec![[1, 0, 0, 0]; 4],
             skin_weights: vec![[1.0, 0.0, 0.0, 0.0]; 4],
@@ -2263,6 +2280,7 @@ mod tests {
             ],
             indices: vec![0, 1, 2, 0, 2, 3],
             uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            uv2: Vec::new(),
             normals: Vec::new(),
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
@@ -2530,6 +2548,58 @@ mod tests {
     }
 
     #[test]
+    fn material_uv_set_selects_the_second_uv_channel() {
+        // N383: uv_set 1 samples TEXCOORD_1 (here the horizontal mirror).
+        let texture = crate::TextureMap::from_rgb565(2, 1, vec![0x00, 0xF8, 0xE0, 0x07]).unwrap();
+        let render = |uv_set: Option<u8>| {
+            let mut geometry = quad_geometry();
+            geometry.uv2 = geometry.uv.iter().map(|uv| [1.0 - uv[0], uv[1]]).collect();
+            let model = Model {
+                source: "t".into(),
+                nodes: vec![Node {
+                    name: "n".into(),
+                    mesh: Some(0),
+                    ..Node::default()
+                }],
+                meshes: vec![mdc_model::Mesh {
+                    name: "q".into(),
+                    vertices: 4,
+                    indices: 6,
+                    material: Some(0),
+                    geometry: Some(geometry),
+                    ..mdc_model::Mesh::default()
+                }],
+                materials: vec![mdc_model::Material {
+                    name: "m".into(),
+                    texture: Some(0),
+                    color: Some([255, 255, 255]),
+                    uv_set,
+                    ..mdc_model::Material::default()
+                }],
+                ..Model::default()
+            };
+            render_scene_at(&model, 0, 0.0, (16, 16), Some(&texture), 0x0000).unwrap()
+        };
+        let at = |frame: &BakedTexture, x: usize| {
+            u16::from_le_bytes([
+                frame.rgb565[(8 * 16 + x) * 2],
+                frame.rgb565[(8 * 16 + x) * 2 + 1],
+            ])
+        };
+        let first = render(None);
+        let second = render(Some(1));
+        assert!(
+            at(&first, 2) >> 11 > ((at(&first, 2) >> 5) & 0x3f),
+            "set 0 left red"
+        );
+        assert!(
+            ((at(&second, 2) >> 5) & 0x3f) > at(&second, 2) >> 11,
+            "set 1 left green: {:#06x}",
+            at(&second, 2)
+        );
+    }
+
+    #[test]
     fn material_atlas_pack_remaps_uvs() {
         // N380: two per-material textures collapse into one page and each mesh's
         // UVs move into its packed sub-rect.
@@ -2543,6 +2613,7 @@ mod tests {
             ],
             indices: vec![0, 1, 2, 0, 2, 3],
             uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            uv2: Vec::new(),
             normals: Vec::new(),
             colors: Vec::new(),
             tangents: Vec::new(),

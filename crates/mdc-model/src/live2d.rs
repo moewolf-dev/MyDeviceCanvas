@@ -266,6 +266,7 @@ impl Live2DImporter {
                 occlusion_strength: None,
                 normal_texture: None,
                 normal_scale: None,
+                uv_set: None,
             });
             nodes.push(Node {
                 name: name.clone(),

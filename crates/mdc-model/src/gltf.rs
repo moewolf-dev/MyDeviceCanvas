@@ -383,6 +383,22 @@ impl GltfImporter {
                 .and_then(|n| n.get("scale"))
                 .and_then(Value::as_f64)
                 .map(|v| v.max(0.0) as f32);
+            // N383: which UV set the material samples (`texCoord`).
+            let tex_coord = |slot: &str| {
+                material
+                    .get(slot)
+                    .and_then(|s| s.get("texCoord"))
+                    .and_then(Value::as_u64)
+                    .map(|v| v.min(u64::from(u8::MAX)) as u8)
+            };
+            let uv_set = pbr
+                .and_then(|p| p.get("baseColorTexture"))
+                .and_then(|b| b.get("texCoord"))
+                .and_then(Value::as_u64)
+                .map(|v| v.min(u64::from(u8::MAX)) as u8)
+                .or_else(|| tex_coord("normalTexture"))
+                .or_else(|| tex_coord("occlusionTexture"))
+                .filter(|set| *set != 0);
             materials.push(Material {
                 name: json_name(material, &format!("material{i}")),
                 texture,
@@ -406,6 +422,7 @@ impl GltfImporter {
                 occlusion_strength,
                 normal_texture,
                 normal_scale,
+                uv_set,
             });
         }
 
@@ -466,6 +483,10 @@ impl GltfImporter {
                                     let uv = pair(&attributes_value, "TEXCOORD_0")
                                         .map(|(a, b)| decode_uv_mesh(a, b, MAX_GEOMETRY_VERTICES))
                                         .unwrap_or_default();
+                                    // N383: TEXCOORD_1 (a second UV set).
+                                    let uv2 = pair(&attributes_value, "TEXCOORD_1")
+                                        .map(|(a, b)| decode_uv_mesh(a, b, MAX_GEOMETRY_VERTICES))
+                                        .unwrap_or_default();
                                     // N326: NORMAL, parallel to positions.
                                     let normals = pair(&attributes_value, "NORMAL")
                                         .map(|(a, b)| decode_normals(a, b, MAX_GEOMETRY_VERTICES))
@@ -512,6 +533,7 @@ impl GltfImporter {
                                         positions,
                                         indices,
                                         uv,
+                                        uv2,
                                         normals,
                                         colors,
                                         tangents,

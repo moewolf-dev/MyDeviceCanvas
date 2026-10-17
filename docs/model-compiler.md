@@ -271,7 +271,10 @@ is imported and multiplies each triangle's shade (sampled at the triangle centro
 on the package/device renderer; `occlusionStrength` scales the effect. N379:
 `TANGENT` and `normalTexture` are imported and, on the package/device renderer,
 shade each pixel from the tangent-space normal map (per-pixel Lambert); without a
-normal map (or tangents) the per-triangle shade is used as before. N380:
+normal map (or tangents) the per-triangle shade is used as before. N383: a
+material's `texCoord` (`Material.uv_set`) selects the mesh UV set, and `TEXCOORD_1`
+is imported into `MeshGeometry.uv2`, so a mesh can sample its texture from the
+second UV channel (falling back to the first). N380:
 `pack_material_atlas` (and `mdc package --atlas MAX_PAGE`) shelf-packs a package's
 per-material textures into one bounded page, remapping material indices and mesh UVs.
 
