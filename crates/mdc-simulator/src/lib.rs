@@ -155,11 +155,10 @@ fn draw_text(
     color: u16,
     scale_x: u32,
     scale_y: u32,
+    alpha: u8,
 ) {
     let scale_x = scale_x.max(1);
     let scale_y = scale_y.max(1);
-    let low = (color & 0xff) as u8;
-    let high = (color >> 8) as u8;
     for (index, ch) in text.bytes().enumerate() {
         let Some(columns) = glyph_columns(ch) else {
             continue;
@@ -178,10 +177,7 @@ fn draw_text(
                             continue;
                         }
                         let at = ((py * width + px) * 2) as usize;
-                        if at + 1 < pixels.len() {
-                            pixels[at] = low;
-                            pixels[at + 1] = high;
-                        }
+                        put_pixel(pixels, at, color, alpha);
                     }
                 }
             }
@@ -199,6 +195,7 @@ fn blit_hex_rgb565(
     w: u16,
     h: u16,
     hex: &str,
+    alpha: u8,
 ) -> bool {
     let expected = usize::from(w) * usize::from(h) * 4;
     if hex.len() != expected || w == 0 || h == 0 {
@@ -217,11 +214,8 @@ fn blit_hex_rgb565(
                 return false;
             };
             let at = ((py * width + px) * 2) as usize;
-            if at + 1 < pixels.len() {
-                pixels[at] = (value & 0xff) as u8;
-                pixels[at + 1] = (value >> 8) as u8;
-                drew = true;
-            }
+            put_pixel(pixels, at, value, alpha);
+            drew = true;
         }
     }
     drew
@@ -238,6 +232,7 @@ fn blit_sprite(
     y: u16,
     w: u16,
     h: u16,
+    alpha: u8,
 ) -> bool {
     let Some(offset) = atlas.frame_offset(index) else {
         return false;
@@ -262,8 +257,8 @@ fn blit_sprite(
             if src + 1 >= atlas.rgb565.len() || dst + 1 >= pixels.len() {
                 continue;
             }
-            pixels[dst] = atlas.rgb565[src];
-            pixels[dst + 1] = atlas.rgb565[src + 1];
+            let value = u16::from_le_bytes([atlas.rgb565[src], atlas.rgb565[src + 1]]);
+            put_pixel(pixels, dst, value, alpha);
             drew = true;
         }
     }
@@ -540,14 +535,35 @@ impl SceneTransform {
     }
 }
 
+/// N338: source-over write of an RGB565 value at `index` with source alpha.
+fn put_pixel(pixels: &mut [u8], index: usize, value: u16, alpha: u8) {
+    if index + 1 >= pixels.len() || alpha == 0 {
+        return;
+    }
+    let out = if alpha == u8::MAX {
+        value
+    } else {
+        let dst = u16::from_le_bytes([pixels[index], pixels[index + 1]]);
+        let af = u32::from(alpha);
+        let kf = 255 - af;
+        let channel = |shift: u32, mask: u16| -> u16 {
+            let d = u32::from((dst >> shift) & mask);
+            let s = u32::from((value >> shift) & mask);
+            ((d * kf + s * af) / 255) as u16
+        };
+        (channel(11, 0x1f) << 11) | (channel(5, 0x3f) << 5) | channel(0, 0x1f)
+    };
+    let bytes = out.to_le_bytes();
+    pixels[index] = bytes[0];
+    pixels[index + 1] = bytes[1];
+}
+
 /// N156: fill the ellipse inscribed in `rect` with `color`.
-fn fill_circle(pixels: &mut [u8], width: u32, height: u32, rect: [u16; 4], color: u16) {
+fn fill_circle(pixels: &mut [u8], width: u32, height: u32, rect: [u16; 4], color: u16, alpha: u8) {
     let [x, y, w, h] = rect;
     if w == 0 || h == 0 {
         return;
     }
-    let low = (color & 0xff) as u8;
-    let high = (color >> 8) as u8;
     let cx = f32::from(x) + (f32::from(w) - 1.0) / 2.0;
     let cy = f32::from(y) + (f32::from(h) - 1.0) / 2.0;
     let rx = f32::from(w) / 2.0;
@@ -564,19 +580,14 @@ fn fill_circle(pixels: &mut [u8], width: u32, height: u32, rect: [u16; 4], color
             let dy = (f32::from(yy) - cy) / ry;
             if dx * dx + dy * dy <= 1.0 {
                 let index = ((u32::from(yy) * width + u32::from(xx)) * 2) as usize;
-                if index + 1 < pixels.len() {
-                    pixels[index] = low;
-                    pixels[index + 1] = high;
-                }
+                put_pixel(pixels, index, color, alpha);
             }
         }
     }
 }
 
 /// N157: Bresenham line from `rect[0..2]` to `rect[2..4]`, clipped to bounds.
-fn draw_line(pixels: &mut [u8], width: u32, height: u32, rect: [u16; 4], color: u16) {
-    let low = (color & 0xff) as u8;
-    let high = (color >> 8) as u8;
+fn draw_line(pixels: &mut [u8], width: u32, height: u32, rect: [u16; 4], color: u16, alpha: u8) {
     let (mut x0, mut y0) = (i64::from(rect[0]), i64::from(rect[1]));
     let (x1, y1) = (i64::from(rect[2]), i64::from(rect[3]));
     let dx = (x1 - x0).abs();
@@ -587,10 +598,7 @@ fn draw_line(pixels: &mut [u8], width: u32, height: u32, rect: [u16; 4], color: 
     loop {
         if x0 >= 0 && y0 >= 0 && (x0 as u32) < width && (y0 as u32) < height {
             let index = ((y0 as u32 * width + x0 as u32) * 2) as usize;
-            if index + 1 < pixels.len() {
-                pixels[index] = low;
-                pixels[index + 1] = high;
-            }
+            put_pixel(pixels, index, color, alpha);
         }
         if x0 == x1 && y0 == y1 {
             break;
@@ -685,12 +693,12 @@ fn fill_scene(
         node.kind.as_str(),
         "rect" | "text" | "image" | "sprite" | "circle" | "line"
     );
+    // N338: source alpha for every rasterised kind.
+    let alpha = node.opacity_u8();
     if node.kind == "rect" {
         if let Some(rect) = node.rect {
             let [x, y, w, h] = transform.apply(rect);
             let color = node.color_rgb565();
-            let low = (color & 0xff) as u8;
-            let high = (color >> 8) as u8;
             for yy in y..y.saturating_add(h) {
                 if u32::from(yy) >= height {
                     break;
@@ -700,10 +708,7 @@ fn fill_scene(
                         break;
                     }
                     let index = ((u32::from(yy) * width + u32::from(xx)) * 2) as usize;
-                    if index + 1 < pixels.len() {
-                        pixels[index] = low;
-                        pixels[index + 1] = high;
-                    }
+                    put_pixel(pixels, index, color, alpha);
                 }
             }
             *drew = true;
@@ -728,7 +733,7 @@ fn fill_scene(
                     break;
                 }
                 draw_text(
-                    pixels, width, height, x, ly as u16, line, color, scale_x, scale_y,
+                    pixels, width, height, x, ly as u16, line, color, scale_x, scale_y, alpha,
                 );
             }
             *drew = true;
@@ -736,7 +741,7 @@ fn fill_scene(
     } else if node.kind == "image" {
         if let (Some(rect), Some(hex)) = (node.rect, node.value.as_deref()) {
             let [x, y, w, h] = transform.apply(rect);
-            if blit_hex_rgb565(pixels, width, height, x, y, w, h, hex) {
+            if blit_hex_rgb565(pixels, width, height, x, y, w, h, hex, alpha) {
                 *drew = true;
             }
         }
@@ -747,7 +752,7 @@ fn fill_scene(
             node.value.as_deref().and_then(|v| v.parse::<u32>().ok()),
         ) {
             let [x, y, w, h] = transform.apply(rect);
-            if blit_sprite(pixels, width, height, atlas, index, x, y, w, h) {
+            if blit_sprite(pixels, width, height, atlas, index, x, y, w, h, alpha) {
                 *drew = true;
             }
         }
@@ -759,6 +764,7 @@ fn fill_scene(
                 height,
                 transform.apply(rect),
                 node.color_rgb565(),
+                alpha,
             );
             *drew = true;
         }
@@ -770,6 +776,7 @@ fn fill_scene(
                 height,
                 transform.apply(rect),
                 node.color_rgb565(),
+                alpha,
             );
             *drew = true;
         }
@@ -2645,6 +2652,7 @@ mod tests {
             rect: None,
             children: Vec::new(),
             value: value.map(str::to_string),
+            opacity: None,
         };
         let mut root = leaf("root", "rect", None);
         root.children.push(leaf("label", "text", Some("hi")));
@@ -2958,6 +2966,7 @@ mod tests {
             rect: Some(geom),
             children: Vec::new(),
             value: Some(color.into()),
+            opacity: None,
         };
         // Background red covers all; a green child on top; a third clipped.
         let scene = SceneNode {
@@ -2969,6 +2978,7 @@ mod tests {
                 rect("clip", [3, 3, 10, 10], "#0000FF"),
             ],
             value: Some("#FF0000".into()),
+            opacity: None,
         };
         session.set_scene(scene).unwrap();
         device.poll().unwrap();
@@ -3007,6 +3017,7 @@ mod tests {
                     rect: Some([0, 0, 0, 0]),
                     value: Some("H".into()),
                     children: Vec::new(),
+                    opacity: None,
                 },
                 SceneNode {
                     name: "swatch".into(),
@@ -3014,8 +3025,10 @@ mod tests {
                     rect: Some([12, 0, 1, 1]),
                     value: Some("07e0".into()),
                     children: Vec::new(),
+                    opacity: None,
                 },
             ],
+            opacity: None,
         };
         session.set_scene(scene).unwrap();
         device.poll().unwrap();
@@ -3055,6 +3068,7 @@ mod tests {
             rect: Some(rect),
             value: Some("H".into()),
             children: Vec::new(),
+            opacity: None,
         };
         // rect 0×0 -> scale 1, so (1,1) stays clear on the fresh framebuffer.
         session.set_scene(text([0, 0, 0, 0])).unwrap();
@@ -3118,6 +3132,7 @@ mod tests {
             rect: Some([0, 0, 30, 7]),
             value: Some("hello world".into()),
             children: Vec::new(),
+            opacity: None,
         };
         session.set_scene(scene).unwrap();
         device.poll().unwrap();
@@ -3128,6 +3143,41 @@ mod tests {
         assert_ne!(device.pixel_rgb565(0, 8), Some(0), "wrapped line drawn");
         // Row 7 is the gap between the two lines and stays clear.
         assert_eq!(device.pixel_rgb565(0, 7), Some(0), "line gap is clear");
+    }
+
+    #[test]
+    fn scene_rect_opacity_blends_over_the_background() {
+        use mdc_protocol::SceneNode;
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 4,
+            height: 4,
+            ..BoardProfile::default()
+        });
+        let rect = |name: &str, color: &str, opacity: Option<u8>| SceneNode {
+            name: name.into(),
+            kind: "rect".into(),
+            rect: Some([0, 0, 4, 4]),
+            value: Some(color.into()),
+            opacity,
+            children: Vec::new(),
+        };
+        device.scene = Some(SceneNode {
+            name: "root".into(),
+            kind: "group".into(),
+            rect: None,
+            value: None,
+            opacity: None,
+            children: vec![
+                rect("bg", "#FFFFFF", None),
+                rect("fg", "#FF0000", Some(128)),
+            ],
+        });
+        assert!(device.render_scene());
+        let px = device.pixel_rgb565(1, 1).unwrap();
+        // White blended half-way to red: not pure red, not white.
+        assert_ne!(px, 0xF800);
+        assert_ne!(px, 0xFFFF);
+        assert!((px >> 11) > 20, "red channel is high: {px:#06x}");
     }
 
     #[test]
@@ -3175,6 +3225,7 @@ mod tests {
             rect: Some(rect),
             children: Vec::new(),
             value: Some(value.into()),
+            opacity: None,
         };
         let scene = SceneNode {
             name: "root".into(),
@@ -3185,6 +3236,7 @@ mod tests {
                 node("disc", "circle", [0, 0, 8, 8], "#FF0000"),
                 node("diag", "line", [0, 15, 15, 0], "#00FF00"),
             ],
+            opacity: None,
         };
         session.set_scene(scene).unwrap();
         device.poll().unwrap();
@@ -3218,6 +3270,7 @@ mod tests {
             rect: Some(geometry),
             children: Vec::new(),
             value: Some(color.into()),
+            opacity: None,
         };
         // Group offset (4, 2) and 2× scale: [0,0,2,2] red -> [4,2,4,4].
         let scene = SceneNode {
@@ -3226,6 +3279,7 @@ mod tests {
             rect: Some([4, 2, 2000, 2000]),
             children: vec![rect("bg", [0, 0, 2, 2], "#FF0000")],
             value: None,
+            opacity: None,
         };
         session.set_scene(scene).unwrap();
         device.poll().unwrap();
@@ -3296,6 +3350,7 @@ mod tests {
                 rect: Some([0, 0, 2, 2]),
                 children: Vec::new(),
                 value: Some("#FFFFFF".into()),
+                opacity: None,
             })
             .unwrap();
         device.poll().unwrap();
@@ -3439,6 +3494,7 @@ mod tests {
                 rect: Some([0, 0, 1, 1]),
                 children: Vec::new(),
                 value: Some("0".into()),
+                opacity: None,
             })
             .unwrap();
         device.poll().unwrap();
@@ -3579,6 +3635,7 @@ mod tests {
                 rect: Some([0, 0, 4, 4]),
                 children: Vec::new(),
                 value: Some("#0000FF".into()),
+                opacity: None,
             })
             .unwrap();
         device.poll().unwrap();
@@ -3939,6 +3996,7 @@ mod tests {
                 rect: Some([0, 0, 4, 4]),
                 children: Vec::new(),
                 value: Some("#000000".into()),
+                opacity: None,
             })
             .unwrap();
         device.poll().unwrap();
@@ -3962,6 +4020,7 @@ mod tests {
                 rect: Some([0, 0, 4, 4]),
                 children: Vec::new(),
                 value: Some("#FF0000".into()),
+                opacity: None,
             })
             .unwrap();
         device.poll().unwrap();

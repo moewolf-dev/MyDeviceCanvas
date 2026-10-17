@@ -355,6 +355,7 @@ fn scene_over_the_depth_limit_is_refused() {
         rect: None,
         children: Vec::new(),
         value: None,
+        opacity: None,
     };
     for i in 0..5 {
         node = SceneNode {
@@ -363,6 +364,7 @@ fn scene_over_the_depth_limit_is_refused() {
             rect: None,
             children: vec![node],
             value: None,
+            opacity: None,
         };
     }
     assert!(matches!(
@@ -465,6 +467,7 @@ fn non_rect_scene_kinds_are_recorded_but_not_rasterized() {
             rect: Some([0, 0, 4, 4]),
             children: Vec::new(),
             value: Some("hi".into()),
+            opacity: None,
         })
         .unwrap();
     device.poll().unwrap();
@@ -500,6 +503,7 @@ fn out_of_bounds_rects_are_clipped_without_panicking() {
             rect: Some([2, 2, 100, 100]),
             children: Vec::new(),
             value: Some("#FF0000".into()),
+            opacity: None,
         })
         .unwrap();
     device.poll().unwrap();
@@ -1607,6 +1611,7 @@ fn scene_circle_and_line_edge_cases_do_not_panic() {
         rect: Some(rect),
         children: Vec::new(),
         value: Some("#00FF00".into()),
+        opacity: None,
     };
     // Zero-size circle and a degenerate (single-point) line must not panic and
     // must not draw outside the framebuffer.
@@ -1620,6 +1625,7 @@ fn scene_circle_and_line_edge_cases_do_not_panic() {
             node("dot", "line", [3, 3, 3, 3]),
             node("far", "line", [100, 100, 200, 200]),
         ],
+        opacity: None,
     };
     session.set_scene(scene).unwrap();
     device.poll().unwrap();
@@ -1720,8 +1726,10 @@ fn scene_group_geometry_and_named_colour_reach_the_device() {
             rect: Some([0, 0, 4, 4]),
             children: Vec::new(),
             value: Some("red".into()),
+            opacity: None,
         }],
         value: None,
+        opacity: None,
     };
     session.set_scene(scene).unwrap();
     device.poll().unwrap();

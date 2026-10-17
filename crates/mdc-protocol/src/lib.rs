@@ -471,6 +471,9 @@ pub struct SceneNode {
     pub children: Vec<SceneNode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    /// N338: source opacity for rasterised kinds (0..=255; `None` = opaque).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<u8>,
 }
 impl SceneNode {
     /// Total node count including this one.
@@ -502,6 +505,10 @@ impl SceneNode {
             return 0xFFFF;
         };
         rgb565_from(rgb.0, rgb.1, rgb.2)
+    }
+    /// N338: the node opacity as 8 bits (255 when unset).
+    pub fn opacity_u8(&self) -> u8 {
+        self.opacity.unwrap_or(255)
     }
 }
 
@@ -1912,8 +1919,10 @@ mod tests {
                     rect: None,
                     children: Vec::new(),
                     value: Some("hi".into()),
+                    opacity: None,
                 }],
                 value: None,
+                opacity: None,
             }),
         }
     }
@@ -1926,6 +1935,7 @@ mod tests {
             rect: None,
             children: Vec::new(),
             value: Some(value.into()),
+            opacity: None,
         };
         // #RGB expands each nibble.
         assert_eq!(coloured("#F00").color_rgb565(), 0xF800);
@@ -1946,6 +1956,7 @@ mod tests {
             rect: Some([1, 2, 3, 4]),
             children: Vec::new(),
             value: Some("#FF0000".into()),
+            opacity: None,
         };
         assert_eq!(node.color_rgb565(), 0xF800);
         assert_eq!(
@@ -1955,6 +1966,7 @@ mod tests {
                 rect: None,
                 children: Vec::new(),
                 value: None,
+                opacity: None,
             }
             .color_rgb565(),
             0xFFFF

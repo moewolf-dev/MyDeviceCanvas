@@ -26,6 +26,7 @@ SceneNode:
   rect:     [x, y, w, h]?     # geometry for kinds that rasterize (N79); a group's transform (N138)
   children: [SceneNode]?      # optional, ordered back-to-front
   value:    string?           # rect/circle/line: "#RRGGBB"/"#RGB"/name; text: glyphs; image: packed RGB565 hex
+  opacity:  u8?              # N338: source alpha 0..=255 for rasterised kinds (default 255)
 ```
 
 Canonical bytes: `protocol/vectors/scene_command.json` (no geometry) and
@@ -49,12 +50,14 @@ A device that accepts a scene rasterizes it locally:
   (`w / (6*scale)` columns, spaces are break points, a longer word is hard-broken)
   and explicit `\n` starts a new line; wrapped lines are drawn at `8*scale` px
   line height and clipped by the framebuffer. Unknown letters are skipped.
+- N338: any rasterised node (`rect`/`text`/`image`/`sprite`/`circle`/`line`) may
+  set `opacity` (0..=255); it is applied as source-over alpha onto whatever is
+  already on the framebuffer (`255`/absent is opaque).
 - `image` blits tightly packed RGB565 when `value` is `w*h` hex words (4 digits
   each, little-endian on the framebuffer). A short or malformed string draws nothing.
 - `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour.
   A missing atlas or index draws nothing.
-- `circle` fills the ellipse inscribed in `rect` with the `value` colour; a
-  zero width or height draws nothing.
+- `circle` fills the ellipse inscribed in `rect` with the `value` colour; a  zero width or height draws nothing.
 - `line` draws a Bresenham segment from `rect[0..2]` to `rect[2..4]`. A degenerate
   segment draws a single pixel; endpoints outside the framebuffer are clipped.
 - `group` (and any node whose kind does not rasterize) does not draw; its `rect`

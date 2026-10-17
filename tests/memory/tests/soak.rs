@@ -173,6 +173,7 @@ fn dirty_region_mirror_soak_is_bounded() {
             rect: Some([0, 0, 4, 4]),
             children: Vec::new(),
             value: Some("#000000".into()),
+            opacity: None,
         })
         .unwrap();
     device.poll().unwrap();
@@ -191,6 +192,7 @@ fn dirty_region_mirror_soak_is_bounded() {
                 rect: Some([0, 0, 4, 4]),
                 children: Vec::new(),
                 value: Some(color.into()),
+                opacity: None,
             })
             .unwrap();
         device.poll().unwrap();
@@ -693,6 +695,7 @@ fn scene_primitive_soak_is_bounded() {
                 rect: Some([10, 10, 200, 200]),
                 children: Vec::new(),
                 value: Some("#FF0000".into()),
+                opacity: None,
             },
             SceneNode {
                 name: "diag".into(),
@@ -700,8 +703,10 @@ fn scene_primitive_soak_is_bounded() {
                 rect: Some([0, 0, 800, 480]),
                 children: Vec::new(),
                 value: Some("#00FF00".into()),
+                opacity: None,
             },
         ],
+        opacity: None,
     };
     session.set_scene(scene).unwrap();
     device.poll().unwrap();
@@ -1119,6 +1124,7 @@ fn scene_render_soak_is_bounded() {
             rect: Some([0, 0, 16, 16]),
             children: Vec::new(),
             value: Some("#00FF00".into()),
+            opacity: None,
         })
         .unwrap();
     device.poll().unwrap();
@@ -1165,6 +1171,7 @@ fn diagnostics_and_text_wrap_stay_bounded() {
             rect: Some([0, 0, 30, 7]),
             value: Some("hello world hello world".into()),
             children: Vec::new(),
+            opacity: None,
         })
         .unwrap();
     device.poll().unwrap();
