@@ -172,6 +172,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Session counters (N398) | sim-verified (`Session::stats`) | n/a |
 | `mdc validate` (N399) | sim-verified (reference checks; exit code) | n/a |
 | Host→device `sendInput` (N400) | sim-verified (C ABI + Node; `touch` gated) | physical: pending |
+| Per-slot `texCoord` (N403) | sim-verified (base vs secondary UV sets) | physical: pending |
+| Bayer dithering (N404) | sim-verified (`bayer_dither_rgb565`) | n/a |
+| Palette quantization (N405) | sim-verified (`quantize_palette`, ≤256) | n/a |
+| Per-pixel occlusion (N406) | sim-verified (AO sampled per pixel) | physical: pending |
+| sRGB bilinear filtering (N407) | sim-verified (`with_srgb`) | n/a |
+| `mdc verify` (N408) | sim-verified (checksum + size) | n/a |
+| Swift `sendInput` (N409) | sim-verified (C ABI wrapper + smoke) | physical: pending |
+| RSS-delta sampler (N410) | sim-verified (`--rss-delta`) | n/a |
 
 ## G03 sim exit
 

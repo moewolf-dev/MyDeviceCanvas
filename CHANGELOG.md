@@ -2,6 +2,28 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.53] — Per-slot UV sets, dithering, palette quantization, per-pixel occlusion, sRGB filtering, verify, Swift sendInput, RSS delta (N403–N412)
+
+### Added
+
+- per-slot `texCoord`: `Material.uv_set` selects the base-colour UV set and
+  `uv_set2` (defaulting to `uv_set`) the secondary maps' set, so normal/occlusion/
+  emissive/metallicRoughness can sample `TEXCOORD_1` (N403)
+- ordered (Bayer) dithering: `bayer_dither_rgb565` and `mdc bake --dither N` (N404)
+- median-cut palette quantization: `quantize_palette` and `mdc bake --palette N`
+  (writes `atlas.pal.json` + `atlas.idx`) (N405)
+- per-pixel occlusion: `occlusionTexture` scales the shaded colour per pixel in the
+  per-pixel pass (N406)
+- sRGB-correct bilinear filtering: `TextureMap::with_srgb` and `render-mesh --srgb`
+  (N407)
+- `MdcPackage::verify` and `mdc verify <file.mdcpkg>` (checksum + size check, exit
+  code) (N408)
+- Swift `MdcSession.sendInput(pointerId:phase:x:y:)` (C ABI
+  `mdc_session_send_input`) plus a smoke call (N409)
+- `mdc-inspector --rss-delta` bounded host-RSS growth sampler (N410)
+- compatibility/memory coverage: full-PBR fixture and an atlas post-processing soak
+  (N411)
+
 ## [0.1.52] — Emissive/PBR textures, per-slot UV transforms, mip chain, specular extensions, session counters, validate, sendInput (N393–N402)
 
 ### Added
