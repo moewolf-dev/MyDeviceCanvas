@@ -758,6 +758,92 @@ fn resolve_geometry(mesh: &Mesh) -> Option<&mdc_model::MeshGeometry> {
     mesh.geometry.as_ref().filter(|g| !g.positions.is_empty())
 }
 
+/// N423: derive per-vertex tangents from the positions, normals, and UVs (the
+/// standard UV-gradient method), for meshes that omit `TANGENT`.
+pub fn generate_tangents(geometry: &mdc_model::MeshGeometry) -> Vec<[f32; 4]> {
+    let count = geometry.positions.len();
+    let mut tangent = vec![[0.0f32; 3]; count];
+    let mut bitangent = vec![[0.0f32; 3]; count];
+    for tri in geometry.indices.chunks_exact(3) {
+        let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+        let (Some(p0), Some(p1), Some(p2)) = (
+            geometry.positions.get(i0),
+            geometry.positions.get(i1),
+            geometry.positions.get(i2),
+        ) else {
+            continue;
+        };
+        let (Some(uv0), Some(uv1), Some(uv2)) = (
+            geometry.uv.get(i0),
+            geometry.uv.get(i1),
+            geometry.uv.get(i2),
+        ) else {
+            continue;
+        };
+        let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+        let du1 = uv1[0] - uv0[0];
+        let dv1 = uv1[1] - uv0[1];
+        let du2 = uv2[0] - uv0[0];
+        let dv2 = uv2[1] - uv0[1];
+        let r = du1 * dv2 - du2 * dv1;
+        if r.abs() < 1e-9 {
+            continue;
+        }
+        let f = 1.0 / r;
+        let t = [
+            (e1[0] * dv2 - e2[0] * dv1) * f,
+            (e1[1] * dv2 - e2[1] * dv1) * f,
+            (e1[2] * dv2 - e2[2] * dv1) * f,
+        ];
+        let b = [
+            (e2[0] * du1 - e1[0] * du2) * f,
+            (e2[1] * du1 - e1[1] * du2) * f,
+            (e2[2] * du1 - e1[2] * du2) * f,
+        ];
+        for index in tri {
+            let index = *index as usize;
+            if let Some(slot) = tangent.get_mut(index) {
+                slot[0] += t[0];
+                slot[1] += t[1];
+                slot[2] += t[2];
+            }
+            if let Some(slot) = bitangent.get_mut(index) {
+                slot[0] += b[0];
+                slot[1] += b[1];
+                slot[2] += b[2];
+            }
+        }
+    }
+    (0..count)
+        .map(|i| {
+            let n = geometry.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
+            let t = tangent[i];
+            let dot = n[0] * t[0] + n[1] * t[1] + n[2] * t[2];
+            let ortho = [t[0] - n[0] * dot, t[1] - n[1] * dot, t[2] - n[2] * dot];
+            let len = (ortho[0] * ortho[0] + ortho[1] * ortho[1] + ortho[2] * ortho[2]).sqrt();
+            let t = if len > 1e-6 {
+                [ortho[0] / len, ortho[1] / len, ortho[2] / len]
+            } else {
+                [1.0, 0.0, 0.0]
+            };
+            // Handedness from the bitangent the UV gradient produced.
+            let cross = [
+                n[1] * t[2] - n[2] * t[1],
+                n[2] * t[0] - n[0] * t[2],
+                n[0] * t[1] - n[1] * t[0],
+            ];
+            let b = bitangent[i];
+            let w = if cross[0] * b[0] + cross[1] * b[1] + cross[2] * b[2] < 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
+            [t[0], t[1], t[2], w]
+        })
+        .collect()
+}
+
 /// N175: the mesh's material base colour as RGB565, when the model sets one.
 fn material_of<'a>(model: &'a Model, mesh: &Mesh) -> Option<&'a mdc_model::Material> {
     mesh.material.and_then(|index| model.materials.get(index))
@@ -2061,7 +2147,8 @@ pub fn render_package_scene_clip_mode(
                 Some(if geometry.tangents.len() >= geometry.positions.len() {
                     geometry.tangents.clone()
                 } else {
-                    vec![[1.0, 0.0, 0.0, 1.0]; deformed.len()]
+                    // N423: derive tangents from the UV gradient.
+                    generate_tangents(geometry)
                 })
             } else {
                 None
@@ -2911,6 +2998,21 @@ mod tests {
             &worlds,
         );
         assert!((out[0][0] - 5.0).abs() < 1e-4, "blended: {:?}", out[0]);
+    }
+
+    #[test]
+    fn generated_tangents_are_orthonormal() {
+        // N423: derived tangents are perpendicular to the normal with unit length.
+        let mut geometry = quad_geometry();
+        geometry.normals = vec![[0.0, 0.0, 1.0]; 4];
+        let tangents = generate_tangents(&geometry);
+        assert_eq!(tangents.len(), 4);
+        for t in &tangents {
+            let len = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+            assert!((len - 1.0).abs() < 1e-3, "unit tangent");
+            assert!(t[2].abs() < 1e-3, "perpendicular to +z normal");
+            assert!(t[3] == 1.0 || t[3] == -1.0, "handedness");
+        }
     }
 
     #[test]
