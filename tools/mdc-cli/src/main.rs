@@ -821,6 +821,7 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut out_dir = String::from(".");
     let mut package_path: Option<String> = None;
     let mut mipmaps = false;
+    let mut dither: u8 = 0;
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -836,6 +837,8 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "--package" => package_path = iter.next().cloned(),
             // N396: also write a box-downsampled mip chain beside the atlas.
             "--mipmaps" => mipmaps = true,
+            // N404: ordered (Bayer) dithering strength in LSBs (0..=8).
+            "--dither" => dither = iter.next().and_then(|v| v.parse().ok()).unwrap_or(4),
             other => images.push(other.to_string()),
         }
     }
@@ -901,7 +904,17 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
     std::fs::create_dir_all(&out_dir)?;
     let atlas_path = Path::new(&out_dir).join("atlas.ppm");
-    std::fs::write(&atlas_path, rgb565_to_ppm(&package.atlas))?;
+    // N404: an optional ordered-dither pass before writing.
+    let dithered = mdc_bake::bayer_dither_rgb565(
+        package.atlas.width,
+        package.atlas.height,
+        &package.atlas.rgb565,
+        dither,
+    );
+    std::fs::write(
+        &atlas_path,
+        rgb565_frame_to_ppm(package.atlas.width, package.atlas.height, &dithered),
+    )?;
     let manifest_path = Path::new(&out_dir).join("atlas.json");
     std::fs::write(&manifest_path, package.manifest.to_json()?)?;
     // N396: an optional box-downsampled mip chain (level 0 is the atlas).
@@ -930,6 +943,7 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "atlas_path": atlas_path.display().to_string(),
             "manifest_path": manifest_path.display().to_string(),
             "mips": mip_paths,
+            "dither": dither,
         }))?
     );
     Ok(())
@@ -1139,10 +1153,6 @@ fn cmd_motion(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Encode a baked RGB565 atlas as a binary PPM (P6).
-fn rgb565_to_ppm(atlas: &mdc_bake::BakedAtlas) -> Vec<u8> {
-    rgb565_frame_to_ppm(atlas.width, atlas.height, &atlas.rgb565)
-}
-
 /// Encode a tightly packed RGB565 frame as a binary PPM (P6).
 fn rgb565_frame_to_ppm(width: u32, height: u32, rgb565: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgb565.len() / 2 * 3 + 32);
@@ -3142,7 +3152,7 @@ fn usage() {
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
-config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--package OUT.mdcpkg]|\
+config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--dither N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] --out f.ppm|\
 motion <motion3.json> [--param ID] [--samples N]|\
@@ -3455,6 +3465,21 @@ mod tests {
         .unwrap();
         cmd_model_info(&[path.to_string_lossy().into_owned()]).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bayer_dither_spreads_a_flat_grey() {
+        // N404: a uniform grey gains variation; strength 0 is a no-op.
+        let grey = 0x8410u16.to_le_bytes().repeat(16); // 4x4 mid grey
+        let plain = mdc_bake::bayer_dither_rgb565(4, 4, &grey, 0);
+        assert_eq!(plain, grey);
+        let dithered = mdc_bake::bayer_dither_rgb565(4, 4, &grey, 4);
+        assert_ne!(dithered, grey, "dithering changes the image");
+        let unique: std::collections::BTreeSet<u16> = dithered
+            .chunks_exact(2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        assert!(unique.len() > 1, "more than one value appears");
     }
 
     #[test]

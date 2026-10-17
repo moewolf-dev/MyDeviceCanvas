@@ -685,6 +685,40 @@ pub fn mesh_package_with_textures(
     mdc_model::MdcPackage::seal(package).map_err(|e| BakeError::Package(e.to_string()))
 }
 
+/// N404: a 4×4 Bayer threshold matrix (0..15).
+const BAYER4: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+
+/// N404: ordered (Bayer) dithering for RGB565. `strength` is the maximum channel
+/// offset in LSBs (0..=8); 0 leaves the image unchanged. Useful for smoothing
+/// gradients before a palette reduction on a weak device.
+pub fn bayer_dither_rgb565(width: u32, height: u32, rgb565: &[u8], strength: u8) -> Vec<u8> {
+    if width == 0
+        || height == 0
+        || rgb565.len() != (width as usize) * (height as usize) * 2
+        || strength == 0
+    {
+        return rgb565.to_vec();
+    }
+    let strength = i32::from(strength.min(8));
+    let mut out = vec![0u8; rgb565.len()];
+    for y in 0..height {
+        for x in 0..width {
+            let index = ((y * width + x) * 2) as usize;
+            let value = u16::from_le_bytes([rgb565[index], rgb565[index + 1]]);
+            let threshold = i32::from(BAYER4[(y % 4) as usize][(x % 4) as usize]) - 8;
+            let offset = threshold * strength / 8;
+            let channel =
+                |raw: u16, max: i32| -> u16 { (i32::from(raw) + offset).clamp(0, max) as u16 };
+            let r = channel((value >> 11) & 0x1f, 31);
+            let g = channel((value >> 5) & 0x3f, 63);
+            let b = channel(value & 0x1f, 31);
+            let dithered = (r << 11) | (g << 5) | b;
+            out[index..index + 2].copy_from_slice(&dithered.to_le_bytes());
+        }
+    }
+    out
+}
+
 /// N396: box-downsample an RGB565 image into a bounded mip chain. Level 0 is the
 /// source; each level halves both axes (min 1×1) and averages the covered texels.
 /// `max_levels` is clamped to 1..=16.
