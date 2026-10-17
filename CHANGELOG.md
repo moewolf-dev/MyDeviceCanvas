@@ -2,6 +2,30 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.49] — Emissive/unlit, vertex colours, skinned normals, WS/C parity, crash reports, scene clip, asset store, RSS (N363–N372)
+
+### Added
+
+- glTF `emissiveFactor` + `KHR_materials_unlit` import; an unlit material draws
+  without directional shading and emissive lifts the ambient floor (N363)
+- glTF `COLOR_0` import into `MeshGeometry.colors`, barycentric-interpolated and
+  multiplied into the textured/solid raster on both host and device paths (N364)
+- skinned normals: `skin_normals`/`transform_direction` rotate normals by the
+  joint matrices so shading follows the pose (N365)
+- `mdc_session_connect_ws` in the C ABI and `MdcSession(webSocket:)` in Swift,
+  alongside the Node `connectWebSocket` (N366)
+- the reserved `Crash` (`0x62`) diagnostic now carries a CBOR `CrashReport`;
+  `Session` records it, `mdc diag --crash` emits it, C ABI kind 3 / Node `crash`
+  map it (N367)
+- scene `clip` node: a scissor rect that offsets (but does not scale) its
+  children and only composites pixels inside the rect (N368)
+- `mdc-assets` `DiskCache` (SHA-256 keys, LRU by mtime, byte quota) and
+  `mdc asset put|ls|get|prune` (N369)
+- bounded host RSS sampling: `mdc-inspector --rss`, `mdc inspect --rss`, and an
+  `rss_bytes` field in the JSONL series (N370)
+- compatibility fixtures (unlit + vertex colours on-device) and a disk-asset-cache
+  quota soak (N371)
+
 ## [0.1.48] — Multi-material textures, OTA over TCP, rounded rect, stream scale (N353–N362)
 
 ### Added

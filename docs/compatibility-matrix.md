@@ -140,6 +140,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Stream scale (N356) | sim-verified (`/stream?scale=` downscales parts) | n/a |
 | Telemetry events (N357) | sim-verified (`ManagerEvent::Telemetry` + C/Node mapping) | physical: pending |
 | `/health` endpoint (N361) | sim-verified (JSON counters) | n/a |
+| Emissive/unlit materials (N363) | sim-verified (glTF import; unlit skips shading) | physical: pending |
+| `COLOR_0` vertex colours (N364) | sim-verified (interpolated on host + device) | physical: pending |
+| Skinned normals (N365) | sim-verified (`skin_normals` follows the pose) | physical: pending |
+| C/Swift `connectWebSocket` (N366) | sim-verified (in-process WS peer) | physical: pending |
+| Crash report `0x62` (N367) | sim-verified (CBOR `CrashReport`; C/Node mapping) | physical: pending |
+| Scene `clip` node (N368) | sim-verified (scissor rect, nesting) | physical: pending |
+| On-disk asset store (N369) | sim-verified (`mdc asset` LRU + quota soak) | n/a |
+| Host RSS sampling (N370) | sim-verified (`--rss`; `rss_bytes` series) | n/a |
 
 ## G03 sim exit
 
