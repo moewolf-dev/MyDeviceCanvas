@@ -164,6 +164,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | `mdc model-info` (N388) | sim-verified (JSON import report) | n/a |
 | `mdc diff` (N389) | sim-verified (manifest + structure diff) | n/a |
 | `KHR_mesh_quantization` (N390) | sim-verified (integer attributes decode) | physical: pending |
+| `emissiveTexture` (N393) | sim-verified (additive emissive) | physical: pending |
+| Per-slot UV transforms (N395) | sim-verified (base/normal/emissive/PBR) | physical: pending |
+| `metallicRoughnessTexture` (N394) | sim-verified (per-teixel roughness) | physical: pending |
+| Atlas mip chain (N396) | sim-verified (`bake_mipmaps`) | n/a |
+| `KHR_materials_specular`/`ior` (N397) | sim-verified (scales the highlight) | physical: pending |
+| Session counters (N398) | sim-verified (`Session::stats`) | n/a |
+| `mdc validate` (N399) | sim-verified (reference checks; exit code) | n/a |
+| Host→device `sendInput` (N400) | sim-verified (C ABI + Node; `touch` gated) | physical: pending |
 
 ## G03 sim exit
 

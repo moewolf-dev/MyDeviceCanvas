@@ -2,6 +2,28 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.52] — Emissive/PBR textures, per-slot UV transforms, mip chain, specular extensions, session counters, validate, sendInput (N393–N402)
+
+### Added
+
+- `emissiveTexture` import plus an additive emissive term (scaled by
+  `emissiveStrength`) in the textured renderer (N393)
+- `KHR_texture_transform` is honoured per texture slot (base colour, normal,
+  emissive, metallicRoughness), each sampled with its own transform (N395)
+- `metallicRoughnessTexture`'s green (roughness) channel raises the per-teixel
+  ambient floor in the per-pixel pass (N394)
+- `bake_mipmaps` (box-downsampled, bounded chain) and `mdc bake --mipmaps` (N396)
+- `KHR_materials_specular` (`specularFactor`/`specularColorFactor`) and
+  `KHR_materials_ior` import; `specularFactor` scales the highlight (N397)
+- `Session::stats()` host counters (`packets_sent`, `bytes_sent`, `acks_received`,
+  `frames_sent`), surfaced by `mdc inspect --watch` (N398)
+- `mdc validate <model>` prints a `ValidationReport` and exits non-zero on fatal
+  reference errors (N399)
+- host→device pointer input: `Session::send_input`, the C ABI
+  `mdc_session_send_input`, and the Node `_native.sendInput` (capability-gated on
+  `touch`) (N400)
+- compatibility/memory coverage for the PBR texture path and specular factor (N401)
+
 ## [0.1.51] — UV sets, 8-influence skinning, scene lights, smooth/specular shading, quantization, CLI introspection (N383–N392)
 
 ### Added
