@@ -1405,6 +1405,28 @@ fn http_stream_scale_requests_stay_bounded() {
 }
 
 #[test]
+fn atlas_post_processing_stays_bounded() {
+    // N411: dither + palette + mip on a large atlas produce bounded outputs.
+    let (w, h) = (64u32, 64u32);
+    let mut atlas = Vec::with_capacity((w * h * 2) as usize);
+    for i in 0..(w * h) {
+        let value = ((i % 31) as u16) << 11 | (((i * 2) % 63) as u16) << 5 | (i % 31) as u16;
+        atlas.extend_from_slice(&value.to_le_bytes());
+    }
+    for _ in 0..50 {
+        let dithered = mdc_bake::bayer_dither_rgb565(w, h, &atlas, 4);
+        assert_eq!(dithered.len(), atlas.len());
+        let quantized = mdc_bake::quantize_palette(w, h, &dithered, 16);
+        assert!(quantized.palette.len() <= 16);
+        assert_eq!(quantized.indices.len(), (w * h) as usize);
+        let mips = mdc_bake::bake_mipmaps(w, h, &dithered, 8);
+        assert_eq!(mips[0].2.len(), atlas.len());
+        assert!(mips.len() <= 8);
+        assert_eq!((mips.last().unwrap().0, mips.last().unwrap().1), (1, 1));
+    }
+}
+
+#[test]
 fn pbr_textured_rendering_stays_bounded() {
     // N401: repeatedly rendering a package with emissive/roughness/normal maps
     // keeps a constant frame size.
