@@ -504,6 +504,13 @@ pub enum ManagerEvent {
         frames_received: u64,
         frames_dropped: u64,
     },
+    /// N357: a structured telemetry event (N335). Metadata only; the full record
+    /// is in the diagnostics queue (`take_diagnostics`).
+    Telemetry {
+        device_id: String,
+        name: String,
+        level: Option<String>,
+    },
     Error {
         device_id: String,
         message: String,
@@ -663,6 +670,15 @@ impl DeviceManager {
             height,
             frames_received,
             frames_dropped,
+        });
+    }
+
+    /// N357: record a telemetry event (metadata only) on the bounded queue.
+    pub fn push_telemetry(&mut self, device_id: String, name: String, level: Option<String>) {
+        self.push_event(ManagerEvent::Telemetry {
+            device_id,
+            name,
+            level,
         });
     }
 
@@ -2035,6 +2051,17 @@ impl<T: Transport> Session<T> {
                     mdc_protocol::decode_control(&packet.payload)
                         .map_err(|e| CoreError::Protocol(e.to_string()))?;
                 self.note_run_identity(event.boot_id, event.run_id);
+                // N357: also surface a metadata-only manager event.
+                if let Some(mgr) = &self.manager {
+                    let device_id = self
+                        .device
+                        .as_ref()
+                        .map(|d| d.capabilities.device_id.clone())
+                        .unwrap_or_default();
+                    if let Ok(mut manager) = mgr.lock() {
+                        manager.push_telemetry(device_id, event.name.clone(), event.level.clone());
+                    }
+                }
                 self.push_diagnostic(DiagnosticRecord::Telemetry(event));
                 Ok(())
             }
@@ -4446,6 +4473,54 @@ mod tests {
             records.as_slice(),
             [DiagnosticRecord::BootInfo(_)]
         ));
+    }
+
+    #[test]
+    fn telemetry_also_emits_a_manager_event() {
+        let (host, mut device) = MemoryLink::pair();
+        let manager = Arc::new(Mutex::new(DeviceManager::new()));
+        let mut session = Session::new(host);
+        session.set_manager(manager.clone());
+        session.connect().unwrap();
+        let hello = Packet::decode(&device.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        write_caps(&mut device, hello.request_id, &caps());
+        session.poll().unwrap();
+        let event = mdc_protocol::TelemetryEvent {
+            name: "soak".into(),
+            level: Some("info".into()),
+            fields: std::collections::BTreeMap::new(),
+            boot_id: 0,
+            run_id: 0,
+            event_seq: 1,
+        };
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Telemetry,
+                    flags: 0,
+                    request_id: 0,
+                    payload: encode_control(&event).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        // The full record is in the diagnostics queue ...
+        assert!(matches!(
+            session.take_diagnostics().as_slice(),
+            [DiagnosticRecord::Telemetry(_)]
+        ));
+        // ... and a metadata-only event is on the manager queue (N357).
+        let events: Vec<ManagerEvent> = manager.lock().unwrap().drain_events().collect();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ManagerEvent::Telemetry { name, level, .. }
+                if name == "soak" && level.as_deref() == Some("info")
+        )));
     }
 
     #[test]

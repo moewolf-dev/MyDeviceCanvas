@@ -277,6 +277,21 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                 message: Some(message),
                 mirror: None,
             },
+            ManagerEvent::Telemetry {
+                device_id,
+                name,
+                level,
+            } => NativeEvent {
+                // N357: telemetry metadata (the full record is in takeDiagnostics).
+                kind: "telemetry".into(),
+                device_id: Some(device_id),
+                input: None,
+                message: Some(match level {
+                    Some(level) => format!("{level}: {name}"),
+                    None => name,
+                }),
+                mirror: None,
+            },
             ManagerEvent::Mirror {
                 device_id,
                 surface_id,

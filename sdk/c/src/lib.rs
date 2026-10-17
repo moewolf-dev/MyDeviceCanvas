@@ -607,6 +607,10 @@ pub unsafe extern "C" fn mdc_session_poll_event(
             frame_id,
             ..
         } => (6, device_id, frame_id.to_string(), 0, 0, 0),
+        // N357: telemetry name (level is in the diagnostics queue).
+        ManagerEvent::Telemetry {
+            device_id, name, ..
+        } => (7, device_id, name, 0, 0, 0),
     };
     *kind = code;
     copy_cstr(device_id, device_id_len, &id);
@@ -668,6 +672,10 @@ pub unsafe extern "C" fn mdc_session_poll_event_with_pointer(
             frame_id,
             ..
         } => (6, device_id, frame_id.to_string(), 0, 0, 0),
+        // N357: telemetry name (level is in the diagnostics queue).
+        ManagerEvent::Telemetry {
+            device_id, name, ..
+        } => (7, device_id, name, 0, 0, 0),
     };
     *kind = code;
     copy_cstr(device_id, device_id_len, &id);
