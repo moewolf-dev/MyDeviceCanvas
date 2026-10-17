@@ -294,7 +294,9 @@ occlusion/emissive/metallicRoughness maps can sample `TEXCOORD_1`. N393:
 colour. N395: `KHR_texture_transform` is honoured per texture slot (base colour,
 normal, emissive, metallicRoughness), each sampled with its own transform. N394:
 `metallicRoughnessTexture`'s green (roughness) channel raises the per-teixel ambient
-floor in the per-pixel pass. N380:
+floor in the per-pixel pass. N406: `occlusionTexture` is sampled per pixel (R channel
+scales the shaded colour) when the per-pixel pass runs; the per-triangle centroid
+sample remains for the flat path. N380:
 `pack_material_atlas` (and `mdc package --atlas MAX_PAGE`) shelf-packs a package's
 per-material textures into one bounded page, remapping material indices and mesh UVs.
 

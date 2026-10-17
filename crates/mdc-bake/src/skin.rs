@@ -1000,6 +1000,12 @@ struct SceneDrawable<'a> {
     roughness_factor: f32,
     /// N395: the metallicRoughness texture's own UV transform.
     roughness_uv_transform: mdc_model::UvTransform,
+    /// N406: occlusion texture (R = ambient occlusion).
+    occlusion_map: Option<&'a crate::TextureMap>,
+    /// N406: the material's `occlusionStrength`.
+    occlusion_strength: f32,
+    /// N395: the occlusion texture's own UV transform.
+    occlusion_uv_transform: mdc_model::UvTransform,
 }
 
 /// N327: default key light (straight down -z, i.e. toward +z-facing surfaces) and
@@ -1160,6 +1166,9 @@ fn draw_scene_sorted(
                     roughness_map: d.roughness_map,
                     roughness_factor: d.roughness_factor,
                     roughness_uv_transform: d.roughness_uv_transform,
+                    occlusion_map: d.occlusion_map,
+                    occlusion_strength: d.occlusion_strength,
+                    occlusion_uv_transform: d.occlusion_uv_transform,
                 }),
                 _ => None,
             },
@@ -1303,6 +1312,9 @@ pub fn render_scene_at(
             roughness_map: None,
             roughness_factor: 1.0,
             roughness_uv_transform: mdc_model::UvTransform::default(),
+            occlusion_map: None,
+            occlusion_strength: 1.0,
+            occlusion_uv_transform: mdc_model::UvTransform::default(),
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -1897,10 +1909,21 @@ pub fn render_package_scene_clip_mode(
         let roughness_map = roughness_index
             .and_then(|index| textures.get(index))
             .and_then(|texture| texture.as_ref());
+        // N406: per-pixel occlusion.
+        let (occlusion_index, occlusion_strength) = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .map(|material| material.occlusion())
+            .unwrap_or((None, 1.0));
+        let occlusion_map = occlusion_index
+            .and_then(|index| textures.get(index))
+            .and_then(|texture| texture.as_ref());
         let smooth = matches!(mode, ShadeMode::Smooth | ShadeMode::SmoothSpecular)
             && has_normals
             && !usable_normal_map;
-        let per_pixel = (usable_normal_map || smooth || roughness_map.is_some()) && has_normals;
+        let per_pixel =
+            (usable_normal_map || smooth || roughness_map.is_some() || occlusion_map.is_some())
+                && has_normals;
         // N387: material-derived Blinn-Phong parameters for the specular mode.
         let (specular, shininess) = if mode == ShadeMode::SmoothSpecular {
             let (roughness, metallic, specular_factor) = mesh
@@ -1930,7 +1953,12 @@ pub fn render_package_scene_clip_mode(
         let emissive_map = emissive_index
             .and_then(|index| textures.get(index))
             .and_then(|texture| texture.as_ref());
-        let (emissive_uv_transform, normal_uv_transform, roughness_uv_transform) = mesh
+        let (
+            emissive_uv_transform,
+            normal_uv_transform,
+            roughness_uv_transform,
+            occlusion_uv_transform,
+        ) = mesh
             .material
             .and_then(|mi| package.materials.get(mi))
             .map(|material| {
@@ -1938,14 +1966,14 @@ pub fn render_package_scene_clip_mode(
                     material.emissive_uv_transform(),
                     material.normal_uv_transform(),
                     material.roughness_uv_transform(),
+                    material.occlusion_uv_transform(),
                 )
             })
             .unwrap_or_default();
         let occlusion = occlusion_factors(package, mesh, geometry, &textures);
         let shade = if per_pixel {
-            // The per-pixel pass applies the Lambert term, so the per-triangle
-            // factor carries occlusion only.
-            occlusion.unwrap_or_else(|| vec![1.0; geometry.indices.len() / 3])
+            // The per-pixel pass applies the Lambert/occlusion terms.
+            vec![1.0; geometry.indices.len() / 3]
         } else {
             triangle_shades_ambients(
                 &deformed,
@@ -2025,6 +2053,9 @@ pub fn render_package_scene_clip_mode(
             roughness_map,
             roughness_factor,
             roughness_uv_transform,
+            occlusion_map,
+            occlusion_strength,
+            occlusion_uv_transform,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;

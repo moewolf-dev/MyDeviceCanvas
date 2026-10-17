@@ -394,7 +394,14 @@ fn fill_triangle(
             // N379/N387: per-pixel shading from interpolated normals.
             if let Some((nm, tri)) = normal_map {
                 let (f0, f1, f2) = (w0 as f32 / area_f, w1 as f32 / area_f, w2 as f32 / area_f);
-                value = crate::texture::apply_normal_map(value, nm, tri, [f0, f1, f2], [0.5, 0.5]);
+                value = crate::texture::apply_normal_map(
+                    value,
+                    nm,
+                    tri,
+                    [f0, f1, f2],
+                    [0.5, 0.5],
+                    [0.5, 0.5],
+                );
             }
             let index = ((y * width + x) * 2) as usize;
             crate::texture::write_pixel(pixels, index, value, blend);

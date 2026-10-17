@@ -2720,6 +2720,89 @@ fn secondary_maps_can_use_a_second_uv_set() {
 }
 
 #[test]
+fn occlusion_is_sampled_per_pixel() {
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node, Texture};
+
+    let png = |w: u32, h: u32, pixels: Vec<u8>| {
+        let image = image::RgbImage::from_raw(w, h, pixels).unwrap();
+        let mut out = Vec::new();
+        image
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    };
+    // A single triangle so a per-triangle centroid sample would be uniform.
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "tri".into(),
+            vertices: 3,
+            indices: 3,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![[-0.5, -0.5, 0.0], [0.5, -0.5, 0.0], [0.0, 0.5, 0.0]],
+                indices: vec![0, 1, 2],
+                uv: vec![[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]],
+                uv2: Vec::new(),
+                normals: vec![[0.0, 0.0, 1.0]; 3],
+                colors: Vec::new(),
+                tangents: Vec::new(),
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                skin_joints2: Vec::new(),
+                skin_weights2: Vec::new(),
+                morph_targets: Vec::new(),
+            }),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "ao".into(),
+            color: Some([255, 255, 255]),
+            occlusion_texture: Some(0),
+            occlusion_strength: Some(1.0),
+            ..Material::default()
+        }],
+        textures: vec![Texture {
+            name: "ao".into(),
+            width: 2,
+            height: 1,
+            format: "image/png".into(),
+            bytes: 0,
+            // Left black (occluded), right white.
+            data: Some(png(2, 1, vec![0, 0, 0, 255, 255, 255])),
+            wrap: None,
+        }],
+        ..Model::default()
+    };
+    let blobs = mdc_bake::attach_model_textures(&model, &mdc_bake::BakeLimits::default());
+    let package = mdc_bake::mesh_package_with_textures(
+        &model,
+        &mdc_model::RendererCapability::full_3d(),
+        blobs,
+    )
+    .unwrap();
+    let frame = mdc_bake::render_package_scene(&package.package, 0.0, (32, 32)).unwrap();
+    let at = |x: usize, y: usize| {
+        u16::from_le_bytes([
+            frame.rgb565[(y * 32 + x) * 2],
+            frame.rgb565[(y * 32 + x) * 2 + 1],
+        ])
+    };
+    // Sample two points inside the triangle at different U coordinates.
+    let left = at(10, 26);
+    let right = at(24, 26);
+    assert!(
+        right > left,
+        "per-pixel occlusion varies within one triangle: left={left:#06x} right={right:#06x}"
+    );
+}
+
+#[test]
 fn device_diagnostics_reach_the_host_channel() {
     use mdc_core::{ConnectionState, DiagnosticRecord, Session};
     use mdc_simulator::{BoardProfile, FakeDevice};

@@ -398,6 +398,12 @@ pub(crate) struct NormalMap<'a> {
     pub roughness_factor: f32,
     /// N395: the metallicRoughness texture's own UV transform.
     pub roughness_uv_transform: mdc_model::UvTransform,
+    /// N406: occlusion texture (R = ambient occlusion).
+    pub occlusion_map: Option<&'a TextureMap>,
+    /// N406: the material's `occlusionStrength`.
+    pub occlusion_strength: f32,
+    /// N395: the occlusion texture's own UV transform.
+    pub occlusion_uv_transform: mdc_model::UvTransform,
 }
 
 /// N393: an additive emissive texture layered on top of the shaded colour.
@@ -460,6 +466,7 @@ pub(crate) fn apply_normal_map(
     tri: [usize; 3],
     weights: [f32; 3],
     uv: [f32; 2],
+    uv_secondary: [f32; 2],
 ) -> u16 {
     let [w0, w1, w2] = weights;
     let interp = |k: usize| {
@@ -489,7 +496,7 @@ pub(crate) fn apply_normal_map(
     // its green (roughness) channel, matching `material_ambient`.
     let ambient = match nm.roughness_map {
         Some(map) => {
-            let [ru, rv] = nm.roughness_uv_transform.apply(uv);
+            let [ru, rv] = nm.roughness_uv_transform.apply(uv_secondary);
             let texel = map.sample(ru, rv);
             let roughness =
                 nm.roughness_factor.clamp(0.0, 1.0) * (f32::from((texel >> 5) & 0x3f) / 63.0);
@@ -505,6 +512,14 @@ pub(crate) fn apply_normal_map(
         if spec > 0.0 {
             value = rgb565_add(value, rgb565_scale(0xFFFF, spec.clamp(0.0, 1.0)));
         }
+    }
+    // N406: per-pixel ambient occlusion (R channel), direction-independent.
+    if let Some(map) = nm.occlusion_map {
+        let [ou, ov] = nm.occlusion_uv_transform.apply(uv_secondary);
+        let texel = map.sample(ou, ov);
+        let red = f32::from((texel >> 11) & 0x1f) / 31.0;
+        let ao = (1.0 - nm.occlusion_strength.clamp(0.0, 1.0) * (1.0 - red)).clamp(0.2, 1.0);
+        value = rgb565_scale(value, ao);
     }
     value
 }
@@ -693,7 +708,7 @@ fn fill_textured_triangle(
             // N379: per-pixel Lambert using the tangent-space normal map.
             if let Some((nm, tri)) = normal_map {
                 let [nu, nv] = nm.uv_transform.apply(raw2);
-                value = apply_normal_map(value, nm, tri, [w0, w1, w2], [nu, nv]);
+                value = apply_normal_map(value, nm, tri, [w0, w1, w2], [nu, nv], raw2);
             }
             // N393: add the emissive texture.
             if let Some(em) = emissive {
