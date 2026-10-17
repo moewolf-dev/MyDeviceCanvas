@@ -278,6 +278,13 @@ impl GltfImporter {
         let mut materials = Vec::with_capacity(materials_json.len());
         for (i, material) in materials_json.iter().enumerate() {
             let pbr = material.get("pbrMetallicRoughness");
+            // N413: fall back to the legacy KHR_materials_pbrSpecularGlossiness
+            // extension by converting it into a metallic-roughness object.
+            let converted_spec_gloss = material
+                .get("extensions")
+                .and_then(|e| e.get("KHR_materials_pbrSpecularGlossiness"))
+                .map(convert_specular_glossiness);
+            let pbr = pbr.or(converted_spec_gloss.as_ref());
             let texture = pbr
                 .and_then(|p| p.get("baseColorTexture"))
                 .and_then(|b| b.get("index"))
@@ -1025,6 +1032,43 @@ fn split_container(bytes: &[u8]) -> Result<(&[u8], Option<&[u8]>), ModelError> {
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     let slice = bytes.get(offset..offset + 4)?;
     Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+/// N413: convert a legacy `KHR_materials_pbrSpecularGlossiness` object into a
+/// `pbrMetallicRoughness` object: diffuse -> base colour, glossiness -> roughness
+/// (`1 - glossiness`), and the specular colour's luminance -> metallic.
+fn convert_specular_glossiness(spec_gloss: &Value) -> Value {
+    let luminance = |value: Option<&Value>, default: f32| -> f32 {
+        let Some(list) = value.and_then(Value::as_array) else {
+            return default;
+        };
+        let channel = |k: usize| {
+            list.get(k)
+                .and_then(Value::as_f64)
+                .map(|v| v.clamp(0.0, 1.0) as f32)
+                .unwrap_or(default)
+        };
+        (0.299 * channel(0) + 0.587 * channel(1) + 0.114 * channel(2)).clamp(0.0, 1.0)
+    };
+    let metallic = luminance(spec_gloss.get("specularFactor"), 1.0);
+    let glossiness = spec_gloss
+        .get("glossinessFactor")
+        .and_then(Value::as_f64)
+        .map(|v| v.clamp(0.0, 1.0))
+        .unwrap_or(1.0);
+    let mut out = serde_json::Map::new();
+    if let Some(diffuse) = spec_gloss.get("diffuseFactor") {
+        out.insert("baseColorFactor".into(), diffuse.clone());
+    }
+    if let Some(texture) = spec_gloss.get("diffuseTexture") {
+        out.insert("baseColorTexture".into(), texture.clone());
+    }
+    out.insert("metallicFactor".into(), serde_json::json!(metallic));
+    out.insert(
+        "roughnessFactor".into(),
+        serde_json::json!(1.0 - glossiness),
+    );
+    Value::Object(out)
 }
 
 /// N373/N395: parse a `KHR_texture_transform` object into a [`UvTransform`].
@@ -2482,6 +2526,40 @@ mod tests {
         let material = &model.materials[0];
         assert_eq!(material.uv_set(), 0);
         assert_eq!(material.uv_set2(), 1, "secondary maps use UV1");
+    }
+
+    #[test]
+    fn specular_glossiness_converts_to_metallic_roughness() {
+        // N413: legacy diffuse/glossiness/specular map onto the modern fields.
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "extensionsUsed": ["KHR_materials_pbrSpecularGlossiness"],
+            "materials": [{
+                "name": "legacy",
+                "extensions": {"KHR_materials_pbrSpecularGlossiness": {
+                    "diffuseFactor": [1.0, 0.0, 0.0, 1.0],
+                    "glossinessFactor": 0.25,
+                    "specularFactor": [0.0, 1.0, 0.0]
+                }}
+            }],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "nodes": [{"name": "root", "mesh": 0}],
+            "accessors": [{"count": 4, "type": "VEC3"}]
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        let material = &model.materials[0];
+        assert_eq!(material.color, Some([255, 0, 0]), "diffuse -> base colour");
+        assert!(
+            (material.roughness() - 0.75).abs() < 1e-6,
+            "glossiness -> roughness"
+        );
+        // Green specular -> metallic ≈ 0.587.
+        assert!(
+            (material.metallic() - 0.587).abs() < 0.01,
+            "specular -> metallic"
+        );
     }
 
     #[test]
