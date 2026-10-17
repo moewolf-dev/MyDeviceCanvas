@@ -2233,6 +2233,8 @@ fn cmd_h06_demo(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
         phase: "down".into(),
         x: 10,
         y: 10,
+
+        node: None,
     })?;
     session.poll()?;
     println!("[ok] input");
@@ -2374,6 +2376,8 @@ fn serve_peer(
                         phase: "down".into(),
                         x: 6,
                         y: 7,
+
+                        node: None,
                     });
                 }
                 while !stop.load(Ordering::Relaxed) {

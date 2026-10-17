@@ -645,6 +645,8 @@ pub unsafe extern "C" fn mdc_session_send_input(
         phase,
         x,
         y,
+
+        node: None,
     };
     match (*session).session.send_input(event) {
         Ok(_) => 0,
@@ -812,6 +814,8 @@ pub unsafe extern "C" fn mdc_session_simulate_input(
             phase: phase.into(),
             x,
             y,
+
+            node: None,
         })
         .is_err()
     {
@@ -1321,6 +1325,8 @@ mod tests {
                 phase: "down".into(),
                 x: 6,
                 y: 7,
+
+                node: None,
             });
             for _ in 0..120 {
                 if device.poll().is_err() {
@@ -1441,6 +1447,8 @@ mod tests {
                 phase: "down".into(),
                 x: 6,
                 y: 7,
+
+                node: None,
             })
             .unwrap();
         held.device.as_mut().unwrap().faults.request_disconnect();

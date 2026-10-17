@@ -102,6 +102,10 @@ checksum/size mismatch.
 unknown kinds, missing `rect`/`value`, zero extents, duplicate names, and
 node/depth limits, exiting non-zero on a fatal problem.
 
+`FakeDevice::hit_test(x, y)` (N418) returns the topmost scene node under a point,
+and device input events carry that node name (`InputEvent.node`; the Node SDK
+exposes it as `input.node`).
+
 `mdc bake --mipmaps` (N396) also writes a box-downsampled mip chain
 (`mip0.ppm` … ) beside the atlas, produced by `mdc_bake::bake_mipmaps`.
 `mdc bake --dither N` (N404) applies ordered (Bayer) dithering (strength `N` LSBs)

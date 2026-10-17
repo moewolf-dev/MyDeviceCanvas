@@ -55,6 +55,8 @@ pub struct InputEventDto {
     pub phase: String,
     pub x: u16,
     pub y: u16,
+    /// N418: the hit-tested scene node, when the device reports one.
+    pub node: Option<String>,
 }
 
 #[napi(object)]
@@ -266,6 +268,7 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                     phase: event.phase,
                     x: event.x,
                     y: event.y,
+                    node: event.node,
                 }),
                 message: None,
                 mirror: None,
@@ -531,6 +534,8 @@ impl NativeManager {
                 phase,
                 x,
                 y,
+
+                node: None,
             })
             .map_err(|e| Error::from_reason(e.to_string()))?;
         sim.session
@@ -565,6 +570,8 @@ impl NativeManager {
                 phase,
                 x,
                 y,
+
+                node: None,
             })
             .map_err(|e| Error::from_reason(e.to_string()))?;
         pump_link(sim)?;

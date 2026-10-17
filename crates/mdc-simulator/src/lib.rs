@@ -744,6 +744,46 @@ fn changed_ranges(previous: &[u8], current: &[u8], max_gap: usize) -> Vec<(usize
     ranges
 }
 
+/// N418: the topmost scene node whose (transformed) rect contains the point.
+fn hit_test_node(
+    node: &mdc_protocol::SceneNode,
+    transform: SceneTransform,
+    x: u16,
+    y: u16,
+) -> Option<String> {
+    let drawable = !matches!(node.kind.as_str(), "group" | "clip");
+    let child_transform = if drawable {
+        transform
+    } else if node.kind == "clip" {
+        match node.rect {
+            Some(rect) => transform.offset(rect),
+            None => transform,
+        }
+    } else {
+        match node.rect {
+            Some(rect) => transform.child(rect),
+            None => transform,
+        }
+    };
+    // Children draw on top, so search them last-first.
+    for child in node.children.iter().rev() {
+        if let Some(name) = hit_test_node(child, child_transform, x, y) {
+            return Some(name);
+        }
+    }
+    if drawable {
+        if let Some(rect) = node.rect {
+            let [rx, ry, rw, rh] = transform.apply(rect);
+            let inside =
+                x >= rx && y >= ry && x < rx.saturating_add(rw) && y < ry.saturating_add(rh);
+            if inside {
+                return Some(node.name.clone());
+            }
+        }
+    }
+    None
+}
+
 /// N80/N138: depth-first scene rasterizer; `rect` nodes fill from their colour,
 /// `group` (or unknown) nodes transform their children.
 fn fill_scene(
@@ -1424,6 +1464,8 @@ impl FakeDevice {
             phase: "down".into(),
             x,
             y,
+
+            node: None,
         });
     }
     fn flush_scripted_input(&mut self) -> Result<(), SimError> {
@@ -1553,6 +1595,12 @@ impl FakeDevice {
         self.write_control(MessageType::Telemetry, 0, &event)
     }
     /// Emit a touch/input event toward the host session (capability-gated).
+    /// N418: the topmost scene node under a device-space point.
+    pub fn hit_test(&self, x: u16, y: u16) -> Option<String> {
+        let scene = self.scene.as_ref()?;
+        hit_test_node(scene, SceneTransform::identity(), x, y)
+    }
+
     pub fn emit_input(&mut self, event: InputEvent) -> Result<(), SimError> {
         if !self.profile.touch {
             return Err(SimError::Protocol("touch capability disabled".into()));
@@ -1565,7 +1613,14 @@ impl FakeDevice {
             event.y,
         )
         .map_err(|_| SimError::Protocol("touch out of bounds".into()))?;
-        let event = InputEvent { x, y, ..event };
+        // N418: attach the hit-tested scene node when the caller did not.
+        let node = event.node.clone().or_else(|| self.hit_test(x, y));
+        let event = InputEvent {
+            x,
+            y,
+            node,
+            ..event
+        };
         match event.phase.as_str() {
             "up" | "cancel" => {
                 self.active_pointers.remove(&event.pointer_id);
@@ -1590,6 +1645,8 @@ impl FakeDevice {
                 phase: "cancel".into(),
                 x: *x,
                 y: *y,
+
+                node: None,
             })
             .collect();
         self.active_pointers.clear();
@@ -3451,6 +3508,40 @@ mod tests {
     }
 
     #[test]
+    fn hit_test_finds_the_topmost_node() {
+        use mdc_protocol::SceneNode;
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 16,
+            height: 16,
+            ..BoardProfile::default()
+        });
+        let rect = |name: &str, r: [u16; 4]| SceneNode {
+            name: name.into(),
+            kind: "rect".into(),
+            rect: Some(r),
+            value: Some("#FFFFFF".into()),
+            value2: None,
+            opacity: None,
+            children: Vec::new(),
+        };
+        device.scene = Some(SceneNode {
+            name: "root".into(),
+            kind: "group".into(),
+            rect: None,
+            value: None,
+            value2: None,
+            opacity: None,
+            children: vec![rect("back", [0, 0, 8, 8]), rect("front", [2, 2, 4, 4])],
+        });
+        // The overlapping topmost child wins.
+        assert_eq!(device.hit_test(3, 3).as_deref(), Some("front"));
+        // The lower child is hit outside the front rect.
+        assert_eq!(device.hit_test(7, 7).as_deref(), Some("back"));
+        // Outside every rect.
+        assert_eq!(device.hit_test(12, 12), None);
+    }
+
+    #[test]
     fn scene_clip_bounds_children() {
         use mdc_protocol::SceneNode;
         let (_host, mut device) = FakeDevice::pair(BoardProfile {
@@ -4520,6 +4611,8 @@ mod tests {
                 phase: "down".into(),
                 x: 1,
                 y: 1,
+
+                node: None,
             })
             .unwrap();
         session.poll().unwrap();
@@ -4550,6 +4643,8 @@ mod tests {
             phase: "down".into(),
             x: 1,
             y: 1,
+
+            node: None,
         });
         let manager = Arc::new(Mutex::new(DeviceManager::new()));
         let mut session = Session::new(host);
@@ -4939,6 +5034,8 @@ mod tests {
                     phase: "down".into(),
                     x,
                     y,
+
+                    node: None,
                 })
                 .unwrap();
             session.poll().unwrap();
@@ -4957,6 +5054,8 @@ mod tests {
                     phase: "up".into(),
                     x,
                     y,
+
+                    node: None,
                 })
                 .unwrap();
             session.poll().unwrap();
@@ -4970,6 +5069,8 @@ mod tests {
                 phase: "down".into(),
                 x: 0,
                 y: 0,
+
+                node: None,
             })
             .unwrap();
         device
@@ -4979,6 +5080,8 @@ mod tests {
                 phase: "down".into(),
                 x: 1,
                 y: 0,
+
+                node: None,
             })
             .unwrap();
         device
@@ -4988,6 +5091,8 @@ mod tests {
                 phase: "up".into(),
                 x: 1,
                 y: 0,
+
+                node: None,
             })
             .unwrap();
         device.faults.request_disconnect();
@@ -5031,6 +5136,8 @@ mod tests {
                 phase: "down".into(),
                 x: 0,
                 y: 0,
+
+                node: None,
             })
             .unwrap();
         session.poll().unwrap();
@@ -5046,6 +5153,8 @@ mod tests {
                 phase: "down".into(),
                 x: 4,
                 y: 0,
+
+                node: None,
             })
             .is_err());
     }
@@ -5238,6 +5347,8 @@ mod tests {
             phase: "down".into(),
             x,
             y,
+
+            node: None,
         };
         device.emit_input(down(1, 0, 0)).unwrap();
         device.emit_input(down(2, 1, 0)).unwrap();
@@ -5248,6 +5359,8 @@ mod tests {
                 phase: "up".into(),
                 x: 0,
                 y: 0,
+
+                node: None,
             })
             .unwrap();
         session.poll().unwrap();

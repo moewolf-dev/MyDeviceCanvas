@@ -2867,6 +2867,8 @@ mod tests {
                 phase: "down".into(),
                 x: 0,
                 y: 0,
+
+                node: None,
             })
             .unwrap(),
         }
@@ -2891,6 +2893,8 @@ mod tests {
                         phase: "up".into(),
                         x: 1,
                         y: 1,
+
+                        node: None,
                     })
                     .unwrap(),
                 }
@@ -3021,6 +3025,8 @@ mod tests {
             phase: phase.into(),
             x,
             y: 1,
+
+            node: None,
         };
         manager.push_input("dev".into(), point("move", 1, 1));
         manager.push_input("dev".into(), point("move", 1, 4));
@@ -4466,6 +4472,8 @@ mod tests {
             phase: "down".into(),
             x: 1,
             y: 2,
+
+            node: None,
         };
         assert_eq!(session.send_input(event), Err(CoreError::Unsupported));
     }

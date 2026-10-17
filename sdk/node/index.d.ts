@@ -23,6 +23,8 @@ export interface TileRequest {
   bytes: Uint8Array;
 }
 export interface InputEventDto {
+  /** N418: the hit-tested scene node, when the device reports one. */
+  node?: string;
   deviceId: string;
   surfaceId: string;
   pointerId: number;

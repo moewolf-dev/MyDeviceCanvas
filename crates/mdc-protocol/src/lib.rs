@@ -830,6 +830,9 @@ pub struct InputEvent {
     pub phase: String,
     pub x: u16,
     pub y: u16,
+    /// N418: the topmost scene node under the pointer, when hit-tested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 /// OTA control command (CBOR for MessageType::Ota).
@@ -1492,6 +1495,8 @@ mod tests {
             phase: "down".into(),
             x: 10,
             y: 20,
+
+            node: None,
         };
         let ota = OtaCommand {
             action: "begin".into(),
