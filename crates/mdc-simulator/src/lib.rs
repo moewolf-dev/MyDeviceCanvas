@@ -535,6 +535,49 @@ impl SceneTransform {
     }
 }
 
+/// N355: fill a rect with rounded corners of `radius` (clamped to half the
+/// smaller side). The pixels outside the corner quarter-circles are skipped.
+#[allow(clippy::too_many_arguments)]
+fn fill_rounded_rect(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    rect: [u16; 4],
+    color: u16,
+    radius: u16,
+    alpha: u8,
+) {
+    let [x, y, w, h] = rect;
+    if w == 0 || h == 0 {
+        return;
+    }
+    let r = i32::from(radius).min(i32::from(w.min(h)) / 2);
+    for yy in y..y.saturating_add(h) {
+        if u32::from(yy) >= height {
+            break;
+        }
+        for xx in x..x.saturating_add(w) {
+            if u32::from(xx) >= width {
+                break;
+            }
+            // Distance test only inside the four corner boxes.
+            let cx =
+                i32::from(xx).min(i32::from(x) + i32::from(w) - 1 - i32::from(xx)) - i32::from(x);
+            let cy =
+                i32::from(yy).min(i32::from(y) + i32::from(h) - 1 - i32::from(yy)) - i32::from(y);
+            if cx < r && cy < r {
+                let dx = r - 1 - cx;
+                let dy = r - 1 - cy;
+                if dx * dx + dy * dy > r * r {
+                    continue;
+                }
+            }
+            let index = ((u32::from(yy) * width + u32::from(xx)) * 2) as usize;
+            put_pixel(pixels, index, color, alpha);
+        }
+    }
+}
+
 /// N348: interpolate two RGB565 colours by `t` (0..=255).
 fn lerp_rgb565(a: u16, b: u16, t: u8) -> u16 {
     let tt = u32::from(t);
@@ -703,7 +746,7 @@ fn fill_scene(
 ) {
     let drawable = matches!(
         node.kind.as_str(),
-        "rect" | "text" | "image" | "sprite" | "circle" | "line" | "gradient"
+        "rect" | "text" | "image" | "sprite" | "circle" | "line" | "gradient" | "rounded-rect"
     );
     // N338: source alpha for every rasterised kind.
     let alpha = node.opacity_u8();
@@ -788,6 +831,25 @@ fn fill_scene(
                 height,
                 transform.apply(rect),
                 node.color_rgb565(),
+                alpha,
+            );
+            *drew = true;
+        }
+    } else if node.kind == "rounded-rect" {
+        // N355: a rect with rounded corners; `value2` is the corner radius.
+        if let Some(rect) = node.rect {
+            let radius = node
+                .value2
+                .as_deref()
+                .and_then(|v| v.trim().parse::<u16>().ok())
+                .unwrap_or(0);
+            fill_rounded_rect(
+                pixels,
+                width,
+                height,
+                transform.apply(rect),
+                node.color_rgb565(),
+                radius,
                 alpha,
             );
             *drew = true;
@@ -3319,6 +3381,29 @@ mod tests {
             (mid >> 11) > 0 && (mid & 0x1f) > 0,
             "mid blended: {mid:#06x}"
         );
+    }
+
+    #[test]
+    fn scene_rounded_rect_clips_the_corners() {
+        use mdc_protocol::SceneNode;
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 8,
+            height: 8,
+            ..BoardProfile::default()
+        });
+        device.scene = Some(SceneNode {
+            name: "r".into(),
+            kind: "rounded-rect".into(),
+            rect: Some([0, 0, 8, 8]),
+            value: Some("#FFFFFF".into()),
+            value2: Some("4".into()),
+            opacity: None,
+            children: Vec::new(),
+        });
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(0, 0), Some(0), "corner clipped");
+        assert_ne!(device.pixel_rgb565(0, 4), Some(0), "edge middle filled");
+        assert_ne!(device.pixel_rgb565(4, 4), Some(0), "center filled");
     }
 
     #[test]

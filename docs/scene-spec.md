@@ -22,7 +22,7 @@ SceneCommand:
 
 SceneNode:
   name:     string
-  kind:     "group" | "rect" | "text" | "sprite" | "image" | "circle" | "line" | "gradient"
+  kind:     "group" | "rect" | "text" | "sprite" | "image" | "circle" | "line" | "gradient" | "rounded-rect"
   rect:     [x, y, w, h]?     # geometry for kinds that rasterize (N79); a group's transform (N138)
   children: [SceneNode]?      # optional, ordered back-to-front
   value:    string?           # rect/circle/line: "#RRGGBB"/"#RGB"/name; text: glyphs; image: packed RGB565 hex
@@ -55,6 +55,8 @@ A device that accepts a scene rasterizes it locally:
   whatever is already on the framebuffer (`255`/absent is opaque).
 - N348: `gradient` fills `rect` with a vertical linear gradient from `value` (top)
   to `value2` (bottom; a missing `value2` is a flat fill).
+- N355: `rounded-rect` fills `rect` with the `value` colour and rounded corners;
+  `value2` is the corner radius in pixels (clamped to half the smaller side).
 - `image` blits tightly packed RGB565 when `value` is `w*h` hex words (4 digits
   each, little-endian on the framebuffer). A short or malformed string draws nothing.
 - `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour.
