@@ -270,6 +270,9 @@ pub struct Material {
     /// N373: `KHR_texture_transform` on the base-colour texture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uv_transform: Option<UvTransform>,
+    /// N374: `KHR_materials_emissive_strength` (`emissiveStrength`, default 1.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emissive_strength: Option<f32>,
 }
 
 /// N373: glTF `KHR_texture_transform`. `rotation` is in radians; the transform is
@@ -351,14 +354,21 @@ impl Material {
     pub fn is_unlit(&self) -> bool {
         self.unlit.unwrap_or(false)
     }
-    /// N363: emissive luminance in 0..1 (from `emissiveFactor`).
+    /// N363/N374: emissive luminance in 0..1 (from `emissiveFactor`, scaled by
+    /// `KHR_materials_emissive_strength`).
     pub fn emissive_luma(&self) -> f32 {
-        match self.emissive {
+        let base = match self.emissive {
             Some([r, g, b]) => {
                 (0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b)) / 255.0
             }
             None => 0.0,
-        }
+        };
+        (base * self.emissive_strength()).clamp(0.0, 1.0)
+    }
+
+    /// N374: `KHR_materials_emissive_strength` (default 1.0; non-negative).
+    pub fn emissive_strength(&self) -> f32 {
+        self.emissive_strength.unwrap_or(1.0).max(0.0)
     }
 }
 

@@ -261,6 +261,7 @@ impl Live2DImporter {
                 emissive: None,
                 unlit: None,
                 uv_transform: None,
+                emissive_strength: None,
             });
             nodes.push(Node {
                 name: name.clone(),

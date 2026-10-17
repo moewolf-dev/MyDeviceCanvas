@@ -266,6 +266,13 @@ impl GltfImporter {
                     }
                 })
                 .filter(|t| !t.is_identity());
+            // N374: KHR_materials_emissive_strength (default 1.0).
+            let emissive_strength = material
+                .get("extensions")
+                .and_then(|e| e.get("KHR_materials_emissive_strength"))
+                .and_then(|s| s.get("emissiveStrength"))
+                .and_then(Value::as_f64)
+                .map(|v| v.max(0.0) as f32);
             materials.push(Material {
                 name: json_name(material, &format!("material{i}")),
                 texture,
@@ -284,6 +291,7 @@ impl GltfImporter {
                 emissive,
                 unlit,
                 uv_transform,
+                emissive_strength,
             });
         }
 
@@ -2151,7 +2159,7 @@ mod tests {
             "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "material": 0}]}],
             "accessors": [{"count": 3, "type": "VEC3"}],
             "materials": [
-                {"name": "red", "emissiveFactor": [1.0, 0.5, 0.0], "extensions": {"KHR_materials_unlit": {}}, "pbrMetallicRoughness": {"baseColorFactor": [1.0, 0.0, 0.0, 1.0], "metallicFactor": 0.25, "roughnessFactor": 0.75, "baseColorTexture": {"index": 0, "extensions": {"KHR_texture_transform": {"offset": [0.25, 0.0], "rotation": 0.0, "scale": [2.0, 1.0]}}}}},
+                {"name": "red", "emissiveFactor": [1.0, 0.5, 0.0], "extensions": {"KHR_materials_unlit": {}, "KHR_materials_emissive_strength": {"emissiveStrength": 1.5}}, "pbrMetallicRoughness": {"baseColorFactor": [1.0, 0.0, 0.0, 1.0], "metallicFactor": 0.25, "roughnessFactor": 0.75, "baseColorTexture": {"index": 0, "extensions": {"KHR_texture_transform": {"offset": [0.25, 0.0], "rotation": 0.0, "scale": [2.0, 1.0]}}}}},
                 {"name": "plain"}
             ]
         });
@@ -2176,6 +2184,10 @@ mod tests {
         assert_eq!(uv.rotation, 0.0);
         assert!(!uv.is_identity());
         assert!(model.materials[1].uv_transform().is_identity());
+        // N374: KHR_materials_emissive_strength scales the emissive luminance.
+        assert_eq!(model.materials[0].emissive_strength(), 1.5);
+        assert!(model.materials[0].emissive_luma() > 0.8);
+        assert_eq!(model.materials[1].emissive_strength(), 1.0);
         assert_eq!(model.materials[0].color_rgb565(), Some(0xF800));
         assert_eq!(model.materials[1].color, None);
         assert_eq!(model.materials[1].color_rgb565(), None);
