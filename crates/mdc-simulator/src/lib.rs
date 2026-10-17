@@ -966,6 +966,8 @@ impl Default for BoardProfile {
                 "wifi_password".into(),
                 // N71: atlas animation control (only meaningful with a baked atlas).
                 "animation".into(),
+                // N347: device texture sampling filter.
+                "filtering".into(),
             ],
             // N308: an MCU-class panel prefers 32-pixel tiles and takes both
             // partial and full updates (it advertises tile support).
@@ -1128,6 +1130,8 @@ pub struct FakeDevice {
     mesh_scene: Option<mdc_model::DevicePackage>,
     /// N315: which package animation the device poses (default: first).
     mesh_clip: mdc_bake::SceneClip,
+    /// N347: texture sampling filter for package scenes (device config).
+    texture_filter: mdc_bake::Filter,
     /// N330: the frame frozen at the last mesh-clip change, blended out.
     mesh_prev_pixels: Vec<u8>,
     mesh_crossfade_ms: u32,
@@ -1202,6 +1206,7 @@ impl FakeDevice {
             texture: None,
             mesh_scene: None,
             mesh_clip: mdc_bake::SceneClip::First,
+            texture_filter: mdc_bake::Filter::Nearest,
             mesh_prev_pixels: Vec::new(),
             mesh_crossfade_ms: 0,
             mesh_blend_start: 0,
@@ -1936,11 +1941,12 @@ impl FakeDevice {
         if let Some(scene) = self.mesh_scene.clone() {
             if scene.meshes.iter().any(|m| m.geometry.is_some()) {
                 let seconds = self.clock.tick as f32 / 1000.0;
-                if let Ok(frame) = mdc_bake::render_package_scene_clip(
+                if let Ok(frame) = mdc_bake::render_package_scene_clip_filtered(
                     &scene,
                     self.mesh_clip,
                     seconds,
                     (width, height),
+                    self.texture_filter,
                 ) {
                     let len = frame.rgb565.len().min(self.pixels.len());
                     self.pixels[..len].copy_from_slice(&frame.rgb565[..len]);
@@ -2123,6 +2129,10 @@ impl FakeDevice {
         if command.key == "animation" {
             return self.handle_animation_config(&packet, &command);
         }
+        // N347: "filtering" selects the device texture sampler.
+        if command.key == "filtering" {
+            return self.handle_filtering_config(&packet, &command);
+        }
         if !self.profile.config_keys.iter().any(|k| k == &command.key) {
             return self.reply_config(&command.key, false, None, Some("E_UNSUPPORTED"));
         }
@@ -2251,6 +2261,39 @@ impl FakeDevice {
     pub fn mesh_clip(&self) -> mdc_bake::SceneClip {
         self.mesh_clip
     }
+    /// N347: `config filtering <nearest|linear>` selects the device sampler.
+    fn handle_filtering_config(
+        &mut self,
+        _packet: &Packet,
+        command: &ConfigCommand,
+    ) -> Result<(), SimError> {
+        match command.action.as_str() {
+            "get" => {
+                let value = if self.texture_filter == mdc_bake::Filter::Linear {
+                    "linear"
+                } else {
+                    "nearest"
+                };
+                self.reply_config("filtering", true, Some(value.into()), None)
+            }
+            "set" => {
+                let value = command
+                    .value
+                    .clone()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                let filter = match value.as_str() {
+                    "linear" => mdc_bake::Filter::Linear,
+                    "nearest" => mdc_bake::Filter::Nearest,
+                    _ => return self.reply_config("filtering", false, None, Some("E_VALUE")),
+                };
+                self.texture_filter = filter;
+                self.reply_config("filtering", true, Some(value), None)
+            }
+            _ => self.reply_config("filtering", false, None, Some("E_ACTION")),
+        }
+    }
+
     /// N315: select a mesh package animation by index/name; `off` renders static.
     fn handle_mesh_clip_config(
         &mut self,
@@ -3178,6 +3221,28 @@ mod tests {
         assert_ne!(px, 0xF800);
         assert_ne!(px, 0xFFFF);
         assert!((px >> 11) > 20, "red channel is high: {px:#06x}");
+    }
+
+    #[test]
+    fn device_filtering_config_sets_the_sampler() {
+        let (host, mut device) = FakeDevice::pair(BoardProfile::default());
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.texture_filter, mdc_bake::Filter::Nearest);
+        session.set_config("filtering", "linear").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.texture_filter, mdc_bake::Filter::Linear);
+        session.set_config("filtering", "bogus").unwrap();
+        device.poll().unwrap();
+        let _ = session.poll();
+        assert_eq!(
+            device.texture_filter,
+            mdc_bake::Filter::Linear,
+            "an unknown filter leaves the sampler unchanged"
+        );
     }
 
     #[test]

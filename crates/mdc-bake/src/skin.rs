@@ -1241,6 +1241,18 @@ pub fn render_package_scene_clip(
     time: f32,
     size: (u32, u32),
 ) -> Result<BakedTexture, BakeError> {
+    render_package_scene_clip_filtered(package, clip, time, size, crate::Filter::Nearest)
+}
+
+/// N347: like [`render_package_scene_clip`] but samples the package texture with
+/// the device's configured filter.
+pub fn render_package_scene_clip_filtered(
+    package: &mdc_model::DevicePackage,
+    clip: SceneClip,
+    time: f32,
+    size: (u32, u32),
+    filter: crate::Filter,
+) -> Result<BakedTexture, BakeError> {
     if size.0 == 0 || size.1 == 0 || size.0 > 1024 || size.1 > 1024 {
         return Err(BakeError::Budget(size.0, size.1));
     }
@@ -1249,7 +1261,8 @@ pub fn render_package_scene_clip(
     };
     let texture = match package.texture.as_ref().filter(|t| t.validate()) {
         Some(blob) => {
-            let map = crate::TextureMap::from_rgb565(blob.width, blob.height, blob.rgb565.clone())?;
+            let map = crate::TextureMap::from_rgb565(blob.width, blob.height, blob.rgb565.clone())?
+                .with_filter(filter);
             Some(if blob.alpha.is_empty() {
                 map
             } else {
