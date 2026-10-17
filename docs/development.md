@@ -62,5 +62,7 @@ OTA a simulator board end-to-end (N350):
 
 ```sh
 cargo run -p mdc -- --board esp32-jc3248w535-sim ota 2.1.0
+cargo run -p mdc -- --address 127.0.0.1:9876 ota 2.1.0   # over TCP (N354)
 ```
+
 

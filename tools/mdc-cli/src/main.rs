@@ -600,6 +600,51 @@ fn cmd_ota(
             _ => {}
         }
     }
+    // N354: over TCP the peer drives the device; there is no local device.
+    if let Some(address) = opts.address.clone() {
+        let transport = connect_tcp(&address)?;
+        let mut session = Session::new(transport);
+        session.connect()?;
+        pump_until_idle(&mut session)?;
+        let ota = session
+            .device
+            .as_ref()
+            .map(|d| d.capabilities.ota)
+            .unwrap_or(false);
+        if !ota {
+            return Err(format!("device at {address} does not advertise OTA").into());
+        }
+        let firmware_before = session
+            .device
+            .as_ref()
+            .map(|d| d.capabilities.firmware.clone())
+            .unwrap_or_default();
+        let result = drive_ota_tcp(&mut session, version, size, sha256.clone());
+        session.refresh_capabilities()?;
+        pump_until_idle(&mut session)?;
+        let firmware_after = session
+            .device
+            .as_ref()
+            .map(|d| d.capabilities.firmware.clone())
+            .unwrap_or_default();
+        let ok = result.is_ok() && firmware_after == version;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "address": address,
+                "version": version,
+                "firmware_before": firmware_before,
+                "firmware_after": firmware_after,
+                "ok": ok,
+                "rolled_back": firmware_after != version,
+                "error": result.err(),
+            }))?
+        );
+        if !ok {
+            return Err("OTA did not confirm the requested version".into());
+        }
+        return Ok(());
+    }
     let (mut session, mut device, _manager) = open_sim(&opts.board)?;
     let ota = session
         .device
@@ -2237,6 +2282,46 @@ fn connect_tcp(address: &str) -> Result<TcpTransport, Box<dyn std::error::Error>
     Err(format!("tcp connect {address}: {last}").into())
 }
 
+/// N354: send the OTA begin/chunk/confirm and wait for each reply over TCP.
+fn drive_ota_tcp(
+    session: &mut Session<TcpTransport>,
+    version: &str,
+    size: Option<u64>,
+    sha256: Option<String>,
+) -> Result<(), String> {
+    let commands = [
+        mdc_protocol::OtaCommand {
+            action: "begin".into(),
+            version: Some(version.to_string()),
+            size,
+            sha256: None,
+        },
+        mdc_protocol::OtaCommand {
+            action: "chunk".into(),
+            version: None,
+            size: None,
+            sha256: sha256.clone(),
+        },
+        mdc_protocol::OtaCommand {
+            action: "confirm".into(),
+            version: None,
+            size: None,
+            sha256: None,
+        },
+    ];
+    for command in commands {
+        session.send_ota(command).map_err(|e| e.to_string())?;
+        for _ in 0..80 {
+            session.poll().map_err(|e| e.to_string())?;
+            if session.pending_request_count() == 0 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+    Ok(())
+}
+
 fn pump_until_idle(session: &mut Session<TcpTransport>) -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..80 {
         session.poll()?;
@@ -3456,6 +3541,24 @@ mod tests {
         };
         let result = cmd_ota(&opts, "2.1.0", &["--sha256".to_string(), "bad".to_string()]);
         assert!(result.is_err(), "a bad image must not confirm");
+    }
+
+    #[test]
+    fn ota_command_rejects_a_tcp_target_that_is_not_listening() {
+        // N354: the TCP branch retries then fails cleanly.
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener);
+            port
+        };
+        let opts = GlobalOpts {
+            sim: false,
+            address: Some(format!("127.0.0.1:{port}")),
+            port: None,
+            board: "esp32-jc3248w535-sim".into(),
+        };
+        assert!(cmd_ota(&opts, "2.2.0", &[]).is_err());
     }
 
     #[test]
