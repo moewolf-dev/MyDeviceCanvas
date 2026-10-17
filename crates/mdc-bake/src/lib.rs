@@ -685,8 +685,62 @@ pub fn mesh_package_with_textures(
     mdc_model::MdcPackage::seal(package).map_err(|e| BakeError::Package(e.to_string()))
 }
 
+/// N396: box-downsample an RGB565 image into a bounded mip chain. Level 0 is the
+/// source; each level halves both axes (min 1×1) and averages the covered texels.
+/// `max_levels` is clamped to 1..=16.
+pub fn bake_mipmaps(
+    width: u32,
+    height: u32,
+    rgb565: &[u8],
+    max_levels: usize,
+) -> Vec<(u32, u32, Vec<u8>)> {
+    let mut out = Vec::new();
+    if width == 0 || height == 0 || rgb565.len() != (width as usize) * (height as usize) * 2 {
+        return out;
+    }
+    let level_cap = max_levels.clamp(1, 16);
+    let read = |data: &[u8], w: u32, x: u32, y: u32| -> u16 {
+        let index = ((y * w + x) * 2) as usize;
+        u16::from_le_bytes([data[index], data[index + 1]])
+    };
+    let mut w = width;
+    let mut h = height;
+    let mut cur = rgb565.to_vec();
+    out.push((w, h, cur.clone()));
+    while out.len() < level_cap && (w > 1 || h > 1) {
+        let nw = (w / 2).max(1);
+        let nh = (h / 2).max(1);
+        let mut next = vec![0u8; (nw as usize) * (nh as usize) * 2];
+        for y in 0..nh {
+            for x in 0..nw {
+                let (mut r, mut g, mut b, mut n) = (0u32, 0u32, 0u32, 0u32);
+                for dy in 0..2 {
+                    for dx in 0..2 {
+                        let sx = (x * 2 + dx).min(w - 1);
+                        let sy = (y * 2 + dy).min(h - 1);
+                        let v = read(&cur, w, sx, sy);
+                        r += u32::from((v >> 11) & 0x1f);
+                        g += u32::from((v >> 5) & 0x3f);
+                        b += u32::from(v & 0x1f);
+                        n += 1;
+                    }
+                }
+                let v = ((((r / n) as u16) & 0x1f) << 11)
+                    | ((((g / n) as u16) & 0x3f) << 5)
+                    | ((b / n) as u16 & 0x1f);
+                let index = ((y * nw + x) * 2) as usize;
+                next[index..index + 2].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        cur = next;
+        w = nw;
+        h = nh;
+        out.push((w, h, cur.clone()));
+    }
+    out
+}
+
 /// N60: bake a sprite set straight into a sealed runtime package the device can
-/// receive over the `PACKAGE` path.
 #[allow(clippy::too_many_arguments)]
 pub fn bake_to_package(
     sources: &[SpriteSource],

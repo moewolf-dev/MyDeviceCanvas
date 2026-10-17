@@ -814,6 +814,7 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut max_texture: u32 = 2048;
     let mut out_dir = String::from(".");
     let mut package_path: Option<String> = None;
+    let mut mipmaps = false;
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -827,6 +828,8 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             }
             "--out" => out_dir = iter.next().cloned().unwrap_or(out_dir),
             "--package" => package_path = iter.next().cloned(),
+            // N396: also write a box-downsampled mip chain beside the atlas.
+            "--mipmaps" => mipmaps = true,
             other => images.push(other.to_string()),
         }
     }
@@ -895,6 +898,23 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(&atlas_path, rgb565_to_ppm(&package.atlas))?;
     let manifest_path = Path::new(&out_dir).join("atlas.json");
     std::fs::write(&manifest_path, package.manifest.to_json()?)?;
+    // N396: an optional box-downsampled mip chain (level 0 is the atlas).
+    let mut mip_paths = Vec::new();
+    if mipmaps {
+        for (level, (w, h, data)) in mdc_bake::bake_mipmaps(
+            package.atlas.width,
+            package.atlas.height,
+            &package.atlas.rgb565,
+            8,
+        )
+        .iter()
+        .enumerate()
+        {
+            let path = Path::new(&out_dir).join(format!("mip{level}.ppm"));
+            std::fs::write(&path, rgb565_frame_to_ppm(*w, *h, data))?;
+            mip_paths.push(path.display().to_string());
+        }
+    }
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
@@ -903,6 +923,7 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "atlas": format!("{}x{}", package.atlas.width, package.atlas.height),
             "atlas_path": atlas_path.display().to_string(),
             "manifest_path": manifest_path.display().to_string(),
+            "mips": mip_paths,
         }))?
     );
     Ok(())
@@ -3094,7 +3115,7 @@ fn usage() {
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
-config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
+config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] --out f.ppm|\
 motion <motion3.json> [--param ID] [--samples N]|\
@@ -3383,6 +3404,25 @@ mod tests {
         .unwrap();
         cmd_model_info(&[path.to_string_lossy().into_owned()]).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mip_chain_halves_and_averages() {
+        // N396: a 2x2 red/green/blue/white atlas downsamples to one averaged texel.
+        let rgb565 = |v: u16| v.to_le_bytes().to_vec();
+        let mut source = Vec::new();
+        for v in [0xF800u16, 0x07E0, 0x001F, 0xFFFF] {
+            source.extend_from_slice(&rgb565(v));
+        }
+        let levels = mdc_bake::bake_mipmaps(2, 2, &source, 4);
+        assert_eq!(levels.len(), 2, "2x2 -> 1x1");
+        assert_eq!((levels[0].0, levels[0].1), (2, 2));
+        assert_eq!((levels[1].0, levels[1].1), (1, 1));
+        let averaged = u16::from_le_bytes([levels[1].2[0], levels[1].2[1]]);
+        // Averaging is bounded and non-zero.
+        assert!(averaged != 0);
+        // Oversized inputs and bad lengths produce an empty chain.
+        assert!(mdc_bake::bake_mipmaps(2, 2, &[0, 0], 4).is_empty());
     }
 
     #[test]

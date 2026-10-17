@@ -93,4 +93,7 @@ flag):
 cargo run -p mdc -- diff ./old.mdcpkg ./new.mdcpkg
 ```
 
+`mdc bake --mipmaps` (N396) also writes a box-downsampled mip chain
+(`mip0.ppm` … ) beside the atlas, produced by `mdc_bake::bake_mipmaps`.
+
 
