@@ -125,6 +125,20 @@ test("native connectWebSocket sends an RGB565 frame to mdc-sim-peer", {
   }
 });
 
+test("native diagnostics round trip", { skip: !native }, async () => {
+  const mdc = await MyDeviceCanvas.create();
+  await mdc.emitMetric("fps", 29.5, "fps");
+  assert.equal(await mdc.diagnosticCount(), 1);
+  const diagnostics = await mdc.takeDiagnostics();
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0].kind, "metric");
+  assert.equal(diagnostics[0].name, "fps");
+  assert.equal(diagnostics[0].unit, "fps");
+  assert.equal(await mdc.diagnosticCount(), 0);
+  mdc.dispose();
+  await assert.rejects(mdc.takeDiagnostics(), /disposed/);
+});
+
 test("native dual-sim lists overlay and disconnect cancel keeps the pointer", { skip: !native }, async () => {
   const mdc = await MyDeviceCanvas.create();
   const devices = await mdc.openBoard("dual-sim");

@@ -58,6 +58,17 @@ pub struct InputEventDto {
 }
 
 #[napi(object)]
+pub struct DiagnosticDto {
+    #[napi(js_name = "kind")]
+    pub kind: String,
+    pub name: String,
+    pub value: f64,
+    pub unit: Option<String>,
+    /// N349: JSON of the telemetry fields (empty for metric/boot info).
+    pub fields: Option<String>,
+}
+
+#[napi(object)]
 pub struct MirrorInfoDto {
     #[napi(js_name = "surfaceId")]
     pub surface_id: String,
@@ -853,6 +864,88 @@ impl NativeManager {
             return Err(Error::from_reason("manager is disposed"));
         }
         Ok(state.last_frame.clone().map(Buffer::from))
+    }
+
+    /// N349: emit a metric on the simulator device's diagnostics channel.
+    #[napi(js_name = "emitMetric")]
+    pub fn emit_metric(&self, name: String, value: f64, unit: Option<String>) -> Result<u32> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        let device = sim
+            .device
+            .as_mut()
+            .ok_or_else(|| Error::from_reason("tcp/ws session cannot emit a local metric"))?;
+        device
+            .emit_metric(&name, value, unit.as_deref())
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        pump_link(sim)?;
+        Ok(sim.session.diagnostic_count() as u32)
+    }
+
+    /// N349: drain the bounded diagnostics channel (metrics, boot info, telemetry).
+    #[napi(js_name = "takeDiagnostics")]
+    pub fn take_diagnostics(&self) -> Result<Vec<DiagnosticDto>> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        let Some(sim) = state.sim.as_mut() else {
+            return Ok(Vec::new());
+        };
+        let records = sim.session.take_diagnostics();
+        Ok(records
+            .into_iter()
+            .map(|record| match record {
+                mdc_core::DiagnosticRecord::Metric(metric) => DiagnosticDto {
+                    kind: "metric".into(),
+                    name: metric.name,
+                    value: metric.value,
+                    unit: metric.unit,
+                    fields: None,
+                },
+                mdc_core::DiagnosticRecord::BootInfo(boot) => DiagnosticDto {
+                    kind: "bootInfo".into(),
+                    name: boot.firmware,
+                    value: boot.boot_id as f64,
+                    unit: boot.reset_reason,
+                    fields: None,
+                },
+                mdc_core::DiagnosticRecord::Telemetry(event) => DiagnosticDto {
+                    kind: "telemetry".into(),
+                    name: event.name,
+                    value: event.event_seq as f64,
+                    unit: event.level,
+                    fields: serde_json::to_string(&event.fields).ok(),
+                },
+            })
+            .collect())
+    }
+
+    /// N349: number of diagnostics waiting.
+    #[napi(js_name = "diagnosticCount")]
+    pub fn diagnostic_count(&self) -> Result<u32> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        Ok(state
+            .sim
+            .as_ref()
+            .map(|sim| sim.session.diagnostic_count() as u32)
+            .unwrap_or(0))
     }
 
     #[napi]

@@ -38,6 +38,7 @@ is idempotent and cancels listeners; every method rejects after dispose.
 | `packageReady()` | N238: whether the last accepted package is render-ready |
 | `connectTcp(address)` | remote peer instead of the in-process simulator |
 | `connectWebSocket(url)` | N340: WebSocket peer (`ws://host:port`) |
+| `emitMetric(name, value, unit)` / `takeDiagnostics()` / `diagnosticCount()` | N349: simulator diagnostics channel (metrics, boot info, telemetry) |
 
 ### installPackage
 

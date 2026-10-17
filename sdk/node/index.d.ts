@@ -44,6 +44,15 @@ export interface MirrorStats {
   framesDropped: number;
   lastFrameId: number;
 }
+/** N349: one diagnostics record. */
+export interface DiagnosticDto {
+  kind: string;
+  name: string;
+  value: number;
+  unit?: string;
+  /** JSON of the telemetry fields (telemetry only). */
+  fields?: string;
+}
 export interface NativeEvent {
   kind: string;
   deviceId?: string;
@@ -72,6 +81,11 @@ export declare class MyDeviceCanvas {
   /** N340: connect over WebSocket (`ws://host:port`). */
   connectWebSocket(url: string): Promise<void>;
   devices(): Promise<Device[]>;
+  /** N349: emit a simulator metric; returns the queue length. */
+  emitMetric(name: string, value: number, unit?: string | null): Promise<number>;
+  /** N349: drain diagnostics (metrics, boot info, telemetry). */
+  takeDiagnostics(): Promise<DiagnosticDto[]>;
+  diagnosticCount(): Promise<number>;
   pollEvents(): Promise<NativeEvent[]>;
   onMirrorFrame(listener: (frame: MirrorInfo) => void): () => void;
   startMirror(

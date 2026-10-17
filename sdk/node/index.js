@@ -90,6 +90,23 @@ export class MyDeviceCanvas {
       (d) => new Device(this._native, d),
     );
   }
+  /** N349: emit a metric on the simulator device's diagnostics channel. */
+  async emitMetric(name, value, unit) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.emitMetric !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.emitMetric(name, value, unit ?? null);
+  }
+  /** N349: drain diagnostics (metrics, boot info, telemetry). */
+  async takeDiagnostics() {
+    if (this._disposed) throw new Error("manager is disposed");
+    return (await this._native.takeDiagnostics?.()) ?? [];
+  }
+  async diagnosticCount() {
+    if (this._disposed) throw new Error("manager is disposed");
+    return (await this._native.diagnosticCount?.()) ?? 0;
+  }
   /** Open a named simulator board, then return its devices. Default stays 480×320. */
   async openBoard(boardId) {
     if (this._disposed) throw new Error("manager is disposed");
