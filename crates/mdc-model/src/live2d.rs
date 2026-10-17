@@ -256,6 +256,8 @@ impl Live2DImporter {
                 alpha_mode: None,
                 alpha_cutoff: None,
                 alpha: None,
+                metallic: None,
+                roughness: None,
             });
             nodes.push(Node {
                 name: name.clone(),

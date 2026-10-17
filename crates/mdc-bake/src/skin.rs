@@ -679,6 +679,15 @@ fn material_blend(model: &Model, mesh: &Mesh) -> u8 {
     }
 }
 
+/// N343: the ambient floor for a mesh, raised by the material roughness (a
+/// rough surface shades flatter).
+fn material_ambient(model: &Model, mesh: &Mesh) -> f32 {
+    let roughness = material_of(model, mesh)
+        .map(|m| m.roughness())
+        .unwrap_or(1.0);
+    (SHADE_AMBIENT + 0.35 * roughness).min(0.9)
+}
+
 /// N166: render one posed frame of the mesh's full geometry into `size` pixels.
 /// Falls back to the preview render when the mesh carries no geometry. N175: the
 /// mesh's material colour is preferred over `color` when no texture is sampled.
@@ -852,6 +861,7 @@ fn triangle_shades(
     normals: &[[f32; 3]],
     indices: &[u32],
     light: [f32; 3],
+    ambient: f32,
 ) -> Vec<f32> {
     if indices.len() < 3 {
         return Vec::new();
@@ -878,7 +888,7 @@ fn triangle_shades(
                 return 1.0;
             }
             let dot = (normal[0] * light[0] + normal[1] * light[1] + normal[2] * light[2]) / len;
-            dot.clamp(SHADE_AMBIENT, 1.0)
+            dot.clamp(ambient, 1.0)
         })
         .collect()
 }
@@ -1001,7 +1011,13 @@ pub fn render_scene_at(
             tint,
             mask,
             fill: tint.unwrap_or(fallback),
-            shade: triangle_shades(&deformed, &geometry.normals, &geometry.indices, SHADE_LIGHT),
+            shade: triangle_shades(
+                &deformed,
+                &geometry.normals,
+                &geometry.indices,
+                SHADE_LIGHT,
+                material_ambient(model, mesh),
+            ),
             blend: material_blend(model, mesh),
         });
     }
@@ -1136,6 +1152,10 @@ pub fn render_package_mesh(
             &geometry.normals,
             &geometry.indices,
             SHADE_LIGHT,
+            mesh.material
+                .and_then(|mi| package.materials.get(mi))
+                .map(|m| (SHADE_AMBIENT + 0.35 * m.roughness()).min(0.9))
+                .unwrap_or(0.9),
         );
         let blend = mesh
             .material
@@ -1303,7 +1323,16 @@ pub fn render_package_scene_clip(
             tint,
             mask,
             fill: tint.unwrap_or(0xF800),
-            shade: triangle_shades(&deformed, &geometry.normals, &geometry.indices, SHADE_LIGHT),
+            shade: triangle_shades(
+                &deformed,
+                &geometry.normals,
+                &geometry.indices,
+                SHADE_LIGHT,
+                mesh.material
+                    .and_then(|mi| package.materials.get(mi))
+                    .map(|m| (SHADE_AMBIENT + 0.35 * m.roughness()).min(0.9))
+                    .unwrap_or(0.9),
+            ),
             blend: mesh
                 .material
                 .and_then(|mi| package.materials.get(mi))
@@ -1999,6 +2028,49 @@ mod tests {
         assert!(
             shaded >> 11 < flat >> 11,
             "the red channel is reduced by shading"
+        );
+    }
+
+    #[test]
+    fn roughness_raises_the_ambient_floor() {
+        let render = |roughness: f32| {
+            let model = Model {
+                source: "t".into(),
+                nodes: vec![Node {
+                    name: "n".into(),
+                    mesh: Some(0),
+                    ..Node::default()
+                }],
+                meshes: vec![mdc_model::Mesh {
+                    name: "q".into(),
+                    vertices: 4,
+                    indices: 6,
+                    material: Some(0),
+                    geometry: Some(mdc_model::MeshGeometry {
+                        normals: vec![[1.0, 0.0, 0.0]; 4],
+                        ..quad_geometry()
+                    }),
+                    ..mdc_model::Mesh::default()
+                }],
+                materials: vec![mdc_model::Material {
+                    name: "m".into(),
+                    color: Some([255, 0, 0]),
+                    roughness: Some(roughness),
+                    ..mdc_model::Material::default()
+                }],
+                ..Model::default()
+            };
+            render_scene_at(&model, 0, 0.0, (16, 16), None, 0x0000).unwrap()
+        };
+        let px = |f: &BakedTexture| {
+            u16::from_le_bytes([f.rgb565[(8 * 16 + 8) * 2], f.rgb565[(8 * 16 + 8) * 2 + 1]])
+        };
+        // A grazing normal: a rough material is flatter (brighter) than a smooth one.
+        let smooth = px(&render(0.0));
+        let rough = px(&render(1.0));
+        assert!(
+            rough >> 11 > smooth >> 11,
+            "rough {rough:#06x} brighter than smooth {smooth:#06x}"
         );
     }
 

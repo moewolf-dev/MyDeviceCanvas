@@ -213,6 +213,15 @@ impl GltfImporter {
                 .and_then(|list| list.get(3))
                 .and_then(Value::as_f64)
                 .map(|v| v.clamp(0.0, 1.0) as f32);
+            // N343: metallic/roughness factors.
+            let metallic = pbr
+                .and_then(|p| p.get("metallicFactor"))
+                .and_then(Value::as_f64)
+                .map(|v| v.clamp(0.0, 1.0) as f32);
+            let roughness = pbr
+                .and_then(|p| p.get("roughnessFactor"))
+                .and_then(Value::as_f64)
+                .map(|v| v.clamp(0.0, 1.0) as f32);
             materials.push(Material {
                 name: json_name(material, &format!("material{i}")),
                 texture,
@@ -226,6 +235,8 @@ impl GltfImporter {
                     .and_then(Value::as_f64)
                     .map(|v| v as f32),
                 alpha,
+                metallic,
+                roughness,
             });
         }
 
@@ -2013,7 +2024,7 @@ mod tests {
             "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "material": 0}]}],
             "accessors": [{"count": 3, "type": "VEC3"}],
             "materials": [
-                {"name": "red", "pbrMetallicRoughness": {"baseColorFactor": [1.0, 0.0, 0.0, 1.0]}},
+                {"name": "red", "pbrMetallicRoughness": {"baseColorFactor": [1.0, 0.0, 0.0, 1.0], "metallicFactor": 0.25, "roughnessFactor": 0.75}},
                 {"name": "plain"}
             ]
         });
@@ -2021,6 +2032,11 @@ mod tests {
             .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
             .unwrap();
         assert_eq!(model.materials[0].color, Some([255, 0, 0]));
+        // N343: metallic/roughness factors are imported with spec defaults.
+        assert_eq!(model.materials[0].metallic, Some(0.25));
+        assert_eq!(model.materials[0].roughness, Some(0.75));
+        assert_eq!(model.materials[0].roughness(), 0.75);
+        assert_eq!(model.materials[1].roughness(), 1.0);
         assert_eq!(model.materials[0].color_rgb565(), Some(0xF800));
         assert_eq!(model.materials[1].color, None);
         assert_eq!(model.materials[1].color_rgb565(), None);

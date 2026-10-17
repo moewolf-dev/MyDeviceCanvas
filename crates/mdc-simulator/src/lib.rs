@@ -3935,6 +3935,8 @@ mod tests {
                 alpha_mode: Some("MASK".into()),
                 alpha_cutoff: Some(0.5),
                 alpha: None,
+                metallic: None,
+                roughness: None,
             }],
             skeletons: Vec::new(),
             animations: Vec::new(),

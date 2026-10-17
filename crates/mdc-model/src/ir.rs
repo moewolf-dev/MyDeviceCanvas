@@ -246,6 +246,12 @@ pub struct Material {
     /// N333: `baseColorFactor` alpha (0..1). `None` means opaque.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alpha: Option<f32>,
+    /// N343: glTF `metallicFactor` (0..1; spec default 1.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metallic: Option<f32>,
+    /// N343: glTF `roughnessFactor` (0..1; spec default 1.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roughness: Option<f32>,
 }
 
 impl Material {
@@ -269,6 +275,15 @@ impl Material {
     pub fn alpha_u8(&self) -> u8 {
         let a = self.alpha.unwrap_or(1.0).clamp(0.0, 1.0);
         (a * 255.0).round() as u8
+    }
+    /// N343: glTF `roughnessFactor` (spec default 1.0).
+    pub fn roughness(&self) -> f32 {
+        self.roughness.unwrap_or(1.0).clamp(0.0, 1.0)
+    }
+    /// N343: glTF `metallicFactor` (spec default 1.0). Recorded; a metallic
+    /// surface needs an environment to light, so the flat renderer only notes it.
+    pub fn metallic(&self) -> f32 {
+        self.metallic.unwrap_or(1.0).clamp(0.0, 1.0)
     }
 }
 

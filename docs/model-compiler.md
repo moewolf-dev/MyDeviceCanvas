@@ -248,7 +248,9 @@ N326/N327: glTF `NORMAL` is imported into `MeshGeometry.normals`, and scene
 renders apply a per-triangle Lambert shade from a fixed key light (`+z`, ambient
 0.45) — a surface facing the light is unshaded, so a flat +z quad is unchanged,
 while a side-facing surface darkens. Skinned vertices use their bind-pose normals
-(no normal skinning).
+(no normal skinning). N343: glTF `metallicFactor`/`roughnessFactor` are imported;
+roughness raises the ambient floor (a rough surface shades flatter), while
+`metallicFactor` is recorded but unlit without an environment.
 
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a
