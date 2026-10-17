@@ -923,10 +923,15 @@ fn material_masked(model: &Model, mesh: &Mesh) -> bool {
 
 /// N333: the source alpha for a mesh's material (255 when opaque).
 fn material_blend(model: &Model, mesh: &Mesh) -> u8 {
-    match material_of(model, mesh) {
+    let base = match material_of(model, mesh) {
         Some(material) if material.is_blended() => material.alpha_u8(),
         _ => 255,
-    }
+    };
+    // N426: a transmissive material fades toward the background.
+    let transmission = material_of(model, mesh)
+        .map(|material| material.transmission())
+        .unwrap_or(0.0);
+    (f32::from(base) * (1.0 - transmission)).round() as u8
 }
 
 /// N343: the ambient floor for a mesh, raised by the material roughness (a
@@ -2196,11 +2201,13 @@ pub fn render_package_scene_clip_mode(
                 .material
                 .and_then(|mi| package.materials.get(mi))
                 .map(|material| {
-                    if material.is_blended() {
+                    let base = if material.is_blended() {
                         material.alpha_u8()
                     } else {
                         255
-                    }
+                    };
+                    // N426: fold transmission into the blend alpha.
+                    (f32::from(base) * (1.0 - material.transmission())).round() as u8
                 })
                 .unwrap_or(255),
             colors: if geometry.colors.len() >= geometry.positions.len()
@@ -3115,6 +3122,50 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!(out[0][2].abs() > 0.9, "tangent rotated to z: {:?}", out[0]);
         assert_eq!(out[0][3], -1.0, "handedness preserved");
+    }
+
+    #[test]
+    fn transmission_fades_the_surface() {
+        // N426: a transmissive material blends toward the background.
+        let render = |transmission: f32| {
+            let model = Model {
+                source: "t".into(),
+                nodes: vec![Node {
+                    name: "n".into(),
+                    mesh: Some(0),
+                    ..Node::default()
+                }],
+                meshes: vec![mdc_model::Mesh {
+                    name: "q".into(),
+                    vertices: 4,
+                    indices: 6,
+                    material: Some(0),
+                    geometry: Some(quad_geometry()),
+                    ..mdc_model::Mesh::default()
+                }],
+                materials: vec![mdc_model::Material {
+                    name: "glass".into(),
+                    color: Some([255, 0, 0]),
+                    transmission: Some(transmission),
+                    ..mdc_model::Material::default()
+                }],
+                ..Model::default()
+            };
+            render_scene_at(&model, 0, 0.0, (16, 16), None, 0x0000).unwrap()
+        };
+        let opaque = u16::from_le_bytes([
+            render(0.0).rgb565[(8 * 16 + 8) * 2],
+            render(0.0).rgb565[(8 * 16 + 8) * 2 + 1],
+        ]);
+        let glass = render(0.8);
+        let faded = u16::from_le_bytes([
+            glass.rgb565[(8 * 16 + 8) * 2],
+            glass.rgb565[(8 * 16 + 8) * 2 + 1],
+        ]);
+        assert!(
+            opaque >> 11 > faded >> 11,
+            "transmission fades the red: {opaque:#06x} -> {faded:#06x}"
+        );
     }
 
     #[test]

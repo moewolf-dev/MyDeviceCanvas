@@ -281,6 +281,7 @@ impl Live2DImporter {
                 clearcoat_roughness: None,
                 sheen_color: None,
                 sheen_roughness: None,
+                transmission: None,
             });
             nodes.push(Node {
                 name: name.clone(),

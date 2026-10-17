@@ -394,6 +394,9 @@ pub struct Material {
     /// N425: `KHR_materials_sheen` `sheenRoughnessFactor` (default 0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sheen_roughness: Option<f32>,
+    /// N426: `KHR_materials_transmission` `transmissionFactor` (0..1; default 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transmission: Option<f32>,
 }
 
 /// N373: glTF `KHR_texture_transform`. `rotation` is in radians; the transform is
@@ -578,6 +581,11 @@ impl Material {
             strength,
             self.sheen_roughness.unwrap_or(0.0).clamp(0.0, 1.0),
         )
+    }
+
+    /// N426: `KHR_materials_transmission` factor (0..1; default 0).
+    pub fn transmission(&self) -> f32 {
+        self.transmission.unwrap_or(0.0).clamp(0.0, 1.0)
     }
 }
 

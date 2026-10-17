@@ -4412,6 +4412,7 @@ mod tests {
                 clearcoat_roughness: None,
                 sheen_color: None,
                 sheen_roughness: None,
+                transmission: None,
             }],
             lights: Vec::new(),
             skeletons: Vec::new(),

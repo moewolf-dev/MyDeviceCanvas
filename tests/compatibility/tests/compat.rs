@@ -887,6 +887,7 @@ fn packaged_masked_texture_cuts_out_on_render() {
             clearcoat_roughness: None,
             sheen_color: None,
             sheen_roughness: None,
+            transmission: None,
         }],
         lights: Vec::new(),
         skeletons: Vec::new(),
@@ -985,6 +986,7 @@ fn masked_material_cuts_out_transparent_texels() {
             clearcoat_roughness: None,
             sheen_color: None,
             sheen_roughness: None,
+            transmission: None,
         }],
         ..Model::default()
     };
@@ -1655,6 +1657,7 @@ fn unlit_material_and_vertex_colours_render_on_the_device() {
                 clearcoat_roughness: None,
                 sheen_color: None,
                 sheen_roughness: None,
+                transmission: None,
                 ..Material::default()
             }],
             ..Model::default()
@@ -1770,6 +1773,7 @@ fn occlusion_texture_darkens_the_shadowed_triangles() {
             clearcoat_roughness: None,
             sheen_color: None,
             sheen_roughness: None,
+            transmission: None,
             ..Material::default()
         }],
         textures: vec![
@@ -1916,6 +1920,7 @@ fn normal_map_perturbs_per_pixel_shading() {
             clearcoat_roughness: None,
             sheen_color: None,
             sheen_roughness: None,
+            transmission: None,
             ..Material::default()
         }],
         textures: vec![
@@ -3004,6 +3009,7 @@ fn clearcoat_adds_a_second_highlight() {
             clearcoat_roughness: Some(0.1),
             sheen_color: None,
             sheen_roughness: None,
+            transmission: None,
             ..Material::default()
         }],
         ..Model::default()
@@ -3149,6 +3155,7 @@ fn sheen_adds_a_rim_highlight() {
             color: Some([64, 64, 64]),
             sheen_color: sheen,
             sheen_roughness: Some(0.2),
+            transmission: None,
             ..Material::default()
         }],
         ..Model::default()

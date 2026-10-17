@@ -429,6 +429,12 @@ impl GltfImporter {
                 .and_then(|s| s.get("sheenRoughnessFactor"))
                 .and_then(Value::as_f64)
                 .map(|v| v.clamp(0.0, 1.0) as f32);
+            // N426: KHR_materials_transmission.
+            let transmission = material_ext
+                .and_then(|e| e.get("KHR_materials_transmission"))
+                .and_then(|t| t.get("transmissionFactor"))
+                .and_then(Value::as_f64)
+                .map(|v| v.clamp(0.0, 1.0) as f32);
             // N379: normalTexture (tangent-space normal map).
             let normal_texture = material
                 .get("normalTexture")
@@ -518,6 +524,7 @@ impl GltfImporter {
                 clearcoat_roughness,
                 sheen_color,
                 sheen_roughness,
+                transmission,
             });
         }
 
