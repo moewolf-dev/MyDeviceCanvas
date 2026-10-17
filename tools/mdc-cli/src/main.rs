@@ -1167,7 +1167,11 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
         (Some(dir), "png") => Some(PathBuf::from(dir)),
         _ => None,
     };
-    for dir in [&bmp_dir, &png_dir].into_iter().flatten() {
+    let jpg_dir = match (&write_dir, format.as_str()) {
+        (Some(dir), "jpg" | "jpeg") => Some(PathBuf::from(dir)),
+        _ => None,
+    };
+    for dir in [&bmp_dir, &png_dir, &jpg_dir].into_iter().flatten() {
         std::fs::create_dir_all(dir)?;
     }
     let mut server = match &serve {
@@ -1234,6 +1238,11 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
             // N328: PNG for a smaller OBS image source.
             let png = mdc_mirror::encode_png(frame.width, frame.height, &frame.bytes);
             std::fs::write(dir.join("frame.png"), png)?;
+        }
+        if let Some(dir) = &jpg_dir {
+            // N336: baseline JPEG, the smallest OBS image source.
+            let jpg = mdc_mirror::encode_jpeg(frame.width, frame.height, &frame.bytes, 80);
+            std::fs::write(dir.join("frame.jpg"), jpg)?;
         }
         if let Some(server) = server.as_mut() {
             let _ = server.accept_pending();
@@ -2569,7 +2578,7 @@ fn usage() {
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
-authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME]|\
+authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg]|install-package <file.mdcpkg>|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\

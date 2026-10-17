@@ -1188,3 +1188,29 @@ fn png_encoder_round_trips_through_the_image_crate() {
     assert_eq!(decoded.get_pixel(0, 0).0, [255, 0, 0, 255]);
     assert_eq!(decoded.get_pixel(1, 0).0, [0, 255, 0, 255]);
 }
+
+#[test]
+fn jpeg_encoder_round_trips_through_the_image_crate() {
+    // N336: the baseline JPEG decodes back to roughly the source colours.
+    let mut bgra = Vec::new();
+    for y in 0..16u32 {
+        for x in 0..16u32 {
+            // left half red, right half blue
+            let (r, g, b) = if x < 8 { (255, 0, 0) } else { (0, 0, 255) };
+            bgra.extend_from_slice(&[b, g, r, 255]);
+        }
+        let _ = y;
+    }
+    let jpeg = mdc_mirror::encode_jpeg(16, 16, &bgra, 90);
+    let decoded = image::load_from_memory_with_format(&jpeg, image::ImageFormat::Jpeg)
+        .unwrap()
+        .to_rgb8();
+    assert_eq!(decoded.dimensions(), (16, 16));
+    let left = decoded.get_pixel(3, 8).0;
+    let right = decoded.get_pixel(12, 8).0;
+    assert!(left[0] > 180 && left[2] < 80, "left is reddish: {left:?}");
+    assert!(
+        right[2] > 180 && right[0] < 80,
+        "right is bluish: {right:?}"
+    );
+}

@@ -9,6 +9,8 @@
 //! `docs/render-topology-decision.md` §6–§7 for the memory and OBS contract.
 use mdc_protocol::{decode_frame_payload, FramePayload, MessageType, HEADER_LEN};
 use mdc_transport::Transport;
+mod jpeg;
+pub use jpeg::encode_jpeg;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -1019,6 +1021,8 @@ struct ServedFrame {
     ppm: Vec<u8>,
     // N328: PNG (stored deflate) for a smaller OBS delivery.
     png: Vec<u8>,
+    // N336: baseline JPEG for the smallest OBS delivery.
+    jpg: Vec<u8>,
 }
 
 /// N144: a minimal HTTP/1.1 fan-out for an OBS browser source. It serves the
@@ -1121,8 +1125,9 @@ impl HttpMirrorServer {
         let bmp = encode_bmp(frame.width, frame.height, frame.pixels);
         let ppm = encode_ppm(frame.width, frame.height, frame.pixels);
         let png = encode_png(frame.width, frame.height, frame.pixels);
-        if bmp.len() + ppm.len() + png.len() <= MAX_SHADOW_BYTES {
-            self.last = Some(ServedFrame { bmp, ppm, png });
+        let jpg = encode_jpeg(frame.width, frame.height, frame.pixels, 80);
+        if bmp.len() + ppm.len() + png.len() + jpg.len() <= MAX_SHADOW_BYTES {
+            self.last = Some(ServedFrame { bmp, ppm, png, jpg });
         }
         self.frames = self.frames.saturating_add(1);
         if let Some(frame) = self.last.as_ref() {
@@ -1326,6 +1331,10 @@ fn respond(last: Option<&ServedFrame>, path: &str) -> Served {
         },
         "/frame.png" => match last {
             Some(frame) if !frame.png.is_empty() => simple_response(200, "image/png", &frame.png),
+            _ => simple_response(503, "text/plain", b"no frame yet"),
+        },
+        "/frame.jpg" => match last {
+            Some(frame) if !frame.jpg.is_empty() => simple_response(200, "image/jpeg", &frame.jpg),
             _ => simple_response(503, "text/plain", b"no frame yet"),
         },
         _ => simple_response(404, "text/plain", b"not found"),
@@ -1890,6 +1899,16 @@ mod tests {
         assert!(png
             .windows(8)
             .any(|w| w == [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]));
+
+        // N336: JPEG is served for the smallest OBS delivery.
+        let jpg = http_get(&mut server, "/frame.jpg");
+        let jpg_head = String::from_utf8_lossy(&jpg);
+        assert!(jpg_head.starts_with("HTTP/1.1 200 OK"), "{jpg_head}");
+        assert!(jpg_head.contains("Content-Type: image/jpeg"));
+        assert!(
+            jpg.windows(2).any(|w| w == [0xFF, 0xD8]),
+            "JPEG body present"
+        );
     }
 
     #[test]
