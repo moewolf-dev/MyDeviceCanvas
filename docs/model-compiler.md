@@ -292,7 +292,8 @@ shading now also applies to untextured (solid) triangles. N390:
 N414: `KHR_materials_clearcoat` adds a second specular lobe from the smooth surface
 normal in the per-pixel pass. N423: when a mesh omits `TANGENT` but a normal map is
 present, tangents are derived from the UV gradient (`generate_tangents`), so normal
-mapping works without authored tangents. N403: `texCoord` is
+mapping works without authored tangents. N425: `KHR_materials_sheen` adds a rim
+highlight (strength from `sheenColorFactor`, falloff from `sheenRoughnessFactor`). N403: `texCoord` is
 honoured per slot — `Material.uv_set` selects the base-colour UV set and
 `uv_set2` (defaulting to `uv_set`) selects the secondary maps' set, so normal/
 occlusion/emissive/metallicRoughness maps can sample `TEXCOORD_1`. N393:

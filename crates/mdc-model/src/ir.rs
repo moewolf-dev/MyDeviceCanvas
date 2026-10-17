@@ -388,6 +388,12 @@ pub struct Material {
     /// N414: `KHR_materials_clearcoat` `clearcoatRoughnessFactor` (default 0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clearcoat_roughness: Option<f32>,
+    /// N425: `KHR_materials_sheen` `sheenColorFactor` as 8-bit RGB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sheen_color: Option<[u8; 3]>,
+    /// N425: `KHR_materials_sheen` `sheenRoughnessFactor` (default 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sheen_roughness: Option<f32>,
 }
 
 /// N373: glTF `KHR_texture_transform`. `rotation` is in radians; the transform is
@@ -557,6 +563,20 @@ impl Material {
         (
             self.clearcoat_factor.unwrap_or(0.0).clamp(0.0, 1.0),
             self.clearcoat_roughness.unwrap_or(0.0).clamp(0.0, 1.0),
+        )
+    }
+
+    /// N425: `KHR_materials_sheen` strength (colour luminance) and roughness.
+    pub fn sheen(&self) -> (f32, f32) {
+        let strength = match self.sheen_color {
+            Some([r, g, b]) => {
+                (0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b)) / 255.0
+            }
+            None => 0.0,
+        };
+        (
+            strength,
+            self.sheen_roughness.unwrap_or(0.0).clamp(0.0, 1.0),
         )
     }
 }

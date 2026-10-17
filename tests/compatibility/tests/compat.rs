@@ -885,6 +885,8 @@ fn packaged_masked_texture_cuts_out_on_render() {
             ior: None,
             clearcoat_factor: None,
             clearcoat_roughness: None,
+            sheen_color: None,
+            sheen_roughness: None,
         }],
         lights: Vec::new(),
         skeletons: Vec::new(),
@@ -981,6 +983,8 @@ fn masked_material_cuts_out_transparent_texels() {
             ior: None,
             clearcoat_factor: None,
             clearcoat_roughness: None,
+            sheen_color: None,
+            sheen_roughness: None,
         }],
         ..Model::default()
     };
@@ -1649,6 +1653,8 @@ fn unlit_material_and_vertex_colours_render_on_the_device() {
                 ior: None,
                 clearcoat_factor: None,
                 clearcoat_roughness: None,
+                sheen_color: None,
+                sheen_roughness: None,
                 ..Material::default()
             }],
             ..Model::default()
@@ -1762,6 +1768,8 @@ fn occlusion_texture_darkens_the_shadowed_triangles() {
             ior: None,
             clearcoat_factor: None,
             clearcoat_roughness: None,
+            sheen_color: None,
+            sheen_roughness: None,
             ..Material::default()
         }],
         textures: vec![
@@ -1906,6 +1914,8 @@ fn normal_map_perturbs_per_pixel_shading() {
             ior: None,
             clearcoat_factor: None,
             clearcoat_roughness: None,
+            sheen_color: None,
+            sheen_roughness: None,
             ..Material::default()
         }],
         textures: vec![
@@ -2992,6 +3002,8 @@ fn clearcoat_adds_a_second_highlight() {
             roughness: Some(0.6),
             clearcoat_factor: Some(clearcoat),
             clearcoat_roughness: Some(0.1),
+            sheen_color: None,
+            sheen_roughness: None,
             ..Material::default()
         }],
         ..Model::default()
@@ -3092,6 +3104,70 @@ fn indexed_texture_blob_renders_on_the_device() {
     let right = at(25);
     assert!(left != right, "the indexed texture paints two colours");
     assert!(left >> 11 > 8 || (right >> 5) & 0x3f > 8);
+}
+
+#[test]
+fn sheen_adds_a_rim_highlight() {
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};
+
+    let build = |sheen: Option<[u8; 3]>| Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.5, 0.5, 0.0],
+                    [-0.5, 0.5, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                uv: Vec::new(),
+                uv2: Vec::new(),
+                // A grazing normal so the rim term is non-zero.
+                normals: vec![[1.0, 0.0, 0.0]; 4],
+                colors: Vec::new(),
+                tangents: Vec::new(),
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                skin_joints2: Vec::new(),
+                skin_weights2: Vec::new(),
+                morph_targets: Vec::new(),
+            }),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "cloth".into(),
+            color: Some([64, 64, 64]),
+            sheen_color: sheen,
+            sheen_roughness: Some(0.2),
+            ..Material::default()
+        }],
+        ..Model::default()
+    };
+    let render = |sheen: Option<[u8; 3]>| {
+        let package =
+            mdc_model::compile_to_package(&build(sheen), &mdc_model::RendererCapability::full_3d())
+                .unwrap();
+        mdc_bake::render_package_scene(&package.package, 0.0, (32, 32)).unwrap()
+    };
+    let sum = |f: &mdc_bake::BakedTexture| -> u64 {
+        f.rgb565
+            .chunks_exact(2)
+            .map(|b| u64::from(u16::from_le_bytes([b[0], b[1]])) >> 5)
+            .sum()
+    };
+    let on = sum(&render(Some([255, 255, 255])));
+    let off = sum(&render(None));
+    assert!(on > off, "sheen brightens");
 }
 
 #[test]

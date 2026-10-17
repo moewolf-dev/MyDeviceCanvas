@@ -4410,6 +4410,8 @@ mod tests {
                 ior: None,
                 clearcoat_factor: None,
                 clearcoat_roughness: None,
+                sheen_color: None,
+                sheen_roughness: None,
             }],
             lights: Vec::new(),
             skeletons: Vec::new(),

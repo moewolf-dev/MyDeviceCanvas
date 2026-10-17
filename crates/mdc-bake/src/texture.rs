@@ -466,6 +466,9 @@ pub(crate) struct NormalMap<'a> {
     /// N414: clearcoat factor (0 = none) and its shininess.
     pub clearcoat: f32,
     pub clearcoat_shininess: f32,
+    /// N425: sheen strength (0 = none) and roughness.
+    pub sheen: f32,
+    pub sheen_roughness: f32,
 }
 
 /// N393: an additive emissive texture layered on top of the shaded colour.
@@ -579,6 +582,14 @@ pub(crate) fn apply_normal_map(
     if nm.clearcoat > 0.0 {
         let half = v3_normalize([nm.light[0], nm.light[1], nm.light[2] + 1.0]);
         let spec = nm.clearcoat * v3_dot(n, half).max(0.0).powf(nm.clearcoat_shininess);
+        if spec > 0.0 {
+            value = rgb565_add(value, rgb565_scale(0xFFFF, spec.clamp(0.0, 1.0)));
+        }
+    }
+    // N425: a sheen rim highlight (view is +z).
+    if nm.sheen > 0.0 {
+        let rim = (1.0 - n[2].abs()).clamp(0.0, 1.0);
+        let spec = nm.sheen * rim.powf(2.0 + 6.0 * nm.sheen_roughness);
         if spec > 0.0 {
             value = rgb565_add(value, rgb565_scale(0xFFFF, spec.clamp(0.0, 1.0)));
         }

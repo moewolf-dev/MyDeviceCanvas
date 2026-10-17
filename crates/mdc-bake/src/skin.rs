@@ -1157,6 +1157,9 @@ struct SceneDrawable<'a> {
     /// N414: clearcoat factor (0 = none) and its shininess.
     clearcoat: f32,
     clearcoat_shininess: f32,
+    /// N425: sheen strength (0 = none) and roughness.
+    sheen: f32,
+    sheen_roughness: f32,
 }
 
 /// N327: default key light (straight down -z, i.e. toward +z-facing surfaces) and
@@ -1322,6 +1325,8 @@ fn draw_scene_sorted(
                     occlusion_uv_transform: d.occlusion_uv_transform,
                     clearcoat: d.clearcoat,
                     clearcoat_shininess: d.clearcoat_shininess,
+                    sheen: d.sheen,
+                    sheen_roughness: d.sheen_roughness,
                 }),
                 _ => None,
             },
@@ -1470,6 +1475,8 @@ pub fn render_scene_at(
             occlusion_uv_transform: mdc_model::UvTransform::default(),
             clearcoat: 0.0,
             clearcoat_shininess: 1.0,
+            sheen: 0.0,
+            sheen_roughness: 0.0,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -2088,9 +2095,25 @@ pub fn render_package_scene_clip_mode(
         let smooth = matches!(mode, ShadeMode::Smooth | ShadeMode::SmoothSpecular)
             && has_normals
             && !usable_normal_map;
-        let per_pixel =
-            (usable_normal_map || smooth || roughness_map.is_some() || occlusion_map.is_some())
-                && has_normals;
+        // N414/N425: a clearcoat or sheen lobe also needs the per-pixel pass.
+        let (clearcoat, clearcoat_roughness) = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .map(|material| material.clearcoat())
+            .unwrap_or((0.0, 0.0));
+        let clearcoat_shininess = 8.0 + 120.0 * (1.0 - clearcoat_roughness);
+        let (sheen, sheen_roughness) = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .map(|material| material.sheen())
+            .unwrap_or((0.0, 0.0));
+        let per_pixel = (usable_normal_map
+            || smooth
+            || roughness_map.is_some()
+            || occlusion_map.is_some()
+            || clearcoat > 0.0
+            || sheen > 0.0)
+            && has_normals;
         // N387: material-derived Blinn-Phong parameters for the specular mode.
         let (specular, shininess) = if mode == ShadeMode::SmoothSpecular {
             let (roughness, metallic, specular_factor) = mesh
@@ -2111,13 +2134,6 @@ pub fn render_package_scene_clip_mode(
         } else {
             (0.0, 1.0)
         };
-        // N414: a clearcoat lobe (present in both specular modes).
-        let (clearcoat, clearcoat_roughness) = mesh
-            .material
-            .and_then(|mi| package.materials.get(mi))
-            .map(|material| material.clearcoat())
-            .unwrap_or((0.0, 0.0));
-        let clearcoat_shininess = 8.0 + 120.0 * (1.0 - clearcoat_roughness);
         // N393/N395: the emissive texture and per-slot UV transforms.
         let (emissive_index, emissive_strength) = mesh
             .material
@@ -2245,6 +2261,8 @@ pub fn render_package_scene_clip_mode(
             occlusion_uv_transform,
             clearcoat,
             clearcoat_shininess,
+            sheen,
+            sheen_roughness,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
