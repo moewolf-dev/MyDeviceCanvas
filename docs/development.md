@@ -49,6 +49,7 @@ Metrics / diagnostics series (bounded JSONL, N317):
 cargo run -p mdc-inspector -- --fresh                 # one pretty snapshot
 cargo run -p mdc-inspector -- --jsonl 60 --interval 100 --board linux-virt
 cargo run -p mdc-inspector -- --rss                     # one host memory sample (N370)
+cargo run -p mdc-inspector -- --rss-delta --count 5 --interval 20   # RSS growth (N410)
 cargo run -p mdc -- --board linux-virt inspect --watch --count 3 --rss
 cargo run -p mdc -- --board linux-virt diag --metric fps --value 29.5 --unit fps
 ```

@@ -50,6 +50,33 @@ fn rss_json() -> serde_json::Value {
     })
 }
 
+/// N410: sample the host RSS `count` times and report the growth. Bounded to
+/// 1..=600 samples so a long watch cannot grow the buffer.
+fn rss_delta(count: u32, interval_ms: u64) -> serde_json::Value {
+    let count = count.clamp(1, 600);
+    let interval = interval_ms.max(1);
+    let mut samples = Vec::with_capacity(count as usize);
+    for index in 0..count {
+        samples.push(resident_bytes().unwrap_or(0));
+        if index + 1 < count {
+            std::thread::sleep(std::time::Duration::from_millis(interval));
+        }
+    }
+    let first = samples.first().copied().unwrap_or(0);
+    let last = samples.last().copied().unwrap_or(0);
+    let min = samples.iter().copied().min().unwrap_or(0);
+    let max = samples.iter().copied().max().unwrap_or(0);
+    serde_json::json!({
+        "samples": count,
+        "first": first,
+        "last": last,
+        "min": min,
+        "max": max,
+        "delta": last as i64 - first as i64,
+        "peak": rss_is_peak(),
+    })
+}
+
 fn fresh_metrics() -> Result<String, Box<dyn std::error::Error>> {
     let (host, mut device) = FakeDevice::pair(BoardProfile::default());
     let mut session = Session::new(host);
@@ -123,6 +150,17 @@ fn main() {
         println!("{}", rss_json());
         return;
     }
+    // N410: a bounded RSS growth sample.
+    if args.iter().any(|a| a == "--rss-delta") {
+        let count = flag_value("--count")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(5);
+        let interval = flag_value("--interval")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(20);
+        println!("{}", rss_delta(count, interval));
+        return;
+    }
     if let Some(count) = flag_value("--jsonl").and_then(|v| v.parse::<u32>().ok()) {
         let interval = flag_value("--interval")
             .and_then(|v| v.parse::<u64>().ok())
@@ -191,6 +229,15 @@ mod tests {
         let mut out = Vec::new();
         watch(0, 10, "default", &mut out).unwrap();
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn rss_delta_is_bounded_and_well_formed() {
+        // N410: a two-sample growth check reports a delta and is capped.
+        let report = rss_delta(2, 1);
+        assert_eq!(report["samples"], serde_json::json!(2));
+        assert!(report.get("delta").is_some());
+        assert_eq!(rss_delta(10_000, 1)["samples"], serde_json::json!(600));
     }
 
     #[test]
