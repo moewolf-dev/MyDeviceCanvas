@@ -23,7 +23,7 @@ pub use backend::{
 };
 pub use gltf::GltfImporter;
 pub use ir::{
-    Animation, AnimationTrack, ImportLimits, Layer, Material, Mesh, MeshGeometry, Model,
+    Animation, AnimationTrack, ImportLimits, Layer, Light, Material, Mesh, MeshGeometry, Model,
     ModelError, Node, Skeleton, Sprite, Texture, UvTransform, MAX_GEOMETRY_INDICES,
     MAX_GEOMETRY_VERTICES,
 };

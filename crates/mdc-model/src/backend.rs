@@ -6,7 +6,7 @@
 //! - `LinuxMeshBackend` ("linux-mesh"): the GPU/Linux backend. Requires mesh2d;
 //!   keeps meshes, skeletons and animations at the device texture limit.
 use crate::ir::{
-    Animation, Layer, Material, Mesh, Model, ModelError, Node, Skeleton, Sprite, Texture,
+    Animation, Layer, Light, Material, Mesh, Model, ModelError, Node, Skeleton, Sprite, Texture,
 };
 use serde::{Deserialize, Serialize};
 
@@ -184,6 +184,9 @@ pub struct DevicePackage {
     pub meshes: Vec<Mesh>,
     pub textures: Vec<Texture>,
     pub materials: Vec<Material>,
+    /// N385: scene lights (the first directional one is the key light).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lights: Vec<Light>,
     pub skeletons: Vec<Skeleton>,
     pub animations: Vec<Animation>,
     pub sprites: Vec<Sprite>,
@@ -282,6 +285,7 @@ impl TargetBackend for Esp32PlaneBackend {
                 meshes: model.meshes.clone(),
                 textures: model.textures.clone(),
                 materials: model.materials.clone(),
+                lights: model.lights.clone(),
                 skeletons: if caps.skeleton {
                     model.skeletons.clone()
                 } else {
@@ -310,6 +314,7 @@ impl TargetBackend for Esp32PlaneBackend {
             meshes: Vec::new(),
             textures,
             materials: model.materials.clone(),
+            lights: model.lights.clone(),
             skeletons: Vec::new(),
             animations: model.animations.clone(),
             sprites,
@@ -360,6 +365,7 @@ impl TargetBackend for LinuxMeshBackend {
                 meshes: Vec::new(),
                 textures: clamped_textures(model, caps.max_texture),
                 materials: model.materials.clone(),
+                lights: model.lights.clone(),
                 skeletons: Vec::new(),
                 animations: model.animations.clone(),
                 sprites,
@@ -379,6 +385,7 @@ impl TargetBackend for LinuxMeshBackend {
             meshes: model.meshes.clone(),
             textures: clamped_textures(model, caps.max_texture),
             materials: model.materials.clone(),
+            lights: model.lights.clone(),
             skeletons: if caps.skeleton {
                 model.skeletons.clone()
             } else {

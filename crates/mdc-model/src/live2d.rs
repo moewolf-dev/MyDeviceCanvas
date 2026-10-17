@@ -323,6 +323,7 @@ impl Live2DImporter {
             sprites,
             layers: vec![layer],
             meta: BTreeMap::new(),
+            lights: Vec::new(),
         })
     }
 

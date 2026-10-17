@@ -527,6 +527,74 @@ pub struct Model {
     /// N46: free-form source metadata (VRM title/author, physics/pose counts).
     #[serde(default)]
     pub meta: std::collections::BTreeMap<String, String>,
+    /// N385: `KHR_lights_punctual` lights (the first directional one is the
+    /// renderer's key light).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lights: Vec<Light>,
+}
+
+/// N385: a `KHR_lights_punctual` light source. Only `direction` affects the
+/// flat renderer (a fixed key light); `color`/`intensity` are recorded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Light {
+    pub name: String,
+    /// `directional` | `point` | `spot`.
+    pub kind: String,
+    /// Linear RGB 0..1 as 8-bit (default white).
+    #[serde(default = "white_rgb", skip_serializing_if = "is_white_rgb")]
+    pub color: [u8; 3],
+    /// glTF `intensity` (default 1.0).
+    #[serde(default = "unit_f32", skip_serializing_if = "is_unit_f32")]
+    pub intensity: f32,
+    /// World-space direction the light travels (default `-z`).
+    #[serde(
+        default = "default_light_dir",
+        skip_serializing_if = "is_default_light_dir"
+    )]
+    pub direction: [f32; 3],
+}
+
+fn white_rgb() -> [u8; 3] {
+    [255, 255, 255]
+}
+
+fn is_white_rgb(value: &[u8; 3]) -> bool {
+    *value == [255, 255, 255]
+}
+
+fn unit_f32() -> f32 {
+    1.0
+}
+
+fn is_unit_f32(value: &f32) -> bool {
+    (*value - 1.0).abs() < f32::EPSILON
+}
+
+fn default_light_dir() -> [f32; 3] {
+    [0.0, 0.0, -1.0]
+}
+
+fn is_default_light_dir(value: &[f32; 3]) -> bool {
+    *value == [0.0, 0.0, -1.0]
+}
+
+impl Default for Light {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            kind: "directional".into(),
+            color: white_rgb(),
+            intensity: 1.0,
+            direction: default_light_dir(),
+        }
+    }
+}
+
+impl Light {
+    /// N385: whether this light is directional (usable as the key light).
+    pub fn is_directional(&self) -> bool {
+        self.kind == "directional"
+    }
 }
 
 impl Model {

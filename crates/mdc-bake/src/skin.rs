@@ -978,6 +978,8 @@ struct SceneDrawable<'a> {
     normal_scale: f32,
     /// N379: ambient floor for the per-pixel Lambert term.
     normal_ambient: f32,
+    /// N385: the key light direction for this drawable.
+    light: [f32; 3],
 }
 
 /// N327: default key light (straight down -z, i.e. toward +z-facing surfaces) and
@@ -1129,7 +1131,7 @@ fn draw_scene_sorted(
                     tangents,
                     map,
                     scale: d.normal_scale,
-                    light: SHADE_LIGHT,
+                    light: d.light,
                     ambient: d.normal_ambient,
                 }),
                 _ => None,
@@ -1156,6 +1158,8 @@ pub fn render_scene_at(
     };
     let worlds = scene_worlds(model, animation_index, time);
     let skeleton = model.skeletons.iter().find(|s| !s.joint_nodes.is_empty());
+    // N385: the scene's key light (a directional light overrides the default).
+    let light = key_light(&model.lights);
     let mut pixels = vec![0u8; (size.0 as usize) * (size.1 as usize) * 2];
     let mut drawables = Vec::new();
     for (index, node) in model.nodes.iter().enumerate() {
@@ -1233,7 +1237,7 @@ pub fn render_scene_at(
                 &deformed,
                 &deformed_normals,
                 &geometry.indices,
-                SHADE_LIGHT,
+                light,
                 material_ambient(model, mesh),
             ),
             blend: material_blend(model, mesh),
@@ -1253,6 +1257,7 @@ pub fn render_scene_at(
             normal_map: None,
             normal_scale: 1.0,
             normal_ambient: 0.9,
+            light,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -1397,7 +1402,7 @@ pub fn render_package_mesh(
             &geometry.positions,
             &geometry.normals,
             &geometry.indices,
-            SHADE_LIGHT,
+            key_light(&package.lights),
             mesh.material
                 .and_then(|mi| package.materials.get(mi))
                 .map(|m| (SHADE_AMBIENT + 0.35 * m.roughness()).min(0.9))
@@ -1577,6 +1582,24 @@ pub fn pack_material_atlas(package: &mut mdc_model::DevicePackage, max_page: u32
     true
 }
 
+/// N385: the renderer's key light, from the first directional light (its
+/// direction points away from the source, so it is negated; intensity scales it).
+fn key_light(lights: &[mdc_model::Light]) -> [f32; 3] {
+    lights
+        .iter()
+        .find(|light| light.is_directional())
+        .map(|light| {
+            let s = light.intensity.clamp(0.0, 4.0);
+            [
+                -light.direction[0] * s,
+                -light.direction[1] * s,
+                -light.direction[2] * s,
+            ]
+        })
+        .filter(|v| v[0] * v[0] + v[1] * v[1] + v[2] * v[2] > 1e-6)
+        .unwrap_or(SHADE_LIGHT)
+}
+
 /// N383: the mesh UV set a material samples (falls back to the first set).
 fn select_uvs<'a>(geometry: &'a mdc_model::MeshGeometry, set: u8) -> Option<&'a [[f32; 2]]> {
     let usable = |uv: &'a [[f32; 2]]| {
@@ -1695,6 +1718,8 @@ pub fn render_package_scene_clip_filtered(
         None => node_world_matrices(&package.nodes),
     };
     let skeleton = package.skeletons.iter().find(|s| !s.joint_nodes.is_empty());
+    // N385: the package's key light (a directional light overrides the default).
+    let light = key_light(&package.lights);
     let mut pixels = vec![0u8; (size.0 as usize) * (size.1 as usize) * 2];
     let mut drawables = Vec::new();
     for (index, node) in package.nodes.iter().enumerate() {
@@ -1794,7 +1819,7 @@ pub fn render_package_scene_clip_filtered(
                 &deformed,
                 &deformed_normals,
                 &geometry.indices,
-                SHADE_LIGHT,
+                light,
                 normal_ambient,
                 occlusion.as_deref(),
             )
@@ -1845,6 +1870,7 @@ pub fn render_package_scene_clip_filtered(
             normal_map: if usable_normal_map { normal_map } else { None },
             normal_scale,
             normal_ambient,
+            light,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -1977,6 +2003,7 @@ fn frames_to_clip_package(
         meshes: Vec::new(),
         textures: Vec::new(),
         materials: Vec::new(),
+        lights: Vec::new(),
         skeletons: Vec::new(),
         animations: Vec::new(),
         sprites: Vec::new(),
@@ -2593,6 +2620,58 @@ mod tests {
         assert!(
             shaded >> 11 < flat >> 11,
             "the red channel is reduced by shading"
+        );
+    }
+
+    #[test]
+    fn directional_light_darkens_a_facing_surface() {
+        // N385: a light travelling along +z leaves the +z-facing quad unlit.
+        let render = |lights: Vec<mdc_model::Light>| {
+            let model = Model {
+                source: "t".into(),
+                nodes: vec![Node {
+                    name: "n".into(),
+                    mesh: Some(0),
+                    ..Node::default()
+                }],
+                meshes: vec![mdc_model::Mesh {
+                    name: "q".into(),
+                    vertices: 4,
+                    indices: 6,
+                    material: Some(0),
+                    geometry: Some(mdc_model::MeshGeometry {
+                        normals: vec![[0.0, 0.0, 1.0]; 4],
+                        ..quad_geometry()
+                    }),
+                    ..mdc_model::Mesh::default()
+                }],
+                materials: vec![mdc_model::Material {
+                    name: "m".into(),
+                    color: Some([255, 255, 255]),
+                    ..mdc_model::Material::default()
+                }],
+                lights,
+                ..Model::default()
+            };
+            render_scene_at(&model, 0, 0.0, (16, 16), None, 0x0000).unwrap()
+        };
+        let at = |frame: &BakedTexture| {
+            u16::from_le_bytes([
+                frame.rgb565[(8 * 16 + 8) * 2],
+                frame.rgb565[(8 * 16 + 8) * 2 + 1],
+            ])
+        };
+        let default_light = render(Vec::new());
+        let backlight = render(vec![mdc_model::Light {
+            name: "back".into(),
+            kind: "directional".into(),
+            color: [255, 255, 255],
+            intensity: 1.0,
+            direction: [0.0, 0.0, 1.0],
+        }]);
+        assert!(
+            at(&default_light) >> 11 > at(&backlight) >> 11,
+            "backlight darker"
         );
     }
 

@@ -4,8 +4,8 @@
 //! only the header is read — so a decode bomb is rejected before any decode
 //! buffer is allocated.
 use crate::ir::{
-    Animation, ImportLimits, Layer, Material, Mesh, Model, ModelError, Node, Skeleton, Texture,
-    UvTransform, MAX_GEOMETRY_INDICES, MAX_GEOMETRY_VERTICES,
+    Animation, ImportLimits, Layer, Light, Material, Mesh, Model, ModelError, Node, Skeleton,
+    Texture, UvTransform, MAX_GEOMETRY_INDICES, MAX_GEOMETRY_VERTICES,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -837,8 +837,84 @@ impl GltfImporter {
             sprites: Vec::new(),
             layers: vec![layer],
             meta,
+            lights: read_lights(&doc, nodes_json),
         })
     }
+}
+
+/// N385: `KHR_lights_punctual` lights. A directional light's world direction is
+/// its node's local rotation applied to `-z` (parent transforms are ignored).
+fn read_lights(doc: &Value, nodes: &[Value]) -> Vec<Light> {
+    let Some(list) = doc
+        .get("extensions")
+        .and_then(|e| e.get("KHR_lights_punctual"))
+        .and_then(|k| k.get("lights"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    list.iter()
+        .enumerate()
+        .map(|(index, light)| {
+            let channel = |k: usize| {
+                light
+                    .get("color")
+                    .and_then(Value::as_array)
+                    .and_then(|list| list.get(k))
+                    .and_then(Value::as_f64)
+                    .map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+                    .unwrap_or(255)
+            };
+            // The referencing node's local rotation orients the light.
+            let rotation = nodes
+                .iter()
+                .find(|node| {
+                    node.get("extensions")
+                        .and_then(|e| e.get("KHR_lights_punctual"))
+                        .and_then(|k| k.get("light"))
+                        .and_then(Value::as_u64)
+                        == Some(index as u64)
+                })
+                .map(|node| read_f32_4(node.get("rotation"), [0.0, 0.0, 0.0, 1.0]))
+                .unwrap_or([0.0, 0.0, 0.0, 1.0]);
+            Light {
+                name: json_name(light, &format!("light{index}")),
+                kind: light
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("directional")
+                    .to_string(),
+                color: [channel(0), channel(1), channel(2)],
+                intensity: light
+                    .get("intensity")
+                    .and_then(Value::as_f64)
+                    .map(|v| v.max(0.0) as f32)
+                    .unwrap_or(1.0),
+                direction: rotate_quat([0.0, 0.0, -1.0], rotation),
+            }
+        })
+        .collect()
+}
+
+/// N385: rotate a vector by a quaternion `[x, y, z, w]` (normalized first).
+fn rotate_quat(v: [f32; 3], q: [f32; 4]) -> [f32; 3] {
+    let [x, y, z, w] = q;
+    let len = (x * x + y * y + z * z + w * w).sqrt();
+    if len <= 1e-6 {
+        return v;
+    }
+    let (x, y, z, w) = (x / len, y / len, z / len, w / len);
+    // t = 2 * cross(q.xyz, v); v' = v + w*t + cross(q.xyz, t)
+    let t = [
+        2.0 * (y * v[2] - z * v[1]),
+        2.0 * (z * v[0] - x * v[2]),
+        2.0 * (x * v[1] - y * v[0]),
+    ];
+    [
+        v[0] + w * t[0] + (y * t[2] - z * t[1]),
+        v[1] + w * t[1] + (z * t[0] - x * t[2]),
+        v[2] + w * t[2] + (x * t[1] - y * t[0]),
+    ]
 }
 
 /// Split a `.glb` container into its JSON and BIN chunks, or pass a `.gltf` JSON
@@ -2092,6 +2168,37 @@ mod tests {
         assert_eq!(positions[0], [0.0, 0.0, 0.0]);
         assert_eq!(positions[1], [9.0, 9.0, 9.0], "sparse value overrides base");
         assert_eq!(positions[2], [2.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn punctual_lights_are_imported() {
+        // N385: a directional light's world direction is its node rotation on -z.
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "extensionsUsed": ["KHR_lights_punctual"],
+            "extensions": {"KHR_lights_punctual": {"lights": [
+                {"type": "directional", "color": [1.0, 0.5, 0.0], "intensity": 2.0}
+            ]}},
+            "nodes": [{
+                "name": "sun",
+                "rotation": [0.0, std::f64::consts::FRAC_1_SQRT_2, 0.0, std::f64::consts::FRAC_1_SQRT_2],
+                "extensions": {"KHR_lights_punctual": {"light": 0}}
+            }]
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        assert_eq!(model.lights.len(), 1);
+        let light = &model.lights[0];
+        assert_eq!(light.kind, "directional");
+        assert_eq!(light.color, [255, 128, 0]);
+        assert_eq!(light.intensity, 2.0);
+        assert!(
+            light.direction[0] < -0.9,
+            "points along -x: {:?}",
+            light.direction
+        );
+        assert!(light.direction[2].abs() < 1e-3);
     }
 
     #[test]

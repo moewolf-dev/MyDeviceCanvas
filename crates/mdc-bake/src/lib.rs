@@ -705,6 +705,7 @@ pub fn bake_to_package(
         meshes: Vec::new(),
         textures: Vec::new(),
         materials: Vec::new(),
+        lights: Vec::new(),
         skeletons: Vec::new(),
         animations: Vec::new(),
         sprites: Vec::new(),

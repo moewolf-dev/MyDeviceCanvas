@@ -276,7 +276,10 @@ material's `texCoord` (`Material.uv_set`) selects the mesh UV set, and `TEXCOORD
 is imported into `MeshGeometry.uv2`, so a mesh can sample its texture from the
 second UV channel (falling back to the first). N384: `JOINTS_1`/`WEIGHTS_1` are
 imported (`MeshGeometry.skin_joints2`/`skin_weights2`) and `skin_arrays_multi`/
-`skin_normals_multi` blend up to eight influences per vertex. N380:
+`skin_normals_multi` blend up to eight influences per vertex. N385:
+`KHR_lights_punctual` is imported (`Model.lights`/`DevicePackage.lights`); the first
+directional light overrides the renderer's fixed key light (its node rotation
+orients it and `intensity` scales it). N380:
 `pack_material_atlas` (and `mdc package --atlas MAX_PAGE`) shelf-packs a package's
 per-material textures into one bounded page, remapping material indices and mesh UVs.
 
