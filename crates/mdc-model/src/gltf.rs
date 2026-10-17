@@ -579,6 +579,18 @@ impl GltfImporter {
             });
         }
 
+        // N375: when `scenes` is declared, only the default scene's nodes are
+        // drawn. Unreachable nodes keep their transforms/children but drop their
+        // mesh so no renderer or back end emits their geometry.
+        if let Some(roots) = default_scene_roots(&doc) {
+            let visible = reachable_nodes(&nodes, &roots);
+            for (i, node) in nodes.iter_mut().enumerate() {
+                if !visible.get(i).copied().unwrap_or(false) {
+                    node.mesh = None;
+                }
+            }
+        }
+
         let animations: Vec<Animation> = doc
             .get("animations")
             .and_then(Value::as_array)
@@ -756,6 +768,40 @@ fn split_container(bytes: &[u8]) -> Result<(&[u8], Option<&[u8]>), ModelError> {
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     let slice = bytes.get(offset..offset + 4)?;
     Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+/// N375: the default scene's root node indices, or `None` when the document does
+/// not declare `scenes` (so every node stays eligible).
+fn default_scene_roots(doc: &Value) -> Option<Vec<usize>> {
+    let scenes = doc.get("scenes").and_then(Value::as_array)?;
+    let index = doc.get("scene").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let scene = scenes.get(index)?;
+    Some(
+        scene
+            .get("nodes")
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(Value::as_u64)
+                    .map(|v| v as usize)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    )
+}
+
+/// N375: which nodes are reachable from `roots` by following `children`.
+fn reachable_nodes(nodes: &[Node], roots: &[usize]) -> Vec<bool> {
+    let mut visible = vec![false; nodes.len()];
+    let mut stack: Vec<usize> = roots.to_vec();
+    while let Some(index) = stack.pop() {
+        if index >= nodes.len() || visible[index] {
+            continue;
+        }
+        visible[index] = true;
+        stack.extend(nodes[index].children.iter().copied());
+    }
+    visible
 }
 
 /// Resolve every declared buffer. A `data:` URI is base64-decoded; the GLB BIN
@@ -1785,6 +1831,56 @@ pub(crate) fn json_name(value: &Value, fallback: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn default_scene_selects_which_nodes_draw() {
+        // N375: with `scenes` declared, only the default scene's nodes keep a mesh.
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "scene": 1,
+            "scenes": [{"nodes": [0]}, {"nodes": [1]}],
+            "nodes": [{"name": "a", "mesh": 0}, {"name": "b", "mesh": 1}],
+            "meshes": [
+                {"primitives": [{"attributes": {"POSITION": 0}}]},
+                {"primitives": [{"attributes": {"POSITION": 1}}]}
+            ],
+            "accessors": [
+                {"count": 3, "type": "VEC3"},
+                {"count": 3, "type": "VEC3"}
+            ]
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        assert_eq!(
+            model.nodes[0].mesh, None,
+            "node 0 is not in the default scene"
+        );
+        assert_eq!(
+            model.nodes[1].mesh,
+            Some(1),
+            "node 1 is in the default scene"
+        );
+
+        // Without `scenes`, every node stays eligible.
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "nodes": [{"name": "a", "mesh": 0}, {"name": "b", "mesh": 1}],
+            "meshes": [
+                {"primitives": [{"attributes": {"POSITION": 0}}]},
+                {"primitives": [{"attributes": {"POSITION": 1}}]}
+            ],
+            "accessors": [
+                {"count": 3, "type": "VEC3"},
+                {"count": 3, "type": "VEC3"}
+            ]
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        assert_eq!(model.nodes[0].mesh, Some(0));
+        assert_eq!(model.nodes[1].mesh, Some(1));
+    }
 
     fn sample_gltf(vertices: u64, texture_bytes: u64, tex_size: u32) -> Vec<u8> {
         let doc = json!({
