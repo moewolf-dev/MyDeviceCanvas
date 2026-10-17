@@ -3002,6 +3002,23 @@ fn cmd_asset(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// N388: import a model and print its summary as JSON.
+fn cmd_model_info(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let path = args.first().cloned().unwrap_or_default();
+    if path.is_empty() {
+        return Err("model-info <model.json|.gltf|.glb>".into());
+    }
+    let bytes = std::fs::read(&path)?;
+    let limits = mdc_model::ImportLimits::default();
+    let model = if path.to_ascii_lowercase().ends_with(".json") {
+        mdc_model::Live2DImporter.import(&bytes, &limits)?
+    } else {
+        mdc_model::GltfImporter.import(&bytes, &limits)?
+    };
+    println!("{}", serde_json::to_string_pretty(&model.summary())?);
+    Ok(())
+}
+
 fn usage() {
     println!(
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
@@ -3015,7 +3032,8 @@ render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprit
 motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss]|\
-asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]"
+asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|\
+model-info <model.json|.gltf|.glb>"
     );
 }
 
@@ -3184,6 +3202,7 @@ fn main() {
         Some("render-mesh") => cmd_render_mesh(&args[1..]),
         Some("render-package") => cmd_render_package(&args[1..]),
         Some("asset") => cmd_asset(&args[1..]),
+        Some("model-info") => cmd_model_info(&args[1..]),
         Some("switch-demo") => {
             let mut o = opts.clone();
             o.sim = true;
@@ -3246,6 +3265,23 @@ mod tests {
     #[cfg(unix)]
     fn host_rss_bytes_is_positive_on_unix() {
         assert!(host_rss_bytes().unwrap() > 0);
+    }
+
+    #[test]
+    fn model_info_summarizes_an_imported_model() {
+        let dir = std::env::temp_dir().join(format!("mdc-model-info-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("m.gltf");
+        std::fs::write(
+            &path,
+            br#"{"asset":{"version":"2.0"},"nodes":[{"name":"root","mesh":0}],
+                "meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1},"material":0}]}],
+                "materials":[{"name":"skin"}],
+                "accessors":[{"count":4,"type":"VEC3"},{"count":4,"type":"VEC3"}]}"#,
+        )
+        .unwrap();
+        cmd_model_info(&[path.to_string_lossy().into_owned()]).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

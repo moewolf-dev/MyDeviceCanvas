@@ -160,6 +160,31 @@ pub enum ModelError {
     Json(String),
 }
 
+/// N388: a compact, serialisable import report for a model.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ModelSummary {
+    pub source: String,
+    pub nodes: usize,
+    pub nodes_with_mesh: usize,
+    pub meshes: usize,
+    pub vertices: u64,
+    pub indices: u64,
+    pub primitives: u64,
+    pub materials: usize,
+    pub textures: usize,
+    pub skeletons: usize,
+    pub animations: usize,
+    pub sprites: usize,
+    pub layers: usize,
+    pub lights: usize,
+    pub morph_targets: usize,
+    pub has_normals: bool,
+    pub has_colors: bool,
+    pub has_tangents: bool,
+    pub has_second_uv: bool,
+    pub has_second_skin: bool,
+}
+
 /// Node local transform. glTF applies `T * R * S` to the node's children and
 /// mesh. Values are the file's defaults (identity) when the node omits them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -600,6 +625,36 @@ impl Light {
 impl Model {
     pub fn total_vertices(&self) -> u64 {
         self.meshes.iter().map(|m| u64::from(m.vertices)).sum()
+    }
+    /// N388: a compact import report (counts and feature flags).
+    pub fn summary(&self) -> ModelSummary {
+        let geometry = self.meshes.iter().filter_map(|m| m.geometry.as_ref());
+        let mut summary = ModelSummary {
+            source: self.source.clone(),
+            nodes: self.nodes.len(),
+            nodes_with_mesh: self.nodes.iter().filter(|n| n.mesh.is_some()).count(),
+            meshes: self.meshes.len(),
+            vertices: self.total_vertices(),
+            indices: self.meshes.iter().map(|m| u64::from(m.indices)).sum(),
+            primitives: self.meshes.iter().map(|m| u64::from(m.primitives)).sum(),
+            materials: self.materials.len(),
+            textures: self.textures.len(),
+            skeletons: self.skeletons.len(),
+            animations: self.animations.len(),
+            sprites: self.sprites.len(),
+            layers: self.layers.len(),
+            lights: self.lights.len(),
+            morph_targets: self.meshes.iter().map(|m| m.morph_targets.len()).sum(),
+            ..ModelSummary::default()
+        };
+        for g in geometry {
+            summary.has_colors |= !g.colors.is_empty();
+            summary.has_tangents |= !g.tangents.is_empty();
+            summary.has_second_uv |= !g.uv2.is_empty();
+            summary.has_second_skin |= !g.skin_joints2.is_empty();
+            summary.has_normals |= !g.normals.is_empty();
+        }
+        summary
     }
     pub fn texture_bytes(&self) -> u64 {
         self.textures.iter().map(|t| u64::from(t.bytes)).sum()

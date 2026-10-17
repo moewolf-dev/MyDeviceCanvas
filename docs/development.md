@@ -77,4 +77,12 @@ cargo run -p mdc -- asset get ./cache <key> --out frame.bin
 cargo run -p mdc -- asset prune ./cache --max-total 4194304
 ```
 
+`mdc model-info <model.json|.gltf|.glb>` (N388) prints a JSON import report
+(node/mesh/vertex/material/texture/animation counts plus normals/colours/tangents/
+second-UV/second-skin feature flags):
+
+```sh
+cargo run -p mdc -- model-info ./model.glb
+```
+
 
