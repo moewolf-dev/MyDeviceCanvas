@@ -65,4 +65,14 @@ cargo run -p mdc -- --board esp32-jc3248w535-sim ota 2.1.0
 cargo run -p mdc -- --address 127.0.0.1:9876 ota 2.1.0   # over TCP (N354)
 ```
 
+A bounded, content-addressed asset store on disk (N369). Files are named by
+their SHA-256 key; `put` prunes to `--max-total` (LRU by modification time):
+
+```sh
+cargo run -p mdc -- asset put ./cache ./frame.bin --max-total 8388608
+cargo run -p mdc -- asset ls ./cache
+cargo run -p mdc -- asset get ./cache <key> --out frame.bin
+cargo run -p mdc -- asset prune ./cache --max-total 4194304
+```
+
 

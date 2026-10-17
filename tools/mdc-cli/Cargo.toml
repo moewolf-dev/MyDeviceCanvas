@@ -23,6 +23,7 @@ mdc-mirror = { path = "../../crates/mdc-mirror" }
 mdc-schedule = { path = "../../crates/mdc-schedule" }
 mdc-model = { path = "../../crates/mdc-model" }
 mdc-bake = { path = "../../crates/mdc-bake" }
+mdc-assets = { path = "../../crates/mdc-assets" }
 mdc-flasher = { path = "../flasher" }
 mdc-provision = { path = "../../crates/mdc-provision" }
 image = { version = "=0.24.9", default-features = false, features = ["png", "jpeg"] }

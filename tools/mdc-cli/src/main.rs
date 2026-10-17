@@ -2878,6 +2878,79 @@ fn cmd_raster_demo() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// N369: bounded, content-addressed asset store on disk.
+fn cmd_asset(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let action = args.first().map(String::as_str).unwrap_or("");
+    let dir = args.get(1).cloned().unwrap_or_default();
+    if dir.is_empty() {
+        return Err("asset <put|ls|get|prune> <dir> ...".into());
+    }
+    let mut max_entry = 1usize << 20;
+    let mut max_total = 8usize << 20;
+    let mut out: Option<String> = None;
+    let mut file: Option<String> = None;
+    let mut iter = args[2..].iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--max-entry" => {
+                max_entry = iter
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("bad --max-entry")?
+            }
+            "--max-total" => {
+                max_total = iter
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("bad --max-total")?
+            }
+            "--out" => out = iter.next().cloned(),
+            other if file.is_none() => file = Some(other.to_string()),
+            _ => {}
+        }
+    }
+    let cache =
+        mdc_assets::DiskCache::open(&dir, max_entry, max_total).map_err(|e| e.to_string())?;
+    match action {
+        "put" => {
+            let path = file.ok_or("asset put <dir> <file>")?;
+            let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+            let key = cache.put(&bytes).map_err(|e| e.to_string())?;
+            let total = cache.total_bytes().map_err(|e| e.to_string())?;
+            println!("{} {} {}", key.0, bytes.len(), total);
+        }
+        "ls" => {
+            for (key, size) in cache.list().map_err(|e| e.to_string())? {
+                println!("{} {}", key.0, size);
+            }
+            println!(
+                "total {} bytes",
+                cache.total_bytes().map_err(|e| e.to_string())?
+            );
+        }
+        "get" => {
+            let key = mdc_assets::AssetKey(file.ok_or("asset get <dir> <key>")?);
+            match cache.get(&key).map_err(|e| e.to_string())? {
+                Some(bytes) => match out {
+                    Some(path) => {
+                        std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+                        println!("{path} {} bytes", bytes.len());
+                    }
+                    None => println!("{} bytes (use --out to save)", bytes.len()),
+                },
+                None => return Err(format!("no asset {}", key.0).into()),
+            }
+        }
+        "prune" => {
+            let removed = cache.prune().map_err(|e| e.to_string())?;
+            let total = cache.total_bytes().map_err(|e| e.to_string())?;
+            println!("removed {removed}; total {total} bytes");
+        }
+        other => return Err(format!("unknown asset action: {other}").into()),
+    }
+    Ok(())
+}
+
 fn usage() {
     println!(
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
@@ -2890,7 +2963,8 @@ bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animatio
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] --out f.ppm|\
 motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] --out f.ppm|\
-scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|raster-demo|preview-mesh|inspect [--watch --count N --interval MS]"
+scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|raster-demo|preview-mesh|inspect [--watch --count N --interval MS]|\
+asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]"
     );
 }
 
@@ -3058,6 +3132,7 @@ fn main() {
         Some("motion") => cmd_motion(&args[1..]),
         Some("render-mesh") => cmd_render_mesh(&args[1..]),
         Some("render-package") => cmd_render_package(&args[1..]),
+        Some("asset") => cmd_asset(&args[1..]),
         Some("switch-demo") => {
             let mut o = opts.clone();
             o.sim = true;
@@ -3082,6 +3157,40 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn asset_put_ls_get_prune_round_trip() {
+        let base = std::env::temp_dir().join(format!("mdc-cli-asset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let src = base.join("src.bin");
+        std::fs::write(&src, [1u8, 2, 3, 4]).unwrap();
+        let store = base.join("store").to_string_lossy().into_owned();
+        cmd_asset(&[
+            "put".into(),
+            store.clone(),
+            src.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        cmd_asset(&["ls".into(), store.clone()]).unwrap();
+        let cache = mdc_assets::DiskCache::open(&store, 1 << 20, 8 << 20).unwrap();
+        let listed = cache.list().unwrap();
+        assert_eq!(listed.len(), 1);
+        let key = listed[0].0 .0.clone();
+        assert_eq!(mdc_assets::AssetKey::from_bytes(&[1, 2, 3, 4]).0, key);
+        let out = base.join("out.bin");
+        cmd_asset(&[
+            "get".into(),
+            store.clone(),
+            key,
+            "--out".into(),
+            out.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), vec![1, 2, 3, 4]);
+        cmd_asset(&["prune".into(), store]).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn rgb565_is_little_endian_and_bounded() {
         let path = std::env::temp_dir().join(format!("mdc-cli-test-{}.png", std::process::id()));
