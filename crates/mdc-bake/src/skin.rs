@@ -862,6 +862,8 @@ struct SceneDrawable<'a> {
     blend: u8,
     /// N353: the mesh's texture (per material when the package carries several).
     texture: Option<&'a crate::TextureMap>,
+    /// N364: per-vertex colours, parallel to the points.
+    colors: Option<&'a [[f32; 4]]>,
 }
 
 /// N327: default key light (straight down -z, i.e. toward +z-facing surfaces) and
@@ -949,6 +951,7 @@ fn draw_scene_sorted(
             d.blend,
             d.fill,
             Some(&d.shade),
+            d.colors,
             mdc_model::MAX_GEOMETRY_VERTICES,
         )?;
     }
@@ -1035,6 +1038,13 @@ pub fn render_scene_at(
             ),
             blend: material_blend(model, mesh),
             texture,
+            colors: if geometry.colors.len() >= geometry.positions.len()
+                && !geometry.colors.is_empty()
+            {
+                Some(&geometry.colors)
+            } else {
+                None
+            },
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -1215,6 +1225,11 @@ pub fn render_package_mesh(
             blend,
             fill,
             Some(&shade),
+            if geometry.colors.len() >= geometry.positions.len() && !geometry.colors.is_empty() {
+                Some(geometry.colors.as_slice())
+            } else {
+                None
+            },
             mdc_model::MAX_GEOMETRY_VERTICES,
         )?;
     }
@@ -1409,6 +1424,13 @@ pub fn render_package_scene_clip_filtered(
                     }
                 })
                 .unwrap_or(255),
+            colors: if geometry.colors.len() >= geometry.positions.len()
+                && !geometry.colors.is_empty()
+            {
+                Some(&geometry.colors)
+            } else {
+                None
+            },
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -1859,6 +1881,7 @@ mod tests {
             skin_joints: vec![[1, 0, 0, 0]; 4],
             skin_weights: vec![[1.0, 0.0, 0.0, 0.0]; 4],
             morph_targets: Vec::new(),
+            colors: Vec::new(),
         });
         let frame = render_geometry_at(&model, 0, 0.0, (16, 16), None, 0xF800).unwrap();
         let covered = frame
@@ -1890,6 +1913,7 @@ mod tests {
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
+            colors: Vec::new(),
         }
     }
 
@@ -2147,6 +2171,53 @@ mod tests {
         assert!(
             shaded >> 11 < flat >> 11,
             "the red channel is reduced by shading"
+        );
+    }
+
+    #[test]
+    fn vertex_colours_multiply_the_fill() {
+        let mut geometry = quad_geometry();
+        geometry.colors = vec![
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0, 1.0],
+        ];
+        let model = Model {
+            source: "t".into(),
+            nodes: vec![Node {
+                name: "n".into(),
+                mesh: Some(0),
+                ..Node::default()
+            }],
+            meshes: vec![mdc_model::Mesh {
+                name: "q".into(),
+                vertices: 4,
+                indices: 6,
+                material: Some(0),
+                geometry: Some(geometry),
+                ..mdc_model::Mesh::default()
+            }],
+            materials: vec![mdc_model::Material {
+                name: "white".into(),
+                color: Some([255, 255, 255]),
+                ..mdc_model::Material::default()
+            }],
+            ..Model::default()
+        };
+        let frame = render_scene_at(&model, 0, 0.0, (16, 16), None, 0xFFFF).unwrap();
+        let at = |x: usize| {
+            u16::from_le_bytes([
+                frame.rgb565[(8 * 16 + x) * 2],
+                frame.rgb565[(8 * 16 + x) * 2 + 1],
+            ])
+        };
+        let left = at(2);
+        let right = at(13);
+        assert!(left >> 11 > (left & 0x1f), "left is red: {left:#06x}");
+        assert!(
+            (right & 0x1f) > (right >> 11),
+            "right is blue: {right:#06x}"
         );
     }
 

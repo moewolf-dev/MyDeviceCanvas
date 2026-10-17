@@ -644,6 +644,7 @@ fn full_geometry_reaches_the_device_and_renders() {
         skin_joints: Vec::new(),
         skin_weights: Vec::new(),
         morph_targets: Vec::new(),
+        colors: Vec::new(),
     };
     let mesh = mdc_model::Mesh {
         name: "quad".into(),
@@ -740,6 +741,7 @@ fn material_colour_tints_the_package_texture_on_the_device() {
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
+            colors: Vec::new(),
         }),
         ..Mesh::default()
     };
@@ -821,6 +823,7 @@ fn packaged_masked_texture_cuts_out_on_render() {
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
+            colors: Vec::new(),
         }),
         ..Mesh::default()
     };
@@ -900,6 +903,7 @@ fn masked_material_cuts_out_transparent_texels() {
                 skin_joints: Vec::new(),
                 skin_weights: Vec::new(),
                 morph_targets: Vec::new(),
+                colors: Vec::new(),
             }),
             ..Mesh::default()
         }],
@@ -965,6 +969,7 @@ fn merged_multi_primitive_geometry_renders_every_triangle() {
                 skin_joints: Vec::new(),
                 skin_weights: Vec::new(),
                 morph_targets: Vec::new(),
+                colors: Vec::new(),
             }),
             ..Mesh::default()
         }],
@@ -1064,6 +1069,7 @@ fn device_renders_a_morph_animated_geometry_package() {
                     [0.6, 0.0, 0.0],
                     [0.6, 0.0, 0.0],
                 ]],
+                colors: Vec::new(),
             }),
             morph_weights: vec![0.0],
             ..Mesh::default()
@@ -1146,6 +1152,7 @@ fn device_renders_an_animated_mesh_package_scene() {
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
+            colors: Vec::new(),
         }),
         ..Mesh::default()
     };
@@ -1251,6 +1258,7 @@ fn device_mesh_package_selects_a_named_clip() {
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
+            colors: Vec::new(),
         }),
         ..Mesh::default()
     };
@@ -1364,6 +1372,7 @@ fn multi_texture_mesh_package_renders_on_the_device() {
         skin_joints: Vec::new(),
         skin_weights: Vec::new(),
         morph_targets: Vec::new(),
+        colors: Vec::new(),
     };
     let model = Model {
         source: "test".into(),
@@ -1611,6 +1620,7 @@ fn multi_mesh_scene_bakes_and_reaches_a_device() {
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
+            colors: Vec::new(),
         }),
         ..Mesh::default()
     };
@@ -1695,6 +1705,7 @@ fn textured_geometry_package_renders_on_the_device() {
             skin_joints: Vec::new(),
             skin_weights: Vec::new(),
             morph_targets: Vec::new(),
+            colors: Vec::new(),
         }),
         ..Mesh::default()
     };

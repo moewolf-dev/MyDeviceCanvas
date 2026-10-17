@@ -4033,6 +4033,7 @@ mod tests {
                     skin_joints: Vec::new(),
                     skin_weights: Vec::new(),
                     morph_targets: Vec::new(),
+                    colors: Vec::new(),
                 }),
                 ..mdc_model::Mesh::default()
             }],

@@ -48,6 +48,9 @@ pub struct MeshGeometry {
     /// N326: NORMAL, parallel to `positions` (empty when absent).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub normals: Vec<[f32; 3]>,
+    /// N364: COLOR_0, parallel to `positions` (RGBA 0..1; empty when absent).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub colors: Vec<[f32; 4]>,
     /// JOINTS_0, parallel to `positions` (empty when absent).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skin_joints: Vec<[u16; 4]>,
@@ -80,6 +83,12 @@ impl MeshGeometry {
                 self.normals.resize(base as usize, [0.0, 0.0, 1.0]);
             }
             self.normals.extend(other.normals);
+        }
+        if !other.colors.is_empty() {
+            if self.colors.is_empty() {
+                self.colors.resize(base as usize, [1.0, 1.0, 1.0, 1.0]);
+            }
+            self.colors.extend(other.colors);
         }
         if !other.skin_joints.is_empty() {
             if self.skin_joints.is_empty() {

@@ -328,6 +328,10 @@ impl GltfImporter {
                                     let normals = pair(&attributes_value, "NORMAL")
                                         .map(|(a, b)| decode_normals(a, b, MAX_GEOMETRY_VERTICES))
                                         .unwrap_or_default();
+                                    // N364: COLOR_0.
+                                    let colors = pair(&attributes_value, "COLOR_0")
+                                        .map(|(a, b)| decode_colors(a, b, MAX_GEOMETRY_VERTICES))
+                                        .unwrap_or_default();
                                     let skin_joints = pair(&attributes_value, "JOINTS_0")
                                         .map(|(a, b)| {
                                             decode_joints_mesh(a, b, MAX_GEOMETRY_VERTICES)
@@ -366,6 +370,7 @@ impl GltfImporter {
                                         indices,
                                         uv,
                                         normals,
+                                        colors,
                                         skin_joints,
                                         skin_weights,
                                         morph_targets,
@@ -853,6 +858,81 @@ fn decode_positions(accessor: &Value, bytes: Option<&[u8]>, max: usize) -> Vec<[
         let z = f32::from_le_bytes(bytes[offset + 8..offset + 12].try_into().unwrap_or([0; 4]));
         out.push([x, y, z]);
         offset += 12;
+    }
+    out
+}
+
+/// N364: COLOR_0 (VEC3/VEC4 f32, or normalized u8/u16) per geometry vertex.
+fn decode_colors(accessor: &Value, bytes: Option<&[u8]>, max: usize) -> Vec<[f32; 4]> {
+    let ty = accessor.get("type").and_then(Value::as_str);
+    let components = match ty {
+        Some("VEC3") => 3,
+        Some("VEC4") => 4,
+        _ => return Vec::new(),
+    };
+    let component = accessor.get("componentType").and_then(Value::as_u64);
+    let normalized = accessor
+        .get("normalized")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let Some(bytes) = bytes else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    match component {
+        Some(5126) => {
+            let stride = components * 4;
+            let mut offset = 0usize;
+            while offset + stride <= bytes.len() && out.len() < max {
+                let read = |k: usize| {
+                    f32::from_le_bytes(
+                        bytes[offset + k * 4..offset + k * 4 + 4]
+                            .try_into()
+                            .unwrap_or([0; 4]),
+                    )
+                };
+                out.push([
+                    read(0),
+                    read(1),
+                    read(2),
+                    if components == 4 { read(3) } else { 1.0 },
+                ]);
+                offset += stride;
+            }
+        }
+        Some(5121) if normalized => {
+            let mut offset = 0usize;
+            while offset + components <= bytes.len() && out.len() < max {
+                let read = |k: usize| f32::from(bytes[offset + k]) / 255.0;
+                out.push([
+                    read(0),
+                    read(1),
+                    read(2),
+                    if components == 4 { read(3) } else { 1.0 },
+                ]);
+                offset += components;
+            }
+        }
+        Some(5123) if normalized => {
+            let stride = components * 2;
+            let mut offset = 0usize;
+            while offset + stride <= bytes.len() && out.len() < max {
+                let read = |k: usize| {
+                    f32::from(u16::from_le_bytes([
+                        bytes[offset + k * 2],
+                        bytes[offset + k * 2 + 1],
+                    ])) / 65535.0
+                };
+                out.push([
+                    read(0),
+                    read(1),
+                    read(2),
+                    if components == 4 { read(3) } else { 1.0 },
+                ]);
+                offset += stride;
+            }
+        }
+        _ => {}
     }
     out
 }

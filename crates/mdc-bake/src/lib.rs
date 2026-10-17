@@ -254,6 +254,7 @@ pub fn raster_triangle_fan(
                 window[1],
                 color,
                 255,
+                None,
             );
         }
     }
@@ -285,7 +286,7 @@ pub(crate) fn raster_points(
             ) else {
                 continue;
             };
-            fill_triangle(&mut pixels, width, height, a, b, c, color, 255);
+            fill_triangle(&mut pixels, width, height, a, b, c, color, 255, None);
         }
     } else if points.len() >= 3 {
         let origin = points[0];
@@ -299,6 +300,7 @@ pub(crate) fn raster_points(
                 window[1],
                 color,
                 255,
+                None,
             );
         }
     }
@@ -346,6 +348,7 @@ fn fill_triangle(
     c: (i16, i16),
     color: u16,
     blend: u8,
+    vc: Option<([f32; 4], [f32; 4], [f32; 4])>,
 ) {
     let min_x = a.0.min(b.0).min(c.0).max(0) as u32;
     let max_x = a.0.max(b.0).max(c.0).max(0) as u32;
@@ -357,6 +360,7 @@ fn fill_triangle(
     if area == 0 {
         return;
     }
+    let area_f = area as f32;
     for y in min_y..=max_y {
         for x in min_x..=max_x {
             let p = (x as i16, y as i16);
@@ -371,8 +375,20 @@ fn fill_triangle(
             if !inside {
                 continue;
             }
+            // N364: multiply the interpolated vertex colour.
+            let mut value = color;
+            if let Some((c0, c1, c2)) = vc {
+                let (f0, f1, f2) = (w0 as f32 / area_f, w1 as f32 / area_f, w2 as f32 / area_f);
+                let interp = [
+                    f0 * c0[0] + f1 * c1[0] + f2 * c2[0],
+                    f0 * c0[1] + f1 * c1[1] + f2 * c2[1],
+                    f0 * c0[2] + f1 * c1[2] + f2 * c2[2],
+                    f0 * c0[3] + f1 * c1[3] + f2 * c2[3],
+                ];
+                value = crate::texture::rgb565_mul(value, crate::texture::rgba_to_rgb565(interp));
+            }
             let index = ((y * width + x) * 2) as usize;
-            crate::texture::write_pixel(pixels, index, color, blend);
+            crate::texture::write_pixel(pixels, index, value, blend);
         }
     }
 }

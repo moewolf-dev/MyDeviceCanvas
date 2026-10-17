@@ -229,6 +229,12 @@ impl TextureMap {
     }
 }
 
+/// N364: convert an RGBA (0..1) vertex colour to RGB565.
+pub(crate) fn rgba_to_rgb565(color: [f32; 4]) -> u16 {
+    let c = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u16;
+    ((c(color[0]) >> 3) << 11) | ((c(color[1]) >> 2) << 5) | (c(color[2]) >> 3)
+}
+
 /// N333: source-over blend of `src` into `dst` with source alpha `a` (0..=255).
 /// `a == 255` returns `src`; `a == 0` returns `dst`.
 pub(crate) fn blend_rgb565(dst: u16, src: u16, a: u8) -> u16 {
@@ -354,6 +360,7 @@ pub(crate) fn raster_indexed(
         255,
         fallback,
         None,
+        None,
         max_points,
     )?;
     Ok(pixels)
@@ -377,6 +384,7 @@ pub(crate) fn draw_indexed(
     blend: u8,
     fallback: u16,
     shade: Option<&[f32]>,
+    colors: Option<&[[f32; 4]]>,
     max_points: usize,
 ) -> Result<(), BakeError> {
     if width == 0 || height == 0 || width > 1024 || height > 1024 {
@@ -407,6 +415,10 @@ pub(crate) fn draw_indexed(
         let factor = shade.and_then(|s| s.get(ti)).copied().unwrap_or(1.0);
         let tint = tint.map(|t| rgb565_scale(t, factor));
         let fill = rgb565_scale(fallback, factor);
+        // N364: per-vertex colours for this triangle.
+        let vc = colors
+            .filter(|c| c.len() >= points.len())
+            .map(|c| (c[triangle[0]], c[triangle[1]], c[triangle[2]]));
         let uvs = uvs.filter(|u| u.len() >= points.len());
         match (texture, uvs) {
             (Some(texture), Some(uvs)) => fill_textured_triangle(
@@ -420,8 +432,9 @@ pub(crate) fn draw_indexed(
                 tint,
                 mask,
                 blend,
+                vc,
             ),
-            _ => crate::fill_triangle(pixels, width, height, a, b, c, fill, blend),
+            _ => crate::fill_triangle(pixels, width, height, a, b, c, fill, blend, vc),
         }
     }
     Ok(())
@@ -439,6 +452,7 @@ fn fill_textured_triangle(
     tint: Option<u16>,
     mask: bool,
     blend: u8,
+    vc: Option<([f32; 4], [f32; 4], [f32; 4])>,
 ) {
     let area = edge(a.0, b.0, c.0);
     if area == 0 {
@@ -476,6 +490,16 @@ fn fill_textured_triangle(
             let mut value = texture.sample(u, v);
             if let Some(tint) = tint {
                 value = rgb565_mul(value, tint);
+            }
+            // N364: multiply the interpolated vertex colour.
+            if let Some((c0, c1, c2)) = vc {
+                let interp = [
+                    w0 * c0[0] + w1 * c1[0] + w2 * c2[0],
+                    w0 * c0[1] + w1 * c1[1] + w2 * c2[1],
+                    w0 * c0[2] + w1 * c1[2] + w2 * c2[2],
+                    w0 * c0[3] + w1 * c1[3] + w2 * c2[3],
+                ];
+                value = rgb565_mul(value, rgba_to_rgb565(interp));
             }
             // N344: for a blended material, fold the per-texel alpha into the
             // material alpha so soft edges fade instead of cutting out.
