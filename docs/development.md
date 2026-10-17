@@ -51,3 +51,10 @@ cargo run -p mdc-inspector -- --jsonl 60 --interval 100 --board linux-virt
 cargo run -p mdc -- --board linux-virt diag --metric fps --value 29.5 --unit fps
 ```
 
+Provisioning a compiled package onto a simulator board (preflight → install →
+version readback, N339):
+
+```sh
+cargo run -p mdc -- --board linux-virt provision ./model.mdcpkg
+```
+

@@ -507,6 +507,64 @@ fn cmd_install_package(opts: &GlobalOpts, path: &str) -> Result<(), Box<dyn std:
     }
     Ok(())
 }
+
+/// N339: end-to-end provisioning of a runtime package onto a simulator board:
+/// preflight (container parses + matches the device renderer) → install → version
+/// readback, with a rollback report when the device refuses it.
+fn cmd_provision(opts: &GlobalOpts, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path)?;
+    // Preflight: the container must parse before anything is sent.
+    let package = mdc_model::MdcPackage::from_bytes(&bytes)
+        .map_err(|e| format!("package preflight failed: {e}"))?;
+    let (mut session, mut device, _manager) = open_sim(&opts.board)?;
+    let renderer = mdc_model::RendererCapability::from_wire(
+        session
+            .device
+            .as_ref()
+            .and_then(|d| d.capabilities.renderer.as_ref()),
+    );
+    let accepted = package.accepted_by(&renderer).is_ok();
+    let firmware_before = session
+        .device
+        .as_ref()
+        .map(|d| d.capabilities.firmware.clone())
+        .unwrap_or_default();
+    let ready = if accepted {
+        session.install_package(&bytes)?;
+        device.poll()?;
+        session.poll()?;
+        device.package_ready()
+    } else {
+        false
+    };
+    // Version readback (also refreshes Capabilities after the install).
+    session.refresh_capabilities()?;
+    device.poll()?;
+    session.poll()?;
+    let firmware_after = session
+        .device
+        .as_ref()
+        .map(|d| d.capabilities.firmware.clone())
+        .unwrap_or_default();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "board": opts.board,
+            "package": path,
+            "package_bytes": bytes.len(),
+            "accepted": accepted,
+            "renderer_ready": ready,
+            "rolled_back": !ready,
+            "firmware_before": firmware_before,
+            "firmware_after": firmware_after,
+            "packages_received": device.metrics.packages_received,
+        }))?
+    );
+    if !ready {
+        return Err("device did not accept the runtime package; rolled back".into());
+    }
+    Ok(())
+}
 /// N55: set a scene from a JSON file, or clear it, on a simulator board.
 fn cmd_scene(opts: &GlobalOpts, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let (mut session, mut device, _manager) = open_sim(&opts.board)?;
@@ -2579,7 +2637,7 @@ fn usage() {
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME]|\
-package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg]|install-package <file.mdcpkg>|\
+package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg]|install-package <file.mdcpkg>|provision <file.mdcpkg>|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] --out f.ppm|\
@@ -2679,6 +2737,14 @@ fn main() {
             let mut o = opts.clone();
             o.sim = true;
             cmd_install_package(&o, &path)
+        }
+        Some("provision") => {
+            let path = args.get(1).cloned().unwrap_or_default();
+            if path.is_empty() {
+                eprintln!("provision requires a package path");
+                std::process::exit(2);
+            }
+            cmd_provision(&opts, &path)
         }
         Some("config") => {
             let action = args.get(1).cloned().unwrap_or_default();
@@ -3209,6 +3275,56 @@ mod tests {
     #[test]
     fn tcp_scripted_input_reaches_manager() {
         run_tcp_input("esp32-jc3248w535-sim").unwrap();
+    }
+
+    #[test]
+    fn provision_preflights_installs_and_reads_back() {
+        let dir = std::env::temp_dir().join(format!("mdc-cli-provision-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("sample.gltf");
+        std::fs::write(
+            &model,
+            r#"{"asset":{"version":"2.0"},"nodes":[{"name":"root","mesh":0}],
+                "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+                "accessors":[{"count":4,"type":"VEC3"}]}"#,
+        )
+        .unwrap();
+        let package = dir.join("sample.mdcpkg");
+        let opts = GlobalOpts {
+            sim: true,
+            address: None,
+            port: None,
+            board: "esp32-jc3248w535-sim".into(),
+        };
+        cmd_package(
+            &opts,
+            model.to_str().unwrap(),
+            &["--out".to_string(), package.to_string_lossy().into_owned()],
+        )
+        .unwrap();
+        // N339: preflight -> install -> version readback succeeds.
+        cmd_provision(&opts, package.to_str().unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn provision_rejects_a_package_the_renderer_cannot_accept() {
+        // A mesh-only package on an MCU (sprite) board rolls back.
+        let dir = std::env::temp_dir().join(format!("mdc-cli-provision-rb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A bogus container fails preflight before anything is sent.
+        let bad = dir.join("bad.mdcpkg");
+        std::fs::write(&bad, b"not a package").unwrap();
+        let opts = GlobalOpts {
+            sim: true,
+            address: None,
+            port: None,
+            board: "esp32-jc3248w535-sim".into(),
+        };
+        assert!(cmd_provision(&opts, bad.to_str().unwrap()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
