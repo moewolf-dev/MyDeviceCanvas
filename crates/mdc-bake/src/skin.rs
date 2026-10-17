@@ -966,6 +966,8 @@ struct SceneDrawable<'a> {
     texture: Option<&'a crate::TextureMap>,
     /// N364: per-vertex colours, parallel to the points.
     colors: Option<&'a [[f32; 4]]>,
+    /// N403: the secondary maps' UV set (None = same as `uvs`).
+    uvs_secondary: Option<&'a [[f32; 2]]>,
     /// N373: the material's base-colour UV transform.
     uv_transform: mdc_model::UvTransform,
     /// N379: per-vertex normals for per-pixel normal mapping.
@@ -1132,6 +1134,7 @@ fn draw_scene_sorted(
             pixels,
             &d.points,
             d.uvs,
+            d.uvs_secondary,
             d.indices,
             size.0,
             size.1,
@@ -1248,10 +1251,13 @@ pub fn render_scene_at(
             _ => geometry.normals.clone(),
         };
         let points = fit_to_box(&deformed, min, max, size.0, size.1);
-        let uvs = select_uvs(
-            geometry,
-            material_of(model, mesh).map(|m| m.uv_set()).unwrap_or(0),
-        );
+        let (uv_set, uv_set2) = material_of(model, mesh)
+            .map(|m| (m.uv_set(), m.uv_set2()))
+            .unwrap_or((0, 0));
+        let uvs = select_uvs(geometry, uv_set);
+        let uvs_secondary = (uv_set2 != uv_set)
+            .then(|| select_uvs(geometry, uv_set2))
+            .flatten();
         let tint = material_color(model, mesh);
         let mask = material_masked(model, mesh);
         drawables.push(SceneDrawable {
@@ -1278,6 +1284,7 @@ pub fn render_scene_at(
             } else {
                 None
             },
+            uvs_secondary,
             uv_transform: material_of(model, mesh)
                 .map(|m| m.uv_transform())
                 .unwrap_or_default(),
@@ -1420,13 +1427,15 @@ pub fn render_package_mesh(
             continue;
         };
         let projected = fit_to_box(&geometry.positions, min, max, size.0, size.1);
-        let uvs = select_uvs(
-            geometry,
-            mesh.material
-                .and_then(|mi| package.materials.get(mi))
-                .map(|m| m.uv_set())
-                .unwrap_or(0),
-        );
+        let (uv_set, uv_set2) = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .map(|m| (m.uv_set(), m.uv_set2()))
+            .unwrap_or((0, 0));
+        let uvs = select_uvs(geometry, uv_set);
+        let uvs_secondary = (uv_set2 != uv_set)
+            .then(|| select_uvs(geometry, uv_set2))
+            .flatten();
         let tint = mesh
             .material
             .and_then(|mi| package.materials.get(mi))
@@ -1468,6 +1477,7 @@ pub fn render_package_mesh(
             &mut pixels,
             &projected,
             uvs,
+            uvs_secondary,
             &geometry.indices,
             size.0,
             size.1,
@@ -1838,13 +1848,15 @@ pub fn render_package_scene_clip_mode(
             _ => geometry.normals.clone(),
         };
         let points = fit_to_box(&deformed, min, max, size.0, size.1);
-        let uvs = select_uvs(
-            geometry,
-            mesh.material
-                .and_then(|mi| package.materials.get(mi))
-                .map(|m| m.uv_set())
-                .unwrap_or(0),
-        );
+        let (uv_set, uv_set2) = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .map(|m| (m.uv_set(), m.uv_set2()))
+            .unwrap_or((0, 0));
+        let uvs = select_uvs(geometry, uv_set);
+        let uvs_secondary = (uv_set2 != uv_set)
+            .then(|| select_uvs(geometry, uv_set2))
+            .flatten();
         let tint = mesh
             .material
             .and_then(|mi| package.materials.get(mi))
@@ -1980,6 +1992,7 @@ pub fn render_package_scene_clip_mode(
             } else {
                 None
             },
+            uvs_secondary,
             uv_transform: mesh
                 .material
                 .and_then(|mi| package.materials.get(mi))

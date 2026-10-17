@@ -267,6 +267,7 @@ impl Live2DImporter {
                 normal_texture: None,
                 normal_scale: None,
                 uv_set: None,
+                uv_set2: None,
                 emissive_texture: None,
                 emissive_uv_transform: None,
                 normal_uv_transform: None,

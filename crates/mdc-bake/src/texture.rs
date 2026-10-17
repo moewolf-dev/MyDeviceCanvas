@@ -351,6 +351,7 @@ pub(crate) fn raster_indexed(
         &mut pixels,
         points,
         uvs,
+        None,
         indices,
         width,
         height,
@@ -515,6 +516,7 @@ pub(crate) fn draw_indexed(
     pixels: &mut [u8],
     points: &[(i16, i16)],
     uvs: Option<&[[f32; 2]]>,
+    uvs2: Option<&[[f32; 2]]>,
     indices: &[u32],
     width: u32,
     height: u32,
@@ -563,6 +565,10 @@ pub(crate) fn draw_indexed(
             .filter(|c| c.len() >= points.len())
             .map(|c| (c[triangle[0]], c[triangle[1]], c[triangle[2]]));
         let uvs = uvs.filter(|u| u.len() >= points.len());
+        // N403: the secondary maps may sample a different UV set.
+        let uv2 = uvs2
+            .filter(|u| u.len() >= points.len())
+            .map(|u| (u[triangle[0]], u[triangle[1]], u[triangle[2]]));
         match (texture, uvs) {
             (Some(texture), Some(uvs)) => fill_textured_triangle(
                 pixels,
@@ -577,6 +583,7 @@ pub(crate) fn draw_indexed(
                 blend,
                 vc,
                 uv_transform,
+                uv2,
                 normal_map
                     .as_ref()
                     .filter(|nm| {
@@ -621,6 +628,7 @@ fn fill_textured_triangle(
     blend: u8,
     vc: Option<([f32; 4], [f32; 4], [f32; 4])>,
     uv_transform: mdc_model::UvTransform,
+    uv2: Option<([f32; 2], [f32; 2], [f32; 2])>,
     normal_map: Option<(&NormalMap<'_>, [usize; 3])>,
     emissive: Option<&EmissiveMap<'_>>,
 ) {
@@ -656,6 +664,14 @@ fn fill_textured_triangle(
             let v = w0 * a.1[1] + w1 * b.1[1] + w2 * c.1[1];
             // N373/N395: each slot applies its own KHR_texture_transform.
             let raw = [u, v];
+            // N403: the secondary maps interpolate their own UV set when present.
+            let raw2 = match uv2 {
+                Some((a2, b2, c2)) => [
+                    w0 * a2[0] + w1 * b2[0] + w2 * c2[0],
+                    w0 * a2[1] + w1 * b2[1] + w2 * c2[1],
+                ],
+                None => raw,
+            };
             let [u, v] = uv_transform.apply(raw);
             if mask && !texture.alpha_at(u, v) {
                 continue;
@@ -676,12 +692,12 @@ fn fill_textured_triangle(
             }
             // N379: per-pixel Lambert using the tangent-space normal map.
             if let Some((nm, tri)) = normal_map {
-                let [nu, nv] = nm.uv_transform.apply(raw);
+                let [nu, nv] = nm.uv_transform.apply(raw2);
                 value = apply_normal_map(value, nm, tri, [w0, w1, w2], [nu, nv]);
             }
             // N393: add the emissive texture.
             if let Some(em) = emissive {
-                let [eu, ev] = em.uv_transform.apply(raw);
+                let [eu, ev] = em.uv_transform.apply(raw2);
                 let texel = em.map.sample(eu, ev);
                 value = rgb565_add(value, rgb565_scale(texel, em.strength.clamp(0.0, 1.0)));
             }

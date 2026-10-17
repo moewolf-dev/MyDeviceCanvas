@@ -429,8 +429,22 @@ impl GltfImporter {
                 .and_then(|b| b.get("texCoord"))
                 .and_then(Value::as_u64)
                 .map(|v| v.min(u64::from(u8::MAX)) as u8)
-                .or_else(|| tex_coord("normalTexture"))
-                .or_else(|| tex_coord("occlusionTexture"))
+                .filter(|set| *set != 0);
+            // N403: the secondary maps may use their own UV set.
+            let secondary = [
+                tex_coord("normalTexture"),
+                tex_coord("occlusionTexture"),
+                tex_coord("emissiveTexture"),
+                pbr.and_then(|p| p.get("metallicRoughnessTexture"))
+                    .and_then(|m| m.get("texCoord"))
+                    .and_then(Value::as_u64)
+                    .map(|v| v.min(u64::from(u8::MAX)) as u8),
+            ];
+            let uv_set2 = secondary
+                .iter()
+                .flatten()
+                .copied()
+                .find(|set| Some(*set) != uv_set)
                 .filter(|set| *set != 0);
             materials.push(Material {
                 name: json_name(material, &format!("material{i}")),
@@ -456,6 +470,7 @@ impl GltfImporter {
                 normal_texture,
                 normal_scale,
                 uv_set,
+                uv_set2,
                 emissive_texture,
                 emissive_uv_transform,
                 normal_uv_transform,
@@ -2445,6 +2460,28 @@ mod tests {
         assert_eq!(material.specular_factor(), 0.25);
         assert_eq!(material.specular_color, Some([255, 128, 0]));
         assert!((material.ior() - 1.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn per_slot_tex_coord_selects_the_uv_set() {
+        // N403: base colour uses UV0, the secondary maps use UV1.
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "materials": [{
+                "name": "m",
+                "pbrMetallicRoughness": {"baseColorTexture": {"index": 0, "texCoord": 0}},
+                "normalTexture": {"index": 0, "texCoord": 1}
+            }],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "nodes": [{"name": "root", "mesh": 0}],
+            "accessors": [{"count": 4, "type": "VEC3"}]
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        let material = &model.materials[0];
+        assert_eq!(material.uv_set(), 0);
+        assert_eq!(material.uv_set2(), 1, "secondary maps use UV1");
     }
 
     #[test]

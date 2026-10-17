@@ -350,6 +350,10 @@ pub struct Material {
     /// N383: which mesh UV set this material samples (`texCoord`; default 0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uv_set: Option<u8>,
+    /// N403: the UV set for the secondary maps (normal/occlusion/emissive/
+    /// metallicRoughness). Defaults to `uv_set`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uv_set2: Option<u8>,
     /// N393: `emissiveTexture.index` (added to the shaded colour).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emissive_texture: Option<usize>,
@@ -494,6 +498,11 @@ impl Material {
     /// N383: which mesh UV set this material samples (default 0).
     pub fn uv_set(&self) -> u8 {
         self.uv_set.unwrap_or(0)
+    }
+
+    /// N403: the UV set for the secondary maps (defaults to `uv_set`).
+    pub fn uv_set2(&self) -> u8 {
+        self.uv_set2.unwrap_or_else(|| self.uv_set())
     }
 
     /// N393: the emissive texture index and its strength (default 1.0).

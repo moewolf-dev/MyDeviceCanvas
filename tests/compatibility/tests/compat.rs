@@ -871,6 +871,7 @@ fn packaged_masked_texture_cuts_out_on_render() {
             normal_texture: None,
             normal_scale: None,
             uv_set: None,
+            uv_set2: None,
             emissive_texture: None,
             emissive_uv_transform: None,
             normal_uv_transform: None,
@@ -962,6 +963,7 @@ fn masked_material_cuts_out_transparent_texels() {
             normal_texture: None,
             normal_scale: None,
             uv_set: None,
+            uv_set2: None,
             emissive_texture: None,
             emissive_uv_transform: None,
             normal_uv_transform: None,
@@ -1627,6 +1629,7 @@ fn unlit_material_and_vertex_colours_render_on_the_device() {
                 normal_texture: None,
                 normal_scale: None,
                 uv_set: None,
+                uv_set2: None,
                 emissive_texture: None,
                 emissive_uv_transform: None,
                 normal_uv_transform: None,
@@ -1737,6 +1740,7 @@ fn occlusion_texture_darkens_the_shadowed_triangles() {
             normal_texture: None,
             normal_scale: None,
             uv_set: None,
+            uv_set2: None,
             emissive_texture: None,
             emissive_uv_transform: None,
             normal_uv_transform: None,
@@ -1878,6 +1882,7 @@ fn normal_map_perturbs_per_pixel_shading() {
             normal_texture: normal,
             normal_scale: Some(1.0),
             uv_set: None,
+            uv_set2: None,
             emissive_texture: None,
             emissive_uv_transform: None,
             normal_uv_transform: None,
@@ -2612,6 +2617,105 @@ fn specular_factor_scales_the_highlight() {
     assert!(
         sum(&full) > sum(&dim),
         "a smaller factor dims the highlight"
+    );
+}
+
+#[test]
+fn secondary_maps_can_use_a_second_uv_set() {
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node, Texture};
+
+    let png = |w: u32, h: u32, pixels: Vec<u8>| {
+        let image = image::RgbImage::from_raw(w, h, pixels).unwrap();
+        let mut out = Vec::new();
+        image
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    };
+    let build = |uv_set2: Option<u8>| {
+        let mut geometry = MeshGeometry {
+            positions: vec![
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            uv2: Vec::new(),
+            normals: vec![[0.0, 0.0, 1.0]; 4],
+            colors: Vec::new(),
+            tangents: Vec::new(),
+            skin_joints: Vec::new(),
+            skin_weights: Vec::new(),
+            skin_joints2: Vec::new(),
+            skin_weights2: Vec::new(),
+            morph_targets: Vec::new(),
+        };
+        // UV set 1 mirrors the U axis.
+        geometry.uv2 = geometry.uv.iter().map(|uv| [1.0 - uv[0], uv[1]]).collect();
+        let model = Model {
+            source: "test".into(),
+            nodes: vec![Node {
+                name: "root".into(),
+                mesh: Some(0),
+                ..Node::default()
+            }],
+            meshes: vec![Mesh {
+                name: "quad".into(),
+                vertices: 4,
+                indices: 6,
+                material: Some(0),
+                geometry: Some(geometry),
+                ..Mesh::default()
+            }],
+            materials: vec![Material {
+                name: "m".into(),
+                texture: Some(0),
+                color: Some([0, 0, 0]),
+                emissive_texture: Some(0),
+                emissive_strength: Some(1.0),
+                uv_set: None,
+                uv_set2,
+                ..Material::default()
+            }],
+            // Left red, right green.
+            textures: vec![Texture {
+                name: "rg".into(),
+                width: 2,
+                height: 1,
+                format: "image/png".into(),
+                bytes: 0,
+                data: Some(png(2, 1, vec![255, 0, 0, 0, 255, 0])),
+                wrap: None,
+            }],
+            ..Model::default()
+        };
+        let blobs = mdc_bake::attach_model_textures(&model, &mdc_bake::BakeLimits::default());
+        mdc_bake::mesh_package_with_textures(
+            &model,
+            &mdc_model::RendererCapability::full_3d(),
+            blobs,
+        )
+        .unwrap()
+    };
+    let frame = |package: &mdc_model::MdcPackage| {
+        mdc_bake::render_package_scene(&package.package, 0.0, (32, 32)).unwrap()
+    };
+    let left = |f: &mdc_bake::BakedTexture| {
+        u16::from_le_bytes([f.rgb565[(16 * 32 + 6) * 2], f.rgb565[(16 * 32 + 6) * 2 + 1]])
+    };
+    // Without uv_set2 the emissive follows UV0 (red on the left).
+    let same = left(&frame(&build(None)));
+    // With uv_set2 = 1 the emissive samples the mirrored UV (green on the left).
+    let secondary = left(&frame(&build(Some(1))));
+    assert!(
+        same >> 11 > ((same >> 5) & 0x3f),
+        "uv0 left is red: {same:#06x}"
+    );
+    assert!(
+        ((secondary >> 5) & 0x3f) > 20,
+        "uv1 left adds green: {secondary:#06x}"
     );
 }
 

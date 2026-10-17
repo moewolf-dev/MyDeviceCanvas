@@ -286,7 +286,10 @@ triangle; `render_package_scene_clip_mode` selects the mode and the device keeps
 its strength/shininess derived from the material's `roughness`/`metallic`. Per-pixel
 shading now also applies to untextured (solid) triangles. N390:
 `KHR_mesh_quantization` integer POSITION and normalized byte/short TANGENT decode
-(raw integer positions are dequantized by the node transform). N393:
+(raw integer positions are dequantized by the node transform). N403: `texCoord` is
+honoured per slot — `Material.uv_set` selects the base-colour UV set and
+`uv_set2` (defaulting to `uv_set`) selects the secondary maps' set, so normal/
+occlusion/emissive/metallicRoughness maps can sample `TEXCOORD_1`. N393:
 `emissiveTexture` is imported and added (scaled by `emissiveStrength`) to the shaded
 colour. N395: `KHR_texture_transform` is honoured per texture slot (base colour,
 normal, emissive, metallicRoughness), each sampled with its own transform. N394:
