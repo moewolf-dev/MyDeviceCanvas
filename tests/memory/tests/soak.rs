@@ -1229,3 +1229,136 @@ fn jpeg_encoder_round_trips_through_the_image_crate() {
         "right is bluish: {right:?}"
     );
 }
+
+#[test]
+fn multi_texture_package_soak_is_bounded() {
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node, Texture};
+    let png = |color: [u8; 3]| {
+        let image = image::RgbImage::from_pixel(1, 1, image::Rgb(color));
+        let mut out = Vec::new();
+        image
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    };
+    let quad = || MeshGeometry {
+        positions: vec![
+            [-0.5, -0.5, 0.0],
+            [0.5, -0.5, 0.0],
+            [0.5, 0.5, 0.0],
+            [-0.5, 0.5, 0.0],
+        ],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        normals: Vec::new(),
+        skin_joints: Vec::new(),
+        skin_weights: Vec::new(),
+        morph_targets: Vec::new(),
+    };
+    let model = Model {
+        source: "soak".into(),
+        nodes: vec![
+            Node {
+                name: "root".into(),
+                children: vec![1, 2],
+                ..Node::default()
+            },
+            Node {
+                name: "a".into(),
+                mesh: Some(0),
+                ..Node::default()
+            },
+            Node {
+                name: "b".into(),
+                mesh: Some(1),
+                ..Node::default()
+            },
+        ],
+        meshes: vec![
+            Mesh {
+                name: "a".into(),
+                vertices: 4,
+                indices: 6,
+                material: Some(0),
+                geometry: Some(quad()),
+                ..Mesh::default()
+            },
+            Mesh {
+                name: "b".into(),
+                vertices: 4,
+                indices: 6,
+                material: Some(1),
+                geometry: Some(quad()),
+                ..Mesh::default()
+            },
+        ],
+        materials: vec![
+            Material {
+                name: "a".into(),
+                texture: Some(0),
+                ..Material::default()
+            },
+            Material {
+                name: "b".into(),
+                texture: Some(1),
+                ..Material::default()
+            },
+        ],
+        textures: vec![
+            Texture {
+                name: "red".into(),
+                width: 1,
+                height: 1,
+                format: "image/png".into(),
+                bytes: 0,
+                data: Some(png([255, 0, 0])),
+                wrap: None,
+            },
+            Texture {
+                name: "blue".into(),
+                width: 1,
+                height: 1,
+                format: "image/png".into(),
+                bytes: 0,
+                data: Some(png([0, 0, 255])),
+                wrap: None,
+            },
+        ],
+        ..Model::default()
+    };
+    let blobs = mdc_bake::attach_model_textures(&model, &mdc_bake::BakeLimits::default());
+    let mut size = None;
+    for _ in 0..50 {
+        let package = mdc_bake::mesh_package_with_textures(
+            &model,
+            &mdc_model::RendererCapability::full_3d(),
+            blobs.clone(),
+        )
+        .unwrap();
+        let bytes = package.to_bytes().unwrap();
+        match size {
+            None => size = Some(bytes.len()),
+            Some(expected) => assert_eq!(bytes.len(), expected, "package size is constant"),
+        }
+    }
+}
+
+#[test]
+fn http_stream_scale_requests_stay_bounded() {
+    use mdc_mirror::{HttpMirrorServer, ShadowFrame};
+    let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+    let pixels = vec![0x20u8; 8 * 8 * 4];
+    for _ in 0..100 {
+        server.publish(&ShadowFrame {
+            width: 8,
+            height: 8,
+            generation: 1,
+            frame_id: 1,
+            pixels: &pixels,
+        });
+        let _ = server.pump();
+    }
+    // The server keeps only one raw frame; no client and no queued parts.
+    assert_eq!(server.client_count(), 0);
+    assert_eq!(server.streaming_clients(), 0);
+}
