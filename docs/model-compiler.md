@@ -262,7 +262,9 @@ roughness raises the ambient floor (a rough surface shades flatter), while
 (lifts the ambient) and `KHR_materials_unlit` (no directional shading) are imported.
 N373: `KHR_texture_transform` on the base-colour texture (`offset`/`rotation`/`scale`)
 is imported and applied to the UV before sampling. N374: `KHR_materials_emissive_strength`
-scales `emissiveFactor` before it lifts the ambient.
+scales `emissiveFactor` before it lifts the ambient. N376: sparse accessors are
+de-sparsed into a tight byte image before decoding, so POSITION/NORMAL/UV/COLOR_0
+(and indices) honour their `sparse` block.
 
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a

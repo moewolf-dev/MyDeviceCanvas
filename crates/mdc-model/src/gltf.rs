@@ -72,6 +72,73 @@ impl GltfImporter {
             data.get(start..start.checked_add(len)?)
         };
 
+        // N376: a tight, de-sparsed byte image per accessor (materialised once
+        // here, so every decoder below is sparse-aware).
+        let resolved: Vec<Option<Vec<u8>>> = (0..accessors.len())
+            .map(|index| {
+                let accessor = accessors.get(index)?;
+                let component = accessor.get("componentType").and_then(Value::as_u64)?;
+                let ty = accessor.get("type").and_then(Value::as_str)?;
+                let component_size = accessor_component_size(component)?;
+                let components = accessor_components(ty)?;
+                let count = accessor.get("count").and_then(Value::as_u64)? as usize;
+                let stride = component_size.checked_mul(components)?;
+                let mut out = vec![0u8; count.checked_mul(stride)?];
+                if let Some(view_index) = accessor.get("bufferView").and_then(Value::as_u64) {
+                    if let Some(bytes) = view_bytes(view_index) {
+                        let n = bytes.len().min(out.len());
+                        out[..n].copy_from_slice(&bytes[..n]);
+                    }
+                }
+                if let Some(sparse) = accessor.get("sparse") {
+                    let sparse_count = sparse.get("count").and_then(Value::as_u64)? as usize;
+                    let indices = sparse.get("indices")?;
+                    let values = sparse.get("values")?;
+                    let index_size =
+                        accessor_component_size(indices.get("componentType")?.as_u64()?)?;
+                    let index_data = indices
+                        .get("bufferView")
+                        .and_then(Value::as_u64)
+                        .and_then(&view_bytes)?;
+                    let index_offset = indices
+                        .get("byteOffset")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0) as usize;
+                    let value_data = values
+                        .get("bufferView")
+                        .and_then(Value::as_u64)
+                        .and_then(&view_bytes)?;
+                    let value_offset = values
+                        .get("byteOffset")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0) as usize;
+                    for k in 0..sparse_count.min(count) {
+                        let read = index_offset.checked_add(k.checked_mul(index_size)?)?;
+                        let target = match index_size {
+                            1 => index_data.get(read).map(|v| usize::from(*v)),
+                            2 => index_data
+                                .get(read..read + 2)
+                                .map(|s| usize::from(u16::from_le_bytes([s[0], s[1]]))),
+                            _ => index_data
+                                .get(read..read + 4)
+                                .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as usize),
+                        }?;
+                        if target >= count {
+                            continue;
+                        }
+                        let src = value_offset.checked_add(k.checked_mul(stride)?)?;
+                        let value = value_data.get(src..src + stride)?;
+                        let dst = target.checked_mul(stride)?;
+                        out[dst..dst + stride].copy_from_slice(value);
+                    }
+                }
+                Some(out)
+            })
+            .collect();
+        let accessor_bytes = |index: u64| -> Option<&[u8]> {
+            resolved.get(index as usize).and_then(|b| b.as_deref())
+        };
+
         // Accessor count is validated against its bufferView before use.
         let accessor_count = |index: u64| -> Result<u64, ModelError> {
             let accessor = accessors
@@ -322,10 +389,7 @@ impl GltfImporter {
                         vertices = vertices.saturating_add(accessor_count(position)?);
                         if preview_positions.is_empty() {
                             if let Some(accessor) = accessors.get(position as usize) {
-                                let bytes = accessor
-                                    .get("bufferView")
-                                    .and_then(Value::as_u64)
-                                    .and_then(&view_bytes);
+                                let bytes = accessor_bytes(position);
                                 preview_positions = decode_preview_positions(accessor, bytes);
                                 preview_xy = preview_positions.iter().map(project_xy).collect();
                             }
@@ -336,19 +400,13 @@ impl GltfImporter {
                             .saturating_sub(geometry.as_ref().map_or(0, |g| g.positions.len()));
                         if remaining > 0 {
                             if let Some(accessor) = accessors.get(position as usize) {
-                                let bytes = accessor
-                                    .get("bufferView")
-                                    .and_then(Value::as_u64)
-                                    .and_then(&view_bytes);
+                                let bytes = accessor_bytes(position);
                                 let positions = decode_positions(accessor, bytes, remaining);
                                 if !positions.is_empty() {
                                     let pair = |source: &Value, key: &str| -> Option<(&Value, Option<&[u8]>)> {
                                         let index = source.get(key).and_then(Value::as_u64)?;
                                         let accessor = accessors.get(index as usize)?;
-                                        let bytes = accessor
-                                            .get("bufferView")
-                                            .and_then(Value::as_u64)
-                                            .and_then(&view_bytes);
+                                        let bytes = accessor_bytes(index);
                                         Some((accessor, bytes))
                                     };
                                     let attributes_value =
@@ -394,10 +452,7 @@ impl GltfImporter {
                                             else {
                                                 continue;
                                             };
-                                            let bytes = accessor
-                                                .get("bufferView")
-                                                .and_then(Value::as_u64)
-                                                .and_then(&view_bytes);
+                                            let bytes = accessor_bytes(index);
                                             morph_targets
                                                 .push(decode_positions(accessor, bytes, remaining));
                                         }
@@ -430,17 +485,11 @@ impl GltfImporter {
                     ) {
                         if skin_joints.is_empty() {
                             let joints = accessors.get(joint_accessor as usize).map(|a| {
-                                let bytes = a
-                                    .get("bufferView")
-                                    .and_then(Value::as_u64)
-                                    .and_then(&view_bytes);
+                                let bytes = accessor_bytes(joint_accessor);
                                 decode_joints(a, bytes)
                             });
                             let weights = accessors.get(weight_accessor as usize).map(|a| {
-                                let bytes = a
-                                    .get("bufferView")
-                                    .and_then(Value::as_u64)
-                                    .and_then(&view_bytes);
+                                let bytes = accessor_bytes(weight_accessor);
                                 decode_weights(a, bytes)
                             });
                             if let (Some(joints), Some(weights)) = (joints, weights) {
@@ -457,10 +506,7 @@ impl GltfImporter {
                     {
                         if preview_uv.is_empty() {
                             if let Some(accessor) = accessors.get(uv_accessor as usize) {
-                                let bytes = accessor
-                                    .get("bufferView")
-                                    .and_then(Value::as_u64)
-                                    .and_then(&view_bytes);
+                                let bytes = accessor_bytes(uv_accessor);
                                 preview_uv = decode_uv(accessor, bytes);
                             }
                         }
@@ -470,10 +516,7 @@ impl GltfImporter {
                             .saturating_add(accessor_count(index)?.min(u64::from(u32::MAX)) as u32);
                         if preview_indices.is_empty() {
                             if let Some(accessor) = accessors.get(index as usize) {
-                                let bytes = accessor
-                                    .get("bufferView")
-                                    .and_then(Value::as_u64)
-                                    .and_then(&view_bytes);
+                                let bytes = accessor_bytes(index);
                                 preview_indices = decode_preview_indices(accessor, bytes);
                             }
                         }
@@ -493,10 +536,7 @@ impl GltfImporter {
                                 let Some(accessor) = accessors.get(accessor_index as usize) else {
                                     continue;
                                 };
-                                let bytes = accessor
-                                    .get("bufferView")
-                                    .and_then(Value::as_u64)
-                                    .and_then(&view_bytes);
+                                let bytes = accessor_bytes(accessor_index);
                                 morph_targets.push(decode_preview_positions(accessor, bytes));
                             }
                         }
@@ -644,10 +684,7 @@ impl GltfImporter {
                                     let Some(accessor) = accessors.get(index as usize) else {
                                         return Vec::new();
                                     };
-                                    let bytes = accessor
-                                        .get("bufferView")
-                                        .and_then(Value::as_u64)
-                                        .and_then(&view_bytes);
+                                    let bytes = accessor_bytes(index);
                                     let cap = limits.max_nodes.saturating_mul(MAX_MORPH_TARGETS);
                                     decode_float_accessor(accessor, bytes, components, cap)
                                 };
@@ -1517,6 +1554,28 @@ fn view_has_valid_data(view: &BufferView, buffers: &[Buffer]) -> bool {
         .is_some()
 }
 
+/// N376: the byte size of a single component type.
+fn accessor_component_size(component: u64) -> Option<usize> {
+    match component {
+        5120 | 5121 => Some(1),
+        5122 | 5123 => Some(2),
+        5125 | 5126 => Some(4),
+        _ => None,
+    }
+}
+
+/// N376: the number of components for a glTF accessor type.
+fn accessor_components(ty: &str) -> Option<usize> {
+    match ty {
+        "SCALAR" => Some(1),
+        "VEC2" => Some(2),
+        "VEC3" => Some(3),
+        "VEC4" => Some(4),
+        "MAT4" => Some(16),
+        _ => None,
+    }
+}
+
 /// Validate an accessor against its bufferView and return its element count.
 /// Accessors without a bufferView (sparse or zero-filled) keep their declared
 /// count. Unknown component/type pairs and overruns are rejected.
@@ -1831,6 +1890,49 @@ pub(crate) fn json_name(value: &Value, fallback: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn sparse_accessors_override_base_values() {
+        // N376: base POSITION [0,0,0],[1,0,0],[2,0,0] with a sparse override of
+        // index 1 to [9,9,9].
+        let mut bin = Vec::new();
+        for value in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0, 0.0, 0.0] {
+            bin.extend_from_slice(&value.to_le_bytes());
+        }
+        bin.extend_from_slice(&1u16.to_le_bytes()); // sparse index 1
+        for value in [9.0f32, 9.0, 9.0] {
+            bin.extend_from_slice(&value.to_le_bytes());
+        }
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": bin.len()}],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+                {"buffer": 0, "byteOffset": 36, "byteLength": 2},
+                {"buffer": 0, "byteOffset": 38, "byteLength": 12}
+            ],
+            "accessors": [{
+                "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+                "sparse": {
+                    "count": 1,
+                    "indices": {"bufferView": 1, "componentType": 5123},
+                    "values": {"bufferView": 2}
+                }
+            }],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "nodes": [{"name": "root", "mesh": 0}]
+        });
+        let model = GltfImporter
+            .import(
+                &glb(&serde_json::to_vec(&doc).unwrap(), &bin),
+                &ImportLimits::default(),
+            )
+            .unwrap();
+        let positions = &model.meshes[0].geometry.as_ref().unwrap().positions;
+        assert_eq!(positions[0], [0.0, 0.0, 0.0]);
+        assert_eq!(positions[1], [9.0, 9.0, 9.0], "sparse value overrides base");
+        assert_eq!(positions[2], [2.0, 0.0, 0.0]);
+    }
 
     #[test]
     fn default_scene_selects_which_nodes_draw() {
