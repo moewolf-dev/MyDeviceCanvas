@@ -1099,15 +1099,26 @@ pub fn render_package_mesh(
     if size.0 == 0 || size.1 == 0 || size.0 > 1024 || size.1 > 1024 {
         return Err(BakeError::Budget(size.0, size.1));
     }
-    let texture = match package.texture.as_ref().filter(|t| t.validate()) {
-        Some(blob) => {
-            let map = crate::TextureMap::from_rgb565(blob.width, blob.height, blob.rgb565.clone())?;
-            Some(if blob.alpha.is_empty() {
-                map
-            } else {
-                map.with_alpha(blob.alpha.clone())
-            })
-        }
+    let build = |blob: &mdc_model::TextureBlob| -> Result<crate::TextureMap, BakeError> {
+        let map = crate::TextureMap::from_rgb565(blob.width, blob.height, blob.rgb565.clone())?;
+        Ok(if blob.alpha.is_empty() {
+            map
+        } else {
+            map.with_alpha(blob.alpha.clone())
+        })
+    };
+    // N358: per-material textures (N353), else the single package texture.
+    let mut textures: Vec<Option<crate::TextureMap>> =
+        Vec::with_capacity(package.texture_blobs.len());
+    for blob in &package.texture_blobs {
+        textures.push(if blob.validate() {
+            Some(build(blob)?)
+        } else {
+            None
+        });
+    }
+    let single = match package.texture.as_ref().filter(|t| t.validate()) {
+        Some(blob) => Some(build(blob)?),
         None => None,
     };
     let mut points = Vec::new();
@@ -1170,6 +1181,13 @@ pub fn render_package_mesh(
                 }
             })
             .unwrap_or(255);
+        let mesh_texture = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .and_then(|material| material.texture)
+            .and_then(|index| textures.get(index))
+            .and_then(|texture| texture.as_ref())
+            .or(single.as_ref());
         crate::texture::draw_indexed(
             &mut pixels,
             &projected,
@@ -1177,7 +1195,7 @@ pub fn render_package_mesh(
             &geometry.indices,
             size.0,
             size.1,
-            texture.as_ref(),
+            mesh_texture,
             tint,
             mask,
             blend,
