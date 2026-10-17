@@ -48,6 +48,7 @@ mdc --board linux-virt mirror --frames 300 --http 127.0.0.1:8080
 #   http://127.0.0.1:8080/frame.png   -> image/png (N328)
 #   http://127.0.0.1:8080/frame.jpg   -> image/jpeg (N336)
 # Optional query on /frame.*: ?scale=2 (integer 1..=8), ?quality=70 (JPEG 1..=100, N346)
+# /stream[.jpg]?scale=2 downscales each streamed part (N356)
 
 # Or fan out over TCP for a local consumer.
 mdc --board linux-virt mirror --frames 30 --serve 127.0.0.1:7777
