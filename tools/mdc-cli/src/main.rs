@@ -469,6 +469,7 @@ fn cmd_package(
     let mut atlas_page: Option<u32> = None;
     let mut indexed: u32 = 0;
     let mut dither: u8 = 0;
+    let mut tangents = false;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -482,15 +483,29 @@ fn cmd_package(
             "--indexed" => indexed = iter.next().and_then(|v| v.parse().ok()).unwrap_or(16),
             // N416: ordered-dither each texture blob (strength in LSBs).
             "--dither" => dither = iter.next().and_then(|v| v.parse().ok()).unwrap_or(4),
+            // N428: derive tangents for meshes that omit them.
+            "--tangents" => tangents = true,
             other => out = Some(other.to_string()),
         }
     }
     let bytes = std::fs::read(model_path)?;
-    let model = if model_path.to_ascii_lowercase().ends_with(".json") {
+    let mut model = if model_path.to_ascii_lowercase().ends_with(".json") {
         mdc_model::Live2DImporter.import(&bytes, &mdc_model::ImportLimits::default())?
     } else {
         mdc_model::GltfImporter.import(&bytes, &mdc_model::ImportLimits::default())?
     };
+    // N428: fill in tangents where the mesh omits them.
+    if tangents {
+        for mesh in &mut model.meshes {
+            if let Some(geometry) = mesh.geometry.as_mut() {
+                if geometry.tangents.len() < geometry.positions.len()
+                    && geometry.uv.len() >= geometry.positions.len()
+                {
+                    geometry.tangents = mdc_bake::generate_tangents(geometry);
+                }
+            }
+        }
+    }
     let profile = BoardProfile::from_board_id(&opts.board);
     let caps = mdc_model::RendererCapability {
         sprite: profile.renderer_sprite,
@@ -3267,7 +3282,7 @@ fn usage() {
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
-package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
+package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] [--srgb] --out f.ppm|\
@@ -3554,6 +3569,53 @@ mod tests {
         let mut tampered = package.clone();
         tampered.manifest.checksum ^= 0xffff;
         assert!(!tampered.verify().valid, "a wrong checksum fails");
+    }
+
+    #[test]
+    fn package_tangents_flag_generates_tangents() {
+        // N428: `--tangents` fills geometry tangents before compiling.
+        let dir = std::env::temp_dir().join(format!("mdc-tangents-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("m.gltf");
+        std::fs::write(
+            &path,
+            br#"{"asset":{"version":"2.0"},
+                "nodes":[{"name":"root","mesh":0}],
+                "meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2}}]}],
+                "accessors":[{"count":4,"type":"VEC3"},{"count":4,"type":"VEC3"},{"count":4,"type":"VEC2"}]}"#,
+        )
+        .unwrap();
+        // Without `--tangents` the geometry has none.
+        cmd_package(
+            &GlobalOpts {
+                sim: true,
+                board: "linux-virt".into(),
+                address: None,
+                port: None,
+            },
+            &path.to_string_lossy(),
+            &[
+                "--out".into(),
+                dir.join("a.mdcpkg").to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        cmd_package(
+            &GlobalOpts {
+                sim: true,
+                board: "linux-virt".into(),
+                address: None,
+                port: None,
+            },
+            &path.to_string_lossy(),
+            &[
+                "--tangents".into(),
+                "--out".into(),
+                dir.join("b.mdcpkg").to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
