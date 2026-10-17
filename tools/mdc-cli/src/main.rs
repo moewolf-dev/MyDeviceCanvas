@@ -3019,6 +3019,74 @@ fn cmd_model_info(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// N389: compare two sealed packages (manifest and structure counts) as JSON.
+fn cmd_diff(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let (Some(a), Some(b)) = (args.first(), args.get(1)) else {
+        return Err("diff <a.mdcpkg> <b.mdcpkg>".into());
+    };
+    let pa = mdc_model::MdcPackage::from_bytes(&std::fs::read(a)?)?;
+    let pb = mdc_model::MdcPackage::from_bytes(&std::fs::read(b)?)?;
+    let mut fields = serde_json::Map::new();
+    let mut compare = |name: &str, av: serde_json::Value, bv: serde_json::Value| {
+        let same = av == bv;
+        fields.insert(
+            name.to_string(),
+            serde_json::json!({ "a": av, "b": bv, "same": same }),
+        );
+    };
+    compare(
+        "version",
+        pa.manifest.version.into(),
+        pb.manifest.version.into(),
+    );
+    compare(
+        "target",
+        pa.manifest.target.clone().into(),
+        pb.manifest.target.clone().into(),
+    );
+    compare(
+        "mode",
+        format!("{:?}", pa.manifest.mode).into(),
+        format!("{:?}", pb.manifest.mode).into(),
+    );
+    compare(
+        "body_bytes",
+        pa.manifest.body_bytes.into(),
+        pb.manifest.body_bytes.into(),
+    );
+    compare(
+        "checksum",
+        pa.manifest.checksum.into(),
+        pb.manifest.checksum.into(),
+    );
+    let counts = |p: &mdc_model::DevicePackage| {
+        serde_json::json!({
+            "nodes": p.nodes.len(),
+            "meshes": p.meshes.len(),
+            "materials": p.materials.len(),
+            "textures": p.textures.len(),
+            "texture_blobs": p.texture_blobs.len(),
+            "skeletons": p.skeletons.len(),
+            "animations": p.animations.len(),
+            "sprites": p.sprites.len(),
+            "lights": p.lights.len(),
+            "estimated_bytes": p.estimated_bytes,
+        })
+    };
+    compare("structure", counts(&pa.package), counts(&pb.package));
+    let identical = fields
+        .values()
+        .all(|entry| entry.get("same").and_then(serde_json::Value::as_bool) == Some(true));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "identical": identical,
+            "fields": fields,
+        }))?
+    );
+    Ok(())
+}
+
 fn usage() {
     println!(
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
@@ -3033,7 +3101,7 @@ motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|\
-model-info <model.json|.gltf|.glb>"
+model-info <model.json|.gltf|.glb>|diff <a.mdcpkg> <b.mdcpkg>"
     );
 }
 
@@ -3203,6 +3271,7 @@ fn main() {
         Some("render-package") => cmd_render_package(&args[1..]),
         Some("asset") => cmd_asset(&args[1..]),
         Some("model-info") => cmd_model_info(&args[1..]),
+        Some("diff") => cmd_diff(&args[1..]),
         Some("switch-demo") => {
             let mut o = opts.clone();
             o.sim = true;
@@ -3265,6 +3334,38 @@ mod tests {
     #[cfg(unix)]
     fn host_rss_bytes_is_positive_on_unix() {
         assert!(host_rss_bytes().unwrap() > 0);
+    }
+
+    #[test]
+    fn diff_reports_identical_and_changed_packages() {
+        let gltf = br#"{"asset":{"version":"2.0"},"nodes":[{"name":"root","mesh":0}],
+            "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+            "accessors":[{"count":4,"type":"VEC3"}]}"#;
+        let model = mdc_model::GltfImporter
+            .import(gltf, &mdc_model::ImportLimits::default())
+            .unwrap();
+        let a =
+            mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::sprite_only())
+                .unwrap();
+        let b = mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d())
+            .unwrap();
+        let dir = std::env::temp_dir().join(format!("mdc-diff-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let (pa, pb) = (dir.join("a.mdcpkg"), dir.join("b.mdcpkg"));
+        std::fs::write(&pa, a.to_bytes().unwrap()).unwrap();
+        std::fs::write(&pb, b.to_bytes().unwrap()).unwrap();
+        // Same file diffed against itself is identical; a sprite vs mesh package is not.
+        cmd_diff(&[
+            pa.to_string_lossy().into_owned(),
+            pa.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        cmd_diff(&[
+            pa.to_string_lossy().into_owned(),
+            pb.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

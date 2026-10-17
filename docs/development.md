@@ -85,4 +85,12 @@ second-UV/second-skin feature flags):
 cargo run -p mdc -- model-info ./model.glb
 ```
 
+`mdc diff <a.mdcpkg> <b.mdcpkg>` (N389) prints a JSON field-by-field comparison of
+two sealed packages (manifest fields plus structural counts, with an `identical`
+flag):
+
+```sh
+cargo run -p mdc -- diff ./old.mdcpkg ./new.mdcpkg
+```
+
 
