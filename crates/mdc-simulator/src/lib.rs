@@ -4311,6 +4311,8 @@ mod tests {
                 emissive_uv_transform: None,
                 normal_uv_transform: None,
                 occlusion_uv_transform: None,
+                roughness_texture: None,
+                roughness_uv_transform: None,
             }],
             lights: Vec::new(),
             skeletons: Vec::new(),

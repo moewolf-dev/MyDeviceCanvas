@@ -992,6 +992,12 @@ struct SceneDrawable<'a> {
     emissive_strength: f32,
     /// N395: the emissive texture's own UV transform.
     emissive_uv_transform: mdc_model::UvTransform,
+    /// N394: metallicRoughness texture (G = roughness).
+    roughness_map: Option<&'a crate::TextureMap>,
+    /// N394: the material's `roughnessFactor`.
+    roughness_factor: f32,
+    /// N395: the metallicRoughness texture's own UV transform.
+    roughness_uv_transform: mdc_model::UvTransform,
 }
 
 /// N327: default key light (straight down -z, i.e. toward +z-facing surfaces) and
@@ -1148,6 +1154,9 @@ fn draw_scene_sorted(
                     specular: d.specular,
                     shininess: d.shininess,
                     uv_transform: d.normal_uv_transform,
+                    roughness_map: d.roughness_map,
+                    roughness_factor: d.roughness_factor,
+                    roughness_uv_transform: d.roughness_uv_transform,
                 }),
                 _ => None,
             },
@@ -1284,6 +1293,9 @@ pub fn render_scene_at(
             emissive_map: None,
             emissive_strength: 1.0,
             emissive_uv_transform: mdc_model::UvTransform::default(),
+            roughness_map: None,
+            roughness_factor: 1.0,
+            roughness_uv_transform: mdc_model::UvTransform::default(),
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -1864,10 +1876,19 @@ pub fn render_package_scene_clip_mode(
         let usable_normal_map = normal_map.is_some()
             && geometry.tangents.len() >= geometry.positions.len()
             && has_normals;
+        // N394: a metallicRoughness texture also needs the per-pixel pass.
+        let (roughness_index, roughness_factor) = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .map(|material| (material.roughness_texture(), material.roughness()))
+            .unwrap_or((None, 1.0));
+        let roughness_map = roughness_index
+            .and_then(|index| textures.get(index))
+            .and_then(|texture| texture.as_ref());
         let smooth = matches!(mode, ShadeMode::Smooth | ShadeMode::SmoothSpecular)
             && has_normals
             && !usable_normal_map;
-        let per_pixel = usable_normal_map || smooth;
+        let per_pixel = (usable_normal_map || smooth || roughness_map.is_some()) && has_normals;
         // N387: material-derived Blinn-Phong parameters for the specular mode.
         let (specular, shininess) = if mode == ShadeMode::SmoothSpecular {
             let (roughness, metallic) = mesh
@@ -1891,13 +1912,14 @@ pub fn render_package_scene_clip_mode(
         let emissive_map = emissive_index
             .and_then(|index| textures.get(index))
             .and_then(|texture| texture.as_ref());
-        let (emissive_uv_transform, normal_uv_transform) = mesh
+        let (emissive_uv_transform, normal_uv_transform, roughness_uv_transform) = mesh
             .material
             .and_then(|mi| package.materials.get(mi))
             .map(|material| {
                 (
                     material.emissive_uv_transform(),
                     material.normal_uv_transform(),
+                    material.roughness_uv_transform(),
                 )
             })
             .unwrap_or_default();
@@ -1916,9 +1938,10 @@ pub fn render_package_scene_clip_mode(
                 occlusion.as_deref(),
             )
         };
+        let use_flat = !usable_normal_map && per_pixel;
         let (drawable_map, drawable_scale) = if usable_normal_map {
             (normal_map, normal_scale)
-        } else if smooth {
+        } else if use_flat {
             (Some(&flat_normal), 0.0)
         } else {
             (None, normal_scale)
@@ -1980,6 +2003,9 @@ pub fn render_package_scene_clip_mode(
             emissive_map,
             emissive_strength,
             emissive_uv_transform,
+            roughness_map,
+            roughness_factor,
+            roughness_uv_transform,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;

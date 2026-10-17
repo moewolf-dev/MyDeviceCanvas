@@ -875,6 +875,8 @@ fn packaged_masked_texture_cuts_out_on_render() {
             emissive_uv_transform: None,
             normal_uv_transform: None,
             occlusion_uv_transform: None,
+            roughness_texture: None,
+            roughness_uv_transform: None,
         }],
         lights: Vec::new(),
         skeletons: Vec::new(),
@@ -961,6 +963,8 @@ fn masked_material_cuts_out_transparent_texels() {
             emissive_uv_transform: None,
             normal_uv_transform: None,
             occlusion_uv_transform: None,
+            roughness_texture: None,
+            roughness_uv_transform: None,
         }],
         ..Model::default()
     };
@@ -1621,6 +1625,8 @@ fn unlit_material_and_vertex_colours_render_on_the_device() {
                 emissive_uv_transform: None,
                 normal_uv_transform: None,
                 occlusion_uv_transform: None,
+                roughness_texture: None,
+                roughness_uv_transform: None,
                 ..Material::default()
             }],
             ..Model::default()
@@ -1726,6 +1732,8 @@ fn occlusion_texture_darkens_the_shadowed_triangles() {
             emissive_uv_transform: None,
             normal_uv_transform: None,
             occlusion_uv_transform: None,
+            roughness_texture: None,
+            roughness_uv_transform: None,
             ..Material::default()
         }],
         textures: vec![
@@ -1862,6 +1870,8 @@ fn normal_map_perturbs_per_pixel_shading() {
             emissive_uv_transform: None,
             normal_uv_transform: None,
             occlusion_uv_transform: None,
+            roughness_texture: None,
+            roughness_uv_transform: None,
             ..Material::default()
         }],
         textures: vec![
@@ -2423,6 +2433,92 @@ fn emissive_texture_adds_light_on_the_device() {
     assert!(
         dark >> 11 < 8,
         "base stays dark without emissive: {dark:#06x}"
+    );
+}
+
+#[test]
+fn roughness_texture_modulates_shading_per_texel() {
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node, Texture};
+
+    let png = |w: u32, h: u32, pixels: Vec<u8>| {
+        let image = image::RgbImage::from_raw(w, h, pixels).unwrap();
+        let mut out = Vec::new();
+        image
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    };
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.5, 0.5, 0.0],
+                    [-0.5, 0.5, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                uv2: Vec::new(),
+                // Grazing (back-facing) normals so the ambient floor dominates.
+                normals: vec![[0.0, 0.0, -1.0]; 4],
+                colors: Vec::new(),
+                tangents: Vec::new(),
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                skin_joints2: Vec::new(),
+                skin_weights2: Vec::new(),
+                morph_targets: Vec::new(),
+            }),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "m".into(),
+            color: Some([255, 255, 255]),
+            // N394: left teixel rough (G=255), right smooth (G=0).
+            roughness_texture: Some(0),
+            ..Material::default()
+        }],
+        textures: vec![Texture {
+            name: "rm".into(),
+            width: 2,
+            height: 1,
+            format: "image/png".into(),
+            bytes: 0,
+            data: Some(png(2, 1, vec![0, 255, 0, 0, 0, 0])),
+            wrap: None,
+        }],
+        ..Model::default()
+    };
+    let blobs = mdc_bake::attach_model_textures(&model, &mdc_bake::BakeLimits::default());
+    let package = mdc_bake::mesh_package_with_textures(
+        &model,
+        &mdc_model::RendererCapability::full_3d(),
+        blobs,
+    )
+    .unwrap();
+    let frame = mdc_bake::render_package_scene(&package.package, 0.0, (32, 32)).unwrap();
+    let at = |x: usize| {
+        u16::from_le_bytes([
+            frame.rgb565[(16 * 32 + x) * 2],
+            frame.rgb565[(16 * 32 + x) * 2 + 1],
+        ])
+    };
+    assert!(
+        at(6) > at(25),
+        "the rough teixel is brighter: left={:#06x} right={:#06x}",
+        at(6),
+        at(25)
     );
 }
 

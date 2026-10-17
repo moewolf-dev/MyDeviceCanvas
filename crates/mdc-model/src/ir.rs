@@ -362,6 +362,12 @@ pub struct Material {
     /// N395: `occlusionTexture`'s `KHR_texture_transform`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occlusion_uv_transform: Option<UvTransform>,
+    /// N394: `metallicRoughnessTexture.index` (G = roughness, B = metallic).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roughness_texture: Option<usize>,
+    /// N395: `metallicRoughnessTexture`'s `KHR_texture_transform`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roughness_uv_transform: Option<UvTransform>,
 }
 
 /// N373: glTF `KHR_texture_transform`. `rotation` is in radians; the transform is
@@ -499,6 +505,16 @@ impl Material {
     /// N395: the occlusion texture's UV transform (identity when absent).
     pub fn occlusion_uv_transform(&self) -> UvTransform {
         self.occlusion_uv_transform.unwrap_or_default()
+    }
+
+    /// N394: the metallicRoughness texture index (G = roughness).
+    pub fn roughness_texture(&self) -> Option<usize> {
+        self.roughness_texture
+    }
+
+    /// N395: the metallicRoughness texture's UV transform (identity when absent).
+    pub fn roughness_uv_transform(&self) -> UvTransform {
+        self.roughness_uv_transform.unwrap_or_default()
     }
 }
 

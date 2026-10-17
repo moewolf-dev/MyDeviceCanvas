@@ -361,6 +361,17 @@ impl GltfImporter {
                 .and_then(|e| e.get("extensions"))
                 .and_then(|e| e.get("KHR_texture_transform"))
                 .and_then(parse_uv_transform);
+            // N394/N395: metallicRoughnessTexture (+ its transform).
+            let roughness_texture = pbr
+                .and_then(|p| p.get("metallicRoughnessTexture"))
+                .and_then(|m| m.get("index"))
+                .and_then(Value::as_u64)
+                .and_then(resolve_texture);
+            let roughness_uv_transform = pbr
+                .and_then(|p| p.get("metallicRoughnessTexture"))
+                .and_then(|m| m.get("extensions"))
+                .and_then(|e| e.get("KHR_texture_transform"))
+                .and_then(parse_uv_transform);
             // N379: normalTexture (tangent-space normal map).
             let normal_texture = material
                 .get("normalTexture")
@@ -426,6 +437,8 @@ impl GltfImporter {
                 emissive_uv_transform,
                 normal_uv_transform,
                 occlusion_uv_transform,
+                roughness_texture,
+                roughness_uv_transform,
             });
         }
 

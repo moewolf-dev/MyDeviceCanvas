@@ -271,6 +271,8 @@ impl Live2DImporter {
                 emissive_uv_transform: None,
                 normal_uv_transform: None,
                 occlusion_uv_transform: None,
+                roughness_texture: None,
+                roughness_uv_transform: None,
             });
             nodes.push(Node {
                 name: name.clone(),

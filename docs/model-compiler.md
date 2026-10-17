@@ -289,7 +289,9 @@ shading now also applies to untextured (solid) triangles. N390:
 (raw integer positions are dequantized by the node transform). N393:
 `emissiveTexture` is imported and added (scaled by `emissiveStrength`) to the shaded
 colour. N395: `KHR_texture_transform` is honoured per texture slot (base colour,
-normal, emissive), each sampled with its own transform. N380:
+normal, emissive, metallicRoughness), each sampled with its own transform. N394:
+`metallicRoughnessTexture`'s green (roughness) channel raises the per-teixel ambient
+floor in the per-pixel pass. N380:
 `pack_material_atlas` (and `mdc package --atlas MAX_PAGE`) shelf-packs a package's
 per-material textures into one bounded page, remapping material indices and mesh UVs.
 

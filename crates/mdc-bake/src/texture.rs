@@ -391,6 +391,12 @@ pub(crate) struct NormalMap<'a> {
     pub shininess: f32,
     /// N395: the normal texture's own UV transform.
     pub uv_transform: mdc_model::UvTransform,
+    /// N394: metallicRoughness texture (G = roughness).
+    pub roughness_map: Option<&'a TextureMap>,
+    /// N394: the material's `roughnessFactor`.
+    pub roughness_factor: f32,
+    /// N395: the metallicRoughness texture's own UV transform.
+    pub roughness_uv_transform: mdc_model::UvTransform,
 }
 
 /// N393: an additive emissive texture layered on top of the shaded colour.
@@ -478,7 +484,19 @@ pub(crate) fn apply_normal_map(
         t[1] * nt[0] + b[1] * nt[1] + n[1] * nt[2],
         t[2] * nt[0] + b[2] * nt[1] + n[2] * nt[2],
     ]);
-    let lux = v3_dot(world, nm.light).clamp(nm.ambient, 1.0);
+    // N394: a metallicRoughness texture raises the per-teixel ambient floor by
+    // its green (roughness) channel, matching `material_ambient`.
+    let ambient = match nm.roughness_map {
+        Some(map) => {
+            let [ru, rv] = nm.roughness_uv_transform.apply(uv);
+            let texel = map.sample(ru, rv);
+            let roughness =
+                nm.roughness_factor.clamp(0.0, 1.0) * (f32::from((texel >> 5) & 0x3f) / 63.0);
+            (nm.ambient + 0.35 * roughness).min(0.95)
+        }
+        None => nm.ambient,
+    };
+    let lux = v3_dot(world, nm.light).clamp(ambient, 1.0);
     let mut value = rgb565_scale(value, lux);
     if nm.specular > 0.0 {
         let half = v3_normalize([nm.light[0], nm.light[1], nm.light[2] + 1.0]);
