@@ -1380,6 +1380,50 @@ fn http_stream_scale_requests_stay_bounded() {
 }
 
 #[test]
+fn material_atlas_pack_stays_within_the_page() {
+    // N381: repeatedly packing a package's per-material textures keeps a single
+    // bounded page, whatever the blob sizes.
+    let gltf = br#"{"asset":{"version":"2.0"},
+        "nodes":[{"name":"root","mesh":0},{"name":"b","mesh":1}],
+        "meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0}]},
+                  {"primitives":[{"attributes":{"POSITION":1},"material":1}]}],
+        "materials":[{"pbrMetallicRoughness":{"baseColorTexture":{"index":0}}},
+                     {"pbrMetallicRoughness":{"baseColorTexture":{"index":1}}}],
+        "accessors":[{"count":4,"type":"VEC3"},{"count":4,"type":"VEC3"}]}"#;
+    let model = mdc_model::GltfImporter
+        .import(gltf, &mdc_model::ImportLimits::default())
+        .unwrap();
+    let package =
+        mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d()).unwrap();
+    let blob = |w: u32, h: u32, value: u16| {
+        let mut rgb565 = Vec::new();
+        for _ in 0..w * h {
+            rgb565.extend_from_slice(&value.to_le_bytes());
+        }
+        mdc_model::TextureBlob {
+            width: w,
+            height: h,
+            rgb565,
+            alpha: Vec::new(),
+        }
+    };
+    for _ in 0..200 {
+        let mut inner = package.package.clone();
+        inner.texture_blobs = vec![
+            blob(16, 16, 0xF800),
+            blob(16, 8, 0x07E0),
+            blob(8, 8, 0x001F),
+        ];
+        if mdc_bake::pack_material_atlas(&mut inner, 64) {
+            assert_eq!(inner.texture_blobs.len(), 1, "one page");
+            let page = &inner.texture_blobs[0];
+            assert!(page.width <= 64 && page.height <= 64, "page bounded");
+            assert_eq!(page.rgb565.len(), (page.width * page.height * 2) as usize);
+        }
+    }
+}
+
+#[test]
 fn disk_asset_cache_stays_within_quota() {
     // N369/N371: the on-disk asset store never exceeds its byte quota, however
     // many payloads are inserted.

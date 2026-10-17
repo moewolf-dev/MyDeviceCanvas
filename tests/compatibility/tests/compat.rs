@@ -1869,6 +1869,125 @@ fn normal_map_perturbs_per_pixel_shading() {
 }
 
 #[test]
+fn packed_material_atlas_renders_on_the_device() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node, Texture};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let png = |w: u32, h: u32, pixels: Vec<u8>| {
+        let image = image::RgbImage::from_raw(w, h, pixels).unwrap();
+        let mut out = Vec::new();
+        image
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    };
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.5, 0.5, 0.0],
+                    [-0.5, 0.5, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                normals: Vec::new(),
+                colors: Vec::new(),
+                tangents: Vec::new(),
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                morph_targets: Vec::new(),
+            }),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "m".into(),
+            texture: Some(0),
+            color: Some([255, 255, 255]),
+            ..Material::default()
+        }],
+        textures: vec![
+            Texture {
+                name: "red-green".into(),
+                width: 2,
+                height: 1,
+                format: "image/png".into(),
+                bytes: 0,
+                data: Some(png(2, 1, vec![255, 0, 0, 0, 255, 0])),
+                wrap: None,
+            },
+            Texture {
+                name: "extra".into(),
+                width: 2,
+                height: 1,
+                format: "image/png".into(),
+                bytes: 0,
+                data: Some(png(2, 1, vec![0, 0, 255, 255, 255, 255])),
+                wrap: None,
+            },
+        ],
+        ..Model::default()
+    };
+    let blobs = mdc_bake::attach_model_textures(&model, &mdc_bake::BakeLimits::default());
+    let mut package = mdc_bake::mesh_package_with_textures(
+        &model,
+        &mdc_model::RendererCapability::full_3d(),
+        blobs,
+    )
+    .unwrap();
+    // N380: collapse the two textures into one page.
+    let mut inner = package.package.clone();
+    assert!(mdc_bake::pack_material_atlas(&mut inner, 64), "packed");
+    package = mdc_model::MdcPackage::seal(inner).unwrap();
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .install_package(&package.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    session.start_mirror("main", "full-frame", 30).unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    device.clock.advance(0);
+    device.emit_mirror_frame().unwrap();
+    session.poll().unwrap();
+    let frame = session.take_mirror_frame().expect("mirror frame");
+    let at = |x: usize, y: usize| {
+        u16::from_le_bytes([
+            frame.bytes[(y * 800 + x) * 2],
+            frame.bytes[(y * 800 + x) * 2 + 1],
+        ])
+    };
+    let left = at(200, 240);
+    let right = at(600, 240);
+    assert!(
+        left >> 11 > ((left >> 5) & 0x3f),
+        "left is red: {left:#06x}"
+    );
+    assert!(
+        ((right >> 5) & 0x3f) > right >> 11,
+        "right is green: {right:#06x}"
+    );
+}
+
+#[test]
 fn device_diagnostics_reach_the_host_channel() {
     use mdc_core::{ConnectionState, DiagnosticRecord, Session};
     use mdc_simulator::{BoardProfile, FakeDevice};

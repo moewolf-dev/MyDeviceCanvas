@@ -1423,11 +1423,7 @@ pub fn pack_material_atlas(package: &mut mdc_model::DevicePackage, max_page: u32
     // Only fully valid, opaque blobs are packed.
     let mut parts: Vec<(usize, u32, u32)> = Vec::new();
     for (index, blob) in package.texture_blobs.iter().enumerate() {
-        if !blob.validate()
-            || !blob.alpha.is_empty()
-            || blob.width > max_page
-            || blob.height > max_page
-        {
+        if !blob.validate() || blob.width > max_page || blob.height > max_page {
             continue;
         }
         parts.push((index, blob.width, blob.height));
@@ -1456,8 +1452,16 @@ pub fn pack_material_atlas(package: &mut mdc_model::DevicePackage, max_page: u32
     if page_h == 0 {
         return false;
     }
-    // Blit each blob into the page.
+    // Blit each blob into the page, carrying any 1-bit alpha mask across.
     let mut page = vec![0u8; (max_page as usize) * (page_h as usize) * 2];
+    let has_alpha = placements.iter().any(|(index, _, _, _, _)| {
+        package
+            .texture_blobs
+            .get(*index)
+            .is_some_and(|blob| !blob.alpha.is_empty())
+    });
+    let page_pixels = (max_page as usize) * (page_h as usize);
+    let mut page_alpha = vec![0xFFu8; page_pixels.div_ceil(8)];
     for (index, px, py, w, h) in &placements {
         let Some(blob) = package.texture_blobs.get(*index) else {
             return false;
@@ -1467,6 +1471,22 @@ pub fn pack_material_atlas(package: &mut mdc_model::DevicePackage, max_page: u32
             let dst = (((py + row) * max_page + px) * 2) as usize;
             let len = (*w * 2) as usize;
             page[dst..dst + len].copy_from_slice(&blob.rgb565[src..src + len]);
+            if !blob.alpha.is_empty() {
+                for col in 0..*w {
+                    let from = ((row * *w + col) / 8) as usize;
+                    let from_bit = (row * *w + col) % 8;
+                    let opaque = blob
+                        .alpha
+                        .get(from)
+                        .is_some_and(|byte| byte & (1 << from_bit) != 0);
+                    let to = ((py + row) * max_page + px + col) as usize;
+                    if opaque {
+                        page_alpha[to / 8] |= 1 << (to % 8);
+                    } else {
+                        page_alpha[to / 8] &= !(1 << (to % 8));
+                    }
+                }
+            }
         }
     }
     // Remap each placed material and the UVs of the meshes that use it.
@@ -1511,7 +1531,7 @@ pub fn pack_material_atlas(package: &mut mdc_model::DevicePackage, max_page: u32
         width: max_page,
         height: page_h,
         rgb565: page,
-        alpha: Vec::new(),
+        alpha: if has_alpha { page_alpha } else { Vec::new() },
     }];
     package.texture = package.texture_blobs.first().cloned();
     true
