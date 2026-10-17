@@ -533,6 +533,17 @@ impl SceneTransform {
             sy: scale(rect[3], self.sy),
         }
     }
+
+    /// N368: a `clip` node's rect offsets its children without scaling them; the
+    /// rect only bounds what is composited back.
+    fn offset(self, rect: [u16; 4]) -> Self {
+        Self {
+            ox: self.ox + i32::from(rect[0]) * self.sx / 1000,
+            oy: self.oy + i32::from(rect[1]) * self.sy / 1000,
+            sx: self.sx,
+            sy: self.sy,
+        }
+    }
 }
 
 /// N355: fill a rect with rounded corners of `radius` (clamped to half the
@@ -750,6 +761,41 @@ fn fill_scene(
     );
     // N338: source alpha for every rasterised kind.
     let alpha = node.opacity_u8();
+    // N368: a `clip` node bounds its children to its rect. Children draw into a
+    // copy of the target, then only the clip rect is composited back.
+    if node.kind == "clip" {
+        if let Some(rect) = node.rect {
+            let [x, y, w, h] = transform.apply(rect);
+            let mut scratch = pixels.to_vec();
+            let mut child_drew = false;
+            let child_transform = transform.offset(rect);
+            for child in &node.children {
+                fill_scene(
+                    child,
+                    &mut scratch,
+                    width,
+                    height,
+                    atlas,
+                    child_transform,
+                    &mut child_drew,
+                );
+            }
+            let x0 = u32::from(x);
+            let y0 = u32::from(y);
+            let x1 = (x0 + u32::from(w)).min(width);
+            let y1 = (y0 + u32::from(h)).min(height);
+            for yy in y0..y1 {
+                let row = (yy * width) as usize * 2;
+                let start = row + x0 as usize * 2;
+                let end = row + x1 as usize * 2;
+                pixels[start..end].copy_from_slice(&scratch[start..end]);
+            }
+            if child_drew {
+                *drew = true;
+            }
+        }
+        return;
+    }
     if node.kind == "rect" {
         if let Some(rect) = node.rect {
             let [x, y, w, h] = transform.apply(rect);
@@ -3398,6 +3444,50 @@ mod tests {
             (mid >> 11) > 0 && (mid & 0x1f) > 0,
             "mid blended: {mid:#06x}"
         );
+    }
+
+    #[test]
+    fn scene_clip_bounds_children() {
+        use mdc_protocol::SceneNode;
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 8,
+            height: 8,
+            ..BoardProfile::default()
+        });
+        let fill = |rect: [u16; 4]| SceneNode {
+            name: "f".into(),
+            kind: "rect".into(),
+            rect: Some(rect),
+            value: Some("#FFFFFF".into()),
+            value2: None,
+            opacity: None,
+            children: Vec::new(),
+        };
+        device.scene = Some(SceneNode {
+            name: "c".into(),
+            kind: "clip".into(),
+            rect: Some([2, 2, 4, 4]),
+            value: None,
+            value2: None,
+            opacity: None,
+            // The child fills 8x8 relative to the clip origin, so it would cover
+            // everything without the clip rect.
+            children: vec![fill([0, 0, 8, 8])],
+        });
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(3, 3), Some(0xFFFF), "inside clip");
+        assert_eq!(device.pixel_rgb565(0, 0), Some(0), "outside clip top-left");
+        assert_eq!(
+            device.pixel_rgb565(7, 7),
+            Some(0),
+            "outside clip bottom-right"
+        );
+        assert_eq!(
+            device.pixel_rgb565(5, 5),
+            Some(0xFFFF),
+            "clip edge included"
+        );
+        assert_eq!(device.pixel_rgb565(6, 6), Some(0), "just past clip");
     }
 
     #[test]
