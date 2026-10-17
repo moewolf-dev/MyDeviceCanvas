@@ -90,6 +90,10 @@ struct SurfaceDto {
     implemented: bool,
     stride: u32,
     rotation: u16,
+    /// N351: the device display profile (N308).
+    preferred_tile_size: u16,
+    supports_partial_update: bool,
+    supports_full_framebuffer: bool,
 }
 
 fn load_rgb565(path: &Path, width: u32, height: u32) -> Result<Vec<u8>, String> {
@@ -178,6 +182,9 @@ fn devices_json(manager: &DeviceManager) -> String {
                     implemented: s.pixel_format.is_implemented(),
                     stride: s.stride,
                     rotation: s.rotation,
+                    preferred_tile_size: s.preferred_tile_size,
+                    supports_partial_update: s.supports_partial_update,
+                    supports_full_framebuffer: s.supports_full_framebuffer,
                 })
                 .collect(),
             mirror: MirrorDto {
@@ -213,6 +220,8 @@ fn inspect_json(manager: &DeviceManager, metrics: Option<&SimMetrics>) -> String
         protocol: String,
         devices: Vec<DeviceDto>,
         metrics: Option<&'a SimMetrics>,
+        /// N351: diagnostic records emitted by the device.
+        diagnostics: Option<u64>,
         image_bytes_included: bool,
         last_error: Option<String>,
     }
@@ -234,6 +243,9 @@ fn inspect_json(manager: &DeviceManager, metrics: Option<&SimMetrics>) -> String
                     implemented: s.pixel_format.is_implemented(),
                     stride: s.stride,
                     rotation: s.rotation,
+                    preferred_tile_size: s.preferred_tile_size,
+                    supports_partial_update: s.supports_partial_update,
+                    supports_full_framebuffer: s.supports_full_framebuffer,
                 })
                 .collect(),
             mirror: MirrorDto {
@@ -264,6 +276,7 @@ fn inspect_json(manager: &DeviceManager, metrics: Option<&SimMetrics>) -> String
         protocol: format!("{}.{}", VERSION.major, VERSION.minor),
         devices,
         metrics,
+        diagnostics: metrics.map(|m| m.diagnostics_emitted),
         image_bytes_included: false,
         last_error: None,
     })
@@ -389,6 +402,7 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
                     "board": opts.board,
                     "scene_nodes": device.scene_node_count(),
                     "atlas_frames": device.atlas_frames(),
+                    "diagnostics_emitted": snapshot.diagnostics_emitted,
                     "config": inspect_json(&mgr, Some(&snapshot)),
                 })
             );
@@ -3510,6 +3524,9 @@ mod tests {
         assert!(json.contains("\"configKeys\""));
         assert!(json.contains("\"scene\""));
         assert!(!json.contains("\"pixels\""));
+        // N351: the surface display profile is exposed.
+        assert!(json.contains("\"preferred_tile_size\": 64"));
+        assert!(json.contains("\"supports_partial_update\": true"));
     }
 
     #[test]
