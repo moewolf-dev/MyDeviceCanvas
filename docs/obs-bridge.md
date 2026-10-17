@@ -47,6 +47,7 @@ mdc --board linux-virt mirror --frames 300 --http 127.0.0.1:8080
 #   http://127.0.0.1:8080/frame.ppm   -> image/x-portable-pixmap
 #   http://127.0.0.1:8080/frame.png   -> image/png (N328)
 #   http://127.0.0.1:8080/frame.jpg   -> image/jpeg (N336)
+#   http://127.0.0.1:8080/health      -> JSON counters (N361)
 # Optional query on /frame.*: ?scale=2 (integer 1..=8), ?quality=70 (JPEG 1..=100, N346)
 # /stream[.jpg]?scale=2 downscales each streamed part (N356)
 

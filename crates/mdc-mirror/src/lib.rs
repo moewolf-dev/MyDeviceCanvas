@@ -1195,6 +1195,17 @@ impl HttpMirrorServer {
     pub fn pump(&mut self) -> io::Result<()> {
         self.accept_pending()?;
         let last = self.last.as_ref();
+        // N361: a bounded health snapshot for a monitoring consumer.
+        let health = {
+            let body = format!(
+                "{{\"frames\":{},\"clients\":{},\"streaming\":{},\"clipped\":{}}}",
+                self.frames,
+                self.clients.len(),
+                self.streaming_clients(),
+                self.clipped_frames()
+            );
+            simple_response(200, "application/json", body.as_bytes())
+        };
         for client in &mut self.clients {
             if client.streaming || client.response.is_some() {
                 continue;
@@ -1211,10 +1222,14 @@ impl HttpMirrorServer {
                     client.request.extend_from_slice(&buffer[..read]);
                     if let Some(end) = find_header_end(&client.request) {
                         let (path, query) = request_target(&client.request[..end]);
-                        match respond(last, &path, &query) {
-                            Served::Bytes(bytes) => client.response = Some(bytes),
-                            Served::Multipart { jpeg, scale } => {
-                                begin_stream(client, last, jpeg, scale)
+                        if path == "/health" {
+                            client.response = Some(health.clone());
+                        } else {
+                            match respond(last, &path, &query) {
+                                Served::Bytes(bytes) => client.response = Some(bytes),
+                                Served::Multipart { jpeg, scale } => {
+                                    begin_stream(client, last, jpeg, scale)
+                                }
                             }
                         }
                     }
@@ -2034,6 +2049,23 @@ mod tests {
             jpg.windows(2).any(|w| w == [0xFF, 0xD8]),
             "JPEG body present"
         );
+    }
+
+    #[test]
+    fn http_health_reports_counters() {
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        let pixels = vec![0u8; 4];
+        server.publish(&ShadowFrame {
+            width: 1,
+            height: 1,
+            generation: 1,
+            frame_id: 1,
+            pixels: &pixels,
+        });
+        let health = String::from_utf8_lossy(&http_get(&mut server, "/health")).to_string();
+        assert!(health.starts_with("HTTP/1.1 200 OK"), "{health}");
+        assert!(health.contains("application/json"));
+        assert!(health.contains("\"frames\":1"), "{health}");
     }
 
     #[test]
