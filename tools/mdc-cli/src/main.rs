@@ -468,6 +468,7 @@ fn cmd_package(
     let mut texture_path: Option<String> = None;
     let mut atlas_page: Option<u32> = None;
     let mut indexed: u32 = 0;
+    let mut dither: u8 = 0;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -479,6 +480,8 @@ fn cmd_package(
             }
             // N415: quantize each texture blob to a palette.
             "--indexed" => indexed = iter.next().and_then(|v| v.parse().ok()).unwrap_or(16),
+            // N416: ordered-dither each texture blob (strength in LSBs).
+            "--dither" => dither = iter.next().and_then(|v| v.parse().ok()).unwrap_or(4),
             other => out = Some(other.to_string()),
         }
     }
@@ -519,6 +522,22 @@ fn cmd_package(
         }
     };
     let texture_error: Option<String> = None;
+    // N416: optionally dither the textures before any palette step.
+    let package = if dither > 0 {
+        let mut inner = package.package.clone();
+        inner.texture_blobs = inner
+            .texture_blobs
+            .iter()
+            .map(|blob| mdc_bake::dither_texture_blob(blob, dither))
+            .collect();
+        inner.texture = inner
+            .texture
+            .as_ref()
+            .map(|blob| mdc_bake::dither_texture_blob(blob, dither));
+        mdc_model::MdcPackage::seal(inner)?
+    } else {
+        package
+    };
     // N415: optionally quantize the textures to a palette (form-A devices).
     let package = if indexed >= 2 {
         let mut inner = package.package.clone();
@@ -3225,7 +3244,7 @@ fn usage() {
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
-package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
+package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] [--srgb] --out f.ppm|\
@@ -3559,6 +3578,25 @@ mod tests {
         .unwrap();
         cmd_model_info(&[path.to_string_lossy().into_owned()]).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dither_texture_blob_changes_rgb565() {
+        // N416: dithering a flat blob produces a non-uniform buffer.
+        let blob = mdc_model::TextureBlob {
+            width: 4,
+            height: 4,
+            rgb565: 0x8410u16.to_le_bytes().repeat(16),
+            alpha: Vec::new(),
+            palette: Vec::new(),
+            indices: Vec::new(),
+        };
+        let dithered = mdc_bake::dither_texture_blob(&blob, 4);
+        assert_ne!(dithered.rgb565, blob.rgb565);
+        assert_eq!(dithered.rgb565.len(), blob.rgb565.len());
+        assert!(!dithered.is_indexed());
+        // Strength 0 is a no-op.
+        assert_eq!(mdc_bake::dither_texture_blob(&blob, 0).rgb565, blob.rgb565);
     }
 
     #[test]

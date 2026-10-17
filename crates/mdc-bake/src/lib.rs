@@ -800,6 +800,22 @@ pub fn quantize_palette(width: u32, height: u32, rgb565: &[u8], max_colors: u32)
     }
 }
 
+/// N416: apply ordered (Bayer) dithering to a blob's RGB565. An indexed or invalid
+/// blob is returned unchanged.
+pub fn dither_texture_blob(blob: &mdc_model::TextureBlob, strength: u8) -> mdc_model::TextureBlob {
+    if blob.is_indexed() || !blob.validate() || strength == 0 {
+        return blob.clone();
+    }
+    mdc_model::TextureBlob {
+        width: blob.width,
+        height: blob.height,
+        rgb565: bayer_dither_rgb565(blob.width, blob.height, &blob.rgb565, strength),
+        alpha: blob.alpha.clone(),
+        palette: Vec::new(),
+        indices: Vec::new(),
+    }
+}
+
 /// N415: quantize a blob's RGB565 to a palette, returning a palette-indexed blob
 /// (the 1-bit alpha mask is preserved). An already-indexed or invalid blob is
 /// returned unchanged.
