@@ -40,6 +40,9 @@ final class MdcSession {
 Default session is **simulator FakeDevice** (same as CLI `--sim`). Physical transports are not exposed through the C ABI in 0.1.
 Also: `mdc_session_current_frame_id`, `mdc_session_surface_size`, `mdc_session_needs_full_frame`.
 
+N366: `MdcSession(webSocket: "ws://host:port")` connects over WebSocket (C ABI
+`mdc_session_connect_ws`), alongside `MdcSession(tcp:)`.
+
 ## Pixel format (N307)
 
 `MdcSession.swift` exposes the surface pixel format enum:

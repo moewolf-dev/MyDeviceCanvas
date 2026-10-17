@@ -93,6 +93,32 @@ fn open_tcp(addr: &str) -> Result<MdcSession, ()> {
     Err(())
 }
 
+/// N366: connect over WebSocket (`ws://host:port`).
+fn open_ws(url: &str) -> Result<MdcSession, ()> {
+    let ws = mdc_transport::WebSocketTransport::connect(url, Duration::from_millis(400))
+        .map_err(|_| ())?;
+    let manager = Arc::new(Mutex::new(DeviceManager::new()));
+    let mut session = Session::new(Box::new(ws) as Box<dyn Transport>);
+    session.set_manager(manager.clone());
+    session.connect().map_err(|_| ())?;
+    let mut held = MdcSession {
+        session,
+        device: None,
+        manager,
+        queued: Vec::new(),
+        queued_diagnostics: std::collections::VecDeque::new(),
+    };
+    for _ in 0..40 {
+        let _ = held.session.poll();
+        if held.session.state == ConnectionState::Ready {
+            remember_endpoint(&held, url);
+            return Ok(held);
+        }
+        thread::sleep(Duration::from_millis(15));
+    }
+    Err(())
+}
+
 fn surface_wh(session: &MdcSession) -> Option<(u16, u16)> {
     if let Some(device) = &session.device {
         return Some((device.profile().width, device.profile().height));
@@ -559,6 +585,25 @@ pub unsafe extern "C" fn mdc_session_connect_tcp(addr: *const c_char) -> *mut Md
     }
 }
 
+/// N366: connect over WebSocket (`ws://host:port`). Returns NULL on failure.
+///
+/// # Safety
+/// `url` is a NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_connect_ws(url: *const c_char) -> *mut MdcSession {
+    if url.is_null() {
+        return ptr::null_mut();
+    }
+    let text = match CStr::from_ptr(url).to_str() {
+        Ok(text) => text,
+        Err(_) => return ptr::null_mut(),
+    };
+    match open_ws(text) {
+        Ok(session) => Box::into_raw(Box::new(session)),
+        Err(()) => ptr::null_mut(),
+    }
+}
+
 /// # Safety
 /// Pointers must be writable when non-null. `session` is null or from create/connect.
 /// Returns 1 when an event was written, 0 when the queue is empty, negative on error.
@@ -1009,6 +1054,13 @@ pub unsafe extern "C" fn mdc_set_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn c_abi_connect_ws_rejects_an_unreachable_url() {
+        let url = std::ffi::CString::new("ws://127.0.0.1:1").unwrap();
+        let session = unsafe { mdc_session_connect_ws(url.as_ptr()) };
+        assert!(session.is_null());
+    }
 
     #[test]
     fn c_abi_diagnostics_round_trip() {

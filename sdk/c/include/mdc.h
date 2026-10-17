@@ -104,6 +104,9 @@ int mdc_session_send_scene(MdcSession* session, const uint8_t* bytes, size_t len
 /** Connect to a TCP simulator peer (`host:port`). Returns NULL on failure. */
 MdcSession* mdc_session_connect_tcp(const char* addr);
 
+/** N366: connect over WebSocket (`ws://host:port`). NULL on failure. */
+MdcSession* mdc_session_connect_ws(const char* url);
+
 /**
  * Write one queued event.
  * kind: 1 input, 2 error, 3 connected, 4 disconnected, 5 endpoint switch.

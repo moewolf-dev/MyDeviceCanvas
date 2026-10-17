@@ -13,5 +13,5 @@ name = "mdc_c"
 mdc-core = { path = "../../crates/mdc-core" }
 mdc-protocol = { path = "../../crates/mdc-protocol" }
 mdc-simulator = { path = "../../crates/mdc-simulator" }
-mdc-transport = { path = "../../crates/mdc-transport" }
+mdc-transport = { path = "../../crates/mdc-transport", features = ["websocket"] }
 serde_json = { workspace = true }

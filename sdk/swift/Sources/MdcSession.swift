@@ -69,6 +69,17 @@ public final class MdcSession {
         raw = created
     }
 
+    /// N366: WebSocket peer (`ws://host:port`).
+    public init(webSocket url: String) throws {
+        let created = url.withCString { text in
+            mdc_session_connect_ws(text)
+        }
+        guard let created else {
+            throw MdcError.createFailed
+        }
+        raw = created
+    }
+
     /// Named simulator board such as `dual-sim`. The default `init()` stays 480×320.
     public init(boardId: String) throws {
         let created = boardId.withCString { text in
