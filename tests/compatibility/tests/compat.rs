@@ -3178,6 +3178,94 @@ fn sheen_adds_a_rim_highlight() {
 }
 
 #[test]
+fn generated_tangents_enable_normal_mapping() {
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node, Texture};
+
+    let png = |w: u32, h: u32, pixels: Vec<u8>| {
+        let image = image::RgbImage::from_raw(w, h, pixels).unwrap();
+        let mut out = Vec::new();
+        image
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    };
+    let build = |normal: Option<usize>| Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.5, 0.5, 0.0],
+                    [-0.5, 0.5, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                uv2: Vec::new(),
+                normals: vec![[0.0, 0.0, 1.0]; 4],
+                colors: Vec::new(),
+                // N423: no authored tangents.
+                tangents: Vec::new(),
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                skin_joints2: Vec::new(),
+                skin_weights2: Vec::new(),
+                morph_targets: Vec::new(),
+            }),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "m".into(),
+            color: Some([255, 255, 255]),
+            normal_texture: normal,
+            ..Material::default()
+        }],
+        textures: vec![Texture {
+            name: "n".into(),
+            width: 2,
+            height: 1,
+            format: "image/png".into(),
+            bytes: 0,
+            // Left tilts the normal away, right faces the light.
+            data: Some(png(2, 1, vec![255, 0, 0, 128, 128, 255])),
+            wrap: None,
+        }],
+        ..Model::default()
+    };
+    let render = |normal: Option<usize>| {
+        let model = build(normal);
+        let blobs = mdc_bake::attach_model_textures(&model, &mdc_bake::BakeLimits::default());
+        let package = mdc_bake::mesh_package_with_textures(
+            &model,
+            &mdc_model::RendererCapability::full_3d(),
+            blobs,
+        )
+        .unwrap();
+        mdc_bake::render_package_scene(&package.package, 0.0, (32, 32)).unwrap()
+    };
+    let sum = |f: &mdc_bake::BakedTexture| -> u64 {
+        f.rgb565
+            .chunks_exact(2)
+            .map(|b| u64::from(u16::from_le_bytes([b[0], b[1]])) >> 5)
+            .sum()
+    };
+    // The normal map (with generated tangents) darkens the tilted triangle.
+    assert!(
+        sum(&render(Some(0))) < sum(&render(None)),
+        "generated tangents apply the normal map"
+    );
+}
+
+#[test]
 fn device_diagnostics_reach_the_host_channel() {
     use mdc_core::{ConnectionState, DiagnosticRecord, Session};
     use mdc_simulator::{BoardProfile, FakeDevice};

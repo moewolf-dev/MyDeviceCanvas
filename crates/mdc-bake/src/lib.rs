@@ -25,7 +25,7 @@ pub use skin::{
     render_package_scene_clip_filtered, render_package_scene_clip_mode,
     render_package_scene_clip_named, render_scene_at, sample_channel, sample_channel_looped,
     skin_arrays, skin_arrays_multi, skin_normals, skin_normals_multi, skin_points, skin_preview,
-    transform_direction, transform_point, Mat4, SceneClip, ShadeMode,
+    skin_tangents_multi, transform_direction, transform_point, Mat4, SceneClip, ShadeMode,
 };
 pub use texture::{Filter, TextureMap, Wrap};
 

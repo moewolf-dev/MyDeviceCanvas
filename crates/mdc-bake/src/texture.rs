@@ -644,6 +644,15 @@ pub(crate) fn draw_indexed(
     } else {
         Vec::new()
     };
+    // N423: an untextured mesh with a normal/emissive map still needs per-pixel
+    // sampling; use a flat white texture so the textured path runs with real UVs.
+    let white;
+    let texture = if texture.is_none() && (normal_map.is_some() || emissive.is_some()) {
+        white = TextureMap::from_rgb565(1, 1, vec![0xFF, 0xFF]).ok();
+        white.as_ref()
+    } else {
+        texture
+    };
     for (ti, triangle) in triangles.into_iter().enumerate() {
         let (Some(&a), Some(&b), Some(&c)) = (
             points.get(triangle[0]),

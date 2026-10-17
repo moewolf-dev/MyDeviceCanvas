@@ -1407,6 +1407,59 @@ fn http_stream_scale_requests_stay_bounded() {
 }
 
 #[test]
+fn generated_tangents_and_skinning_stay_bounded() {
+    // N431: tangent generation and skinning on a larger mesh are bounded.
+    use mdc_model::{MeshGeometry, Skeleton};
+    let count = 600usize;
+    let mut positions = Vec::with_capacity(count);
+    let mut uv = Vec::with_capacity(count);
+    for i in 0..count {
+        positions.push([(i % 20) as f32 * 0.1, (i / 20) as f32 * 0.1, 0.0]);
+        uv.push([(i % 20) as f32 / 20.0, (i / 20) as f32 / 30.0]);
+    }
+    let mut indices = Vec::new();
+    for i in 0..count - 2 {
+        indices.extend_from_slice(&[i as u32, (i + 1) as u32, (i + 2) as u32]);
+    }
+    let geometry = MeshGeometry {
+        positions: positions.clone(),
+        indices,
+        uv: uv.clone(),
+        uv2: Vec::new(),
+        normals: vec![[0.0, 0.0, 1.0]; count],
+        colors: Vec::new(),
+        tangents: Vec::new(),
+        skin_joints: vec![[0, 0, 0, 0]; count],
+        skin_weights: vec![[1.0, 0.0, 0.0, 0.0]; count],
+        skin_joints2: Vec::new(),
+        skin_weights2: Vec::new(),
+        morph_targets: Vec::new(),
+    };
+    let skeleton = Skeleton {
+        name: "s".into(),
+        bones: 1,
+        joint_nodes: vec![0],
+        inverse_bind: vec![mdc_bake::mat4_identity()],
+    };
+    let worlds = vec![mdc_bake::mat4_identity()];
+    for _ in 0..50 {
+        let tangents = mdc_bake::generate_tangents(&geometry);
+        assert_eq!(tangents.len(), count);
+        let skinned = mdc_bake::skin_tangents_multi(
+            &geometry.skin_joints,
+            &geometry.skin_weights,
+            &[],
+            &[],
+            &tangents,
+            &skeleton,
+            &worlds,
+        );
+        assert_eq!(skinned.len(), count);
+        assert!(skinned.iter().all(|t| t[3].abs() == 1.0));
+    }
+}
+
+#[test]
 fn indexed_texture_blobs_survive_a_package_round_trip() {
     // N421: index + dither + seal + reopen keeps a valid, bounded texture.
     let blob = mdc_model::TextureBlob {

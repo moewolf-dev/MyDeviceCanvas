@@ -2093,9 +2093,10 @@ pub fn render_package_scene_clip_mode(
             .and_then(|texture| texture.as_ref());
         let normal_ambient = package_material_ambient(package, mesh);
         let has_normals = deformed_normals.len() >= deformed.len();
-        let usable_normal_map = normal_map.is_some()
-            && geometry.tangents.len() >= geometry.positions.len()
-            && has_normals;
+        // N423: tangents can be generated from the UVs when the mesh omits them.
+        let has_tangents = geometry.tangents.len() >= geometry.positions.len()
+            || geometry.uv.len() >= geometry.positions.len();
+        let usable_normal_map = normal_map.is_some() && has_tangents && has_normals;
         // N394: a metallicRoughness texture also needs the per-pixel pass.
         let (roughness_index, roughness_factor) = mesh
             .material
