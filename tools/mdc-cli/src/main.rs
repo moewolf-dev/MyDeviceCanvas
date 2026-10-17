@@ -1255,6 +1255,8 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         Some("clamp") => mdc_bake::Wrap::Clamp,
         _ => mdc_bake::Wrap::Repeat,
     });
+    // N407: average bilinear samples in linear light.
+    let srgb = args.iter().any(|a| a == "--srgb");
     // N324/N334: an explicit `--texture` wins; otherwise use the model's own
     // embedded base-colour texture.
     let texture = match &texture_path {
@@ -1263,14 +1265,16 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             Some(
                 mdc_bake::texture_map_with_alpha8(&image, &mdc_bake::BakeLimits::default())?
                     .with_filter(filter)
-                    .with_wrap(wrap),
+                    .with_wrap(wrap)
+                    .with_srgb(srgb),
             )
         }
         None => match model.material_texture(0) {
             Some(image) => Some(
                 mdc_bake::texture_map_with_alpha8(image, &mdc_bake::BakeLimits::default())?
                     .with_filter(filter)
-                    .with_wrap(wrap),
+                    .with_wrap(wrap)
+                    .with_srgb(srgb),
             ),
             None => None,
         },
@@ -3189,7 +3193,7 @@ authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--wr
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
-render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] --out f.ppm|\
+render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] [--srgb] --out f.ppm|\
 motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss]|\

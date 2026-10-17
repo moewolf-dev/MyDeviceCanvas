@@ -51,6 +51,8 @@ pub struct TextureMap {
     /// N344: optional 8-bit alpha channel (one byte per texel). Takes precedence
     /// over `alpha` for soft `BLEND`.
     pub alpha8: Option<Vec<u8>>,
+    /// N407: average bilinear samples in linear light (sRGB-correct).
+    pub srgb: bool,
 }
 
 impl TextureMap {
@@ -71,6 +73,7 @@ impl TextureMap {
             wrap: Wrap::Repeat,
             alpha: None,
             alpha8: None,
+            srgb: false,
         })
     }
 
@@ -127,6 +130,12 @@ impl TextureMap {
     /// N344: attach a per-texel 8-bit alpha channel.
     pub fn with_alpha8(mut self, alpha8: Vec<u8>) -> Self {
         self.alpha8 = Some(alpha8);
+        self
+    }
+
+    /// N407: sample bilinear in linear light (sRGB-correct averaging).
+    pub fn with_srgb(mut self, srgb: bool) -> Self {
+        self.srgb = srgb;
         self
     }
 
@@ -221,11 +230,42 @@ impl TextureMap {
         let channel = |shift: u32, mask: u32| {
             let acc: f32 = samples
                 .iter()
-                .map(|(value, weight)| f32::from((value >> shift) & mask as u16) * weight)
+                .map(|(value, weight)| {
+                    let raw = f32::from((value >> shift) & mask as u16);
+                    let raw = if self.srgb {
+                        // N407: average in linear light, then return to sRGB.
+                        srgb_to_linear(raw / mask as f32)
+                    } else {
+                        raw
+                    };
+                    raw * weight
+                })
                 .sum();
+            let acc = if self.srgb {
+                linear_to_srgb(acc) * mask as f32
+            } else {
+                acc
+            };
             ((acc.round() as u32).min(mask) as u16) << shift
         };
         channel(11, 0x1f) | channel(5, 0x3f) | channel(0, 0x1f)
+    }
+}
+
+/// N407: sRGB transfer functions (per-channel 0..1).
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb(c: f32) -> f32 {
+    if c <= 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
     }
 }
 
@@ -739,6 +779,16 @@ mod tests {
             rgb565.extend_from_slice(&value.to_le_bytes());
         }
         TextureMap::from_rgb565(width, height, rgb565).unwrap()
+    }
+
+    #[test]
+    fn srgb_linear_filtering_is_brighter_for_black_white() {
+        // N407: averaging black and white in linear light lands above mid-grey.
+        let texture = TextureMap::from_rgb565(2, 1, vec![0x00, 0x00, 0xFF, 0xFF]).unwrap();
+        let plain = texture.sample_linear(0.5, 0.5);
+        let srgb = texture.with_srgb(true).sample_linear(0.5, 0.5);
+        let red = |v: u16| v >> 11;
+        assert!(red(srgb) > red(plain), "sRGB average is brighter");
     }
 
     #[test]
