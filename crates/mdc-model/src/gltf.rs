@@ -372,6 +372,29 @@ impl GltfImporter {
                 .and_then(|m| m.get("extensions"))
                 .and_then(|e| e.get("KHR_texture_transform"))
                 .and_then(parse_uv_transform);
+            // N397: KHR_materials_specular / KHR_materials_ior.
+            let material_ext = material.get("extensions");
+            let specular_ext = material_ext.and_then(|e| e.get("KHR_materials_specular"));
+            let specular_factor = specular_ext
+                .and_then(|s| s.get("specularFactor"))
+                .and_then(Value::as_f64)
+                .map(|v| v.clamp(0.0, 1.0) as f32);
+            let specular_color = specular_ext
+                .and_then(|s| s.get("specularColorFactor"))
+                .and_then(Value::as_array)
+                .and_then(|list| {
+                    let channel = |k: usize| {
+                        list.get(k)
+                            .and_then(Value::as_f64)
+                            .map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+                    };
+                    Some([channel(0)?, channel(1)?, channel(2)?])
+                });
+            let ior = material_ext
+                .and_then(|e| e.get("KHR_materials_ior"))
+                .and_then(|i| i.get("ior"))
+                .and_then(Value::as_f64)
+                .map(|v| v.max(1.0) as f32);
             // N379: normalTexture (tangent-space normal map).
             let normal_texture = material
                 .get("normalTexture")
@@ -439,6 +462,9 @@ impl GltfImporter {
                 occlusion_uv_transform,
                 roughness_texture,
                 roughness_uv_transform,
+                specular_factor,
+                specular_color,
+                ior,
             });
         }
 
@@ -2390,6 +2416,35 @@ mod tests {
         let normal = material.normal_uv_transform();
         assert_eq!(normal.offset, [0.0, 0.25]);
         assert!(!normal.is_identity());
+    }
+
+    #[test]
+    fn specular_extension_and_slot_transforms_import() {
+        // N397: KHR_materials_specular / KHR_materials_ior.
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "extensionsUsed": ["KHR_materials_specular", "KHR_materials_ior"],
+            "materials": [{
+                "name": "m",
+                "extensions": {
+                    "KHR_materials_specular": {
+                        "specularFactor": 0.25,
+                        "specularColorFactor": [1.0, 0.5, 0.0]
+                    },
+                    "KHR_materials_ior": {"ior": 1.8}
+                }
+            }],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "nodes": [{"name": "root", "mesh": 0}],
+            "accessors": [{"count": 4, "type": "VEC3"}]
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        let material = &model.materials[0];
+        assert_eq!(material.specular_factor(), 0.25);
+        assert_eq!(material.specular_color, Some([255, 128, 0]));
+        assert!((material.ior() - 1.8).abs() < 1e-6);
     }
 
     #[test]

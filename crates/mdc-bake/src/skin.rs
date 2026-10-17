@@ -1891,13 +1891,19 @@ pub fn render_package_scene_clip_mode(
         let per_pixel = (usable_normal_map || smooth || roughness_map.is_some()) && has_normals;
         // N387: material-derived Blinn-Phong parameters for the specular mode.
         let (specular, shininess) = if mode == ShadeMode::SmoothSpecular {
-            let (roughness, metallic) = mesh
+            let (roughness, metallic, specular_factor) = mesh
                 .material
                 .and_then(|mi| package.materials.get(mi))
-                .map(|material| (material.roughness(), material.metallic()))
-                .unwrap_or((1.0, 1.0));
+                .map(|material| {
+                    (
+                        material.roughness(),
+                        material.metallic(),
+                        material.specular_factor(),
+                    )
+                })
+                .unwrap_or((1.0, 1.0, 1.0));
             (
-                (1.0 - roughness) * (0.4 + 0.6 * metallic) * 0.9,
+                (1.0 - roughness) * (0.4 + 0.6 * metallic) * 0.9 * specular_factor,
                 8.0 + 120.0 * (1.0 - roughness),
             )
         } else {

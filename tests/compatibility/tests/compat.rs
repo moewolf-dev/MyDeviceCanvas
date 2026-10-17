@@ -877,6 +877,9 @@ fn packaged_masked_texture_cuts_out_on_render() {
             occlusion_uv_transform: None,
             roughness_texture: None,
             roughness_uv_transform: None,
+            specular_factor: None,
+            specular_color: None,
+            ior: None,
         }],
         lights: Vec::new(),
         skeletons: Vec::new(),
@@ -965,6 +968,9 @@ fn masked_material_cuts_out_transparent_texels() {
             occlusion_uv_transform: None,
             roughness_texture: None,
             roughness_uv_transform: None,
+            specular_factor: None,
+            specular_color: None,
+            ior: None,
         }],
         ..Model::default()
     };
@@ -1627,6 +1633,9 @@ fn unlit_material_and_vertex_colours_render_on_the_device() {
                 occlusion_uv_transform: None,
                 roughness_texture: None,
                 roughness_uv_transform: None,
+                specular_factor: None,
+                specular_color: None,
+                ior: None,
                 ..Material::default()
             }],
             ..Model::default()
@@ -1734,6 +1743,9 @@ fn occlusion_texture_darkens_the_shadowed_triangles() {
             occlusion_uv_transform: None,
             roughness_texture: None,
             roughness_uv_transform: None,
+            specular_factor: None,
+            specular_color: None,
+            ior: None,
             ..Material::default()
         }],
         textures: vec![
@@ -1872,6 +1884,9 @@ fn normal_map_perturbs_per_pixel_shading() {
             occlusion_uv_transform: None,
             roughness_texture: None,
             roughness_uv_transform: None,
+            specular_factor: None,
+            specular_color: None,
+            ior: None,
             ..Material::default()
         }],
         textures: vec![

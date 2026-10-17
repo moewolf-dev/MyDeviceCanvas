@@ -368,6 +368,15 @@ pub struct Material {
     /// N395: `metallicRoughnessTexture`'s `KHR_texture_transform`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roughness_uv_transform: Option<UvTransform>,
+    /// N397: `KHR_materials_specular` `specularFactor` (0..1; default 1.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub specular_factor: Option<f32>,
+    /// N397: `KHR_materials_specular` `specularColorFactor` as 8-bit RGB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub specular_color: Option<[u8; 3]>,
+    /// N397: `KHR_materials_ior` index of refraction (default 1.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ior: Option<f32>,
 }
 
 /// N373: glTF `KHR_texture_transform`. `rotation` is in radians; the transform is
@@ -515,6 +524,16 @@ impl Material {
     /// N395: the metallicRoughness texture's UV transform (identity when absent).
     pub fn roughness_uv_transform(&self) -> UvTransform {
         self.roughness_uv_transform.unwrap_or_default()
+    }
+
+    /// N397: `KHR_materials_specular` `specularFactor` (0..1; default 1.0).
+    pub fn specular_factor(&self) -> f32 {
+        self.specular_factor.unwrap_or(1.0).clamp(0.0, 1.0)
+    }
+
+    /// N397: `KHR_materials_ior` (default 1.5).
+    pub fn ior(&self) -> f32 {
+        self.ior.unwrap_or(1.5).max(1.0)
     }
 }
 
