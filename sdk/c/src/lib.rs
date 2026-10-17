@@ -611,6 +611,47 @@ pub unsafe extern "C" fn mdc_session_connect_ws(url: *const c_char) -> *mut MdcS
     }
 }
 
+/// N400: send a pointer event to the device (requires the `touch` capability).
+/// Returns 0 on success and a negative value on failure. `phase` is one of
+/// `down`/`move`/`up`; a null `surface_id` defaults to `main`.
+///
+/// # Safety
+/// `session` is null or from create/connect; string pointers are NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_send_input(
+    session: *mut MdcSession,
+    surface_id: *const c_char,
+    pointer_id: u16,
+    phase: *const c_char,
+    x: u16,
+    y: u16,
+) -> c_int {
+    if session.is_null() {
+        return -1;
+    }
+    let surface = if surface_id.is_null() {
+        "main".to_string()
+    } else {
+        CStr::from_ptr(surface_id).to_string_lossy().into_owned()
+    };
+    let phase = if phase.is_null() {
+        "down".to_string()
+    } else {
+        CStr::from_ptr(phase).to_string_lossy().into_owned()
+    };
+    let event = InputEvent {
+        surface_id: surface,
+        pointer_id,
+        phase,
+        x,
+        y,
+    };
+    match (*session).session.send_input(event) {
+        Ok(_) => 0,
+        Err(_) => -1,
+    }
+}
+
 /// # Safety
 /// Pointers must be writable when non-null. `session` is null or from create/connect.
 /// Returns 1 when an event was written, 0 when the queue is empty, negative on error.
@@ -1067,6 +1108,22 @@ mod tests {
         let url = std::ffi::CString::new("ws://127.0.0.1:1").unwrap();
         let session = unsafe { mdc_session_connect_ws(url.as_ptr()) };
         assert!(session.is_null());
+    }
+
+    #[test]
+    fn c_abi_send_input_reaches_the_device() {
+        // N400: the host can send a pointer event when the device enables touch.
+        let session = mdc_session_create();
+        assert!(!session.is_null());
+        unsafe {
+            let surface = std::ffi::CString::new("main").unwrap();
+            let phase = std::ffi::CString::new("down").unwrap();
+            assert_eq!(
+                mdc_session_send_input(session, surface.as_ptr(), 2, phase.as_ptr(), 5, 6),
+                0
+            );
+            mdc_session_destroy(session);
+        }
     }
 
     #[test]

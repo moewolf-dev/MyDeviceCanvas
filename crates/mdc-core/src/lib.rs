@@ -1463,6 +1463,23 @@ impl<T: Transport> Session<T> {
         let _ = (self.state, _payload);
         Err(CoreError::Unsupported)
     }
+    /// N400: send a pointer/touch event to the device, gated on its `touch`
+    /// capability.
+    pub fn send_input(&mut self, event: mdc_protocol::InputEvent) -> Result<u32, CoreError> {
+        if self.state != ConnectionState::Ready {
+            return Err(CoreError::Unsupported);
+        }
+        let touch = self
+            .device
+            .as_ref()
+            .is_some_and(|device| device.capabilities.touch);
+        if !touch {
+            return Err(CoreError::Unsupported);
+        }
+        let payload =
+            mdc_protocol::encode_control(&event).map_err(|e| CoreError::Protocol(e.to_string()))?;
+        self.write_packet(MessageType::Input, payload)
+    }
     /// N54: set a vector scene, gated on the device's advertised scene limits.
     pub fn set_scene(&mut self, scene: mdc_protocol::SceneNode) -> Result<u32, CoreError> {
         let caps = self.scene_gate()?;
@@ -4434,6 +4451,23 @@ mod tests {
             .unwrap();
         session.poll().unwrap();
         assert!(session.stats().acks_received >= 1, "the frame was acked");
+    }
+
+    #[test]
+    fn send_input_requires_the_touch_capability() {
+        // N400: `caps()` advertises touch: false, so the send is refused.
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        let event = mdc_protocol::InputEvent {
+            surface_id: "main".into(),
+            pointer_id: 1,
+            phase: "down".into(),
+            x: 1,
+            y: 2,
+        };
+        assert_eq!(session.send_input(event), Err(CoreError::Unsupported));
     }
 
     #[test]

@@ -120,6 +120,11 @@ int mdc_session_poll_event_with_pointer(MdcSession* session, int* kind, char* de
                                         size_t device_id_len, char* phase, size_t phase_len,
                                         uint16_t* pointer_id, uint16_t* x, uint16_t* y);
 
+/** N400: send a pointer event to the device (requires the touch capability).
+ *  Returns 0 on success, negative on failure. */
+int mdc_session_send_input(MdcSession* session, const char* surface_id, uint16_t pointer_id,
+                           const char* phase, uint16_t x, uint16_t y);
+
 /** Simulator-only touch injection. Returns 0, or negative when the session is not a FakeDevice. */
 int mdc_session_simulate_input(MdcSession* session, const char* phase, uint16_t x, uint16_t y);
 

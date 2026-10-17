@@ -539,6 +539,38 @@ impl NativeManager {
         Ok(())
     }
 
+    /// N400: send a pointer event from the host to the device (capability-gated).
+    #[napi(js_name = "sendInput")]
+    pub fn send_input(
+        &self,
+        surface_id: String,
+        pointer_id: u16,
+        phase: String,
+        x: u16,
+        y: u16,
+    ) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        sim.session
+            .send_input(InputEvent {
+                surface_id,
+                pointer_id,
+                phase,
+                x,
+                y,
+            })
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        pump_link(sim)?;
+        Ok(())
+    }
+
     /// Form B: ask the device to start/stop mirroring (capability-gated).
     #[napi(js_name = "startMirror")]
     pub fn start_mirror(&self, surface_id: String, mode: String, max_fps: u16) -> Result<u32> {
