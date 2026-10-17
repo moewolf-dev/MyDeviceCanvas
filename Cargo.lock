@@ -377,6 +377,7 @@ dependencies = [
 name = "mdc-compatibility-tests"
 version = "0.1.0"
 dependencies = [
+ "image",
  "mdc-bake",
  "mdc-core",
  "mdc-mirror",

@@ -1334,6 +1334,154 @@ fn device_mesh_package_selects_a_named_clip() {
 }
 
 #[test]
+fn multi_texture_mesh_package_renders_on_the_device() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node, Texture};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let png = |color: [u8; 3]| {
+        let image = image::RgbImage::from_pixel(1, 1, image::Rgb(color));
+        let mut out = Vec::new();
+        image
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    };
+    let quad = || MeshGeometry {
+        positions: vec![
+            [-0.5, -0.5, 0.0],
+            [0.5, -0.5, 0.0],
+            [0.5, 0.5, 0.0],
+            [-0.5, 0.5, 0.0],
+        ],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        normals: Vec::new(),
+        skin_joints: Vec::new(),
+        skin_weights: Vec::new(),
+        morph_targets: Vec::new(),
+    };
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![
+            Node {
+                name: "root".into(),
+                children: vec![1, 2],
+                ..Node::default()
+            },
+            Node {
+                name: "left".into(),
+                mesh: Some(0),
+                translation: [-0.6, 0.0, 0.0],
+                ..Node::default()
+            },
+            Node {
+                name: "right".into(),
+                mesh: Some(1),
+                translation: [0.6, 0.0, 0.0],
+                ..Node::default()
+            },
+        ],
+        meshes: vec![
+            Mesh {
+                name: "left".into(),
+                vertices: 4,
+                indices: 6,
+                material: Some(0),
+                geometry: Some(quad()),
+                ..Mesh::default()
+            },
+            Mesh {
+                name: "right".into(),
+                vertices: 4,
+                indices: 6,
+                material: Some(1),
+                geometry: Some(quad()),
+                ..Mesh::default()
+            },
+        ],
+        materials: vec![
+            Material {
+                name: "left".into(),
+                texture: Some(0),
+                color: Some([255, 255, 255]),
+                ..Material::default()
+            },
+            Material {
+                name: "right".into(),
+                texture: Some(1),
+                color: Some([255, 255, 255]),
+                ..Material::default()
+            },
+        ],
+        textures: vec![
+            Texture {
+                name: "red".into(),
+                width: 1,
+                height: 1,
+                format: "image/png".into(),
+                bytes: 0,
+                data: Some(png([255, 0, 0])),
+                wrap: None,
+            },
+            Texture {
+                name: "blue".into(),
+                width: 1,
+                height: 1,
+                format: "image/png".into(),
+                bytes: 0,
+                data: Some(png([0, 0, 255])),
+                wrap: None,
+            },
+        ],
+        ..Model::default()
+    };
+    let blobs = mdc_bake::attach_model_textures(&model, &mdc_bake::BakeLimits::default());
+    let package = mdc_bake::mesh_package_with_textures(
+        &model,
+        &mdc_model::RendererCapability::full_3d(),
+        blobs,
+    )
+    .unwrap();
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .install_package(&package.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.package_ready());
+    session.start_mirror("main", "full-frame", 30).unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    device.clock.advance(0);
+    device.emit_mirror_frame().unwrap();
+    session.poll().unwrap();
+    let frame = session.take_mirror_frame().expect("mirror frame");
+    assert_eq!((frame.width, frame.height), (800, 480));
+    let at = |x: usize, y: usize| {
+        u16::from_le_bytes([
+            frame.bytes[(y * 800 + x) * 2],
+            frame.bytes[(y * 800 + x) * 2 + 1],
+        ])
+    };
+    let left = at(200, 240);
+    let right = at(600, 240);
+    assert!(
+        left >> 11 > 20 && (left & 0x1f) < 8,
+        "left red: {left:#06x}"
+    );
+    assert!(
+        (right >> 11) < 8 && (right & 0x1f) > 20,
+        "right blue: {right:#06x}"
+    );
+}
+
+#[test]
 fn device_diagnostics_reach_the_host_channel() {
     use mdc_core::{ConnectionState, DiagnosticRecord, Session};
     use mdc_simulator::{BoardProfile, FakeDevice};
