@@ -871,6 +871,10 @@ fn packaged_masked_texture_cuts_out_on_render() {
             normal_texture: None,
             normal_scale: None,
             uv_set: None,
+            emissive_texture: None,
+            emissive_uv_transform: None,
+            normal_uv_transform: None,
+            occlusion_uv_transform: None,
         }],
         lights: Vec::new(),
         skeletons: Vec::new(),
@@ -953,6 +957,10 @@ fn masked_material_cuts_out_transparent_texels() {
             normal_texture: None,
             normal_scale: None,
             uv_set: None,
+            emissive_texture: None,
+            emissive_uv_transform: None,
+            normal_uv_transform: None,
+            occlusion_uv_transform: None,
         }],
         ..Model::default()
     };
@@ -1609,6 +1617,10 @@ fn unlit_material_and_vertex_colours_render_on_the_device() {
                 normal_texture: None,
                 normal_scale: None,
                 uv_set: None,
+                emissive_texture: None,
+                emissive_uv_transform: None,
+                normal_uv_transform: None,
+                occlusion_uv_transform: None,
                 ..Material::default()
             }],
             ..Model::default()
@@ -1710,6 +1722,10 @@ fn occlusion_texture_darkens_the_shadowed_triangles() {
             normal_texture: None,
             normal_scale: None,
             uv_set: None,
+            emissive_texture: None,
+            emissive_uv_transform: None,
+            normal_uv_transform: None,
+            occlusion_uv_transform: None,
             ..Material::default()
         }],
         textures: vec![
@@ -1842,6 +1858,10 @@ fn normal_map_perturbs_per_pixel_shading() {
             normal_texture: normal,
             normal_scale: Some(1.0),
             uv_set: None,
+            emissive_texture: None,
+            emissive_uv_transform: None,
+            normal_uv_transform: None,
+            occlusion_uv_transform: None,
             ..Material::default()
         }],
         textures: vec![
@@ -2272,6 +2292,137 @@ fn imported_directional_light_reaches_the_device_render() {
     assert!(
         backlit < lit,
         "the imported light darkens the device frame: lit={lit:.2} backlit={backlit:.2}"
+    );
+}
+
+#[test]
+fn emissive_texture_adds_light_on_the_device() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node, Texture, UvTransform};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let png = |w: u32, h: u32, pixels: Vec<u8>| {
+        let image = image::RgbImage::from_raw(w, h, pixels).unwrap();
+        let mut out = Vec::new();
+        image
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    };
+    let build = |emissive: Option<usize>, transform: Option<UvTransform>| Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.5, 0.5, 0.0],
+                    [-0.5, 0.5, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                uv2: Vec::new(),
+                normals: vec![[0.0, 0.0, 1.0]; 4],
+                colors: Vec::new(),
+                tangents: Vec::new(),
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                skin_joints2: Vec::new(),
+                skin_weights2: Vec::new(),
+                morph_targets: Vec::new(),
+            }),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "glow".into(),
+            // Black base colour so any colour must come from the emissive map.
+            texture: Some(0),
+            color: Some([0, 0, 0]),
+            emissive_texture: emissive,
+            emissive_strength: Some(1.0),
+            emissive_uv_transform: transform,
+            ..Material::default()
+        }],
+        textures: vec![
+            Texture {
+                name: "black".into(),
+                width: 1,
+                height: 1,
+                format: "image/png".into(),
+                bytes: 0,
+                data: Some(png(1, 1, vec![0, 0, 0])),
+                wrap: None,
+            },
+            Texture {
+                name: "glow".into(),
+                width: 2,
+                height: 1,
+                format: "image/png".into(),
+                bytes: 0,
+                // Left red, right green.
+                data: Some(png(2, 1, vec![255, 0, 0, 0, 255, 0])),
+                wrap: None,
+            },
+        ],
+        ..Model::default()
+    };
+    let render = |emissive: Option<usize>, transform: Option<UvTransform>| -> Vec<u8> {
+        let model = build(emissive, transform);
+        let blobs = mdc_bake::attach_model_textures(&model, &mdc_bake::BakeLimits::default());
+        let package = mdc_bake::mesh_package_with_textures(
+            &model,
+            &mdc_model::RendererCapability::full_3d(),
+            blobs,
+        )
+        .unwrap();
+        let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        session
+            .install_package(&package.to_bytes().unwrap())
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session.start_mirror("main", "full-frame", 30).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        device.clock.advance(0);
+        device.emit_mirror_frame().unwrap();
+        session.poll().unwrap();
+        session.take_mirror_frame().expect("mirror frame").bytes
+    };
+    let at = |bytes: &[u8], x: usize, y: usize| {
+        u16::from_le_bytes([bytes[(y * 800 + x) * 2], bytes[(y * 800 + x) * 2 + 1]])
+    };
+
+    // Emissive off: the black base colour keeps the quad dark.
+    let off = render(None, None);
+    // Emissive on with a half-UV offset: the left half samples the red texel.
+    let on = render(
+        Some(1),
+        Some(UvTransform {
+            offset: [0.25, 0.0],
+            rotation: 0.0,
+            scale: [0.5, 1.0],
+        }),
+    );
+    let dark = at(&off, 300, 240);
+    let glow = at(&on, 300, 240);
+    assert!(glow >> 11 > 20, "emissive adds red: {glow:#06x}");
+    assert!(
+        dark >> 11 < 8,
+        "base stays dark without emissive: {dark:#06x}"
     );
 }
 

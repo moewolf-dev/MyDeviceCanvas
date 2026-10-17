@@ -363,6 +363,7 @@ pub(crate) fn raster_indexed(
         None,
         mdc_model::UvTransform::default(),
         None,
+        None,
         max_points,
     )?;
     Ok(pixels)
@@ -388,6 +389,16 @@ pub(crate) struct NormalMap<'a> {
     pub specular: f32,
     /// N387: Blinn-Phong shininess exponent.
     pub shininess: f32,
+    /// N395: the normal texture's own UV transform.
+    pub uv_transform: mdc_model::UvTransform,
+}
+
+/// N393: an additive emissive texture layered on top of the shaded colour.
+pub(crate) struct EmissiveMap<'a> {
+    pub map: &'a TextureMap,
+    pub strength: f32,
+    /// N395: the emissive texture's own UV transform.
+    pub uv_transform: mdc_model::UvTransform,
 }
 
 /// N387: saturating per-channel RGB565 add (for an additive specular term).
@@ -498,6 +509,7 @@ pub(crate) fn draw_indexed(
     colors: Option<&[[f32; 4]]>,
     uv_transform: mdc_model::UvTransform,
     normal_map: Option<NormalMap<'_>>,
+    emissive: Option<EmissiveMap<'_>>,
     max_points: usize,
 ) -> Result<(), BakeError> {
     if width == 0 || height == 0 || width > 1024 || height > 1024 {
@@ -553,6 +565,7 @@ pub(crate) fn draw_indexed(
                         nm.normals.len() >= points.len() && nm.tangents.len() >= points.len()
                     })
                     .map(|nm| (nm, triangle)),
+                emissive.as_ref(),
             ),
             _ => crate::fill_triangle(
                 pixels,
@@ -591,6 +604,7 @@ fn fill_textured_triangle(
     vc: Option<([f32; 4], [f32; 4], [f32; 4])>,
     uv_transform: mdc_model::UvTransform,
     normal_map: Option<(&NormalMap<'_>, [usize; 3])>,
+    emissive: Option<&EmissiveMap<'_>>,
 ) {
     let area = edge(a.0, b.0, c.0);
     if area == 0 {
@@ -622,8 +636,9 @@ fn fill_textured_triangle(
             let w2 = e2 as f32 / area_f;
             let u = w0 * a.1[0] + w1 * b.1[0] + w2 * c.1[0];
             let v = w0 * a.1[1] + w1 * b.1[1] + w2 * c.1[1];
-            // N373: apply the material's KHR_texture_transform before sampling.
-            let [u, v] = uv_transform.apply([u, v]);
+            // N373/N395: each slot applies its own KHR_texture_transform.
+            let raw = [u, v];
+            let [u, v] = uv_transform.apply(raw);
             if mask && !texture.alpha_at(u, v) {
                 continue;
             }
@@ -643,7 +658,14 @@ fn fill_textured_triangle(
             }
             // N379: per-pixel Lambert using the tangent-space normal map.
             if let Some((nm, tri)) = normal_map {
-                value = apply_normal_map(value, nm, tri, [w0, w1, w2], [u, v]);
+                let [nu, nv] = nm.uv_transform.apply(raw);
+                value = apply_normal_map(value, nm, tri, [w0, w1, w2], [nu, nv]);
+            }
+            // N393: add the emissive texture.
+            if let Some(em) = emissive {
+                let [eu, ev] = em.uv_transform.apply(raw);
+                let texel = em.map.sample(eu, ev);
+                value = rgb565_add(value, rgb565_scale(texel, em.strength.clamp(0.0, 1.0)));
             }
             // N344: for a blended material, fold the per-texel alpha into the
             // material alpha so soft edges fade instead of cutting out.

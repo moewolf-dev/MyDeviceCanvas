@@ -984,6 +984,14 @@ struct SceneDrawable<'a> {
     specular: f32,
     /// N387: Blinn-Phong shininess exponent.
     shininess: f32,
+    /// N395: the normal texture's own UV transform.
+    normal_uv_transform: mdc_model::UvTransform,
+    /// N393: an additive emissive texture.
+    emissive_map: Option<&'a crate::TextureMap>,
+    /// N393: the emissive strength.
+    emissive_strength: f32,
+    /// N395: the emissive texture's own UV transform.
+    emissive_uv_transform: mdc_model::UvTransform,
 }
 
 /// N327: default key light (straight down -z, i.e. toward +z-facing surfaces) and
@@ -1139,9 +1147,15 @@ fn draw_scene_sorted(
                     ambient: d.normal_ambient,
                     specular: d.specular,
                     shininess: d.shininess,
+                    uv_transform: d.normal_uv_transform,
                 }),
                 _ => None,
             },
+            d.emissive_map.map(|map| crate::texture::EmissiveMap {
+                map,
+                strength: d.emissive_strength,
+                uv_transform: d.emissive_uv_transform,
+            }),
             mdc_model::MAX_GEOMETRY_VERTICES,
         )?;
     }
@@ -1266,6 +1280,10 @@ pub fn render_scene_at(
             light,
             specular: 0.0,
             shininess: 1.0,
+            normal_uv_transform: mdc_model::UvTransform::default(),
+            emissive_map: None,
+            emissive_strength: 1.0,
+            emissive_uv_transform: mdc_model::UvTransform::default(),
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -1456,6 +1474,7 @@ pub fn render_package_mesh(
                 .and_then(|mi| package.materials.get(mi))
                 .map(|m| m.uv_transform())
                 .unwrap_or_default(),
+            None,
             None,
             mdc_model::MAX_GEOMETRY_VERTICES,
         )?;
@@ -1863,6 +1882,25 @@ pub fn render_package_scene_clip_mode(
         } else {
             (0.0, 1.0)
         };
+        // N393/N395: the emissive texture and per-slot UV transforms.
+        let (emissive_index, emissive_strength) = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .map(|material| material.emissive_map())
+            .unwrap_or((None, 1.0));
+        let emissive_map = emissive_index
+            .and_then(|index| textures.get(index))
+            .and_then(|texture| texture.as_ref());
+        let (emissive_uv_transform, normal_uv_transform) = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .map(|material| {
+                (
+                    material.emissive_uv_transform(),
+                    material.normal_uv_transform(),
+                )
+            })
+            .unwrap_or_default();
         let occlusion = occlusion_factors(package, mesh, geometry, &textures);
         let shade = if per_pixel {
             // The per-pixel pass applies the Lambert term, so the per-triangle
@@ -1938,6 +1976,10 @@ pub fn render_package_scene_clip_mode(
             light,
             specular,
             shininess,
+            normal_uv_transform,
+            emissive_map,
+            emissive_strength,
+            emissive_uv_transform,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;

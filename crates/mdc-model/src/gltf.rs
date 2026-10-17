@@ -331,29 +331,7 @@ impl GltfImporter {
                 .and_then(|p| p.get("baseColorTexture"))
                 .and_then(|b| b.get("extensions"))
                 .and_then(|e| e.get("KHR_texture_transform"))
-                .map(|t| {
-                    let pair = |key: &str, default: [f32; 2]| -> [f32; 2] {
-                        t.get(key)
-                            .and_then(Value::as_array)
-                            .and_then(|list| {
-                                Some([
-                                    list.first()?.as_f64()? as f32,
-                                    list.get(1)?.as_f64()? as f32,
-                                ])
-                            })
-                            .unwrap_or(default)
-                    };
-                    UvTransform {
-                        offset: pair("offset", [0.0, 0.0]),
-                        rotation: t
-                            .get("rotation")
-                            .and_then(Value::as_f64)
-                            .map(|v| v as f32)
-                            .unwrap_or(0.0),
-                        scale: pair("scale", [1.0, 1.0]),
-                    }
-                })
-                .filter(|t| !t.is_identity());
+                .and_then(parse_uv_transform);
             // N374: KHR_materials_emissive_strength (default 1.0).
             let emissive_strength = material
                 .get("extensions")
@@ -372,6 +350,17 @@ impl GltfImporter {
                 .and_then(|o| o.get("strength"))
                 .and_then(Value::as_f64)
                 .map(|v| v.clamp(0.0, 1.0) as f32);
+            // N393/N395: emissiveTexture (+ its KHR_texture_transform).
+            let emissive_texture = material
+                .get("emissiveTexture")
+                .and_then(|e| e.get("index"))
+                .and_then(Value::as_u64)
+                .and_then(resolve_texture);
+            let emissive_uv_transform = material
+                .get("emissiveTexture")
+                .and_then(|e| e.get("extensions"))
+                .and_then(|e| e.get("KHR_texture_transform"))
+                .and_then(parse_uv_transform);
             // N379: normalTexture (tangent-space normal map).
             let normal_texture = material
                 .get("normalTexture")
@@ -383,6 +372,16 @@ impl GltfImporter {
                 .and_then(|n| n.get("scale"))
                 .and_then(Value::as_f64)
                 .map(|v| v.max(0.0) as f32);
+            let normal_uv_transform = material
+                .get("normalTexture")
+                .and_then(|n| n.get("extensions"))
+                .and_then(|e| e.get("KHR_texture_transform"))
+                .and_then(parse_uv_transform);
+            let occlusion_uv_transform = material
+                .get("occlusionTexture")
+                .and_then(|o| o.get("extensions"))
+                .and_then(|e| e.get("KHR_texture_transform"))
+                .and_then(parse_uv_transform);
             // N383: which UV set the material samples (`texCoord`).
             let tex_coord = |slot: &str| {
                 material
@@ -423,6 +422,10 @@ impl GltfImporter {
                 normal_texture,
                 normal_scale,
                 uv_set,
+                emissive_texture,
+                emissive_uv_transform,
+                normal_uv_transform,
+                occlusion_uv_transform,
             });
         }
 
@@ -968,6 +971,31 @@ fn split_container(bytes: &[u8]) -> Result<(&[u8], Option<&[u8]>), ModelError> {
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     let slice = bytes.get(offset..offset + 4)?;
     Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+/// N373/N395: parse a `KHR_texture_transform` object into a [`UvTransform`].
+fn parse_uv_transform(t: &Value) -> Option<UvTransform> {
+    let pair = |key: &str, default: [f32; 2]| -> [f32; 2] {
+        t.get(key)
+            .and_then(Value::as_array)
+            .and_then(|list| {
+                Some([
+                    list.first()?.as_f64()? as f32,
+                    list.get(1)?.as_f64()? as f32,
+                ])
+            })
+            .unwrap_or(default)
+    };
+    let transform = UvTransform {
+        offset: pair("offset", [0.0, 0.0]),
+        rotation: t
+            .get("rotation")
+            .and_then(Value::as_f64)
+            .map(|v| v as f32)
+            .unwrap_or(0.0),
+        scale: pair("scale", [1.0, 1.0]),
+    };
+    (!transform.is_identity()).then_some(transform)
 }
 
 /// N375: the default scene's root node indices, or `None` when the document does
@@ -2315,6 +2343,40 @@ mod tests {
             light.direction
         );
         assert!(light.direction[2].abs() < 1e-3);
+    }
+
+    #[test]
+    fn emissive_texture_and_slot_transforms_import() {
+        // N393/N395: emissiveTexture plus per-slot KHR_texture_transform.
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "images": [{"name": "t", "mimeType": "image/png", "width": 1, "height": 1}],
+            "textures": [{"source": 0}],
+            "materials": [{
+                "name": "m",
+                "emissiveFactor": [1.0, 1.0, 1.0],
+                "emissiveTexture": {"index": 0, "extensions": {
+                    "KHR_texture_transform": {"offset": [0.5, 0.0], "scale": [0.5, 0.5]}
+                }},
+                "normalTexture": {"index": 0, "extensions": {
+                    "KHR_texture_transform": {"offset": [0.0, 0.25]}
+                }}
+            }],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "nodes": [{"name": "root", "mesh": 0}],
+            "accessors": [{"count": 4, "type": "VEC3"}]
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        let material = &model.materials[0];
+        assert_eq!(material.emissive_texture, Some(0));
+        let emissive = material.emissive_uv_transform();
+        assert_eq!(emissive.offset, [0.5, 0.0]);
+        assert_eq!(emissive.scale, [0.5, 0.5]);
+        let normal = material.normal_uv_transform();
+        assert_eq!(normal.offset, [0.0, 0.25]);
+        assert!(!normal.is_identity());
     }
 
     #[test]

@@ -350,6 +350,18 @@ pub struct Material {
     /// N383: which mesh UV set this material samples (`texCoord`; default 0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uv_set: Option<u8>,
+    /// N393: `emissiveTexture.index` (added to the shaded colour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emissive_texture: Option<usize>,
+    /// N395: `emissiveTexture`'s `KHR_texture_transform`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emissive_uv_transform: Option<UvTransform>,
+    /// N395: `normalTexture`'s `KHR_texture_transform`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normal_uv_transform: Option<UvTransform>,
+    /// N395: `occlusionTexture`'s `KHR_texture_transform`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occlusion_uv_transform: Option<UvTransform>,
 }
 
 /// N373: glTF `KHR_texture_transform`. `rotation` is in radians; the transform is
@@ -467,6 +479,26 @@ impl Material {
     /// N383: which mesh UV set this material samples (default 0).
     pub fn uv_set(&self) -> u8 {
         self.uv_set.unwrap_or(0)
+    }
+
+    /// N393: the emissive texture index and its strength (default 1.0).
+    pub fn emissive_map(&self) -> (Option<usize>, f32) {
+        (self.emissive_texture, self.emissive_strength())
+    }
+
+    /// N395: the emissive texture's UV transform (identity when absent).
+    pub fn emissive_uv_transform(&self) -> UvTransform {
+        self.emissive_uv_transform.unwrap_or_default()
+    }
+
+    /// N395: the normal texture's UV transform (identity when absent).
+    pub fn normal_uv_transform(&self) -> UvTransform {
+        self.normal_uv_transform.unwrap_or_default()
+    }
+
+    /// N395: the occlusion texture's UV transform (identity when absent).
+    pub fn occlusion_uv_transform(&self) -> UvTransform {
+        self.occlusion_uv_transform.unwrap_or_default()
     }
 }
 
