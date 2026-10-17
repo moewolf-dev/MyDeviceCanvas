@@ -177,6 +177,7 @@ pub struct ModelSummary {
     pub sprites: usize,
     pub layers: usize,
     pub lights: usize,
+    pub variants: usize,
     pub morph_targets: usize,
     pub has_normals: bool,
     pub has_colors: bool,
@@ -646,6 +647,9 @@ pub struct Model {
     /// renderer's key light).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lights: Vec<Light>,
+    /// N420: `KHR_materials_variants` variant names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<String>,
 }
 
 /// N385: a `KHR_lights_punctual` light source. Only `direction` affects the
@@ -744,6 +748,7 @@ impl Model {
             sprites: self.sprites.len(),
             layers: self.layers.len(),
             lights: self.lights.len(),
+            variants: self.variants.len(),
             morph_targets: self.meshes.iter().map(|m| m.morph_targets.len()).sum(),
             ..ModelSummary::default()
         };

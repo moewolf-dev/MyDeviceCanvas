@@ -336,6 +336,7 @@ impl Live2DImporter {
             layers: vec![layer],
             meta: BTreeMap::new(),
             lights: Vec::new(),
+            variants: Vec::new(),
         })
     }
 

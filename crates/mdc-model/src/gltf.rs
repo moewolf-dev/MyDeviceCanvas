@@ -914,8 +914,24 @@ impl GltfImporter {
             layers: vec![layer],
             meta,
             lights: read_lights(&doc, nodes_json),
+            variants: read_variants(&doc),
         })
     }
+}
+
+/// N420: `KHR_materials_variants` variant names.
+fn read_variants(doc: &Value) -> Vec<String> {
+    doc.get("extensions")
+        .and_then(|e| e.get("KHR_materials_variants"))
+        .and_then(|v| v.get("variants"))
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .enumerate()
+                .map(|(i, variant)| json_name(variant, &format!("variant{i}")))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// N385: `KHR_lights_punctual` lights. A directional light's world direction is
@@ -2572,6 +2588,26 @@ mod tests {
             (material.metallic() - 0.587).abs() < 0.01,
             "specular -> metallic"
         );
+    }
+
+    #[test]
+    fn material_variants_are_imported() {
+        // N420: variant names are collected from KHR_materials_variants.
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "extensionsUsed": ["KHR_materials_variants"],
+            "extensions": {"KHR_materials_variants": {"variants": [
+                {"name": "day"}, {"name": "night"}
+            ]}},
+            "nodes": [{"name": "root", "mesh": 0}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "accessors": [{"count": 4, "type": "VEC3"}]
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        assert_eq!(model.variants, vec!["day".to_string(), "night".to_string()]);
+        assert_eq!(model.summary().variants, 2);
     }
 
     #[test]
