@@ -407,6 +407,13 @@ fn v3_cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     ]
 }
 
+/// N386: a 1×1 normal map pointing straight out of the surface, used with a zero
+/// scale to get per-pixel (Gouraud) Lambert shading without a real map.
+pub(crate) fn flat_normal_map() -> TextureMap {
+    // RGB(128, 128, 255) -> tangent-space normal (0, 0, 1).
+    TextureMap::from_rgb565(1, 1, vec![0x1F, 0x84]).expect("1x1 texture")
+}
+
 /// N379: RGB565 -> linear (0..1) channels, for decoding a normal map texel.
 fn rgb565_channels(value: u16) -> [f32; 3] {
     [

@@ -2037,6 +2037,75 @@ fn packed_material_atlas_renders_on_the_device() {
 }
 
 #[test]
+fn smooth_shading_gradients_across_a_triangle() {
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};
+
+    // Normals vary across the quad, so per-pixel (smooth) shading differs from
+    // the per-triangle (flat) shade.
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.5, 0.5, 0.0],
+                    [-0.5, 0.5, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                uv: Vec::new(),
+                uv2: Vec::new(),
+                normals: vec![
+                    [0.0, 0.0, 1.0],
+                    [1.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                ],
+                colors: Vec::new(),
+                tangents: Vec::new(),
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                skin_joints2: Vec::new(),
+                skin_weights2: Vec::new(),
+                morph_targets: Vec::new(),
+            }),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "m".into(),
+            color: Some([255, 255, 255]),
+            ..Material::default()
+        }],
+        ..Model::default()
+    };
+    let package =
+        mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d()).unwrap();
+    let flat = mdc_bake::render_package_scene(&package.package, 0.0, (32, 32)).unwrap();
+    let smooth = mdc_bake::render_package_scene_clip_mode(
+        &package.package,
+        mdc_bake::SceneClip::First,
+        0.0,
+        (32, 32),
+        mdc_bake::Filter::Nearest,
+        mdc_bake::ShadeMode::Smooth,
+    )
+    .unwrap();
+    assert_ne!(
+        flat.rgb565, smooth.rgb565,
+        "smooth shading differs from flat"
+    );
+}
+
+#[test]
 fn device_diagnostics_reach_the_host_channel() {
     use mdc_core::{ConnectionState, DiagnosticRecord, Session};
     use mdc_simulator::{BoardProfile, FakeDevice};

@@ -1678,6 +1678,28 @@ pub fn render_package_scene_clip_filtered(
     size: (u32, u32),
     filter: crate::Filter,
 ) -> Result<BakedTexture, BakeError> {
+    render_package_scene_clip_mode(package, clip, time, size, filter, ShadeMode::Flat)
+}
+
+/// N386: how the package renderer shades each surface. `Flat` is the historical
+/// per-triangle Lambert; `Smooth` shades per pixel from interpolated normals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ShadeMode {
+    #[default]
+    Flat,
+    Smooth,
+}
+
+/// N386: like [`render_package_scene_clip_filtered`] but with an explicit shade
+/// mode (`Smooth` gives per-pixel Gouraud shading).
+pub fn render_package_scene_clip_mode(
+    package: &mdc_model::DevicePackage,
+    clip: SceneClip,
+    time: f32,
+    size: (u32, u32),
+    filter: crate::Filter,
+    mode: ShadeMode,
+) -> Result<BakedTexture, BakeError> {
     if size.0 == 0 || size.1 == 0 || size.0 > 1024 || size.1 > 1024 {
         return Err(BakeError::Budget(size.0, size.1));
     }
@@ -1720,6 +1742,8 @@ pub fn render_package_scene_clip_filtered(
     let skeleton = package.skeletons.iter().find(|s| !s.joint_nodes.is_empty());
     // N385: the package's key light (a directional light overrides the default).
     let light = key_light(&package.lights);
+    // N386: a shared flat normal map drives smooth (per-pixel) shading.
+    let flat_normal = crate::texture::flat_normal_map();
     let mut pixels = vec![0u8; (size.0 as usize) * (size.1 as usize) * 2];
     let mut drawables = Vec::new();
     for (index, node) in package.nodes.iter().enumerate() {
@@ -1796,7 +1820,8 @@ pub fn render_package_scene_clip_filtered(
             .and_then(|index| textures.get(index))
             .and_then(|texture| texture.as_ref())
             .or(single.as_ref());
-        // N379: a tangent-space normal map turns shading per-pixel.
+        // N379: a tangent-space normal map turns shading per-pixel. N386: the
+        // `Smooth` mode does the same with a flat map at zero scale.
         let (normal_index, normal_scale) = mesh
             .material
             .and_then(|mi| package.materials.get(mi))
@@ -1806,11 +1831,14 @@ pub fn render_package_scene_clip_filtered(
             .and_then(|index| textures.get(index))
             .and_then(|texture| texture.as_ref());
         let normal_ambient = package_material_ambient(package, mesh);
+        let has_normals = deformed_normals.len() >= deformed.len();
         let usable_normal_map = normal_map.is_some()
             && geometry.tangents.len() >= geometry.positions.len()
-            && deformed_normals.len() >= deformed.len();
+            && has_normals;
+        let smooth = mode == ShadeMode::Smooth && has_normals && !usable_normal_map;
+        let per_pixel = usable_normal_map || smooth;
         let occlusion = occlusion_factors(package, mesh, geometry, &textures);
-        let shade = if usable_normal_map {
+        let shade = if per_pixel {
             // The per-pixel pass applies the Lambert term, so the per-triangle
             // factor carries occlusion only.
             occlusion.unwrap_or_else(|| vec![1.0; geometry.indices.len() / 3])
@@ -1823,6 +1851,13 @@ pub fn render_package_scene_clip_filtered(
                 normal_ambient,
                 occlusion.as_deref(),
             )
+        };
+        let (drawable_map, drawable_scale) = if usable_normal_map {
+            (normal_map, normal_scale)
+        } else if smooth {
+            (Some(&flat_normal), 0.0)
+        } else {
+            (None, normal_scale)
         };
         drawables.push(SceneDrawable {
             depth,
@@ -1857,18 +1892,22 @@ pub fn render_package_scene_clip_filtered(
                 .and_then(|mi| package.materials.get(mi))
                 .map(|m| m.uv_transform())
                 .unwrap_or_default(),
-            normals: if usable_normal_map {
+            normals: if per_pixel {
                 Some(deformed_normals)
             } else {
                 None
             },
-            tangents: if usable_normal_map {
-                Some(geometry.tangents.clone())
+            tangents: if per_pixel {
+                Some(if geometry.tangents.len() >= geometry.positions.len() {
+                    geometry.tangents.clone()
+                } else {
+                    vec![[1.0, 0.0, 0.0, 1.0]; deformed.len()]
+                })
             } else {
                 None
             },
-            normal_map: if usable_normal_map { normal_map } else { None },
-            normal_scale,
+            normal_map: if per_pixel { drawable_map } else { None },
+            normal_scale: drawable_scale,
             normal_ambient,
             light,
         });
