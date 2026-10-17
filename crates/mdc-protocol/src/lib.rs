@@ -757,6 +757,20 @@ pub struct ErrorPayload {
     pub message: String,
 }
 
+/// N367: a device -> host crash/fault report (CBOR for `MessageType::Crash`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CrashReport {
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pc: Option<u32>,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub boot_id: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub run_id: u64,
+}
+
 /// N316: a device -> host metric sample (CBOR for `MessageType::Metric`). The
 /// diagnostics channel is independent of the frame/ack path, so a saturated
 /// image link cannot lose a test result.
@@ -1618,6 +1632,17 @@ mod tests {
         let back: TelemetryEvent = decode_control(&encode_control(&event).unwrap()).unwrap();
         assert_eq!(back, event);
         assert_eq!(MessageType::try_from(0x60), Ok(MessageType::Telemetry));
+
+        // N367: the reserved Crash type carries a fault report.
+        let crash = CrashReport {
+            reason: "load-access".into(),
+            task: Some("mdc_app".into()),
+            pc: Some(0x4000_0000),
+            boot_id: 7,
+            run_id: 2,
+        };
+        let back: CrashReport = decode_control(&encode_control(&crash).unwrap()).unwrap();
+        assert_eq!(back, crash);
     }
 
     #[test]

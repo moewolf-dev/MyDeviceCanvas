@@ -1471,6 +1471,23 @@ impl FakeDevice {
         };
         self.write_control(MessageType::BootInfo, 0, &boot)
     }
+    /// N367: emit a crash/fault report on the diagnostics channel.
+    pub fn emit_crash(
+        &mut self,
+        reason: &str,
+        task: Option<&str>,
+        pc: Option<u32>,
+    ) -> Result<(), SimError> {
+        self.metrics.diagnostics_emitted = self.metrics.diagnostics_emitted.saturating_add(1);
+        let report = mdc_protocol::CrashReport {
+            reason: reason.to_string(),
+            task: task.map(str::to_string),
+            pc,
+            boot_id: self.boot_id,
+            run_id: self.run_id,
+        };
+        self.write_control(MessageType::Crash, 0, &report)
+    }
     /// N335: emit a structured telemetry event (name + level + string fields).
     pub fn emit_telemetry(
         &mut self,

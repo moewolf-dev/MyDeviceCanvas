@@ -942,6 +942,13 @@ impl NativeManager {
                     unit: event.level,
                     fields: serde_json::to_string(&event.fields).ok(),
                 },
+                mdc_core::DiagnosticRecord::Crash(report) => DiagnosticDto {
+                    kind: "crash".into(),
+                    name: report.reason,
+                    value: f64::from(report.pc.unwrap_or(0)),
+                    unit: report.task,
+                    fields: None,
+                },
             })
             .collect())
     }

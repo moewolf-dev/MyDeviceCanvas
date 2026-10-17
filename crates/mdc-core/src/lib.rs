@@ -30,6 +30,8 @@ pub enum DiagnosticRecord {
     BootInfo(BootInfo),
     /// N335: structured telemetry event.
     Telemetry(mdc_protocol::TelemetryEvent),
+    /// N367: a crash/fault report.
+    Crash(mdc_protocol::CrashReport),
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -2063,6 +2065,15 @@ impl<T: Transport> Session<T> {
                     }
                 }
                 self.push_diagnostic(DiagnosticRecord::Telemetry(event));
+                Ok(())
+            }
+            MessageType::Crash => {
+                // N367: the reserved crash type now carries a fault report.
+                let report: mdc_protocol::CrashReport =
+                    mdc_protocol::decode_control(&packet.payload)
+                        .map_err(|e| CoreError::Protocol(e.to_string()))?;
+                self.note_run_identity(report.boot_id, report.run_id);
+                self.push_diagnostic(DiagnosticRecord::Crash(report));
                 Ok(())
             }
             MessageType::MirrorCtrl => Ok(()),

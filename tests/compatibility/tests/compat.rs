@@ -1511,11 +1511,15 @@ fn device_diagnostics_reach_the_host_channel() {
     let mut fields = std::collections::BTreeMap::new();
     fields.insert("heap".to_string(), "1234".to_string());
     device.emit_telemetry("soak", Some("info"), fields).unwrap();
+    device
+        .emit_crash("load-access", Some("mdc_app"), Some(0x4000_0000))
+        .unwrap();
     session.poll().unwrap();
     let records = session.take_diagnostics();
-    assert_eq!(records.len(), 3);
+    assert_eq!(records.len(), 4);
     assert!(matches!(records[0], DiagnosticRecord::BootInfo(_)));
     assert!(matches!(records[2], DiagnosticRecord::Telemetry(_)));
+    assert!(matches!(records[3], DiagnosticRecord::Crash(_)));
     match &records[1] {
         DiagnosticRecord::Metric(metric) => {
             assert_eq!(metric.name, "fps");

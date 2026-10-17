@@ -1534,6 +1534,7 @@ fn cmd_diag(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::erro
     let mut value = 30.0_f64;
     let mut unit: Option<String> = Some("fps".to_string());
     let mut telemetry: Option<String> = None;
+    let mut crash: Option<String> = None;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -1541,6 +1542,7 @@ fn cmd_diag(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::erro
             "--value" => value = iter.next().and_then(|v| v.parse().ok()).unwrap_or(value),
             "--unit" => unit = iter.next().cloned(),
             "--telemetry" => telemetry = iter.next().cloned(),
+            "--crash" => crash = iter.next().cloned(),
             _ => {}
         }
     }
@@ -1555,6 +1557,10 @@ fn cmd_diag(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::erro
         fields.insert("value".to_string(), format!("{value}"));
         fields.insert("board".to_string(), opts.board.clone());
         device.emit_telemetry(name, Some("info"), fields)?;
+    }
+    if let Some(reason) = &crash {
+        // N367: a crash/fault report.
+        device.emit_crash(reason, Some("mdc_app"), Some(0x4000_0000))?;
     }
     session.poll()?;
     let records = session.take_diagnostics();
@@ -1583,6 +1589,12 @@ fn cmd_diag(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::erro
                 "level": e.level,
                 "fields": e.fields,
                 "event_seq": e.event_seq,
+            }),
+            mdc_core::DiagnosticRecord::Crash(c) => serde_json::json!({
+                "kind": "crash",
+                "reason": c.reason,
+                "task": c.task,
+                "pc": c.pc,
             }),
         })
         .collect();
@@ -2871,7 +2883,7 @@ fn usage() {
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
-authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME]|\
+authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\

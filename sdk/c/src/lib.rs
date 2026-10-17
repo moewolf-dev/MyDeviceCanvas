@@ -377,6 +377,13 @@ pub unsafe extern "C" fn mdc_session_take_diagnostic(
             *value = event.event_seq as f64;
             copy_cstr(unit, unit_len, event.level.as_deref().unwrap_or(""));
         }
+        DiagnosticRecord::Crash(report) => {
+            // N367: kind 3; name = reason, unit = task.
+            *kind = 3;
+            copy_cstr(name, name_len, &report.reason);
+            *value = f64::from(report.pc.unwrap_or(0));
+            copy_cstr(unit, unit_len, report.task.as_deref().unwrap_or(""));
+        }
     }
     1
 }

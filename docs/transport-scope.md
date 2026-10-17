@@ -52,7 +52,7 @@ the message types now:
 |---|---|---|
 | `Telemetry` | `0x60` | **implemented** (N335: CBOR `TelemetryEvent`; `Session::take_diagnostics`) |
 | `Metric` | `0x61` | **implemented** (N316: CBOR `MetricReport`; `Session::take_diagnostics`) |
-| `Crash` | `0x62` | **reserved, not implemented** |
+| `Crash` | `0x62` | **implemented** (N367: CBOR `CrashReport`) |
 | `BootInfo` | `0x63` | **implemented** (N316: CBOR `BootInfo`) |
 
 `MessageType::try_from` (Rust) and the C++ `Parser::known_type` accept all four
