@@ -2,6 +2,31 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.50] — Texture transforms, scene selection, sparse/interleaved import, AO, normal maps, atlas packing (N373–N382)
+
+### Added
+
+- `KHR_texture_transform` on the base-colour texture (`Material.uv_transform`) is
+  imported and applied to UVs before sampling (N373)
+- `KHR_materials_emissive_strength` scales `emissiveFactor` before it lifts the
+  ambient floor (N374)
+- glTF default-scene selection: with `scenes` declared, only the default scene's
+  nodes keep a mesh, so unreferenced nodes are not drawn (N375)
+- glTF sparse accessors are de-sparsed into a tight byte image before decoding
+  (N376)
+- interleaved accessors (`bufferView.byteStride` + accessor `byteOffset`) are
+  de-strided into the same tight image (N377)
+- `occlusionTexture` multiplies each package/device triangle's shade (sampled at
+  the triangle centroid); `occlusionStrength` scales it (N378)
+- `TANGENT` + `normalTexture` drive per-pixel normal mapping on the package/device
+  renderer (per-pixel Lambert); geometry without tangents keeps the per-triangle
+  shade (N379)
+- `pack_material_atlas` (and `mdc package --atlas MAX_PAGE`) shelf-packs a
+  package's per-material textures into one bounded page, carrying 1-bit alpha and
+  remapping material indices and mesh UVs (N380)
+- compatibility fixtures (occlusion, normal map, packed atlas) and a bounded
+  atlas-pack soak (N381)
+
 ## [0.1.49] — Emissive/unlit, vertex colours, skinned normals, WS/C parity, crash reports, scene clip, asset store, RSS (N363–N372)
 
 ### Added

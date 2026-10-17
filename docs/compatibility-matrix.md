@@ -148,6 +148,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Scene `clip` node (N368) | sim-verified (scissor rect, nesting) | physical: pending |
 | On-disk asset store (N369) | sim-verified (`mdc asset` LRU + quota soak) | n/a |
 | Host RSS sampling (N370) | sim-verified (`--rss`; `rss_bytes` series) | n/a |
+| `KHR_texture_transform` (N373) | sim-verified (UV offset/rotation/scale) | physical: pending |
+| `KHR_materials_emissive_strength` (N374) | sim-verified (scales emissive) | physical: pending |
+| Default-scene selection (N375) | sim-verified (unreferenced nodes dropped) | physical: pending |
+| Sparse accessors (N376) | sim-verified (de-sparsed) | physical: pending |
+| Interleaved accessors (N377) | sim-verified (`byteStride` de-stride) | physical: pending |
+| Occlusion texture (N378) | sim-verified (per-triangle AO) | physical: pending |
+| Normal mapping (N379) | sim-verified (per-pixel `TANGENT`+`normalTexture`) | physical: pending |
+| Atlas packing (N380) | sim-verified (`pack_material_atlas`; UV remap) | physical: pending |
 
 ## G03 sim exit
 

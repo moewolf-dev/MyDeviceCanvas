@@ -67,6 +67,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 53 | N343–N352: metallic/roughness shading, 8-bit texture alpha, multi-clip atlas bake, JPEG quality + HTTP scale, device filtering config, scene gradient, Node diagnostics, `mdc ota`, inspector profile/counters | sim-verified |
 | 54 | N353–N362: multi-material textures, OTA over TCP, scene rounded-rect, stream scale, telemetry events, multi-texture fixtures/soak, `/health` | sim-verified |
 | 55 | N363–N372: emissive/unlit, `COLOR_0` vertex colours, skinned normals, C/Swift `connectWebSocket`, `Crash` report, scene `clip`, on-disk asset store, host RSS sampling | sim-verified |
+| 56 | N373–N382: `KHR_texture_transform`, `KHR_materials_emissive_strength`, default-scene selection, sparse + interleaved accessors, occlusion texture, normal mapping, texture atlas packing | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 
