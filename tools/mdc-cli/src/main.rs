@@ -707,6 +707,7 @@ fn cmd_bake_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut out_dir = String::from(".");
     let mut package_path: Option<String> = None;
     let mut texture_path: Option<String> = None;
+    let mut all_animations = false;
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -721,6 +722,8 @@ fn cmd_bake_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "--out" => out_dir = iter.next().cloned().unwrap_or(out_dir),
             "--package" => package_path = iter.next().cloned(),
             "--texture" => texture_path = iter.next().cloned(),
+            // N345: bake every animation into one multi-clip atlas package.
+            "--all-animations" => all_animations = true,
             other => model_path = Some(other.to_string()),
         }
     }
@@ -746,6 +749,34 @@ fn cmd_bake_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     };
     let textured = texture.is_some() && has_uv;
     if let Some(path) = &package_path {
+        if all_animations {
+            // N345: one clip per animation in a single atlas package.
+            let clips: Vec<(usize, u32)> = (0..model.animations.len())
+                .map(|index| (index, frames))
+                .collect();
+            let sealed = mdc_bake::bake_scene_clips_to_package(
+                &model,
+                &clips,
+                (sprite, sprite),
+                if textured { texture.as_ref() } else { None },
+                0xF800,
+            )?;
+            let package_bytes = sealed.to_bytes().map_err(|e| format!("package: {e}"))?;
+            std::fs::write(path, &package_bytes)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "source": model_path,
+                    "clips": clips.len(),
+                    "frames": frames,
+                    "mode": sealed.manifest.mode,
+                    "textured": textured,
+                    "package_path": path,
+                    "package_bytes": package_bytes.len(),
+                }))?
+            );
+            return Ok(());
+        }
         let sealed = mdc_bake::bake_textured_to_package(
             &model,
             animation,
@@ -2639,7 +2670,7 @@ flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <t
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg]|install-package <file.mdcpkg>|provision <file.mdcpkg>|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--package OUT.mdcpkg]|\
-bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
+bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] --out f.ppm|\
 motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] --out f.ppm|\

@@ -1423,6 +1423,28 @@ fn frames_to_package(
     frames: u32,
     sprite: (u32, u32),
 ) -> Result<mdc_model::MdcPackage, BakeError> {
+    let clips = vec![mdc_model::AtlasClip {
+        name: "bake-mesh".into(),
+        start: 0,
+        frames,
+        fps: 30,
+        looping: true,
+        fade_in_ms: 0,
+        fade_out_ms: 0,
+    }];
+    frames_to_clip_package(baked, clips, sprite)
+}
+
+/// N345: pack baked frames into a `BakedSprites` package with one or more clips.
+fn frames_to_clip_package(
+    baked: Vec<BakedTexture>,
+    clips: Vec<mdc_model::AtlasClip>,
+    sprite: (u32, u32),
+) -> Result<mdc_model::MdcPackage, BakeError> {
+    let frames = baked.len() as u32;
+    if frames == 0 {
+        return Err(BakeError::FrameCount(0, 64));
+    }
     let columns = (frames as f64).sqrt().ceil().max(1.0) as u32;
     let rows = frames.div_ceil(columns);
     let plan = mdc_model::AtlasPlan {
@@ -1445,15 +1467,7 @@ fn frames_to_package(
         columns: atlas.columns,
         rows: atlas.rows,
         rgb565: atlas.rgb565,
-        clips: vec![mdc_model::AtlasClip {
-            name: "bake-mesh".into(),
-            start: 0,
-            frames,
-            fps: 30,
-            looping: true,
-            fade_in_ms: 0,
-            fade_out_ms: 0,
-        }],
+        clips,
     };
     let package = mdc_model::DevicePackage {
         target: "esp32-plane".into(),
@@ -1471,6 +1485,45 @@ fn frames_to_package(
         texture: None,
     };
     mdc_model::MdcPackage::seal(package).map_err(|e| BakeError::Package(e.to_string()))
+}
+
+/// N345: bake several animations of one scene into a single multi-clip atlas
+/// package, so a weak device can switch clips with `config animation`.
+pub fn bake_scene_clips_to_package(
+    model: &Model,
+    clips: &[(usize, u32)],
+    sprite: (u32, u32),
+    texture: Option<&crate::TextureMap>,
+    fallback: u16,
+) -> Result<mdc_model::MdcPackage, BakeError> {
+    if clips.is_empty() {
+        return Err(BakeError::FrameCount(0, 64));
+    }
+    let mut baked = Vec::new();
+    let mut atlas_clips = Vec::new();
+    for (animation, frames) in clips {
+        let frames = (*frames).clamp(1, 64);
+        let part = bake_scene_frames(model, *animation, frames, sprite, texture, fallback)?;
+        let name = model
+            .animations
+            .get(*animation)
+            .map(|a| a.name.clone())
+            .unwrap_or_else(|| format!("clip{animation}"));
+        atlas_clips.push(mdc_model::AtlasClip {
+            name,
+            start: baked.len() as u32,
+            frames: part.len() as u32,
+            fps: 30,
+            looping: true,
+            fade_in_ms: 0,
+            fade_out_ms: 0,
+        });
+        baked.extend(part);
+    }
+    if baked.len() > 64 {
+        return Err(BakeError::FrameCount(baked.len(), 64));
+    }
+    frames_to_clip_package(baked, atlas_clips, sprite)
 }
 
 /// N112: bake solid skinned frames straight into a runtime `BakedSprites`
@@ -2029,6 +2082,44 @@ mod tests {
             shaded >> 11 < flat >> 11,
             "the red channel is reduced by shading"
         );
+    }
+
+    #[test]
+    fn multi_clip_atlas_package_has_one_clip_per_animation() {
+        let mut model = two_mesh_model();
+        model.animations = vec![
+            Animation {
+                name: "idle".into(),
+                channels: 1,
+                tracks: vec![AnimationTrack {
+                    node: 1,
+                    path: "translation".into(),
+                    interpolation: "LINEAR".into(),
+                    times: vec![0.0, 1.0],
+                    values: vec![-0.4, 0.0, 0.0, -0.4, 0.0, 0.0],
+                }],
+            },
+            Animation {
+                name: "walk".into(),
+                channels: 1,
+                tracks: vec![AnimationTrack {
+                    node: 1,
+                    path: "translation".into(),
+                    interpolation: "LINEAR".into(),
+                    times: vec![0.0, 1.0],
+                    values: vec![0.4, 0.0, 0.0, 0.4, 0.0, 0.0],
+                }],
+            },
+        ];
+        let package =
+            bake_scene_clips_to_package(&model, &[(0, 2), (1, 2)], (16, 16), None, 0xFFFF).unwrap();
+        let atlas = package.package.atlas.as_ref().expect("atlas");
+        assert_eq!(atlas.clips.len(), 2);
+        assert_eq!(atlas.clips[0].name, "idle");
+        assert_eq!(atlas.clips[0].frames, 2);
+        assert_eq!(atlas.clips[1].name, "walk");
+        assert_eq!(atlas.clips[1].start, 2);
+        assert_eq!(atlas.frames, 4);
     }
 
     #[test]
