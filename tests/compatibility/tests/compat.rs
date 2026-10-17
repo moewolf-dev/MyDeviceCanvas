@@ -3022,6 +3022,79 @@ fn clearcoat_adds_a_second_highlight() {
 }
 
 #[test]
+fn indexed_texture_blob_renders_on_the_device() {
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};
+
+    let model = Model {
+        source: "test".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.5, 0.5, 0.0],
+                    [-0.5, 0.5, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                uv2: Vec::new(),
+                normals: Vec::new(),
+                colors: Vec::new(),
+                tangents: Vec::new(),
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                skin_joints2: Vec::new(),
+                skin_weights2: Vec::new(),
+                morph_targets: Vec::new(),
+            }),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "m".into(),
+            texture: Some(0),
+            color: Some([255, 255, 255]),
+            ..Material::default()
+        }],
+        ..Model::default()
+    };
+    let mut package =
+        mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d()).unwrap();
+    // A red/green indexed texture (N415).
+    let blob = mdc_model::TextureBlob {
+        width: 2,
+        height: 1,
+        rgb565: vec![0x00, 0xF8, 0xE0, 0x07],
+        alpha: Vec::new(),
+        palette: Vec::new(),
+        indices: Vec::new(),
+    };
+    let indexed = mdc_bake::index_texture_blob(&blob, 2);
+    assert!(indexed.is_indexed());
+    package.package.texture_blobs = vec![indexed.clone()];
+    package.package.texture = Some(indexed);
+    let frame = mdc_bake::render_package_scene(&package.package, 0.0, (32, 32)).unwrap();
+    let at = |x: usize| {
+        u16::from_le_bytes([
+            frame.rgb565[(16 * 32 + x) * 2],
+            frame.rgb565[(16 * 32 + x) * 2 + 1],
+        ])
+    };
+    let left = at(6);
+    let right = at(25);
+    assert!(left != right, "the indexed texture paints two colours");
+    assert!(left >> 11 > 8 || (right >> 5) & 0x3f > 8);
+}
+
+#[test]
 fn device_diagnostics_reach_the_host_channel() {
     use mdc_core::{ConnectionState, DiagnosticRecord, Session};
     use mdc_simulator::{BoardProfile, FakeDevice};

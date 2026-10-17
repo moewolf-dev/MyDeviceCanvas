@@ -1407,6 +1407,55 @@ fn http_stream_scale_requests_stay_bounded() {
 }
 
 #[test]
+fn indexed_texture_blobs_survive_a_package_round_trip() {
+    // N421: index + dither + seal + reopen keeps a valid, bounded texture.
+    let blob = mdc_model::TextureBlob {
+        width: 8,
+        height: 8,
+        rgb565: {
+            let mut rgb = Vec::new();
+            for i in 0..64u16 {
+                rgb.extend_from_slice(&(i.wrapping_mul(1023)).to_le_bytes());
+            }
+            rgb
+        },
+        alpha: Vec::new(),
+        palette: Vec::new(),
+        indices: Vec::new(),
+    };
+    for _ in 0..50 {
+        let dithered = mdc_bake::dither_texture_blob(&blob, 4);
+        let indexed = mdc_bake::index_texture_blob(&dithered, 8);
+        assert!(indexed.validate());
+        assert!(indexed.palette.len() <= 8);
+        assert_eq!(indexed.indices.len(), 64);
+        let mut package = mdc_model::DevicePackage {
+            target: "esp32-plane".into(),
+            mode: mdc_model::PackageMode::Mesh,
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            textures: Vec::new(),
+            materials: Vec::new(),
+            lights: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 0,
+            atlas: None,
+            texture: Some(indexed),
+            texture_blobs: Vec::new(),
+        };
+        package.texture_blobs.push(package.texture.clone().unwrap());
+        let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+        let bytes = sealed.to_bytes().unwrap();
+        let reopened = mdc_model::MdcPackage::from_bytes(&bytes).unwrap();
+        assert!(reopened.package.texture_blobs[0].is_indexed());
+        assert!(reopened.verify().valid);
+    }
+}
+
+#[test]
 fn atlas_post_processing_stays_bounded() {
     // N411: dither + palette + mip on a large atlas produce bounded outputs.
     let (w, h) = (64u32, 64u32);
