@@ -77,6 +77,40 @@ fn rss_delta(count: u32, interval_ms: u64) -> serde_json::Value {
     })
 }
 
+/// N509: sample host memory while cycling a bounded buffer, and report the peak
+/// growth over the baseline. The buffer is released each iteration, so the peak
+/// is the high-water mark of one allocation, not an accumulation.
+fn heap_peak(count: u32, interval_ms: u64, size_kb: u64) -> serde_json::Value {
+    let count = count.clamp(1, 600);
+    let interval = interval_ms.max(1);
+    let size = (size_kb.clamp(1, 65_536) * 1024) as usize;
+    let baseline = resident_bytes().unwrap_or(0);
+    let mut peak = baseline;
+    let mut last = baseline;
+    for index in 0..count {
+        // Touch one byte per page so the buffer becomes resident.
+        let mut buffer = vec![0u8; size];
+        for byte in buffer.iter_mut().step_by(4096) {
+            *byte = 1;
+        }
+        last = resident_bytes().unwrap_or(0);
+        peak = peak.max(last);
+        drop(buffer);
+        if index + 1 < count {
+            std::thread::sleep(std::time::Duration::from_millis(interval));
+        }
+    }
+    serde_json::json!({
+        "samples": count,
+        "buffer_bytes": size,
+        "baseline": baseline,
+        "last": last,
+        "peak": peak,
+        "growth": peak as i64 - baseline as i64,
+        "peak_is_high_water": rss_is_peak(),
+    })
+}
+
 fn fresh_metrics() -> Result<String, Box<dyn std::error::Error>> {
     let (host, mut device) = FakeDevice::pair(BoardProfile::default());
     let mut session = Session::new(host);
@@ -170,6 +204,20 @@ fn main() {
         println!("{}", rss_delta(count, interval));
         return;
     }
+    // N509: a bounded peak-memory probe over a cyclic allocation.
+    if args.iter().any(|a| a == "--heap") {
+        let count = flag_value("--count")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(8);
+        let interval = flag_value("--interval")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(5);
+        let size_kb = flag_value("--size-kb")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(1024);
+        println!("{}", heap_peak(count, interval, size_kb));
+        return;
+    }
     if let Some(count) = flag_value("--jsonl").and_then(|v| v.parse::<u32>().ok()) {
         let interval = flag_value("--interval")
             .and_then(|v| v.parse::<u64>().ok())
@@ -209,6 +257,31 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn heap_peak_reports_a_bounded_growth() {
+        // N509: the probe samples, releases, and never accumulates.
+        let report = heap_peak(3, 1, 512);
+        assert_eq!(report["samples"], 3);
+        assert_eq!(report["buffer_bytes"], 512 * 1024);
+        let peak = report["peak"].as_u64().unwrap();
+        let baseline = report["baseline"].as_u64().unwrap();
+        assert!(peak >= baseline, "peak is at least the baseline");
+        // The growth is an integer delta of the two samples.
+        assert_eq!(
+            report["growth"].as_i64().unwrap(),
+            peak as i64 - baseline as i64
+        );
+    }
+
+    #[test]
+    fn heap_peak_clamps_the_probe_bounds() {
+        let report = heap_peak(0, 0, 0);
+        assert_eq!(report["samples"], 1);
+        assert_eq!(report["buffer_bytes"], 1024);
+        let huge = heap_peak(1, 1, u64::MAX);
+        assert_eq!(huge["buffer_bytes"], 65_536 * 1024);
+    }
 
     fn parse_lines(bytes: &[u8]) -> Vec<serde_json::Value> {
         String::from_utf8(bytes.to_vec())
