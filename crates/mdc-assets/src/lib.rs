@@ -99,6 +99,94 @@ impl AssetCache {
     }
 }
 
+/// N467: a chunked upload that spools to a temp file, so a large asset never sits
+/// in memory. `finish` hashes what was written and renames the temp file into the
+/// cache; dropping without finishing removes it.
+pub struct DiskChunkedUpload {
+    dir: PathBuf,
+    path: PathBuf,
+    file: Option<std::fs::File>,
+    hasher: Sha256,
+    received: usize,
+    limit: usize,
+}
+
+impl DiskChunkedUpload {
+    pub fn begin(dir: impl Into<PathBuf>, limit: usize) -> Result<Self, AssetError> {
+        let dir = dir.into();
+        std::fs::create_dir_all(&dir).map_err(|e| AssetError::Io(e.to_string()))?;
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = dir.join(format!(".upload-{}-{serial}", std::process::id()));
+        let file = std::fs::File::create(&path).map_err(|e| AssetError::Io(e.to_string()))?;
+        Ok(Self {
+            dir,
+            path,
+            file: Some(file),
+            hasher: Sha256::new(),
+            received: 0,
+            limit,
+        })
+    }
+
+    pub fn received(&self) -> usize {
+        self.received
+    }
+
+    /// Append a chunk; refuses to exceed the declared limit before writing.
+    pub fn push_chunk(&mut self, bytes: &[u8]) -> Result<(), AssetError> {
+        let next = self
+            .received
+            .checked_add(bytes.len())
+            .ok_or(AssetError::TooLarge)?;
+        if next > self.limit {
+            return Err(AssetError::TooLarge);
+        }
+        let Some(file) = self.file.as_mut() else {
+            return Err(AssetError::Io("upload already finished".into()));
+        };
+        use std::io::Write;
+        file.write_all(bytes)
+            .map_err(|e| AssetError::Io(e.to_string()))?;
+        self.hasher.update(bytes);
+        self.received = next;
+        Ok(())
+    }
+
+    /// Drop the partial upload and remove its temp file.
+    pub fn abort(&mut self) {
+        self.file = None;
+        let _ = std::fs::remove_file(&self.path);
+    }
+
+    /// Complete the upload: hash the bytes and move the temp file into the cache
+    /// as its content key (call [`DiskCache::prune`] to enforce a quota).
+    pub fn finish(mut self) -> Result<AssetKey, AssetError> {
+        if let Some(file) = self.file.take() {
+            file.sync_all().map_err(|e| AssetError::Io(e.to_string()))?;
+        }
+        let key = AssetKey(
+            self.hasher
+                .finalize_reset()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+        );
+        let target = self.dir.join(&key.0);
+        std::fs::rename(&self.path, &target).map_err(|e| AssetError::Io(e.to_string()))?;
+        self.received = 0;
+        Ok(key)
+    }
+}
+
+impl Drop for DiskChunkedUpload {
+    fn drop(&mut self) {
+        if self.file.is_some() {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 /// N369: a bounded, content-addressed cache on disk. Files are named by their
 /// SHA-256 key; sizes come from the directory listing and LRU order from the
 /// file modification time (touched on every `get`/`put`).
@@ -343,6 +431,37 @@ mod tests {
             "an old entry was evicted"
         );
         let _ = (b, c);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disk_chunked_upload_spools_and_finishes() {
+        // N467: chunks spool to a temp file, the limit is enforced, and finish
+        // renames the file to its content key.
+        let dir = std::env::temp_dir().join(format!("mdc-disk-upload-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut upload = DiskChunkedUpload::begin(&dir, 8).unwrap();
+        upload.push_chunk(&[1, 2, 3, 4]).unwrap();
+        upload.push_chunk(&[5, 6, 7, 8]).unwrap();
+        assert_eq!(upload.received(), 8);
+        assert_eq!(upload.push_chunk(&[9]), Err(AssetError::TooLarge));
+        let key = upload.finish().unwrap();
+        assert_eq!(key, AssetKey::from_bytes(&[1, 2, 3, 4, 5, 6, 7, 8]));
+        assert!(
+            dir.join(&key.0).is_file(),
+            "the file is stored under its key"
+        );
+
+        // Aborting removes the partial file.
+        let mut aborted = DiskChunkedUpload::begin(&dir, 8).unwrap();
+        aborted.push_chunk(&[1, 2]).unwrap();
+        aborted.abort();
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".upload-"))
+            .collect();
+        assert!(leftovers.is_empty(), "no temp files remain");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
