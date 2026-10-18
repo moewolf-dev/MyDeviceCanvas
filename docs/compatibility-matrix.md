@@ -204,6 +204,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Package mip chain (N438) | sim-verified (`AtlasBlob.mips`) | physical: pending |
 | `render-package --mip` (N439) | sim-verified (stored level) | n/a |
 | C `session_stats` (N440) | sim-verified (out-params) | n/a |
+| Texture-transform UV override (N443) | sim-verified (`texCoord` wins) | physical: pending |
+| `KHR_materials_anisotropy` (N444) | sim-verified (brushed highlight) | physical: pending |
+| `EXT_texture_webp` (N445) | sim-verified (source resolve + WebP decode) | physical: pending |
+| Full session stats (N446) | sim-verified (`packages_sent`, `mirror_frames`, `pacing_dropped`) | n/a |
+| Swift `stats()` (N447) | sim-verified (wrapper + smoke) | n/a |
+| `mirror --scale` (N448) | sim-verified (box downscale) | n/a |
+| glTF cameras (N449) | sim-verified (metadata) | n/a |
+| Scene `visible` (N450) | sim-verified (draw + hit-test skipped) | physical: pending |
 
 ## G03 sim exit
 

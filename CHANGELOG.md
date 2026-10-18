@@ -2,6 +2,23 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.57] — Texture-transform UV override, anisotropy, WebP, full stats, Swift stats, mirror scale, cameras, scene visibility (N443–N452)
+
+### Added
+
+- `KHR_texture_transform.texCoord` overrides the textureInfo's UV set (N443)
+- `KHR_materials_anisotropy` adds a brushed highlight stretched along the tangent
+  (rotation-aware) (N444)
+- `EXT_texture_webp` is honoured and WebP bytes decode via the `image` crate's
+  `webp` feature (N445)
+- `SessionStats` gained `packages_sent`, `mirror_frames`, and `pacing_dropped` (N446)
+- Swift `MdcSession.stats()` wrapper plus a smoke check (N447)
+- `mdc mirror --scale N` box-downscales frames written to disk (N448)
+- glTF `cameras` are imported (`Model.cameras`, `model-info` field) (N449)
+- scene nodes accept `visible: false` to hide themselves and their children from
+  drawing and hit-testing (N450)
+- memory coverage for repeated variant selection (N451)
+
 ## [0.1.56] — Variants, volume, iridescence, session stats, JSONL devices, package mips (N433–N442)
 
 ### Added

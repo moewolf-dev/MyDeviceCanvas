@@ -74,6 +74,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 60 | N413–N422: `pbrSpecularGlossiness`, clearcoat, indexed palette textures, texture dithering, `scene-lint`, scene hit-testing, OTA phase checkpoint, `KHR_materials_variants` | sim-verified |
 | 61 | N423–N432: generated/skinned tangents, `KHR_materials_sheen`, `KHR_materials_transmission`, C hit-node out-param, `package --tangents`, clip-by-name, Node `connectSerial` | sim-verified |
 | 62 | N433–N442: variant mappings + `--variant`, `KHR_materials_volume`, `KHR_materials_iridescence`, extended session stats, `devices --compact`, package mip chain, `render-package --mip`, C `session_stats` | sim-verified |
+| 63 | N443–N452: texture-transform UV override, `KHR_materials_anisotropy`, `EXT_texture_webp`, full session stats, Swift stats, `mirror --scale`, glTF cameras, scene `visible` | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 
