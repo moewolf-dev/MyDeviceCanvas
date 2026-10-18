@@ -20,6 +20,8 @@ pub struct MdcSession {
     queued: Vec<ManagerEvent>,
     /// N319: diagnostics drained from the session, oldest first.
     queued_diagnostics: std::collections::VecDeque<DiagnosticRecord>,
+    /// N518: mirrored frames dropped because the caller's buffer was too small.
+    mirror_budget_skips: u64,
 }
 
 fn pump(session: &mut MdcSession) -> Result<(), ()> {
@@ -61,6 +63,7 @@ fn open_board(board_id: &str) -> Result<MdcSession, ()> {
         manager,
         queued: Vec::new(),
         queued_diagnostics: std::collections::VecDeque::new(),
+        mirror_budget_skips: 0,
     };
     pump(&mut held)?;
     if held.session.state != ConnectionState::Ready {
@@ -82,6 +85,7 @@ fn open_tcp(addr: &str) -> Result<MdcSession, ()> {
         manager,
         queued: Vec::new(),
         queued_diagnostics: std::collections::VecDeque::new(),
+        mirror_budget_skips: 0,
     };
     for _ in 0..40 {
         let _ = held.session.poll();
@@ -108,6 +112,7 @@ fn open_ws(url: &str) -> Result<MdcSession, ()> {
         manager,
         queued: Vec::new(),
         queued_diagnostics: std::collections::VecDeque::new(),
+        mirror_budget_skips: 0,
     };
     for _ in 0..40 {
         let _ = held.session.poll();
@@ -1131,10 +1136,17 @@ pub unsafe extern "C" fn mdc_emit_mirror_frame(session: *mut MdcSession) -> c_in
 }
 
 /// # Safety
-/// `session` must be alive; `out` must point to `cap` writable bytes when non-NULL.
-#[no_mangle]
-pub unsafe extern "C" fn mdc_take_mirror_frame(
+/// N518: shared implementation for the mirror take entry points. Writes the
+/// surface id when `surface_id` is non-null, and counts frames dropped because
+/// the caller's buffer was too small.
+///
+/// # Safety
+/// `session` must be alive; out pointers may be NULL.
+#[allow(clippy::too_many_arguments)]
+unsafe fn take_mirror_frame_impl(
     session: *mut MdcSession,
+    surface_id: *mut c_char,
+    surface_id_len: usize,
     width: *mut u16,
     height: *mut u16,
     frame_id: *mut u64,
@@ -1147,6 +1159,12 @@ pub unsafe extern "C" fn mdc_take_mirror_frame(
     let Some(frame) = session.session.take_mirror_frame() else {
         return -1;
     };
+    if !surface_id.is_null() && surface_id_len > 0 {
+        let id = frame.surface_id.as_bytes();
+        let n = id.len().min(surface_id_len - 1);
+        ptr::copy_nonoverlapping(id.as_ptr(), surface_id as *mut u8, n);
+        *surface_id.add(n) = 0;
+    }
     if !width.is_null() {
         *width = frame.width;
     }
@@ -1161,10 +1179,79 @@ pub unsafe extern "C" fn mdc_take_mirror_frame(
         return len as i64;
     }
     if cap < len {
+        // N518: the frame did not fit; count the drop rather than truncating.
+        session.mirror_budget_skips = session.mirror_budget_skips.saturating_add(1);
         return -2;
     }
     ptr::copy_nonoverlapping(frame.bytes.as_ptr(), out, len);
     len as i64
+}
+
+/// # Safety
+/// `session` must be alive; the out pointers may be NULL.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_take_mirror_frame(
+    session: *mut MdcSession,
+    width: *mut u16,
+    height: *mut u16,
+    frame_id: *mut u64,
+    out: *mut u8,
+    cap: usize,
+) -> i64 {
+    take_mirror_frame_impl(
+        session,
+        ptr::null_mut(),
+        0,
+        width,
+        height,
+        frame_id,
+        out,
+        cap,
+    )
+}
+
+/// N518: like [`mdc_take_mirror_frame`], and also writes the surface id
+/// (parity with the Node/Swift `surfaceId`). Returns the frame bytes copied
+/// (0 when empty, -1 on error, -2 when the buffer is too small).
+///
+/// # Safety
+/// `session` must be alive; the out pointers may be NULL.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_take_mirror_frame_with_surface(
+    session: *mut MdcSession,
+    surface_id: *mut c_char,
+    surface_id_len: usize,
+    width: *mut u16,
+    height: *mut u16,
+    frame_id: *mut u64,
+    out: *mut u8,
+    cap: usize,
+) -> i64 {
+    take_mirror_frame_impl(
+        session,
+        surface_id,
+        surface_id_len,
+        width,
+        height,
+        frame_id,
+        out,
+        cap,
+    )
+}
+
+/// N518: mirrored frames dropped because the caller's buffer was too small.
+///
+/// # Safety
+/// `session` must be a valid pointer returned by a `mdc_session_*` constructor.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_mirror_skips(session: *const MdcSession, skips: *mut u64) -> c_int {
+    let Some(session) = session.as_ref() else {
+        return -1;
+    };
+    if !skips.is_null() {
+        *skips = session.mirror_budget_skips;
+    }
+    0
 }
 
 /// # Safety
@@ -1847,6 +1934,53 @@ mod tests {
                 ),
                 -1
             );
+            mdc_session_destroy(session);
+        }
+    }
+
+    #[test]
+    fn mirror_take_with_surface_and_budget_skips() {
+        unsafe {
+            let board = std::ffi::CString::new("linux-virt").unwrap();
+            let session = mdc_session_create_board(board.as_ptr());
+            assert!(!session.is_null());
+            assert_eq!(mdc_start_mirror(session, std::ptr::null(), 15), 0);
+            assert_eq!(mdc_emit_mirror_frame(session), 0);
+            let mut surface = [0i8; 16];
+            let (mut width, mut height, mut frame_id) = (0u16, 0u16, 0u64);
+            let mut buf = vec![0u8; 800 * 480 * 2];
+            // N518: the surface id is written alongside the frame.
+            let n = mdc_take_mirror_frame_with_surface(
+                session,
+                surface.as_mut_ptr(),
+                surface.len(),
+                &mut width,
+                &mut height,
+                &mut frame_id,
+                buf.as_mut_ptr(),
+                buf.len(),
+            );
+            assert_eq!(n, (800 * 480 * 2) as i64);
+            assert_eq!((width, height), (800, 480));
+            let id = std::ffi::CStr::from_ptr(surface.as_ptr()).to_string_lossy();
+            assert_eq!(id, "main");
+            // A buffer that cannot hold the frame drops it and counts the skip.
+            assert_eq!(mdc_emit_mirror_frame(session), 0);
+            let n = mdc_take_mirror_frame_with_surface(
+                session,
+                std::ptr::null_mut(),
+                0,
+                &mut width,
+                &mut height,
+                &mut frame_id,
+                buf.as_mut_ptr(),
+                8,
+            );
+            assert_eq!(n, -2);
+            let mut skips = 7u64;
+            assert_eq!(mdc_mirror_skips(session, &mut skips), 0);
+            assert_eq!(skips, 1);
+            assert_eq!(mdc_mirror_skips(std::ptr::null(), &mut skips), -1);
             mdc_session_destroy(session);
         }
     }

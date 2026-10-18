@@ -171,6 +171,15 @@ int64_t mdc_take_mirror_frame(MdcSession* session, uint16_t* width, uint16_t* he
 /** Form B: mirror counters. Writes received/dropped; returns 0 or -1. */
 int mdc_mirror_stats(const MdcSession* session, uint64_t* received, uint64_t* dropped);
 
+/** N518: like mdc_take_mirror_frame, and also writes the surface id. */
+int64_t mdc_take_mirror_frame_with_surface(MdcSession* session, char* surface_id,
+                                           size_t surface_id_len, uint16_t* width,
+                                           uint16_t* height, uint64_t* frame_id, uint8_t* out,
+                                           size_t cap);
+
+/** N518: frames dropped because the caller's mirror buffer was too small. */
+int mdc_mirror_skips(const MdcSession* session, uint64_t* skips);
+
 /**
  * Set a vector scene from a NUL-terminated JSON SceneNode.
  * Returns 0, -1 on a bad pointer/session, or -2 on malformed JSON.
