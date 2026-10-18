@@ -44,6 +44,29 @@ pub struct TileRequest {
     pub bytes: Buffer,
 }
 
+/// N455: host-side session counters.
+#[napi(object)]
+pub struct SessionStatsDto {
+    #[napi(js_name = "packetsSent")]
+    pub packets_sent: i64,
+    #[napi(js_name = "bytesSent")]
+    pub bytes_sent: i64,
+    #[napi(js_name = "bytesReceived")]
+    pub bytes_received: i64,
+    #[napi(js_name = "acksReceived")]
+    pub acks_received: i64,
+    #[napi(js_name = "framesSent")]
+    pub frames_sent: i64,
+    #[napi(js_name = "droppedFrames")]
+    pub dropped_frames: i64,
+    #[napi(js_name = "packagesSent")]
+    pub packages_sent: i64,
+    #[napi(js_name = "mirrorFrames")]
+    pub mirror_frames: i64,
+    #[napi(js_name = "pacingDropped")]
+    pub pacing_dropped: i64,
+}
+
 #[napi(object)]
 pub struct InputEventDto {
     #[napi(js_name = "deviceId")]
@@ -891,6 +914,32 @@ impl NativeManager {
         let tcp = TcpTransport::connect(address.trim(), Duration::from_millis(400))
             .map_err(|e| Error::from_reason(e.to_string()))?;
         connect_transport(&mut state, Box::new(tcp), address.trim(), "tcp")
+    }
+
+    /// N455: the host-side session counters.
+    #[napi(js_name = "stats")]
+    pub fn stats(&self) -> Result<SessionStatsDto> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_ref().unwrap();
+        let stats = sim.session.stats();
+        Ok(SessionStatsDto {
+            packets_sent: stats.packets_sent as i64,
+            bytes_sent: stats.bytes_sent as i64,
+            bytes_received: stats.bytes_received as i64,
+            acks_received: stats.acks_received as i64,
+            frames_sent: stats.frames_sent as i64,
+            dropped_frames: stats.dropped_frames as i64,
+            packages_sent: stats.packages_sent as i64,
+            mirror_frames: stats.mirror_frames as i64,
+            pacing_dropped: stats.pacing_dropped as i64,
+        })
     }
 
     /// N430: replace the session with a serial connection (`/dev/...`).

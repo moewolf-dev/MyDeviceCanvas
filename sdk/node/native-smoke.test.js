@@ -168,6 +168,14 @@ test("native dual-sim lists overlay and disconnect cancel keeps the pointer", { 
   await hostInput._native.sendInput("main", 9, "down", 12, 13);
   hostInput.dispose();
 
+  // N455: host session counters are readable from Node.
+  const statsSession = await MyDeviceCanvas.create();
+  await statsSession.devices();
+  const stats = statsSession._native.stats();
+  assert.ok(stats.packetsSent >= 0);
+  assert.ok(stats.bytesSent >= 0);
+  statsSession.dispose();
+
   // N430: connectSerial rejects an unusable path cleanly.
   const serial = await MyDeviceCanvas.create();
   assert.throws(() => serial._native.connectSerial("/no/such/port", 115200));
