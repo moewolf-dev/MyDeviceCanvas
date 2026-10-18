@@ -242,6 +242,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | C gesture config (N498) | sim-verified (`set_gesture_config`) | n/a |
 | e-ink ghost fade (N499) | sim-verified (partial vs full) | physical: pending |
 | WebSocket mirror (N500) | sim-verified (`/ws`, RFC 6455 handshake) | n/a |
+| Reserved extensions (N503) | sim-verified (rejected with a clear error) | n/a |
+| Mip-level selection (N504) | sim-verified (`--mip-level`, helpers) | physical: pending |
+| Multi-stop gradients (N505) | sim-verified (stop list) | physical: pending |
+| Tile counters (N506) | sim-verified (core + C) | n/a |
+| WS control frames (N507) | sim-verified (ping/pong/close) | n/a |
+| Swift bounded mirror (N508) | sim-verified (bufferingNewest) | physical: pending |
+| Heap probe (N509) | sim-verified (peak growth) | n/a |
+| `mdc record` (N510) | sim-verified (sequence + manifest) | n/a |
 | Swift gestures (N483) | sim-verified (`isGesture`/`gestureKind` + smoke) | physical: pending |
 | Text align (N484) | sim-verified (left/center/right) | physical: pending |
 | Scene z-order (N485) | sim-verified (draw + hit order) | physical: pending |

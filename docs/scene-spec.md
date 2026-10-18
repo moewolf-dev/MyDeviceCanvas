@@ -55,6 +55,9 @@ A device that accepts a scene rasterizes it locally:
   whatever is already on the framebuffer (`255`/absent is opaque).
 - N348: `gradient` fills `rect` with a vertical linear gradient from `value` (top)
   to `value2` (bottom; a missing `value2` is a flat fill).
+- N505: `gradient` accepts a comma-separated stop list in `value2`
+  (`0:#FF0000,50:#00FF00,100:#0000FF`), interpolating between stops; a value
+  without a comma keeps the two-stop `value`/`value2` ramp.
 - N355: `rounded-rect` fills `rect` with the `value` colour and rounded corners;
   `value2` is the corner radius in pixels (clamped to half the smaller side).
 - N368: `clip` treats `rect` as a scissor: its children are offset by the rect's
@@ -77,6 +80,7 @@ A device that accepts a scene rasterizes it locally:
   default is word wrapping).
 - N497: a `line` with `value2` set to a dash length (in pixels) is drawn dashed;
   `value2` unset (or `0`) draws it solid.
+- N484/N485/N495: `align`, `z`, and `wrap` are documented above.
 - N493: a recognised gesture carries the hit-tested scene node when the device
   reported one on the input event.
 - `image` blits tightly packed RGB565 when `value` is `w*h` hex words (4 digits

@@ -2,6 +2,27 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.63] — reserved-extension diagnostics, mip-level selection, multi-stop gradients, tile counters, WebSocket control frames, Swift mirror backpressure, heap probe, `mdc record` (N503–N512)
+
+### Added
+
+- `EXT_meshopt_compression`/`KHR_draco_mesh_compression`/`KHR_texture_basisu` are
+  detected and rejected with a clear error instead of reading raw bytes;
+  `model-info` reports them (N503)
+- `mdc_bake::select_mip_level`/`mip_chain_levels`/`blob_mip_level` and
+  `mdc package --mip-level N` (N504)
+- scene `gradient` accepts a multi-stop list in `value2` (N505)
+- `SessionStats.tiles_sent`/`tile_bytes_sent` plus the C
+  `mdc_session_tile_stats` (N506)
+- `mdc-mirror` `/ws` answers ping/pong and handles close frames, with
+  `ws_pings`/`ws_closes` counters (N507)
+- Swift `mirrorFramesBounded(maxFps:)`: a `.bufferingNewest(1)` mirror stream (N508)
+- `mdc-inspector --heap` reports a bounded peak-memory probe (N509)
+- `mdc record` writes a numbered sequence plus a `manifest.json` (N510)
+- compatibility + memory coverage for gradients, diagnostics, and WS control
+  frames (N511)
+
+
 ## [0.1.62] — gesture nodes, text wrap/punctuation, dashed lines, mirror flip, C gesture config, e-ink ghost fade, WebSocket mirror (N493–N502)
 
 ### Added

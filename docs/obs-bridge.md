@@ -73,6 +73,9 @@ accept `?scale=N` (nearest integer downscale, 1..=8) and `?quality=N` (JPEG) fro
 the raw BGRA frame. N486 adds `?flip=h|v|hv` to mirror a frame. N500 adds `/ws`,
 a WebSocket endpoint (RFC 6455) that pushes one binary JPEG message per published
 frame — use it from a browser or any WebSocket client when multipart is awkward.
+N507 answers client ping frames with a pong (echoing the payload) and closes the
+connection cleanly on a close frame; `/health` reports `ws`, `ws_pings`, and
+`ws_closes`.
 
 ## Guarantees
 
