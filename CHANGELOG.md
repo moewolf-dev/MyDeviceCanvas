@@ -2,6 +2,22 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.62] — gesture nodes, text wrap/punctuation, dashed lines, mirror flip, C gesture config, e-ink ghost fade, WebSocket mirror (N493–N502)
+
+### Added
+
+- gestures carry the hit-tested scene node through core, C, and Node (N493)
+- extended punctuation glyphs (`" ' % & @ ; < > ~`) (N494)
+- scene `text` accepts `wrap: word|char|none` (N495)
+- `mdc mirror --flip h/v` and public `mdc_mirror::flip_bgra` (N496)
+- scene `line` accepts a dash length in `value2` (N497)
+- C ABI `mdc_session_set_gesture_config` / `mdc_session_gesture_config` (N498)
+- e-ink partial-refresh ghosting fades and a full frame clears it exactly (N499)
+- `mdc-mirror` `/ws`: an RFC 6455 WebSocket that pushes binary JPEG frames, with
+  `sha1`/`base64_encode`/`ws_frame` helpers and a `ws` health counter (N500)
+- compatibility + memory coverage for the new scene fields and the WS endpoint (N501)
+
+
 ## [0.1.61] — Swift gestures, text align, scene z-order, frame flip, asset verify, gesture tuning, e-ink ghosting, texture mips (N483–N492)
 
 ### Added

@@ -70,7 +70,9 @@ and frames that arrive while a slow client is still writing are dropped
 dependency-free baseline JPEG encoder (`encode_jpeg`) served at `/frame.jpg` and
 `mdc mirror --format jpg --quality N`. N346: the one-shot `/frame.*` endpoints
 accept `?scale=N` (nearest integer downscale, 1..=8) and `?quality=N` (JPEG) from
-the raw BGRA frame.
+the raw BGRA frame. N486 adds `?flip=h|v|hv` to mirror a frame. N500 adds `/ws`,
+a WebSocket endpoint (RFC 6455) that pushes one binary JPEG message per published
+frame — use it from a browser or any WebSocket client when multipart is awkward.
 
 ## Guarantees
 

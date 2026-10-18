@@ -73,6 +73,12 @@ A device that accepts a scene rasterizes it locally:
   rect width.
 - N485: `z` sets a sibling's draw order (higher draws on top; ties keep document
   order). Hit-testing searches the highest `z` first.
+- N495: `wrap: "word" | "char" | "none"` controls `text` line breaking (the
+  default is word wrapping).
+- N497: a `line` with `value2` set to a dash length (in pixels) is drawn dashed;
+  `value2` unset (or `0`) draws it solid.
+- N493: a recognised gesture carries the hit-tested scene node when the device
+  reported one on the input event.
 - `image` blits tightly packed RGB565 when `value` is `w*h` hex words (4 digits
   each, little-endian on the framebuffer). A short or malformed string draws nothing.
 - `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour.

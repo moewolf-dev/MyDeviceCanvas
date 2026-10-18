@@ -235,6 +235,13 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Resumable uploads (N478) | sim-verified (`begin_named`/`resume`) | n/a |
 | `scene-render --time` (N479) | sim-verified (animated frame) | n/a |
 | Additive blend (N480) | sim-verified (saturating add) | physical: pending |
+| Gesture hit node (N493) | sim-verified (core + C + Node) | physical: pending |
+| Text wrap modes (N495) | sim-verified (word/char/none) | physical: pending |
+| Dashed lines (N497) | sim-verified (dash length) | physical: pending |
+| Mirror flip (N486/N496) | sim-verified (`?flip`, `--flip`) | n/a |
+| C gesture config (N498) | sim-verified (`set_gesture_config`) | n/a |
+| e-ink ghost fade (N499) | sim-verified (partial vs full) | physical: pending |
+| WebSocket mirror (N500) | sim-verified (`/ws`, RFC 6455 handshake) | n/a |
 | Swift gestures (N483) | sim-verified (`isGesture`/`gestureKind` + smoke) | physical: pending |
 | Text align (N484) | sim-verified (left/center/right) | physical: pending |
 | Scene z-order (N485) | sim-verified (draw + hit order) | physical: pending |

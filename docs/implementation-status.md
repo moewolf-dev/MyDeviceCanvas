@@ -79,6 +79,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 65 | N463–N472: keyframed scene animation, gesture tracker, overlay rendering, `validate --strict`, disk chunked uploads, linear mips, frame crop, numbered mirror frames | sim-verified |
 | 66 | N473–N482: gesture events (C/Node), scene rotate + additive blend, lowercase glyphs, animation-key budget, resumable uploads, `scene-render --time` | sim-verified |
 | 67 | N483–N492: Swift gestures, text align, scene z-order, frame flip, `asset verify`, gesture tuning, e-ink ghosting, texture mip chains | sim-verified |
+| 68 | N493–N502: gesture nodes, text wrap/punctuation, dashed lines, mirror flip, C gesture config, e-ink ghost fade, WebSocket mirror `/ws` | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 

@@ -66,6 +66,9 @@ A malformed package rejects with the device error; `packageReady()` stays false.
 ## Gestures (N473/N474)
 
 `pollEvents()` also yields `kind: "gesture"` events with
-`gesture: { kind: "tap" | "long-press" | "drag", pointerId, x, y }`; the core
-derives them from the raw input stream (`GestureTracker`). The C ABI reports the
-same events as poll kind `8` with the gesture kind in `phase`.
+`gesture: { kind: "tap" | "long-press" | "drag", pointerId, x, y, node? }`; the
+core derives them from the raw input stream (`GestureTracker`). N493 adds the
+hit-tested scene `node`. N488 lets the host tune the thresholds via
+`Session::set_gesture_config` (`mdc_session_set_gesture_config` in C). The C ABI
+reports the same events as poll kind `8` with the gesture kind in `phase` and the
+node in the `node` out-param.
