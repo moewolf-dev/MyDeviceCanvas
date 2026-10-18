@@ -844,6 +844,50 @@ pub fn mip_texture_blob(
     out
 }
 
+/// N524: the vertices a package actually draws (sum over meshes with geometry).
+pub fn draw_vertices(package: &mdc_model::DevicePackage) -> u64 {
+    package
+        .meshes
+        .iter()
+        .filter(|mesh| mesh.geometry.is_some())
+        .map(|mesh| u64::from(mesh.vertices))
+        .sum()
+}
+
+/// N524: drop geometry from meshes once the cumulative vertex count would exceed
+/// `max_vertices`, and clear the nodes that referenced them. Mesh indices stay
+/// stable (animations/skins keep pointing at the right entry). Returns the number
+/// of meshes trimmed.
+pub fn trim_to_vertex_budget(package: &mut mdc_model::DevicePackage, max_vertices: u64) -> usize {
+    let mut used: u64 = 0;
+    let mut dropped: Vec<usize> = Vec::new();
+    for (index, mesh) in package.meshes.iter_mut().enumerate() {
+        if mesh.geometry.is_none() {
+            continue;
+        }
+        let cost = u64::from(mesh.vertices);
+        if used.saturating_add(cost) > max_vertices {
+            mesh.geometry = None;
+            mesh.vertices = 0;
+            mesh.indices = 0;
+            dropped.push(index);
+        } else {
+            used = used.saturating_add(cost);
+        }
+    }
+    if dropped.is_empty() {
+        return 0;
+    }
+    for node in &mut package.nodes {
+        if let Some(mesh) = node.mesh {
+            if dropped.contains(&mesh) {
+                node.mesh = None;
+            }
+        }
+    }
+    dropped.len()
+}
+
 /// N504: the coarsest mip level that still covers the target size in both axes.
 /// Returns 0 when the target is at least as large as the source.
 pub fn select_mip_level(width: u32, height: u32, target_w: u32, target_h: u32) -> usize {
@@ -1204,6 +1248,61 @@ mod tests {
             decode_resize_rgb565(&png, (8, 8), &limits),
             Err(BakeError::Dimensions(64, 64, 16))
         ));
+    }
+
+    #[test]
+    fn vertex_budget_trims_later_meshes() {
+        // N524: meshes are kept in order until the budget runs out.
+        let quad = |name: &str| mdc_model::Mesh {
+            name: name.into(),
+            vertices: 4,
+            indices: 6,
+            geometry: Some(mdc_model::MeshGeometry {
+                positions: vec![
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let node = |mesh: usize| mdc_model::Node {
+            name: format!("m{mesh}"),
+            mesh: Some(mesh),
+            ..Default::default()
+        };
+        let mut package = mdc_model::DevicePackage {
+            target: "esp32-plane".into(),
+            mode: mdc_model::PackageMode::Mesh,
+            nodes: vec![node(0), node(1), node(2)],
+            meshes: vec![quad("a"), quad("b"), quad("c")],
+            textures: Vec::new(),
+            materials: Vec::new(),
+            lights: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 0,
+            atlas: None,
+            texture: None,
+            texture_blobs: Vec::new(),
+        };
+        assert_eq!(draw_vertices(&package), 12);
+        // A budget of 8 keeps two quads and trims the third.
+        assert_eq!(trim_to_vertex_budget(&mut package, 8), 1);
+        assert_eq!(draw_vertices(&package), 8);
+        assert!(package.meshes[0].geometry.is_some());
+        assert!(package.meshes[1].geometry.is_some());
+        assert!(package.meshes[2].geometry.is_none());
+        assert_eq!(package.meshes[2].vertices, 0);
+        assert_eq!(package.nodes[2].mesh, None, "the node no longer draws it");
+        assert_eq!(package.nodes[0].mesh, Some(0));
+        // A generous budget trims nothing.
+        assert_eq!(trim_to_vertex_budget(&mut package, 1_000), 0);
     }
 
     #[test]

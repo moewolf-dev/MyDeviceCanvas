@@ -508,6 +508,8 @@ fn cmd_package(
     let mut texture_mips: usize = 0;
     // N504: bake from a coarser mip level (a small-target package).
     let mut mip_level: usize = 0;
+    // N524: cap the vertices the package draws (0 = no cap).
+    let mut max_draw_vertices: u64 = 0;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -533,6 +535,10 @@ fn cmd_package(
             }
             // N504: use a coarser chain level as the base texture.
             "--mip-level" => mip_level = iter.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+            // N524: trim meshes past a cumulative vertex budget.
+            "--max-draw-vertices" => {
+                max_draw_vertices = iter.next().and_then(|v| v.parse().ok()).unwrap_or(0)
+            }
             other => out = Some(other.to_string()),
         }
     }
@@ -668,6 +674,15 @@ fn cmd_package(
         }
         None => package,
     };
+    // N524: optionally cap the drawn vertices (later meshes are trimmed).
+    let trimmed = if max_draw_vertices > 0 {
+        let mut inner = package.package.clone();
+        let dropped = mdc_bake::trim_to_vertex_budget(&mut inner, max_draw_vertices);
+        (mdc_model::MdcPackage::seal(inner)?, dropped)
+    } else {
+        (package, 0usize)
+    };
+    let (package, trimmed_meshes) = trimmed;
     let bytes = package.to_bytes()?;
     let out = out.unwrap_or_else(|| format!("{model_path}.mdcpkg"));
     std::fs::write(&out, &bytes)?;
@@ -709,6 +724,9 @@ fn cmd_package(
                 "mip_levels": blobs.iter().map(|b| mdc_bake::mip_chain_levels(b).len()).collect::<Vec<_>>(),
                 "animations": package.package.animations.len(),
                 "estimated_bytes": package.package.estimated_bytes,
+                // N524: the drawn-vertex budget and how many meshes it trimmed.
+                "draw_vertices": mdc_bake::draw_vertices(&package.package),
+                "trimmed_meshes": trimmed_meshes,
                 "output": out,
             }))?
         );
@@ -3830,7 +3848,7 @@ fn usage() {
          devices [--compact]|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--scale N] [--sequence] [--flip h/v] [--serve ADDR] [--http ADDR] [--ws-heartbeat N] [--ws-timeout M] [--source-fps N] [--max-fps N] [--bandwidth BPS]|record [--frames N] [--fps N] [--dir DIR] [--play] [--format ppm|bmp|png|jpg] [--scale N]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
-package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents] [--variant NAME] [--report] [--texture-mips N] [--mip-level N]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
+package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents] [--variant NAME] [--report] [--texture-mips N] [--mip-level N] [--max-draw-vertices N]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--mip-linear] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] [--srgb] --out f.ppm|\
@@ -4301,6 +4319,52 @@ mod tests {
             ],
         )
         .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn package_max_draw_vertices_trims_the_package() {
+        // N524: `--max-draw-vertices` trims meshes past the budget. The POSITION
+        // accessor is an embedded `data:` URI (4 zero VEC3 floats = 48 bytes).
+        let dir = std::env::temp_dir().join(format!("mdc-vertex-budget-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("m.gltf");
+        let zeros = "A".repeat(64); // base64 of 48 zero bytes
+        let gltf = format!(
+            r#"{{"asset":{{"version":"2.0"}},
+                "nodes":[{{"name":"a","mesh":0}},{{"name":"b","mesh":1}}],
+                "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}}}}]}},
+                          {{"primitives":[{{"attributes":{{"POSITION":0}}}}]}}],
+                "buffers":[{{"byteLength":48,"uri":"data:application/octet-stream;base64,{zeros}"}}],
+                "bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":48}}],
+                "accessors":[{{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3"}}]}}"#
+        );
+        std::fs::write(&path, gltf).unwrap();
+        let opts = GlobalOpts {
+            sim: true,
+            board: "linux-virt".into(),
+            address: None,
+            port: None,
+        };
+        let run = |budget: &str| {
+            let out = dir.join(format!("b{budget}.mdcpkg"));
+            cmd_package(
+                &opts,
+                &path.to_string_lossy(),
+                &[
+                    "--max-draw-vertices".into(),
+                    budget.into(),
+                    "--out".into(),
+                    out.to_string_lossy().into_owned(),
+                ],
+            )
+            .unwrap();
+            let package = mdc_model::MdcPackage::from_bytes(&std::fs::read(&out).unwrap()).unwrap();
+            mdc_bake::draw_vertices(&package.package)
+        };
+        // Two 4-vertex meshes: a budget of 4 keeps one, a generous one keeps both.
+        assert_eq!(run("4"), 4);
+        assert_eq!(run("100"), 8);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
