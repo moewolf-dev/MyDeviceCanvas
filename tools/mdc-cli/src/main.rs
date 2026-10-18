@@ -1300,6 +1300,40 @@ fn cmd_motion(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Encode a baked RGB565 atlas as a binary PPM (P6).
+/// N448: box-average a BGRA frame by an integer factor.
+fn downscale_bgra(width: u32, height: u32, bytes: &[u8], factor: u32) -> Vec<u8> {
+    let factor = factor.max(1);
+    let out_w = (width / factor).max(1);
+    let out_h = (height / factor).max(1);
+    let mut out = vec![0u8; (out_w as usize) * (out_h as usize) * 4];
+    for y in 0..out_h {
+        for x in 0..out_w {
+            let (mut b, mut g, mut r, mut a, mut n) = (0u32, 0u32, 0u32, 0u32, 0u32);
+            for dy in 0..factor {
+                for dx in 0..factor {
+                    let sx = (x * factor + dx).min(width.saturating_sub(1));
+                    let sy = (y * factor + dy).min(height.saturating_sub(1));
+                    let index = ((sy * width + sx) * 4) as usize;
+                    if let Some(pixel) = bytes.get(index..index + 4) {
+                        b += u32::from(pixel[0]);
+                        g += u32::from(pixel[1]);
+                        r += u32::from(pixel[2]);
+                        a += u32::from(pixel[3]);
+                        n += 1;
+                    }
+                }
+            }
+            let n = n.max(1);
+            let index = ((y * out_w + x) * 4) as usize;
+            out[index] = (b / n) as u8;
+            out[index + 1] = (g / n) as u8;
+            out[index + 2] = (r / n) as u8;
+            out[index + 3] = (a / n) as u8;
+        }
+    }
+    out
+}
+
 /// Encode a tightly packed RGB565 frame as a binary PPM (P6).
 fn rgb565_frame_to_ppm(width: u32, height: u32, rgb565: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgb565.len() / 2 * 3 + 32);
@@ -1638,6 +1672,7 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
     let mut max_fps: Option<u16> = None;
     let mut bandwidth: Option<u64> = None;
     let mut quality: u8 = 80;
+    let mut scale: u32 = 1;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -1657,6 +1692,8 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
             "--max-fps" => max_fps = iter.next().and_then(|v| v.parse().ok()),
             "--bandwidth" => bandwidth = iter.next().and_then(|v| v.parse().ok()),
             "--quality" => quality = iter.next().and_then(|v| v.parse().ok()).unwrap_or(quality),
+            // N448: downscale frames written to disk.
+            "--scale" => scale = iter.next().and_then(|v| v.parse().ok()).unwrap_or(scale),
             _ => {}
         }
     }
@@ -1751,6 +1788,29 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
             mdc_schedule::FrameDecision::Send { .. } => {}
         }
         scheduler.commit(now);
+        // N448: an optional box downscale for the written frames.
+        let scaled = if scale > 1 {
+            Some(downscale_bgra(
+                u32::from(frame.width),
+                u32::from(frame.height),
+                &frame.bytes,
+                scale,
+            ))
+        } else {
+            None
+        };
+        let (out_w, out_h, out_bytes) = match &scaled {
+            Some(bytes) => (
+                (u32::from(frame.width) / scale).max(1),
+                (u32::from(frame.height) / scale).max(1),
+                bytes.as_slice(),
+            ),
+            None => (
+                u32::from(frame.width),
+                u32::from(frame.height),
+                frame.bytes.as_slice(),
+            ),
+        };
         let shadow = |generation: u64| mdc_mirror::ShadowFrame {
             width: frame.width,
             height: frame.height,
@@ -1758,22 +1818,29 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
             frame_id: frame.frame_id,
             pixels: &frame.bytes,
         };
+        let scaled_shadow = |generation: u64| mdc_mirror::ShadowFrame {
+            width: out_w as u16,
+            height: out_h as u16,
+            generation,
+            frame_id: frame.frame_id,
+            pixels: out_bytes,
+        };
         if let Some(sink) = sink.as_mut() {
-            sink.on_frame(shadow(frames_seen));
+            sink.on_frame(scaled_shadow(frames_seen));
         }
         if let Some(dir) = &bmp_dir {
-            let bmp = mdc_mirror::encode_bmp(frame.width, frame.height, &frame.bytes);
+            let bmp = mdc_mirror::encode_bmp(out_w as u16, out_h as u16, out_bytes);
             std::fs::write(dir.join("frame.bmp"), bmp)?;
         }
         if let Some(dir) = &png_dir {
             // N328: PNG for a smaller OBS image source.
-            let png = mdc_mirror::encode_png(frame.width, frame.height, &frame.bytes);
+            let png = mdc_mirror::encode_png(out_w as u16, out_h as u16, out_bytes);
             std::fs::write(dir.join("frame.png"), png)?;
         }
         if let Some(dir) = &jpg_dir {
             // N336/N346: baseline JPEG, the smallest OBS image source.
             let jpg =
-                mdc_mirror::encode_jpeg(frame.width, frame.height, &frame.bytes, quality.max(1));
+                mdc_mirror::encode_jpeg(out_w as u16, out_h as u16, out_bytes, quality.max(1));
             std::fs::write(dir.join("frame.jpg"), jpg)?;
         }
         if let Some(server) = server.as_mut() {
@@ -3380,7 +3447,7 @@ fn usage() {
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices [--compact]|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
-authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
+authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--scale N] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents] [--variant NAME]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
@@ -3998,6 +4065,21 @@ mod tests {
         assert!(averaged != 0);
         // Oversized inputs and bad lengths produce an empty chain.
         assert!(mdc_bake::bake_mipmaps(2, 2, &[0, 0], 4).is_empty());
+    }
+
+    #[test]
+    fn downscale_bgra_averages_pixels() {
+        // N448: a 2x2 BGRA block averages into one pixel.
+        let bytes = [
+            10u8, 20, 30, 255, // (0,0)
+            20, 30, 40, 255, // (1,0)
+            30, 40, 50, 255, // (0,1)
+            40, 50, 60, 255, // (1,1)
+        ];
+        let scaled = downscale_bgra(2, 2, &bytes, 2);
+        assert_eq!(scaled, vec![25, 35, 45, 255]);
+        // Factor 1 is a copy.
+        assert_eq!(downscale_bgra(2, 2, &bytes, 1), bytes.to_vec());
     }
 
     #[test]
