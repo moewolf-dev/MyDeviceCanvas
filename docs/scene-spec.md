@@ -57,6 +57,8 @@ A device that accepts a scene rasterizes it locally:
   to `value2` (bottom; a missing `value2` is a flat fill).
 - N515: `mode: "radial"` makes a `gradient` interpolate by distance from the
   rect centre (the start stop is the centre); the default is a linear ramp.
+- N525: a linear `gradient` follows `rotate` (0 = top-to-bottom, 90 =
+  left-to-right, 180/270 reverse, any other angle is a diagonal).
 - N505: `gradient` accepts a comma-separated stop list in `value2`
   (`0:#FF0000,50:#00FF00,100:#0000FF`), interpolating between stops; a value
   without a comma keeps the two-stop `value`/`value2` ramp.

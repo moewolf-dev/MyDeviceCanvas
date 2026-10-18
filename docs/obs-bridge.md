@@ -77,7 +77,9 @@ N507 answers client ping frames with a pong (echoing the payload) and closes the
 connection cleanly on a close frame; `/health` reports `ws`, `ws_pings`, and
 `ws_closes`. N517 adds a heartbeat: `mirror --http ADDR --ws-heartbeat N
 [--ws-timeout M]` pings every N published frames and drops a peer that has been
-silent for M frames (`/health` also reports `ws_timeouts`).
+silent for M frames (`/health` also reports `ws_timeouts`). N527 adds
+`--ws-fragment N`, which splits each WebSocket message into a first binary frame
+plus continuation frames of at most `N` bytes (the client reassembles them).
 
 ## Guarantees
 

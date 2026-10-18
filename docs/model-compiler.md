@@ -366,6 +366,12 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
 - N504: a texture with a mip chain (`--texture-mips`) can bake from a coarser
   level (`--mip-level N`); at render time the device picks the coarsest level
   that still covers the target size (`select_mip_level`).
+- N523: an image's media type is taken from `mimeType` or, when absent, from its
+  magic bytes; PNG/JPEG/**WebP** (VP8/VP8L/VP8X) dimensions are probed from the
+  container header rather than trusted from the declared size.
+- N524: `mdc package --max-draw-vertices N` trims meshes once the cumulative
+  vertex count would exceed `N` (`trim_to_vertex_budget`); mesh indices stay
+  stable and the nodes that referenced a trimmed mesh stop drawing it.
 
 ## Non-goals (this wave)
 

@@ -63,6 +63,13 @@ A malformed package rejects with the device error; `packageReady()` stays false.
 - No native artifact vendored: build per platform (see `sdk/node/package.json`).
 - No physical-board claim; D05/G03 remain open.
 
+## Mirror parity (N528)
+
+`emitMirrorFrame()` (sim-only), `takeMirrorFrameBounded(maxBytes)` and
+`mirrorSkips()` mirror the C ABI: a frame that does not fit the caller's cap is
+dropped and counted instead of being copied out. `takeMirrorFrame()`/`mirrorStats()`
+work over any transport, not just the in-process simulator.
+
 ## Gestures (N473/N474)
 
 `pollEvents()` also yields `kind: "gesture"` events with

@@ -2,6 +2,26 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.65] — WebP probing, drawn-vertex budget, arbitrary gradient angle, dirty tracker, WS fragmentation, Node mirror parity, inspector alerts, `record --render` (N523–N532)
+
+### Added
+
+- WebP (VP8/VP8L/VP8X) dimension probing and magic-byte format sniffing (N523)
+- `mdc_bake::draw_vertices`/`trim_to_vertex_budget` and
+  `mdc package --max-draw-vertices N` (N524)
+- a linear `gradient` follows `rotate` at any angle (180/270 reverse) (N525)
+- `mdc_core::DirtyTracker` accumulates dirty rectangles across frames and
+  escalates to a full frame past a coverage threshold (N526)
+- `mdc-mirror` `/ws` message fragmentation (`with_ws_fragment`,
+  `mirror --ws-fragment N`) (N527)
+- Node `takeMirrorFrameBounded`/`mirrorSkips`/`emitMirrorFrame` (N528)
+- `mdc-inspector --jsonl --max-peak-bytes/--max-diagnostics` emits a JSON verdict
+  and exits 2 on an alert (N529)
+- `mdc record --play --render --board B` decodes and replays a sequence onto a
+  device (N530)
+- compatibility + memory coverage for the vertex budget and WS fragmentation (N531)
+
+
 ## [0.1.64] — GPU instancing, automatic mip selection, radial gradients, dirty tiles, WS heartbeat, C mirror parity, heap timeline, `record --play` (N513–N522)
 
 ### Added

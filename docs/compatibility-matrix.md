@@ -258,6 +258,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | C mirror parity (N518) | sim-verified (surface id, skips) | n/a |
 | Heap timeline (N519) | sim-verified (per-tick peak) | n/a |
 | `record --play` (N520) | sim-verified (manifest check) | n/a |
+| WebP probing (N523) | sim-verified (VP8/VP8L/VP8X) | n/a |
+| Drawn-vertex budget (N524) | sim-verified (trim + install) | physical: pending |
+| Gradient angle (N525) | sim-verified (0/90/180/270 + diagonal) | physical: pending |
+| Dirty tracker (N526) | sim-verified (accumulate + escalate) | n/a |
+| WS fragmentation (N527) | sim-verified (continuation frames) | n/a |
+| Node mirror parity (N528) | sim-verified (bounded take + skips) | n/a |
+| Inspector alerts (N529) | sim-verified (threshold + exit 2) | n/a |
+| `record --render` (N530) | sim-verified (decode + replay) | physical: pending |
 | Swift gestures (N483) | sim-verified (`isGesture`/`gestureKind` + smoke) | physical: pending |
 | Text align (N484) | sim-verified (left/center/right) | physical: pending |
 | Scene z-order (N485) | sim-verified (draw + hit order) | physical: pending |
