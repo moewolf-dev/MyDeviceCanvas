@@ -844,6 +844,54 @@ pub fn mip_texture_blob(
     out
 }
 
+/// N504: the coarsest mip level that still covers the target size in both axes.
+/// Returns 0 when the target is at least as large as the source.
+pub fn select_mip_level(width: u32, height: u32, target_w: u32, target_h: u32) -> usize {
+    if width == 0 || height == 0 || target_w == 0 || target_h == 0 {
+        return 0;
+    }
+    let max_level = (u32::BITS - 1 - width.max(height).leading_zeros()) as usize;
+    let mut level = 0;
+    while level < max_level
+        && (width >> (level + 1)) >= target_w
+        && (height >> (level + 1)) >= target_h
+    {
+        level += 1;
+    }
+    level
+}
+
+/// N504: the geometry of each level in a blob's chain (level 0 first).
+pub fn mip_chain_levels(blob: &mdc_model::TextureBlob) -> Vec<(u32, u32)> {
+    let mut out = vec![(blob.width, blob.height)];
+    out.extend(blob.mips.iter().map(|mip| (mip.width, mip.height)));
+    out
+}
+
+/// N504: a blob view of one chain level as a standalone level-0 texture.
+/// Returns `None` when the level is out of range or invalid.
+pub fn blob_mip_level(
+    blob: &mdc_model::TextureBlob,
+    level: usize,
+) -> Option<mdc_model::TextureBlob> {
+    if level == 0 {
+        let mut base = blob.clone();
+        base.mips.clear();
+        return base.validate().then_some(base);
+    }
+    let mip = blob.mips.get(level - 1)?;
+    let candidate = mdc_model::TextureBlob {
+        width: mip.width,
+        height: mip.height,
+        rgb565: mip.rgb565.clone(),
+        alpha: Vec::new(),
+        palette: Vec::new(),
+        indices: Vec::new(),
+        mips: Vec::new(),
+    };
+    candidate.validate().then_some(candidate)
+}
+
 /// N415: quantize a blob's RGB565 to a palette, returning a palette-indexed blob
 /// (the 1-bit alpha mask is preserved). An already-indexed or invalid blob is
 /// returned unchanged.
@@ -1156,6 +1204,45 @@ mod tests {
             decode_resize_rgb565(&png, (8, 8), &limits),
             Err(BakeError::Dimensions(64, 64, 16))
         ));
+    }
+
+    #[test]
+    fn mip_level_selection_matches_the_target() {
+        // N504: pick the coarsest level that still covers the target.
+        assert_eq!(select_mip_level(256, 256, 256, 256), 0);
+        assert_eq!(select_mip_level(256, 256, 128, 128), 1);
+        assert_eq!(select_mip_level(256, 256, 64, 64), 2);
+        assert_eq!(select_mip_level(256, 256, 1, 1), 8);
+        // A non-square chain is limited by its shorter axis: 128x64 cannot drop
+        // to 64x32 and still cover a 64x64 target, but it can for 64x32.
+        assert_eq!(select_mip_level(128, 64, 64, 64), 0);
+        assert_eq!(select_mip_level(128, 64, 64, 32), 1);
+        // Degenerate inputs are level 0.
+        assert_eq!(select_mip_level(0, 16, 8, 8), 0);
+        assert_eq!(select_mip_level(16, 16, 0, 0), 0);
+
+        let blob = mdc_model::TextureBlob {
+            width: 8,
+            height: 8,
+            rgb565: (0..64u16)
+                .flat_map(|i| i.wrapping_mul(1023).to_le_bytes())
+                .collect(),
+            alpha: Vec::new(),
+            palette: Vec::new(),
+            indices: Vec::new(),
+            mips: Vec::new(),
+        };
+        let mipped = mip_texture_blob(&blob, 8, false);
+        assert_eq!(
+            mip_chain_levels(&mipped),
+            vec![(8, 8), (4, 4), (2, 2), (1, 1)]
+        );
+        // Level 0 is the blob without its chain; level 2 is the 2x2 mip.
+        assert_eq!(blob_mip_level(&mipped, 0).unwrap().mips.len(), 0);
+        let level2 = blob_mip_level(&mipped, 2).unwrap();
+        assert_eq!((level2.width, level2.height), (2, 2));
+        assert!(level2.validate() && level2.mips.is_empty());
+        assert!(blob_mip_level(&mipped, 9).is_none());
     }
 
     #[test]

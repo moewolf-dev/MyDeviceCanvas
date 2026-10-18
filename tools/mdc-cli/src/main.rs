@@ -506,6 +506,8 @@ fn cmd_package(
     let mut variant: Option<String> = None;
     let mut report = false;
     let mut texture_mips: usize = 0;
+    // N504: bake from a coarser mip level (a small-target package).
+    let mut mip_level: usize = 0;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -529,6 +531,8 @@ fn cmd_package(
             "--texture-mips" => {
                 texture_mips = iter.next().and_then(|v| v.parse().ok()).unwrap_or(8)
             }
+            // N504: use a coarser chain level as the base texture.
+            "--mip-level" => mip_level = iter.next().and_then(|v| v.parse().ok()).unwrap_or(0),
             other => out = Some(other.to_string()),
         }
     }
@@ -604,6 +608,18 @@ fn cmd_package(
             .texture
             .as_ref()
             .map(|blob| mdc_bake::mip_texture_blob(blob, texture_mips, false));
+        mdc_model::MdcPackage::seal(inner)?
+    } else {
+        package
+    };
+    // N504: optionally replace the base texture with a coarser mip level.
+    let package = if mip_level > 0 {
+        let mut inner = package.package.clone();
+        let level = |blob: &mdc_model::TextureBlob| {
+            mdc_bake::blob_mip_level(blob, mip_level).unwrap_or_else(|| blob.clone())
+        };
+        inner.texture_blobs = inner.texture_blobs.iter().map(level).collect();
+        inner.texture = inner.texture.as_ref().map(level);
         mdc_model::MdcPackage::seal(inner)?
     } else {
         package
@@ -688,6 +704,9 @@ fn cmd_package(
                 "palette_entries": palette_entries,
                 "texture_blob_bytes": blob_bytes,
                 "atlas_mips": mips,
+                // N504: the texture mip chains and their levels.
+                "texture_mips": blobs.iter().map(|b| b.mips.len()).sum::<usize>(),
+                "mip_levels": blobs.iter().map(|b| mdc_bake::mip_chain_levels(b).len()).collect::<Vec<_>>(),
                 "animations": package.package.animations.len(),
                 "estimated_bytes": package.package.estimated_bytes,
                 "output": out,
@@ -3621,7 +3640,7 @@ fn usage() {
          devices [--compact]|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--scale N] [--sequence] [--flip h/v] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
-package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents] [--variant NAME] [--report] [--texture-mips N]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
+package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents] [--variant NAME] [--report] [--texture-mips N] [--mip-level N]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--mip-linear] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] [--srgb] --out f.ppm|\
@@ -4082,6 +4101,60 @@ mod tests {
             ],
         )
         .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn package_mip_level_resamples_the_base_texture() {
+        // N504: `--texture-mips` builds the chain and `--mip-level` bakes from
+        // a coarser level, shrinking the stored base texture.
+        let dir = std::env::temp_dir().join(format!("mdc-mip-level-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("m.gltf");
+        std::fs::write(
+            &path,
+            br#"{"asset":{"version":"2.0"},
+                "nodes":[{"name":"root","mesh":0}],
+                "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+                "accessors":[{"count":4,"type":"VEC3"}]}"#,
+        )
+        .unwrap();
+        let texture = dir.join("t.png");
+        std::fs::write(
+            &texture,
+            mdc_mirror::encode_png(16, 16, &vec![0x40u8; 16 * 16 * 4]),
+        )
+        .unwrap();
+        let opts = GlobalOpts {
+            sim: true,
+            board: "linux-virt".into(),
+            address: None,
+            port: None,
+        };
+        let run = |level: &str| {
+            let out = dir.join(format!("l{level}.mdcpkg"));
+            cmd_package(
+                &opts,
+                &path.to_string_lossy(),
+                &[
+                    "--texture".into(),
+                    texture.to_string_lossy().into_owned(),
+                    "--texture-mips".into(),
+                    "8".into(),
+                    "--mip-level".into(),
+                    level.into(),
+                    "--out".into(),
+                    out.to_string_lossy().into_owned(),
+                ],
+            )
+            .unwrap();
+            let package = mdc_model::MdcPackage::from_bytes(&std::fs::read(&out).unwrap()).unwrap();
+            let blob = package.package.texture.clone().unwrap();
+            (blob.width, blob.height)
+        };
+        // Level 0 keeps the source size; level 2 halves it twice (16 -> 4).
+        assert_eq!(run("0"), (16, 16));
+        assert_eq!(run("2"), (4, 4));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
