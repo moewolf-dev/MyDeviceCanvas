@@ -365,11 +365,17 @@ impl GltfImporter {
                 name: json_name(image, &format!("image{i}")),
                 width,
                 height,
+                // N523: fall back to the magic bytes when `mimeType` is absent.
                 format: image
                     .get("mimeType")
                     .and_then(Value::as_str)
-                    .unwrap_or("image/png")
-                    .to_string(),
+                    .map(str::to_string)
+                    .or_else(|| {
+                        data.as_deref()
+                            .and_then(sniff_image_format)
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_else(|| "image/png".to_string()),
                 bytes: bytes_len.min(u64::from(u32::MAX)) as u32,
                 data,
                 wrap: None,
@@ -2493,6 +2499,58 @@ fn base64_decode(input: &[u8]) -> Result<Vec<u8>, ModelError> {
 }
 
 /// Probe PNG or JPEG header bytes for real dimensions without decoding pixels.
+/// N523: the media type of an embedded image from its magic bytes.
+pub fn sniff_image_format(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        return Some("image/png");
+    }
+    if bytes.starts_with(&[0xFF, 0xD8]) {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        return Some("image/webp");
+    }
+    None
+}
+
+/// N523: probe a WebP container (VP8 lossy, VP8L lossless, or VP8X extended).
+fn probe_webp_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if !(bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP")) {
+        return None;
+    }
+    match bytes.get(12..16)? {
+        b"VP8 " => {
+            // Lossy: 3-byte frame tag, 3-byte start code, then 14-bit W/H.
+            if bytes.get(23..26)? != [0x9D, 0x01, 0x2A] {
+                return None;
+            }
+            let w = u32::from(u16::from_le_bytes(bytes.get(26..28)?.try_into().ok()?) & 0x3FFF);
+            let h = u32::from(u16::from_le_bytes(bytes.get(28..30)?.try_into().ok()?) & 0x3FFF);
+            Some((w, h))
+        }
+        b"VP8L" => {
+            // Lossless: 1-byte signature, then 14-bit (W-1) and 14-bit (H-1).
+            if *bytes.get(20)? != 0x2F {
+                return None;
+            }
+            let bits = u32::from_le_bytes(bytes.get(21..25)?.try_into().ok()?);
+            let w = (bits & 0x3FFF) + 1;
+            let h = ((bits >> 14) & 0x3FFF) + 1;
+            Some((w, h))
+        }
+        b"VP8X" => {
+            // Extended: 24-bit (W-1) and 24-bit (H-1) canvas size.
+            let read24 = |slice: &[u8]| -> u32 {
+                u32::from(slice[0]) | (u32::from(slice[1]) << 8) | (u32::from(slice[2]) << 16)
+            };
+            let w = read24(bytes.get(24..27)?) + 1;
+            let h = read24(bytes.get(27..30)?) + 1;
+            Some((w, h))
+        }
+        _ => None,
+    }
+}
+
 fn probe_image_size(bytes: &[u8]) -> Option<(u32, u32)> {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
         // PNG: signature(8) IHDR length(4) "IHDR"(4) width(4) height(4)
@@ -2503,6 +2561,9 @@ fn probe_image_size(bytes: &[u8]) -> Option<(u32, u32)> {
     }
     if bytes.starts_with(&[0xFF, 0xD8]) {
         return probe_jpeg_size(bytes);
+    }
+    if bytes.starts_with(b"RIFF") {
+        return probe_webp_size(bytes);
     }
     None
 }
@@ -3721,6 +3782,84 @@ mod tests {
         // N323: the embedded bytes are retained for the compiler.
         assert_eq!(model.embedded_texture(0), Some(jpeg.as_slice()));
         assert_eq!(model.embedded_texture(1), None);
+    }
+
+    #[test]
+    fn webp_headers_are_probed_and_sniffed() {
+        // N523: VP8 (lossy), VP8L (lossless), and VP8X (extended) headers.
+        let mut vp8 = Vec::new();
+        vp8.extend_from_slice(b"RIFF");
+        vp8.extend_from_slice(&0u32.to_le_bytes());
+        vp8.extend_from_slice(b"WEBP");
+        vp8.extend_from_slice(b"VP8 ");
+        vp8.extend_from_slice(&0u32.to_le_bytes());
+        vp8.extend_from_slice(&[0, 0, 0]); // frame tag
+        vp8.extend_from_slice(&[0x9D, 0x01, 0x2A]); // start code
+        vp8.extend_from_slice(&100u16.to_le_bytes());
+        vp8.extend_from_slice(&60u16.to_le_bytes());
+        assert_eq!(probe_image_size(&vp8), Some((100, 60)));
+
+        let mut vp8l = Vec::new();
+        vp8l.extend_from_slice(b"RIFF");
+        vp8l.extend_from_slice(&0u32.to_le_bytes());
+        vp8l.extend_from_slice(b"WEBP");
+        vp8l.extend_from_slice(b"VP8L");
+        vp8l.extend_from_slice(&0u32.to_le_bytes());
+        vp8l.push(0x2F);
+        // (w-1)=31, (h-1)=15 packed little-endian in 14+14 bits.
+        let bits: u32 = 31 | (15 << 14);
+        vp8l.extend_from_slice(&bits.to_le_bytes());
+        assert_eq!(probe_image_size(&vp8l), Some((32, 16)));
+
+        let mut vp8x = Vec::new();
+        vp8x.extend_from_slice(b"RIFF");
+        vp8x.extend_from_slice(&0u32.to_le_bytes());
+        vp8x.extend_from_slice(b"WEBP");
+        vp8x.extend_from_slice(b"VP8X");
+        vp8x.extend_from_slice(&10u32.to_le_bytes());
+        vp8x.extend_from_slice(&[0u8; 4]); // flags + reserved
+        vp8x.extend_from_slice(&[0x3F, 0x01, 0x00]); // width-1 = 319
+        vp8x.extend_from_slice(&[0xDF, 0x00, 0x00]); // height-1 = 223
+        assert_eq!(probe_image_size(&vp8x), Some((320, 224)));
+
+        // Magic-based format detection.
+        assert_eq!(sniff_image_format(&vp8), Some("image/webp"));
+        assert_eq!(
+            sniff_image_format(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),
+            Some("image/png")
+        );
+        assert_eq!(sniff_image_format(&[0xFF, 0xD8, 0xFF]), Some("image/jpeg"));
+        assert_eq!(sniff_image_format(b"not an image"), None);
+    }
+
+    #[test]
+    fn webp_texture_dimensions_come_from_the_header() {
+        // N523: an image without `mimeType` is typed from its magic bytes and
+        // its dimensions come from the container header, not the declared size.
+        let mut webp = Vec::new();
+        webp.extend_from_slice(b"RIFF");
+        webp.extend_from_slice(&0u32.to_le_bytes());
+        webp.extend_from_slice(b"WEBP");
+        webp.extend_from_slice(b"VP8X");
+        webp.extend_from_slice(&10u32.to_le_bytes());
+        webp.extend_from_slice(&[0u8; 4]);
+        webp.extend_from_slice(&[0x0F, 0x00, 0x00]); // 16 wide
+        webp.extend_from_slice(&[0x07, 0x00, 0x00]); // 8 high
+        let document = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "extensionsUsed": ["EXT_texture_webp"],
+            "buffers": [{"byteLength": webp.len()}],
+            "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": webp.len()}],
+            "images": [{"bufferView": 0, "width": 1, "height": 1}],
+            "textures": [{"extensions": {"EXT_texture_webp": {"source": 0}}}],
+            "materials": [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}],
+        });
+        let bytes = glb(serde_json::to_vec(&document).unwrap().as_slice(), &webp);
+        let model = GltfImporter
+            .import(&bytes, &ImportLimits::default())
+            .unwrap();
+        assert_eq!(model.textures[0].format, "image/webp");
+        assert_eq!((model.textures[0].width, model.textures[0].height), (16, 8));
     }
 
     #[test]
