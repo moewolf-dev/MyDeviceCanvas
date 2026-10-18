@@ -1409,6 +1409,59 @@ fn http_stream_scale_requests_stay_bounded() {
 }
 
 #[test]
+fn mipped_package_round_trips_stay_bounded() {
+    // N441: a mipped sprite package seals and reopens with a bounded mip chain.
+    let source = mdc_bake::SpriteSource {
+        name: "s".into(),
+        image: {
+            let image = image::RgbImage::from_pixel(8, 8, image::Rgb([12, 34, 56]));
+            let mut out = Vec::new();
+            image
+                .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                .unwrap();
+            out
+        },
+    };
+    let motion = mdc_model::MotionInfo {
+        name: "bake".into(),
+        channels: 1,
+        duration_sec: 0.1,
+        fps: 30.0,
+        fade_in_sec: 0.0,
+        fade_out_sec: 0.0,
+        looping: true,
+        curves: Vec::new(),
+    };
+    for _ in 0..50 {
+        let package = mdc_bake::bake_to_package_mipped(
+            std::slice::from_ref(&source),
+            std::slice::from_ref(&motion),
+            (8, 8),
+            64,
+            &mdc_bake::BakeLimits::default(),
+            8,
+        )
+        .unwrap();
+        let bytes = package.to_bytes().unwrap();
+        let reopened = mdc_model::MdcPackage::from_bytes(&bytes).unwrap();
+        let atlas = reopened.package.atlas.as_ref().unwrap();
+        assert!(atlas.mips.len() <= 7);
+        assert!(atlas
+            .mips
+            .iter()
+            .all(|m| { m.rgb565.len() == (m.width as usize) * (m.height as usize) * 2 }));
+        assert_eq!(
+            (
+                atlas.mips.last().unwrap().width,
+                atlas.mips.last().unwrap().height
+            ),
+            (1, 1)
+        );
+        assert!(reopened.verify().valid);
+    }
+}
+
+#[test]
 fn generated_tangents_and_skinning_stay_bounded() {
     // N431: tangent generation and skinning on a larger mesh are bounded.
     use mdc_model::{MeshGeometry, Skeleton};
