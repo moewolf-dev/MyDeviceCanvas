@@ -28,6 +28,8 @@ export interface GestureDto {
   pointerId: number;
   x: number;
   y: number;
+  /** N493: the hit-tested scene node, when reported. */
+  node?: string;
 }
 
 export interface InputEventDto {

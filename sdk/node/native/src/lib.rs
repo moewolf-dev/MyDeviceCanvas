@@ -146,6 +146,8 @@ pub struct GestureDto {
     pub pointer_id: u16,
     pub x: u16,
     pub y: u16,
+    /// N493: the hit-tested scene node, when reported.
+    pub node: Option<String>,
 }
 
 struct SimSession {
@@ -324,6 +326,7 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                     pointer_id: gesture.pointer_id,
                     x: gesture.x,
                     y: gesture.y,
+                    node: gesture.node,
                 }),
                 device_id: Some(device_id),
                 input: None,

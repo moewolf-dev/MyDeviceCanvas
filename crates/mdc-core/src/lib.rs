@@ -240,12 +240,14 @@ pub enum GestureKind {
 }
 
 /// N464: a gesture derived from raw input events.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Gesture {
     pub kind: GestureKind,
     pub pointer_id: u16,
     pub x: u16,
     pub y: u16,
+    /// N493: the hit-tested scene node, when the device reported one.
+    pub node: Option<String>,
 }
 
 /// N464: thresholds for gesture recognition.
@@ -269,13 +271,15 @@ impl Default for GestureConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct PointerState {
     down_ms: u64,
     x: u16,
     y: u16,
     dragged: bool,
     long_pressed: bool,
+    /// N493: the node under the pointer when it went down.
+    node: Option<String>,
 }
 
 /// N464: derive tap/long-press/drag gestures from a pointer's input events.
@@ -315,6 +319,7 @@ impl GestureTracker {
                         y: event.y,
                         dragged: false,
                         long_pressed: false,
+                        node: event.node.clone(),
                     },
                 );
                 None
@@ -331,6 +336,7 @@ impl GestureTracker {
                         pointer_id: event.pointer_id,
                         x: event.x,
                         y: event.y,
+                        node: event.node.clone(),
                     });
                 }
                 None
@@ -343,6 +349,7 @@ impl GestureTracker {
                         pointer_id: event.pointer_id,
                         x: event.x,
                         y: event.y,
+                        node: event.node.clone(),
                     });
                 }
                 if state.long_pressed {
@@ -354,6 +361,7 @@ impl GestureTracker {
                         pointer_id: event.pointer_id,
                         x: event.x,
                         y: event.y,
+                        node: event.node.clone().or(state.node.clone()),
                     })
                 } else {
                     None
@@ -375,6 +383,7 @@ impl GestureTracker {
                     pointer_id: *pointer_id,
                     x: state.x,
                     y: state.y,
+                    node: state.node.clone(),
                 });
             }
         }
@@ -4840,7 +4849,8 @@ mod tests {
             phase: phase.into(),
             x: 4,
             y: 5,
-            node: None,
+            // N493: the device reports the hit node with the event.
+            node: Some("btn".into()),
         };
         for (phase, id) in [("down", 10u32), ("up", 11)] {
             device
@@ -4866,10 +4876,11 @@ mod tests {
                     kind: GestureKind::Tap,
                     pointer_id: 3,
                     x: 4,
-                    y: 5
+                    y: 5,
+                    node: Some(node),
                 },
                 ..
-            }
+            } if node == "btn"
         )));
     }
 
@@ -4911,7 +4922,8 @@ mod tests {
                 kind: GestureKind::Tap,
                 pointer_id: 1,
                 x: 10,
-                y: 10
+                y: 10,
+                node: None
             })
         );
 
@@ -4923,7 +4935,8 @@ mod tests {
                 kind: GestureKind::Drag,
                 pointer_id: 1,
                 x: 20,
-                y: 10
+                y: 10,
+                node: None
             })
         );
         assert_eq!(
@@ -4932,7 +4945,8 @@ mod tests {
                 kind: GestureKind::Drag,
                 pointer_id: 1,
                 x: 20,
-                y: 10
+                y: 10,
+                node: None
             })
         );
 
@@ -4945,7 +4959,8 @@ mod tests {
                 kind: GestureKind::LongPress,
                 pointer_id: 1,
                 x: 5,
-                y: 5
+                y: 5,
+                node: None
             })
         );
         assert_eq!(tracker.tick(2000), None, "long-press emits once");

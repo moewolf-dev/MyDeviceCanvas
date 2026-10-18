@@ -782,7 +782,7 @@ pub unsafe extern "C" fn mdc_session_poll_event_with_node(
             8,
             device_id,
             gesture_kind(gesture.kind).to_string(),
-            String::new(),
+            gesture.node.unwrap_or_default(),
             gesture.x,
             gesture.y,
         ),
