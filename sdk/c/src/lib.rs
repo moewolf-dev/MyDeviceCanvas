@@ -155,6 +155,30 @@ fn copy_cstr(dst: *mut c_char, cap: usize, text: &str) {
     }
 }
 
+/// N506: write the partial-update (tile) counters (null out-params are ignored).
+///
+/// # Safety
+///
+/// `session` must be a valid pointer returned by a `mdc_session_*` constructor.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_tile_stats(
+    session: *const MdcSession,
+    tiles_sent: *mut u64,
+    tile_bytes_sent: *mut u64,
+) -> c_int {
+    let Some(session) = session.as_ref() else {
+        return -1;
+    };
+    let stats = session.session.stats();
+    if !tiles_sent.is_null() {
+        *tiles_sent = stats.tiles_sent;
+    }
+    if !tile_bytes_sent.is_null() {
+        *tile_bytes_sent = stats.tile_bytes_sent;
+    }
+    0
+}
+
 /// N498: tune gesture recognition (tap window, long-press window, drag distance).
 /// Returns 0 on success, negative on error.
 ///
@@ -1837,6 +1861,26 @@ mod tests {
             assert_eq!(mdc_clear_scene(session), 0);
             let bad = std::ffi::CString::new("not json").unwrap();
             assert_eq!(mdc_set_scene(session, bad.as_ptr()), -2);
+            mdc_session_destroy(session);
+        }
+    }
+
+    #[test]
+    fn tile_stats_are_reported_via_c_abi() {
+        unsafe {
+            let session = mdc_session_create();
+            assert!(!session.is_null());
+            let (mut tiles, mut bytes) = (7u64, 7u64);
+            assert_eq!(mdc_session_tile_stats(session, &mut tiles, &mut bytes), 0);
+            assert_eq!((tiles, bytes), (0, 0));
+            assert_eq!(
+                mdc_session_tile_stats(session, std::ptr::null_mut(), std::ptr::null_mut()),
+                0
+            );
+            assert_eq!(
+                mdc_session_tile_stats(std::ptr::null(), &mut tiles, &mut bytes),
+                -1
+            );
             mdc_session_destroy(session);
         }
     }

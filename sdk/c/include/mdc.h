@@ -138,6 +138,10 @@ int mdc_session_send_input(MdcSession* session, const char* surface_id, uint16_t
 /** Simulator-only touch injection. Returns 0, or negative when the session is not a FakeDevice. */
 int mdc_session_simulate_input(MdcSession* session, const char* phase, uint16_t x, uint16_t y);
 
+/** N506: write the partial-update (tile) counters (null out-params are ignored). */
+int mdc_session_tile_stats(const MdcSession* session, uint64_t* tiles_sent,
+                           uint64_t* tile_bytes_sent);
+
 /** N498: tune gesture recognition thresholds (0 or negative on error). */
 int mdc_session_set_gesture_config(MdcSession* session, uint64_t tap_max_ms, uint64_t long_press_ms,
                                    uint16_t drag_threshold);

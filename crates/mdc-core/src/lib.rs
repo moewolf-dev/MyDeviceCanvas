@@ -407,6 +407,10 @@ pub struct SessionStats {
     pub mirror_frames: u64,
     /// N446: frames refused by the host pacing budget.
     pub pacing_dropped: u64,
+    /// N506: partial (tile) updates sent.
+    pub tiles_sent: u64,
+    /// N506: bytes covered by the tiles sent.
+    pub tile_bytes_sent: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1631,6 +1635,12 @@ impl<T: Transport> Session<T> {
         )
         .map_err(|e| CoreError::Protocol(e.to_string()))?;
         let request_id = self.write_packet(MessageType::Tile, payload)?;
+        // N506: count the partial update and its payload bytes.
+        self.stats.tiles_sent = self.stats.tiles_sent.saturating_add(1);
+        self.stats.tile_bytes_sent = self
+            .stats
+            .tile_bytes_sent
+            .saturating_add(tile.bytes.len() as u64);
         self.pending_frames
             .insert(request_id, (tile.surface_id, tile.base_frame_id));
         Ok(request_id)
@@ -3912,6 +3922,37 @@ mod tests {
         assert_eq!(pkt.kind, MessageType::Tile);
         let tile = mdc_protocol::decode_tile_payload(&pkt.payload).unwrap();
         assert_eq!(tile.bytes, vec![0x11, 0x22]);
+        // N506: the tile and its bytes are counted.
+        let stats = session.stats();
+        assert_eq!(stats.tiles_sent, 1);
+        assert_eq!(stats.tile_bytes_sent, 2);
+        session
+            .send_tile(Tile {
+                surface_id: "main".into(),
+                base_frame_id: 1,
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 1,
+                bytes: vec![0x33, 0x44, 0x55, 0x66],
+            })
+            .unwrap();
+        let stats = session.stats();
+        assert_eq!(stats.tiles_sent, 2);
+        assert_eq!(stats.tile_bytes_sent, 6);
+        // A tile for an unknown surface fails before it is counted.
+        assert!(session
+            .send_tile(Tile {
+                surface_id: "nope".into(),
+                base_frame_id: 1,
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                bytes: vec![0x00, 0x00],
+            })
+            .is_err());
+        assert_eq!(session.stats().tiles_sent, 2);
     }
 
     #[test]
