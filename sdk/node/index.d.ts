@@ -107,7 +107,13 @@ export declare class MyDeviceCanvas {
     options?: { mode?: string; maxFps?: number },
   ): Promise<number>;
   stopMirror(surfaceId: string): Promise<number>;
+  /** Sim-only: push one mirrored frame from the local FakeDevice. */
+  emitMirrorFrame(): Promise<void>;
   takeMirrorFrame(): Promise<MirrorFrame | null>;
+  /** N528: take the newest frame only when it fits `maxBytes` (else null). */
+  takeMirrorFrameBounded(maxBytes: number): Promise<MirrorFrame | null>;
+  /** N528: frames dropped because the caller's cap was too small. */
+  mirrorSkips(): Promise<number>;
   mirrorStats(): Promise<MirrorStats | null>;
   getConfig(key: string): Promise<string>;
   setConfig(key: string, value: string | number): Promise<string>;

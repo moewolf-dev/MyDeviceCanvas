@@ -46,6 +46,27 @@ test("native simulator session lists a device and accepts an RGB565 frame", { sk
   await assert.rejects(mdc.devices(), /disposed/);
 });
 
+test("native bounded mirror take drops an oversized frame", { skip: !native }, async () => {
+  // N528: `takeMirrorFrameBounded` returns the frame when it fits the cap and
+  // drops (counting) it otherwise.
+  const mdc = await MyDeviceCanvas.create();
+  await mdc.openBoard("linux-virt");
+  assert.equal(await mdc.mirrorSkips(), 0);
+  await mdc.startMirror("main");
+  await mdc.emitMirrorFrame();
+  // A tiny cap cannot hold the 800x480 RGB565 frame.
+  assert.equal(await mdc.takeMirrorFrameBounded(16), null);
+  assert.equal(await mdc.mirrorSkips(), 1);
+  // A generous cap takes the next frame.
+  await mdc.emitMirrorFrame();
+  const frame = await mdc.takeMirrorFrameBounded(800 * 480 * 2);
+  assert.ok(frame, "a frame within the cap is returned");
+  assert.equal(frame.width, 800);
+  assert.equal(frame.height, 480);
+  assert.equal(frame.surfaceId, "main");
+  mdc.dispose();
+});
+
 test("native installPackage rejects a malformed package", { skip: !native }, async () => {
   const mdc = await MyDeviceCanvas.create();
   await assert.rejects(mdc.installPackage(new Uint8Array([1, 2, 3])));

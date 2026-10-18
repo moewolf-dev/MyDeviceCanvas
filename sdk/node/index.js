@@ -159,6 +159,27 @@ export class MyDeviceCanvas {
     }
     return this._native.stopMirror(surfaceId);
   }
+  /** Sim-only: push one mirrored frame from the local FakeDevice. */
+  async emitMirrorFrame() {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.emitMirrorFrame !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    await this._native.emitMirrorFrame();
+  }
+  /** N528: take the newest frame only when it fits `maxBytes` (else null). */
+  async takeMirrorFrameBounded(maxBytes) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.takeMirrorFrameBounded !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return (await this._native.takeMirrorFrameBounded(maxBytes)) ?? null;
+  }
+  /** N528: mirrored frames dropped because the caller's cap was too small. */
+  async mirrorSkips() {
+    if (this._disposed) throw new Error("manager is disposed");
+    return (await this._native.mirrorSkips?.()) ?? 0;
+  }
   /** Drain the latest complete mirrored frame (pixels copied out of native). */
   async takeMirrorFrame() {
     if (this._disposed) throw new Error("manager is disposed");

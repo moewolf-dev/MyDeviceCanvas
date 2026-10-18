@@ -193,6 +193,8 @@ struct State {
     board_id: Option<String>,
     sim: Option<SimSession>,
     last_frame: Option<Vec<u8>>,
+    /// N528: mirrored frames dropped because the caller's cap was too small.
+    mirror_skips: u64,
 }
 
 fn ensure_sim(state: &mut State) -> Result<()> {
@@ -724,6 +726,48 @@ impl NativeManager {
             height: frame.height,
             pixels: Buffer::from(frame.bytes),
         }))
+    }
+
+    /// N528: take the newest mirrored frame only when it fits `max_bytes`;
+    /// otherwise the frame is dropped and counted (see `mirrorSkips`).
+    #[napi(js_name = "takeMirrorFrameBounded")]
+    pub fn take_mirror_frame_bounded(&self, max_bytes: u32) -> Result<Option<MirrorFrameDto>> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        let Some(frame) = sim.session.take_mirror_frame() else {
+            return Ok(None);
+        };
+        if frame.bytes.len() > max_bytes as usize {
+            state.mirror_skips = state.mirror_skips.saturating_add(1);
+            return Ok(None);
+        }
+        Ok(Some(MirrorFrameDto {
+            surface_id: frame.surface_id,
+            frame_id: frame.frame_id as u32,
+            width: frame.width,
+            height: frame.height,
+            pixels: Buffer::from(frame.bytes),
+        }))
+    }
+
+    /// N528: mirrored frames dropped because the caller's buffer was too small.
+    #[napi(js_name = "mirrorSkips")]
+    pub fn mirror_skips(&self) -> Result<f64> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        Ok(state.mirror_skips as f64)
     }
 
     #[napi(js_name = "mirrorStats")]
