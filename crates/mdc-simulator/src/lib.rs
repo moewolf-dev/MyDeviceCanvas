@@ -674,6 +674,9 @@ fn add_pixel(pixels: &mut [u8], index: usize, value: u16, alpha: u8) {
 }
 
 /// N489: mix a new e-ink pixel over the old one, keeping a faint remnant.
+/// N499: because the mix is relative to the current pixel, repeating the same
+/// partial refresh fades the ghost, while a full frame replaces the pixel
+/// exactly (no ghost).
 fn ghost_mix(old: u16, new: u16) -> u16 {
     let mix = |shift: u32, mask: u16| -> u16 {
         let o = u32::from((old >> shift) & mask);
@@ -3853,6 +3856,73 @@ mod tests {
         assert!(
             (mid >> 11) > 0 && (mid & 0x1f) > 0,
             "mid blended: {mid:#06x}"
+        );
+    }
+
+    #[test]
+    fn eink_full_refresh_clears_ghosting() {
+        // N499: repeated partial refreshes fade the ghost; a full frame is exact.
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 2,
+            height: 2,
+            color_fps: false,
+            supports_partial_update: true,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        let frame = |bytes: Vec<u8>| mdc_core::Frame {
+            surface_id: "main".into(),
+            width: 2,
+            height: 2,
+            bytes,
+        };
+        // Start from a clean black panel.
+        session.send_frame(frame(vec![0u8; 8])).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.pixel_rgb565(0, 0).unwrap(), 0);
+        let white_tile = |base: u64| mdc_core::Tile {
+            surface_id: "main".into(),
+            base_frame_id: base,
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+            bytes: vec![0xff, 0xff],
+        };
+        // A white partial refresh leaves a ghost...
+        device.advance(200).unwrap();
+        let base = device.current_frame_id();
+        session.send_tile(white_tile(base)).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        let after_first = device.pixel_rgb565(0, 0).unwrap();
+        assert!(
+            after_first != 0 && after_first != 0xffff,
+            "partial refresh ghosts: {after_first:#06x}"
+        );
+        // ...that fades with a second identical refresh.
+        device.advance(200).unwrap();
+        session.send_tile(white_tile(base)).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        let after_second = device.pixel_rgb565(0, 0).unwrap();
+        assert!(
+            after_second > after_first,
+            "the ghost fades toward the target ({after_first:#06x} -> {after_second:#06x})"
+        );
+        // A full white frame clears it exactly.
+        device.advance(200).unwrap();
+        session.send_frame(frame(vec![0xff; 8])).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(
+            device.pixel_rgb565(0, 0).unwrap(),
+            0xffff,
+            "a full refresh is exact"
         );
     }
 
