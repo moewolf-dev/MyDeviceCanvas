@@ -272,7 +272,7 @@ impl TextureMap {
 }
 
 /// N407: sRGB transfer functions (per-channel 0..1).
-fn srgb_to_linear(c: f32) -> f32 {
+pub(crate) fn srgb_to_linear(c: f32) -> f32 {
     if c <= 0.04045 {
         c / 12.92
     } else {
@@ -280,7 +280,7 @@ fn srgb_to_linear(c: f32) -> f32 {
     }
 }
 
-fn linear_to_srgb(c: f32) -> f32 {
+pub(crate) fn linear_to_srgb(c: f32) -> f32 {
     if c <= 0.003_130_8 {
         c * 12.92
     } else {

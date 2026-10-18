@@ -964,6 +964,7 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut out_dir = String::from(".");
     let mut package_path: Option<String> = None;
     let mut mipmaps = false;
+    let mut mip_linear = false;
     let mut dither: u8 = 0;
     let mut palette: u32 = 0;
     let mut iter = args.iter();
@@ -981,6 +982,8 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "--package" => package_path = iter.next().cloned(),
             // N396: also write a box-downsampled mip chain beside the atlas.
             "--mipmaps" => mipmaps = true,
+            // N468: average the written mip chain in linear light.
+            "--mip-linear" => mip_linear = true,
             // N404: ordered (Bayer) dithering strength in LSBs (0..=8).
             "--dither" => dither = iter.next().and_then(|v| v.parse().ok()).unwrap_or(4),
             // N405: median-cut the atlas to at most N palette entries.
@@ -1109,11 +1112,12 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     // N396: an optional box-downsampled mip chain (level 0 is the atlas).
     let mut mip_paths = Vec::new();
     if mipmaps {
-        for (level, (w, h, data)) in mdc_bake::bake_mipmaps(
+        for (level, (w, h, data)) in mdc_bake::bake_mipmaps_with(
             package.atlas.width,
             package.atlas.height,
-            &package.atlas.rgb565,
+            &dithered,
             8,
+            mip_linear,
         )
         .iter()
         .enumerate()
@@ -3516,7 +3520,7 @@ fn usage() {
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--scale N] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents] [--variant NAME] [--report]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
-config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
+config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--mip-linear] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] [--srgb] --out f.ppm|\
 motion <motion3.json> [--param ID] [--samples N]|\
