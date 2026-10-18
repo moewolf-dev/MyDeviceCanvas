@@ -820,8 +820,11 @@ fn hit_test_node(
             None => transform,
         }
     };
-    // Children draw on top, so search them last-first.
-    for child in node.children.iter().rev() {
+    // N485: the highest `z` (then the last in document order) is on top.
+    let mut children: Vec<&mdc_protocol::SceneNode> = node.children.iter().collect();
+    children.sort_by_key(|child| (child.z(), std::cmp::Reverse(())));
+    children.reverse();
+    for child in children {
         if let Some(name) = hit_test_node(child, child_transform, x, y) {
             return Some(name);
         }
@@ -1092,7 +1095,10 @@ fn fill_scene(
             None => transform,
         }
     };
-    for child in &node.children {
+    // N485: draw siblings in ascending `z` (stable, so ties keep document order).
+    let mut children: Vec<&mdc_protocol::SceneNode> = node.children.iter().collect();
+    children.sort_by_key(|child| child.z());
+    for child in children {
         fill_scene(child, pixels, width, height, atlas, child_transform, drew);
     }
 }
@@ -3093,6 +3099,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             value2: None,
         };
         let mut root = leaf("root", "rect", None);
@@ -3428,6 +3435,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             value2: None,
         };
         // Background red covers all; a green child on top; a third clipped.
@@ -3446,6 +3454,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3491,6 +3500,7 @@ mod tests {
                     rotate: None,
                     blend: None,
                     align: None,
+                    z: None,
                     value2: None,
                 },
                 SceneNode {
@@ -3505,6 +3515,7 @@ mod tests {
                     rotate: None,
                     blend: None,
                     align: None,
+                    z: None,
                     value2: None,
                 },
             ],
@@ -3514,6 +3525,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3561,6 +3573,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             value2: None,
         };
         // rect 0×0 -> scale 1, so (1,1) stays clear on the fresh framebuffer.
@@ -3631,6 +3644,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3668,6 +3682,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -3681,6 +3696,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             children: vec![
                 rect("bg", "#FFFFFF", None),
                 rect("fg", "#FF0000", Some(128)),
@@ -3737,6 +3753,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -3746,6 +3763,66 @@ mod tests {
         assert!(
             (mid >> 11) > 0 && (mid & 0x1f) > 0,
             "mid blended: {mid:#06x}"
+        );
+    }
+
+    #[test]
+    fn z_order_overrides_document_order() {
+        // N485: a higher `z` draws on top regardless of document order.
+        use mdc_protocol::SceneNode;
+        let render = |green_z: Option<i32>| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 4,
+                height: 4,
+                ..BoardProfile::default()
+            });
+            let rect = |name: &str, color: &str, z: Option<i32>| SceneNode {
+                name: name.into(),
+                kind: "rect".into(),
+                rect: Some([0, 0, 4, 4]),
+                value: Some(color.into()),
+                value2: None,
+                opacity: Some(255),
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: None,
+                z,
+                children: Vec::new(),
+            };
+            device.scene = Some(SceneNode {
+                name: "root".into(),
+                kind: "group".into(),
+                rect: None,
+                value: None,
+                value2: None,
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: None,
+                z: None,
+                children: vec![
+                    rect("green", "#00FF00", green_z),
+                    rect("red", "#FF0000", None),
+                ],
+            });
+            assert!(device.render_scene());
+            device.pixel_rgb565(1, 1).unwrap()
+        };
+        // Document order: red (last) wins.
+        let red = render(None);
+        assert!(
+            red >> 11 > 8 && ((red >> 5) & 0x3f) < 8,
+            "red on top: {red:#06x}"
+        );
+        // z=1 lifts green above red, and hit-testing agrees.
+        let green = render(Some(1));
+        assert!(
+            ((green >> 5) & 0x3f) > 8 && green >> 11 < 8,
+            "green on top: {green:#06x}"
         );
     }
 
@@ -3771,6 +3848,7 @@ mod tests {
                 rotate: None,
                 blend: None,
                 align: align.map(str::to_string),
+                z: None,
                 children: Vec::new(),
             });
             assert!(device.render_scene());
@@ -3812,6 +3890,7 @@ mod tests {
                 rotate: None,
                 blend: blend.map(str::to_string),
                 align: None,
+                z: None,
                 children: Vec::new(),
             };
             device.scene = Some(SceneNode {
@@ -3826,6 +3905,7 @@ mod tests {
                 rotate: None,
                 blend: None,
                 align: None,
+                z: None,
                 children: vec![
                     rect("base", "#00FF00", None),
                     rect("glow", "#FF0000", blend),
@@ -3892,6 +3972,7 @@ mod tests {
             rotate: Some(90),
             blend: None,
             align: None,
+            z: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -3931,6 +4012,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             children: Vec::new(),
         });
         assert!(device.render_overlay());
@@ -3963,6 +4045,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             children: Vec::new(),
         });
         // t=0: fully transparent, so the black background remains.
@@ -3999,6 +4082,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             children: vec![
                 SceneNode {
                     name: "hidden".into(),
@@ -4012,6 +4096,7 @@ mod tests {
                     rotate: None,
                     blend: None,
                     align: None,
+                    z: None,
                     children: Vec::new(),
                 },
                 SceneNode {
@@ -4026,6 +4111,7 @@ mod tests {
                     rotate: None,
                     blend: None,
                     align: None,
+                    z: None,
                     children: Vec::new(),
                 },
             ],
@@ -4087,6 +4173,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -4101,6 +4188,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             children: vec![rect("back", [0, 0, 8, 8]), rect("front", [2, 2, 4, 4])],
         });
         // The overlapping topmost child wins.
@@ -4131,6 +4219,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -4145,6 +4234,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             // The child fills 8x8 relative to the clip origin, so it would cover
             // everything without the clip rect.
             children: vec![fill([0, 0, 8, 8])],
@@ -4185,6 +4275,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -4244,6 +4335,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             value2: None,
         };
         let scene = SceneNode {
@@ -4261,6 +4353,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -4301,6 +4394,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             value2: None,
         };
         // Group offset (4, 2) and 2× scale: [0,0,2,2] red -> [4,2,4,4].
@@ -4316,6 +4410,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -4397,6 +4492,7 @@ mod tests {
                 rotate: None,
                 blend: None,
                 align: None,
+                z: None,
                 value2: None,
             })
             .unwrap();
@@ -4554,6 +4650,7 @@ mod tests {
                 rotate: None,
                 blend: None,
                 align: None,
+                z: None,
                 value2: None,
             })
             .unwrap();
@@ -4709,6 +4806,7 @@ mod tests {
                 rotate: None,
                 blend: None,
                 align: None,
+                z: None,
                 value2: None,
             })
             .unwrap();
@@ -5118,6 +5216,7 @@ mod tests {
                 rotate: None,
                 blend: None,
                 align: None,
+                z: None,
                 value2: None,
             })
             .unwrap();
@@ -5148,6 +5247,7 @@ mod tests {
                 rotate: None,
                 blend: None,
                 align: None,
+                z: None,
                 value2: None,
             })
             .unwrap();

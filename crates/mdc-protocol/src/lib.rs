@@ -505,6 +505,10 @@ pub struct SceneNode {
     /// N484: `left` (default) | `center` | `right` alignment for `text`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub align: Option<String>,
+    /// N485: explicit draw order among siblings (higher draws on top; ties keep
+    /// document order).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub z: Option<i32>,
 }
 
 /// N463: a keyframed scene animation. Keyframes are `[time_ms, value]` and are
@@ -621,6 +625,11 @@ pub struct SceneLint {
 }
 
 impl SceneNode {
+    /// N485: this node's draw order among its siblings (default 0).
+    pub fn z(&self) -> i32 {
+        self.z.unwrap_or(0)
+    }
+
     /// N480: whether the node adds to the framebuffer instead of covering it.
     pub fn is_additive(&self) -> bool {
         self.blend.as_deref() == Some("additive")
@@ -2210,6 +2219,7 @@ mod tests {
                     rotate: None,
                     blend: None,
                     align: None,
+                    z: None,
                     value2: None,
                 }],
                 value: None,
@@ -2219,6 +2229,7 @@ mod tests {
                 rotate: None,
                 blend: None,
                 align: None,
+                z: None,
                 value2: None,
             }),
         }
@@ -2238,6 +2249,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             value2: None,
         };
         // #RGB expands each nibble.
@@ -2265,6 +2277,7 @@ mod tests {
             rotate: None,
             blend: None,
             align: None,
+            z: None,
             value2: None,
         };
         assert_eq!(node.color_rgb565(), 0xF800);
@@ -2281,6 +2294,7 @@ mod tests {
                 rotate: None,
                 blend: None,
                 align: None,
+                z: None,
                 value2: None,
             }
             .color_rgb565(),
