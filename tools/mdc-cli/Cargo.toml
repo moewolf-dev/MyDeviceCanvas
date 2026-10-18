@@ -29,7 +29,9 @@ mdc-bake = { path = "../../crates/mdc-bake" }
 mdc-assets = { path = "../../crates/mdc-assets" }
 mdc-flasher = { path = "../flasher" }
 mdc-provision = { path = "../../crates/mdc-provision" }
-image = { version = "=0.24.9", default-features = false, features = ["png", "jpeg", "webp"] }
+# N530: PPM/BMP are the mirror's own output formats, so `record --play --render`
+# can decode them back.
+image = { version = "=0.24.9", default-features = false, features = ["png", "jpeg", "webp", "pnm", "bmp"] }
 serde = { workspace = true }
 serde_json = "=1.0.100"
 sha2 = "=0.10.8"

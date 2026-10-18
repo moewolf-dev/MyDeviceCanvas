@@ -2211,18 +2211,117 @@ fn verify_sequence(dir: &str) -> Result<serde_json::Value, Box<dyn std::error::E
     }))
 }
 
+/// N530: decode a recorded frame (PPM/BMP/PNG/JPEG) to packed RGB565.
+fn frame_to_rgb565(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let image = image::load_from_memory(bytes).ok()?.to_rgb8();
+    let (width, height) = (image.width(), image.height());
+    let mut out = Vec::with_capacity((width * height * 2) as usize);
+    for pixel in image.pixels() {
+        let [r, g, b] = pixel.0;
+        let value = (u16::from(r >> 3) << 11) | (u16::from(g >> 2) << 5) | u16::from(b >> 3);
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    Some((width, height, out))
+}
+
+/// N530: nearest-neighbour fit of a packed RGB565 frame to a target size.
+fn fit_rgb565(src: &[u8], size: (u32, u32), target: (u32, u32)) -> Vec<u8> {
+    let (sw, sh) = (size.0.max(1), size.1.max(1));
+    let (dw, dh) = (target.0.max(1), target.1.max(1));
+    let mut out = vec![0u8; (dw * dh * 2) as usize];
+    for y in 0..dh {
+        let sy = (u64::from(y) * u64::from(sh) / u64::from(dh)) as u32;
+        for x in 0..dw {
+            let sx = (u64::from(x) * u64::from(sw) / u64::from(dw)) as u32;
+            let si = ((sy * sw + sx) * 2) as usize;
+            let di = ((y * dw + x) * 2) as usize;
+            if let (Some(from), Some(to)) = (src.get(si..si + 2), out.get_mut(di..di + 2)) {
+                to.copy_from_slice(from);
+            }
+        }
+    }
+    out
+}
+
+/// N530: replay the recorded frames onto a simulated device surface.
+fn render_sequence(
+    dir: &str,
+    board: &str,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let base = PathBuf::from(dir);
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(base.join("manifest.json"))?)?;
+    let files = manifest["files"].as_array().cloned().unwrap_or_default();
+    let (mut session, mut device, _manager) = open_sim(board)?;
+    let (width, height) = (device.profile().width, device.profile().height);
+    let mut rendered = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for file in &files {
+        let Some(name) = file.as_str() else {
+            continue;
+        };
+        let bytes = match std::fs::read(base.join(name)) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                failures.push(name.to_string());
+                continue;
+            }
+        };
+        let Some((fw, fh, pixels)) = frame_to_rgb565(&bytes) else {
+            failures.push(name.to_string());
+            continue;
+        };
+        let fitted = fit_rgb565(&pixels, (fw, fh), (u32::from(width), u32::from(height)));
+        if session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width,
+                height,
+                bytes: fitted,
+            })
+            .is_err()
+        {
+            failures.push(name.to_string());
+            continue;
+        }
+        device.poll()?;
+        session.poll()?;
+        rendered += 1;
+    }
+    Ok(serde_json::json!({
+        "dir": dir,
+        "board": board,
+        "surface": { "width": width, "height": height },
+        "frames": files.len(),
+        "rendered": rendered,
+        "failures": failures,
+        "ok": failures.is_empty(),
+    }))
+}
+
 /// N520: `mdc record --play --dir DIR` verifies a recorded sequence.
 fn cmd_record_play(extra: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut dir = "mdc-record".to_string();
+    let mut board = "default".to_string();
+    let mut render = false;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
-        if flag == "--dir" {
-            dir = iter.next().cloned().unwrap_or(dir);
+        match flag.as_str() {
+            "--dir" => dir = iter.next().cloned().unwrap_or(dir),
+            "--board" => board = iter.next().cloned().unwrap_or(board),
+            // N530: replay the frames onto a simulated device.
+            "--render" => render = true,
+            _ => {}
         }
     }
     let report = verify_sequence(&dir)?;
-    let valid = report["valid"].as_bool().unwrap_or(false);
+    let mut valid = report["valid"].as_bool().unwrap_or(false);
     println!("{}", serde_json::to_string_pretty(&report)?);
+    if render {
+        let rendered = render_sequence(&dir, &board)?;
+        valid = valid && rendered["ok"].as_bool().unwrap_or(false);
+        println!("{}", serde_json::to_string_pretty(&rendered)?);
+    }
     if !valid {
         std::process::exit(1);
     }
@@ -3852,7 +3951,7 @@ fn usage() {
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices [--compact]|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
-authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--scale N] [--sequence] [--flip h/v] [--serve ADDR] [--http ADDR] [--ws-heartbeat N] [--ws-timeout M] [--ws-fragment N] [--source-fps N] [--max-fps N] [--bandwidth BPS]|record [--frames N] [--fps N] [--dir DIR] [--play] [--format ppm|bmp|png|jpg] [--scale N]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
+authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--scale N] [--sequence] [--flip h/v] [--serve ADDR] [--http ADDR] [--ws-heartbeat N] [--ws-timeout M] [--ws-fragment N] [--source-fps N] [--max-fps N] [--bandwidth BPS]|record [--frames N] [--fps N] [--dir DIR] [--play [--render] [--board B]] [--format ppm|bmp|png|jpg] [--scale N]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents] [--variant NAME] [--report] [--texture-mips N] [--mip-level N] [--max-draw-vertices N]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--mip-linear] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
@@ -5498,6 +5597,49 @@ mod tests {
         assert_eq!(manifest["width"], 100);
         assert_eq!(manifest["height"], 60);
         assert_eq!(manifest["files"].as_array().unwrap().len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn record_play_render_replays_onto_a_device() {
+        // N530: `--render` decodes each recorded frame and sends it to a device.
+        let dir = std::env::temp_dir().join(format!("mdc-render-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let opts = GlobalOpts {
+            sim: true,
+            address: None,
+            port: None,
+            board: "linux-virt".into(),
+        };
+        cmd_record(
+            &opts,
+            &[
+                "--frames".into(),
+                "2".into(),
+                "--scale".into(),
+                "8".into(),
+                "--dir".into(),
+                dir.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        // Replay onto the default 480x320 board (the frames are 100x60).
+        let report = render_sequence(&dir.to_string_lossy(), "default").unwrap();
+        assert_eq!(report["frames"], 2);
+        assert_eq!(report["rendered"], 2);
+        assert!(report["ok"].as_bool().unwrap());
+        assert_eq!(report["surface"]["width"], 480);
+        // A corrupted frame is reported rather than rendered.
+        std::fs::write(dir.join("frame0001.ppm"), b"not an image").unwrap();
+        let report = render_sequence(&dir.to_string_lossy(), "default").unwrap();
+        assert_eq!(report["rendered"], 1);
+        assert_eq!(report["failures"].as_array().unwrap().len(), 1);
+        assert!(!report["ok"].as_bool().unwrap());
+        // The RGB565 fit is nearest-neighbour and keeps the target size.
+        let pixels = vec![0x00, 0xF8, 0xE0, 0x07];
+        let fitted = fit_rgb565(&pixels, (2, 1), (4, 2));
+        assert_eq!(fitted.len(), 4 * 2 * 2);
+        assert_eq!(&fitted[0..2], &[0x00, 0xF8]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
