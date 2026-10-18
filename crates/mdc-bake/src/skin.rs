@@ -927,9 +927,9 @@ fn material_blend(model: &Model, mesh: &Mesh) -> u8 {
         Some(material) if material.is_blended() => material.alpha_u8(),
         _ => 255,
     };
-    // N426: a transmissive material fades toward the background.
+    // N426/N434: transmission (or a thick volume) fades toward the background.
     let transmission = material_of(model, mesh)
-        .map(|material| material.transmission())
+        .map(|material| material.transmission().max(material.volume_factor()))
         .unwrap_or(0.0);
     (f32::from(base) * (1.0 - transmission)).round() as u8
 }
@@ -2224,8 +2224,9 @@ pub fn render_package_scene_clip_mode(
                     } else {
                         255
                     };
-                    // N426: fold transmission into the blend alpha.
-                    (f32::from(base) * (1.0 - material.transmission())).round() as u8
+                    // N426/N434: fold transmission and volume into the blend alpha.
+                    let transmission = material.transmission().max(material.volume_factor());
+                    (f32::from(base) * (1.0 - transmission)).round() as u8
                 })
                 .unwrap_or(255),
             colors: if geometry.colors.len() >= geometry.positions.len()
@@ -3143,6 +3144,51 @@ mod tests {
     }
 
     #[test]
+    fn volume_thickness_fades_like_transmission() {
+        // N434: a thick volume reads opaque even without an explicit transmission.
+        let render = |thickness: f32, distance: f32| {
+            let model = Model {
+                source: "t".into(),
+                nodes: vec![Node {
+                    name: "n".into(),
+                    mesh: Some(0),
+                    ..Node::default()
+                }],
+                meshes: vec![mdc_model::Mesh {
+                    name: "q".into(),
+                    vertices: 4,
+                    indices: 6,
+                    material: Some(0),
+                    geometry: Some(quad_geometry()),
+                    ..mdc_model::Mesh::default()
+                }],
+                materials: vec![mdc_model::Material {
+                    name: "glass".into(),
+                    color: Some([255, 0, 0]),
+                    volume_thickness: Some(thickness),
+                    volume_attenuation_distance: Some(distance),
+                    ..mdc_model::Material::default()
+                }],
+                ..Model::default()
+            };
+            render_scene_at(&model, 0, 0.0, (16, 16), None, 0x0000).unwrap()
+        };
+        let at = |frame: &BakedTexture| {
+            u16::from_le_bytes([
+                frame.rgb565[(8 * 16 + 8) * 2],
+                frame.rgb565[(8 * 16 + 8) * 2 + 1],
+            ])
+        };
+        // thickness 0 keeps the surface opaque; a thick volume fades it.
+        let opaque = at(&render(0.0, 1.0));
+        let thick = at(&render(1.0, 1.0));
+        assert!(
+            opaque >> 11 > thick >> 11,
+            "thick volume fades: {opaque:#06x} -> {thick:#06x}"
+        );
+    }
+
+    #[test]
     fn transmission_fades_the_surface() {
         // N426: a transmissive material blends toward the background.
         let render = |transmission: f32| {
@@ -3165,6 +3211,8 @@ mod tests {
                     name: "glass".into(),
                     color: Some([255, 0, 0]),
                     transmission: Some(transmission),
+                    volume_thickness: None,
+                    volume_attenuation_distance: None,
                     ..mdc_model::Material::default()
                 }],
                 ..Model::default()

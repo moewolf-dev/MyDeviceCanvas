@@ -889,6 +889,8 @@ fn packaged_masked_texture_cuts_out_on_render() {
             sheen_color: None,
             sheen_roughness: None,
             transmission: None,
+            volume_thickness: None,
+            volume_attenuation_distance: None,
         }],
         lights: Vec::new(),
         skeletons: Vec::new(),
@@ -988,6 +990,8 @@ fn masked_material_cuts_out_transparent_texels() {
             sheen_color: None,
             sheen_roughness: None,
             transmission: None,
+            volume_thickness: None,
+            volume_attenuation_distance: None,
         }],
         ..Model::default()
     };
@@ -1660,6 +1664,8 @@ fn unlit_material_and_vertex_colours_render_on_the_device() {
                 sheen_color: None,
                 sheen_roughness: None,
                 transmission: None,
+                volume_thickness: None,
+                volume_attenuation_distance: None,
                 ..Material::default()
             }],
             ..Model::default()
@@ -1776,6 +1782,8 @@ fn occlusion_texture_darkens_the_shadowed_triangles() {
             sheen_color: None,
             sheen_roughness: None,
             transmission: None,
+            volume_thickness: None,
+            volume_attenuation_distance: None,
             ..Material::default()
         }],
         textures: vec![
@@ -1923,6 +1931,8 @@ fn normal_map_perturbs_per_pixel_shading() {
             sheen_color: None,
             sheen_roughness: None,
             transmission: None,
+            volume_thickness: None,
+            volume_attenuation_distance: None,
             ..Material::default()
         }],
         textures: vec![
@@ -3013,6 +3023,8 @@ fn clearcoat_adds_a_second_highlight() {
             sheen_color: None,
             sheen_roughness: None,
             transmission: None,
+            volume_thickness: None,
+            volume_attenuation_distance: None,
             ..Material::default()
         }],
         ..Model::default()
@@ -3159,6 +3171,8 @@ fn sheen_adds_a_rim_highlight() {
             sheen_color: sheen,
             sheen_roughness: Some(0.2),
             transmission: None,
+            volume_thickness: None,
+            volume_attenuation_distance: None,
             ..Material::default()
         }],
         ..Model::default()

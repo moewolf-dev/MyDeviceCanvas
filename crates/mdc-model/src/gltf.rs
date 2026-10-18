@@ -435,6 +435,16 @@ impl GltfImporter {
                 .and_then(|t| t.get("transmissionFactor"))
                 .and_then(Value::as_f64)
                 .map(|v| v.clamp(0.0, 1.0) as f32);
+            // N434: KHR_materials_volume.
+            let volume_ext = material_ext.and_then(|e| e.get("KHR_materials_volume"));
+            let volume_thickness = volume_ext
+                .and_then(|v| v.get("thicknessFactor"))
+                .and_then(Value::as_f64)
+                .map(|v| v.max(0.0) as f32);
+            let volume_attenuation_distance = volume_ext
+                .and_then(|v| v.get("attenuationDistance"))
+                .and_then(Value::as_f64)
+                .map(|v| v.max(0.0) as f32);
             // N379: normalTexture (tangent-space normal map).
             let normal_texture = material
                 .get("normalTexture")
@@ -525,6 +535,8 @@ impl GltfImporter {
                 sheen_color,
                 sheen_roughness,
                 transmission,
+                volume_thickness,
+                volume_attenuation_distance,
             });
         }
 

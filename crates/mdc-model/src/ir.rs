@@ -400,6 +400,12 @@ pub struct Material {
     /// N426: `KHR_materials_transmission` `transmissionFactor` (0..1; default 0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transmission: Option<f32>,
+    /// N434: `KHR_materials_volume` `thicknessFactor` (default 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_thickness: Option<f32>,
+    /// N434: `KHR_materials_volume` `attenuationDistance` (default infinite).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_attenuation_distance: Option<f32>,
 }
 
 /// N373: glTF `KHR_texture_transform`. `rotation` is in radians; the transform is
@@ -589,6 +595,17 @@ impl Material {
     /// N426: `KHR_materials_transmission` factor (0..1; default 0).
     pub fn transmission(&self) -> f32 {
         self.transmission.unwrap_or(0.0).clamp(0.0, 1.0)
+    }
+
+    /// N434: how opaque a volume reads, from `thicknessFactor` over
+    /// `attenuationDistance` (0 when either is unset).
+    pub fn volume_factor(&self) -> f32 {
+        let thickness = self.volume_thickness.unwrap_or(0.0).max(0.0);
+        let distance = self.volume_attenuation_distance.unwrap_or(0.0);
+        if thickness <= 0.0 || distance <= 0.0 {
+            return 0.0;
+        }
+        (thickness / distance).clamp(0.0, 1.0)
     }
 }
 

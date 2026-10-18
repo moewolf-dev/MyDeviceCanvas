@@ -4413,6 +4413,8 @@ mod tests {
                 sheen_color: None,
                 sheen_roughness: None,
                 transmission: None,
+                volume_thickness: None,
+                volume_attenuation_distance: None,
             }],
             lights: Vec::new(),
             skeletons: Vec::new(),
