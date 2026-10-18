@@ -1449,6 +1449,7 @@ fn cmd_render_package(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
     let mut sprite: u32 = 64;
     let mut clip: Option<String> = None;
     let mut time: f32 = 0.0;
+    let mut mip: usize = 0;
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -1458,6 +1459,8 @@ fn cmd_render_package(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
             // N429: select the animation clip by name at `--time` seconds.
             "--clip" => clip = iter.next().cloned(),
             "--time" => time = iter.next().and_then(|v| v.parse().ok()).unwrap_or(time),
+            // N439: render a stored mip level of the atlas instead of a frame.
+            "--mip" => mip = iter.next().and_then(|v| v.parse().ok()).unwrap_or(0),
             other => file = Some(other.to_string()),
         }
     }
@@ -1495,6 +1498,27 @@ fn cmd_render_package(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
         return Ok(());
     }
     let atlas = package.package.atlas.as_ref().expect("atlas checked");
+    // N439: a stored mip level renders its whole downsampled image.
+    if mip > 0 {
+        let level = atlas
+            .mips
+            .get(mip - 1)
+            .ok_or_else(|| format!("mip {mip} not present ({} levels)", atlas.mips.len()))?;
+        std::fs::write(
+            &out,
+            rgb565_frame_to_ppm(level.width, level.height, &level.rgb565),
+        )?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "package": file,
+                "mip": mip,
+                "size": format!("{}x{}", level.width, level.height),
+                "output": out,
+            }))?
+        );
+        return Ok(());
+    }
     let offset = atlas
         .frame_offset(frame)
         .ok_or_else(|| format!("frame {frame} out of range ({} frames)", atlas.frames))?;
@@ -3359,7 +3383,7 @@ config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] [--srgb] --out f.ppm|\
 motion <motion3.json> [--param ID] [--samples N]|\
-render-package <file.mdcpkg> [--frame N] [--clip NAME] [--time T] --out f.ppm|\
+render-package <file.mdcpkg> [--frame N] [--clip NAME] [--time T] [--mip N] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|\
 model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb>|verify <file.mdcpkg>|diff <a.mdcpkg> <b.mdcpkg>"
@@ -3641,6 +3665,55 @@ mod tests {
         let mut tampered = package.clone();
         tampered.manifest.checksum ^= 0xffff;
         assert!(!tampered.verify().valid, "a wrong checksum fails");
+    }
+
+    #[test]
+    fn render_package_mip_writes_a_level() {
+        // N439: a stored mip renders its whole downsampled image.
+        let source = mdc_bake::SpriteSource {
+            name: "s".into(),
+            image: {
+                let image = image::RgbImage::from_pixel(4, 4, image::Rgb([10, 20, 30]));
+                let mut out = Vec::new();
+                image
+                    .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                    .unwrap();
+                out
+            },
+        };
+        let package = mdc_bake::bake_to_package_mipped(
+            &[source],
+            &[mdc_model::MotionInfo {
+                name: "bake".into(),
+                channels: 1,
+                duration_sec: 0.1,
+                fps: 30.0,
+                fade_in_sec: 0.0,
+                fade_out_sec: 0.0,
+                looping: true,
+                curves: Vec::new(),
+            }],
+            (4, 4),
+            64,
+            &mdc_bake::BakeLimits::default(),
+            8,
+        )
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!("mdc-mip-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let pkg = dir.join("a.mdcpkg");
+        std::fs::write(&pkg, package.to_bytes().unwrap()).unwrap();
+        let out = dir.join("m1.ppm");
+        cmd_render_package(&[
+            pkg.to_string_lossy().into_owned(),
+            "--mip".into(),
+            "1".into(),
+            "--out".into(),
+            out.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        assert!(out.is_file());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
