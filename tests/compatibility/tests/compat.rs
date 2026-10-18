@@ -3514,6 +3514,89 @@ fn mirror_http_stream_pushes_device_frames() {
 }
 
 #[test]
+fn mirror_websocket_pushes_device_frames() {
+    // N500: `/ws` upgrades and then pushes one binary JPEG per mirrored frame.
+    use mdc_core::{ConnectionState, Session};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+    use std::io::{Read, Write};
+    use std::time::Duration;
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 8,
+        height: 4,
+        mirror: true,
+        mirror_fps: 15,
+        device_id: "sim-ws".into(),
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session.start_mirror("main", "full-frame", 15).unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    let mut http = mdc_mirror::HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+    let addr = http.local_addr().unwrap();
+    let mut client = std::net::TcpStream::connect(addr).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_millis(20)))
+        .unwrap();
+    client
+        .write_all(
+            b"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+              Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        )
+        .unwrap();
+
+    let mut response = Vec::new();
+    for _ in 0..3 {
+        for _ in 0..10 {
+            device.emit_mirror_frame().unwrap();
+            session.poll().unwrap();
+            if let Some(frame) = session.take_mirror_frame() {
+                http.publish(&mdc_mirror::ShadowFrame {
+                    width: frame.width,
+                    height: frame.height,
+                    generation: frame.frame_id,
+                    frame_id: frame.frame_id,
+                    pixels: &frame.bytes,
+                });
+                break;
+            }
+        }
+        for _ in 0..10 {
+            let _ = http.pump();
+            let mut buffer = [0u8; 8192];
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => response.extend_from_slice(&buffer[..n]),
+                Err(_) => std::thread::sleep(Duration::from_millis(2)),
+            }
+        }
+    }
+    let text = String::from_utf8_lossy(&response);
+    assert!(text.starts_with("HTTP/1.1 101"), "upgraded: {text:.40}");
+    assert!(
+        text.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+        "accept header"
+    );
+    // A binary message carrying a JPEG follows the handshake.
+    let body = response
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|i| i + 4)
+        .expect("handshake body");
+    let payload = &response[body..];
+    assert!(
+        payload.windows(2).any(|w| w == [0xFF, 0xD8]),
+        "a JPEG message arrived"
+    );
+    assert_eq!(http.ws_clients(), 1);
+}
+
+#[test]
 fn multi_mesh_scene_bakes_and_reaches_a_device() {
     use mdc_core::{ConnectionState, Session};
     use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};
@@ -3763,6 +3846,115 @@ fn scene_circle_and_line_edge_cases_do_not_panic() {
         Some(0),
         "empty circle draws nothing"
     );
+}
+
+#[test]
+fn scene_align_z_wrap_and_dash_render_deterministically() {
+    // N484/N485/N495/N497: the newer scene fields render together, stably.
+    use mdc_core::{ConnectionState, Session};
+    use mdc_protocol::SceneNode;
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 24,
+        height: 16,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+    let rect = |name: &str, color: &str, z: Option<i32>| SceneNode {
+        name: name.into(),
+        kind: "rect".into(),
+        rect: Some([0, 0, 8, 8]),
+        value: Some(color.into()),
+        value2: None,
+        opacity: None,
+        visible: None,
+        anim: None,
+        rotate: None,
+        blend: None,
+        align: None,
+        z,
+        wrap: None,
+        children: Vec::new(),
+    };
+    let scene = SceneNode {
+        name: "root".into(),
+        kind: "group".into(),
+        rect: None,
+        value: None,
+        value2: None,
+        opacity: None,
+        visible: None,
+        anim: None,
+        rotate: None,
+        blend: None,
+        align: None,
+        z: None,
+        wrap: None,
+        children: vec![
+            // z lifts green above red despite the document order.
+            rect("green", "#00FF00", Some(5)),
+            rect("red", "#FF0000", None),
+            SceneNode {
+                name: "label".into(),
+                kind: "text".into(),
+                rect: Some([0, 8, 24, 7]),
+                value: Some("hi".into()),
+                value2: None,
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: Some("center".into()),
+                z: None,
+                wrap: Some("none".into()),
+                children: Vec::new(),
+            },
+            SceneNode {
+                name: "rule".into(),
+                kind: "line".into(),
+                rect: Some([0, 15, 23, 15]),
+                value: Some("#FFFFFF".into()),
+                value2: Some("4".into()),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                children: Vec::new(),
+            },
+        ],
+    };
+    session.set_scene(scene).unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.render_scene());
+    // z: green is on top of red.
+    assert_eq!(device.pixel_rgb565(1, 1), Some(0x07E0));
+    // The dashed rule alternates painted and empty pixels.
+    let row: Vec<u16> = (0..24)
+        .map(|x| device.pixel_rgb565(x, 15).unwrap())
+        .collect();
+    assert!(row.iter().any(|v| *v != 0) && row.contains(&0), "dashed");
+    // The centred label drew on the text row.
+    assert!((0..24).any(|x| device.pixel_rgb565(x, 8).unwrap() != 0));
+    // Rendering is deterministic: a second pass matches the first.
+    let first: Vec<Option<u16>> = (0..24 * 16)
+        .map(|i| device.pixel_rgb565((i % 24) as u16, (i / 24) as u16))
+        .collect();
+    assert!(device.render_scene());
+    let second: Vec<Option<u16>> = (0..24 * 16)
+        .map(|i| device.pixel_rgb565((i % 24) as u16, (i / 24) as u16))
+        .collect();
+    assert_eq!(first, second, "rendering is deterministic");
 }
 
 #[test]
