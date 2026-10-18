@@ -67,9 +67,19 @@ fn glyph_columns(ch: u8) -> Option<[u8; 5]> {
         b'=' => 47,
         b'*' => 48,
         b'#' => 49,
+        // N494: more punctuation.
+        b'"' => 50,
+        b'\'' => 51,
+        b'%' => 52,
+        b'&' => 53,
+        b'@' => 54,
+        b';' => 55,
+        b'<' => 56,
+        b'>' => 57,
+        b'~' => 58,
         _ => return None,
     };
-    const FONT: [[u8; 5]; 50] = [
+    const FONT: [[u8; 5]; 59] = [
         [0x3e, 0x51, 0x49, 0x45, 0x3e],
         [0x00, 0x42, 0x7f, 0x40, 0x00],
         [0x42, 0x61, 0x51, 0x49, 0x46],
@@ -120,6 +130,16 @@ fn glyph_columns(ch: u8) -> Option<[u8; 5]> {
         [0x14, 0x14, 0x14, 0x14, 0x14],
         [0x14, 0x08, 0x3e, 0x08, 0x14],
         [0x14, 0x7f, 0x14, 0x7f, 0x14],
+        // N494: " ' % & @ ; < > ~
+        [0x03, 0x00, 0x03, 0x00, 0x00],
+        [0x03, 0x00, 0x00, 0x00, 0x00],
+        [0x63, 0x13, 0x08, 0x64, 0x63],
+        [0x36, 0x49, 0x55, 0x22, 0x50],
+        [0x3e, 0x41, 0x5d, 0x55, 0x3e],
+        [0x00, 0x56, 0x36, 0x00, 0x00],
+        [0x08, 0x14, 0x22, 0x41, 0x00],
+        [0x00, 0x41, 0x22, 0x14, 0x08],
+        [0x08, 0x04, 0x08, 0x10, 0x08],
     ];
     FONT.get(index).copied()
 }
@@ -3567,7 +3587,10 @@ mod tests {
         assert_ne!(glyph_columns(b'a'), glyph_columns(b'A'));
         assert!(glyph_columns(b'z').is_some());
         assert_eq!(glyph_columns(b' '), Some([0, 0, 0, 0, 0]));
-        assert!(glyph_columns(b'~').is_none());
+        // N494: the extended punctuation renders too.
+        for ch in "\"'%&@;<>~".bytes() {
+            assert!(glyph_columns(ch).is_some(), "missing {}", ch as char);
+        }
     }
 
     #[test]
