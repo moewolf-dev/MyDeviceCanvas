@@ -235,6 +235,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Resumable uploads (N478) | sim-verified (`begin_named`/`resume`) | n/a |
 | `scene-render --time` (N479) | sim-verified (animated frame) | n/a |
 | Additive blend (N480) | sim-verified (saturating add) | physical: pending |
+| Swift gestures (N483) | sim-verified (`isGesture`/`gestureKind` + smoke) | physical: pending |
+| Text align (N484) | sim-verified (left/center/right) | physical: pending |
+| Scene z-order (N485) | sim-verified (draw + hit order) | physical: pending |
+| Frame flip (N486) | sim-verified (`?flip=h|v`) | n/a |
+| `asset verify` (N487) | sim-verified (content re-hash) | n/a |
+| Gesture tuning (N488) | sim-verified (`set_gesture_config`) | n/a |
+| e-ink ghosting (N489) | sim-verified (partial refresh) | physical: pending |
+| Texture mip chains (N490) | sim-verified (`TextureBlob.mips`) | physical: pending |
 
 ## G03 sim exit
 

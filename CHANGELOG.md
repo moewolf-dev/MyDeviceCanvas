@@ -2,6 +2,21 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.61] — Swift gestures, text align, scene z-order, frame flip, asset verify, gesture tuning, e-ink ghosting, texture mips (N483–N492)
+
+### Added
+
+- Swift `MdcUiEvent.isGesture`/`gestureKind` plus a smoke check (N483)
+- scene `text` accepts `align: left|center|right` (N484)
+- scene nodes accept `z` for sibling draw order (and hit-testing) (N485)
+- `?flip=h|v|hv` mirrors served frames (N486)
+- `mdc asset verify <dir>` re-hashes stored entries (N487)
+- `Session::set_gesture_config`/`gesture_config` tune recognition thresholds (N488)
+- e-ink partial refreshes leave a faint ghost of the previous pixel (N489)
+- `TextureBlob.mips` plus `mip_texture_blob` and `mdc package --texture-mips N` (N490)
+- memory coverage for mipped texture packages (N491)
+
+
 ## [0.1.60] — Gesture events, scene rotate/additive, lowercase text, animation budget, resumable uploads (N473–N482)
 
 ### Added

@@ -69,6 +69,10 @@ A device that accepts a scene rasterizes it locally:
   `gradient` runs horizontally.
 - N480: `blend: "additive"` adds a `rect`/`gradient` to the framebuffer (saturating
   per channel) instead of covering it; the default is `source-over`.
+- N484: `align: "left" | "center" | "right"` positions each `text` line within the
+  rect width.
+- N485: `z` sets a sibling's draw order (higher draws on top; ties keep document
+  order). Hit-testing searches the highest `z` first.
 - `image` blits tightly packed RGB565 when `value` is `w*h` hex words (4 digits
   each, little-endian on the framebuffer). A short or malformed string draws nothing.
 - `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour.
