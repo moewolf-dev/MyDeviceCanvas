@@ -504,6 +504,7 @@ fn cmd_package(
     let mut dither: u8 = 0;
     let mut tangents = false;
     let mut variant: Option<String> = None;
+    let mut report = false;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -521,6 +522,8 @@ fn cmd_package(
             "--tangents" => tangents = true,
             // N433: pick a KHR_materials_variants set by name.
             "--variant" => variant = iter.next().cloned(),
+            // N458: print an extended compile report.
+            "--report" => report = true,
             other => out = Some(other.to_string()),
         }
     }
@@ -631,6 +634,46 @@ fn cmd_package(
     let bytes = package.to_bytes()?;
     let out = out.unwrap_or_else(|| format!("{model_path}.mdcpkg"));
     std::fs::write(&out, &bytes)?;
+    if report {
+        // N458: an extended compile report (texture/palette/mip detail).
+        let verification = package.verify();
+        let blobs = &package.package.texture_blobs;
+        let indexed = blobs.iter().filter(|b| b.is_indexed()).count();
+        let palette_entries: usize = blobs.iter().map(|b| b.palette.len()).sum();
+        let blob_bytes: usize = blobs.iter().map(|b| b.rgb565.len() + b.indices.len()).sum();
+        let mips = package
+            .package
+            .atlas
+            .as_ref()
+            .map(|a| a.mips.len())
+            .unwrap_or(0);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "board": opts.board,
+                "source": model_path,
+                "target": package.manifest.target,
+                "mode": package.manifest.mode,
+                "verified": verification.valid,
+                "checksum": verification.checksum,
+                "body_bytes": package.manifest.body_bytes,
+                "package_bytes": bytes.len(),
+                "nodes": package.package.nodes.len(),
+                "meshes": package.package.meshes.len(),
+                "materials": package.package.materials.len(),
+                "textures": package.package.textures.len(),
+                "texture_blobs": blobs.len(),
+                "indexed_textures": indexed,
+                "palette_entries": palette_entries,
+                "texture_blob_bytes": blob_bytes,
+                "atlas_mips": mips,
+                "animations": package.package.animations.len(),
+                "estimated_bytes": package.package.estimated_bytes,
+                "output": out,
+            }))?
+        );
+        return Ok(());
+    }
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
@@ -3456,7 +3499,7 @@ fn usage() {
          devices [--compact]|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--scale N] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
-package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents] [--variant NAME]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
+package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents] [--variant NAME] [--report]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] [--srgb] --out f.ppm|\
@@ -3860,6 +3903,38 @@ mod tests {
             mdc_bake::ShadeMode::Flat,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn package_report_prints_texture_detail() {
+        // N458: `--report` prints an extended compile summary.
+        let dir = std::env::temp_dir().join(format!("mdc-report-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("m.gltf");
+        std::fs::write(
+            &path,
+            br#"{"asset":{"version":"2.0"},
+                "nodes":[{"name":"root","mesh":0}],
+                "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+                "accessors":[{"count":4,"type":"VEC3"}]}"#,
+        )
+        .unwrap();
+        cmd_package(
+            &GlobalOpts {
+                sim: true,
+                board: "linux-virt".into(),
+                address: None,
+                port: None,
+            },
+            &path.to_string_lossy(),
+            &[
+                "--report".into(),
+                "--out".into(),
+                dir.join("a.mdcpkg").to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
