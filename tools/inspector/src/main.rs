@@ -111,6 +111,19 @@ fn heap_peak(count: u32, interval_ms: u64, size_kb: u64) -> serde_json::Value {
     })
 }
 
+/// N539: the one-line verdict a thresholded watch ends with.
+fn verdict_line(summary: &WatchSummary, alerts: &[String]) -> String {
+    serde_json::json!({
+        "kind": "verdict",
+        "samples": summary.samples,
+        "peak_bytes": summary.peak_bytes,
+        "diagnostics_total": summary.diagnostics_total,
+        "alerts": alerts,
+        "ok": alerts.is_empty(),
+    })
+    .to_string()
+}
+
 fn fresh_metrics() -> Result<String, Box<dyn std::error::Error>> {
     let (host, mut device) = FakeDevice::pair(BoardProfile::default());
     let mut session = Session::new(host);
@@ -292,20 +305,12 @@ fn main() {
                 ));
             }
         }
-        // N529: a JSON verdict makes the watch machine-checkable.
+        // N529: a JSON verdict makes the watch machine-checkable. N539: it is
+        // emitted as one JSONL record so the series stays line-oriented.
         let thresholded =
             flag_value("--max-peak-bytes").is_some() || flag_value("--max-diagnostics").is_some();
         if thresholded {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "samples": summary.samples,
-                    "peak_bytes": summary.peak_bytes,
-                    "diagnostics_total": summary.diagnostics_total,
-                    "alerts": alerts,
-                    "ok": alerts.is_empty(),
-                })
-            );
+            println!("{}", verdict_line(&summary, &alerts));
         }
         if !alerts.is_empty() {
             eprintln!("inspector alert: {}", alerts.join("; "));
@@ -394,6 +399,29 @@ mod tests {
         let summary = watch(1, 1, "default", 0, &mut out).unwrap();
         assert_eq!(summary.samples, 1);
         assert!(summary.peak_bytes > 0);
+    }
+
+    #[test]
+    fn verdict_line_is_one_jsonl_record() {
+        // N539: the verdict is a single line with the alert list.
+        let summary = WatchSummary {
+            samples: 4,
+            peak_bytes: 1024,
+            diagnostics_total: 7,
+        };
+        let line = verdict_line(&summary, &["peak 1024 over 1".to_string()]);
+        assert!(!line.contains('\n'), "one line");
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["kind"], "verdict");
+        assert_eq!(parsed["samples"], 4);
+        assert_eq!(parsed["peak_bytes"], 1024);
+        assert_eq!(parsed["ok"], false);
+        assert_eq!(parsed["alerts"].as_array().unwrap().len(), 1);
+        let ok = verdict_line(&summary, &[]);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&ok).unwrap()["ok"],
+            true
+        );
     }
 
     #[test]
