@@ -293,6 +293,16 @@ impl GestureTracker {
         }
     }
 
+    /// N488: replace the recognition thresholds.
+    pub fn set_config(&mut self, config: GestureConfig) {
+        self.config = config;
+    }
+
+    /// N488: the current thresholds.
+    pub fn config(&self) -> GestureConfig {
+        self.config
+    }
+
     /// Feed one input event; returns a gesture when it completes one.
     pub fn on_event(&mut self, event: &mdc_protocol::InputEvent, now_ms: u64) -> Option<Gesture> {
         match event.phase.as_str() {
@@ -1648,6 +1658,16 @@ impl<T: Transport> Session<T> {
                 manager.push_gesture(device_id, gesture);
             }
         }
+    }
+
+    /// N488: tune gesture recognition (tap/long-press/drag thresholds).
+    pub fn set_gesture_config(&mut self, config: GestureConfig) {
+        self.gestures.set_config(config);
+    }
+
+    /// N488: the current gesture thresholds.
+    pub fn gesture_config(&self) -> GestureConfig {
+        self.gestures.config()
     }
 
     /// N419: the highest OTA phase sent (0 none, 1 begin, 2 chunk, 3 confirm).
@@ -4741,6 +4761,68 @@ mod tests {
         };
         assert!(session.set_scene(scene(1)).is_ok(), "one key fits");
         assert_eq!(session.set_scene(scene(2)), Err(CoreError::TooLarge));
+    }
+
+    #[test]
+    fn gesture_config_tunes_the_tap_window() {
+        // N488: a short tap window rejects a slow press.
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        let manager = std::sync::Arc::new(std::sync::Mutex::new(DeviceManager::new()));
+        session.set_manager(manager.clone());
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        session.set_gesture_config(GestureConfig {
+            tap_max_ms: 10,
+            long_press_ms: 5_000,
+            drag_threshold: 6,
+        });
+        assert_eq!(session.gesture_config().tap_max_ms, 10);
+        let input = |phase: &str| mdc_protocol::InputEvent {
+            surface_id: "main".into(),
+            pointer_id: 1,
+            phase: phase.into(),
+            x: 1,
+            y: 1,
+            node: None,
+        };
+        // Poll at t=0 (down), then advance past the tap window before "up".
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Input,
+                    flags: 0,
+                    request_id: 1,
+                    payload: encode_control(&input("down")).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        session.tick(500).unwrap();
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Input,
+                    flags: 0,
+                    request_id: 2,
+                    payload: encode_control(&input("up")).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        let events: Vec<ManagerEvent> = manager.lock().unwrap().drain_events().collect();
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ManagerEvent::Gesture { .. })),
+            "a slow press is not a tap"
+        );
     }
 
     #[test]
