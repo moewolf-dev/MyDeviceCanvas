@@ -1055,8 +1055,8 @@ struct HttpClient {
     stream_part: Vec<u8>,
     /// A long-lived multipart consumer rather than a one-shot request.
     streaming: bool,
-    /// N337: this stream serves JPEG parts.
-    stream_jpeg: bool,
+    /// N337/N453: the streamed part format.
+    stream_format: StreamFormat,
     /// N356: integer downscale applied to each streamed part (1 = full size).
     stream_scale: u16,
     /// The peer closed or errored; dropped on the next pump.
@@ -1069,7 +1069,15 @@ struct HttpClient {
 const MULTIPART_BOUNDARY: &str = "mdcframe";
 
 /// The path a request for a live stream uses.
-const STREAM_PATHS: [&str; 3] = ["/stream", "/stream.bmp", "/stream.jpg"];
+const STREAM_PATHS: [&str; 4] = ["/stream", "/stream.bmp", "/stream.jpg", "/stream.png"];
+
+/// N453: the image format of each multipart stream part.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StreamFormat {
+    Bmp,
+    Jpeg,
+    Png,
+}
 
 fn multipart_headers() -> Vec<u8> {
     format!(
@@ -1098,8 +1106,8 @@ fn multipart_part(content_type: &str, body: &[u8]) -> Vec<u8> {
 enum Served {
     Bytes(Vec<u8>),
     Multipart {
-        /// N337: serve JPEG parts instead of BMP.
-        jpeg: bool,
+        /// N337/N453: the part format (BMP, JPEG, or PNG).
+        format: StreamFormat,
         /// N356: integer downscale for each streamed part (1..=8).
         scale: u16,
     },
@@ -1140,23 +1148,14 @@ impl HttpMirrorServer {
         }
         self.frames = self.frames.saturating_add(1);
         if let Some(frame) = self.last.as_ref() {
-            let jpeg_parts = stream_part_for(frame, true, 1);
-            let bmp_parts = stream_part_for(frame, false, 1);
             for client in &mut self.clients {
                 if !client.streaming {
                     continue;
                 }
                 if client.stream_part.is_empty() {
                     // N356: honour the client's `?scale=` on the live stream.
-                    client.stream_part = if client.stream_scale <= 1 {
-                        if client.stream_jpeg {
-                            jpeg_parts.clone()
-                        } else {
-                            bmp_parts.clone()
-                        }
-                    } else {
-                        stream_part_for(frame, client.stream_jpeg, client.stream_scale)
-                    };
+                    client.stream_part =
+                        stream_part_for(frame, client.stream_format, client.stream_scale);
                 } else {
                     client.clipped = client.clipped.saturating_add(1);
                 }
@@ -1176,7 +1175,7 @@ impl HttpMirrorServer {
                         stream_headers: Vec::new(),
                         stream_part: Vec::new(),
                         streaming: false,
-                        stream_jpeg: false,
+                        stream_format: StreamFormat::Bmp,
                         stream_scale: 1,
                         dead: false,
                         clipped: 0,
@@ -1227,8 +1226,8 @@ impl HttpMirrorServer {
                         } else {
                             match respond(last, &path, &query) {
                                 Served::Bytes(bytes) => client.response = Some(bytes),
-                                Served::Multipart { jpeg, scale } => {
-                                    begin_stream(client, last, jpeg, scale)
+                                Served::Multipart { format, scale } => {
+                                    begin_stream(client, last, format, scale)
                                 }
                             }
                         }
@@ -1292,18 +1291,23 @@ impl HttpMirrorServer {
 
 /// N313: start a live multipart stream for a client, seeding it with the newest
 /// frame if one is already cached. N337: `jpeg` selects JPEG parts.
-fn begin_stream(client: &mut HttpClient, last: Option<&ServedFrame>, jpeg: bool, scale: u16) {
+fn begin_stream(
+    client: &mut HttpClient,
+    last: Option<&ServedFrame>,
+    format: StreamFormat,
+    scale: u16,
+) {
     client.streaming = true;
-    client.stream_jpeg = jpeg;
+    client.stream_format = format;
     client.stream_scale = scale.clamp(1, 8);
     client.stream_headers = multipart_headers();
     client.stream_part = last
-        .map(|frame| stream_part_for(frame, jpeg, client.stream_scale))
+        .map(|frame| stream_part_for(frame, format, client.stream_scale))
         .unwrap_or_default();
 }
 
 /// N356: build a multipart part from the raw frame at an integer downscale.
-fn stream_part_for(frame: &ServedFrame, jpeg: bool, scale: u16) -> Vec<u8> {
+fn stream_part_for(frame: &ServedFrame, format: StreamFormat, scale: u16) -> Vec<u8> {
     let (width, height, raw) = if scale <= 1 {
         (
             frame.width,
@@ -1314,10 +1318,10 @@ fn stream_part_for(frame: &ServedFrame, jpeg: bool, scale: u16) -> Vec<u8> {
         let (w, h, raw) = downscale_bgra(frame.width, frame.height, &frame.bgra, scale);
         (w, h, std::borrow::Cow::Owned(raw))
     };
-    if jpeg {
-        multipart_part("image/jpeg", &encode_jpeg(width, height, &raw, 80))
-    } else {
-        multipart_part("image/bmp", &encode_bmp(width, height, &raw))
+    match format {
+        StreamFormat::Jpeg => multipart_part("image/jpeg", &encode_jpeg(width, height, &raw, 80)),
+        StreamFormat::Png => multipart_part("image/png", &encode_png(width, height, &raw)),
+        StreamFormat::Bmp => multipart_part("image/bmp", &encode_bmp(width, height, &raw)),
     }
 }
 
@@ -1433,10 +1437,12 @@ fn respond(last: Option<&ServedFrame>, path: &str, query: &str) -> Served {
             .and_then(|v| v.parse::<u16>().ok())
             .unwrap_or(1)
             .clamp(1, 8);
-        return Served::Multipart {
-            jpeg: path == "/stream.jpg",
-            scale,
+        let format = match path {
+            "/stream.jpg" => StreamFormat::Jpeg,
+            "/stream.png" => StreamFormat::Png,
+            _ => StreamFormat::Bmp,
         };
+        return Served::Multipart { format, scale };
     }
     Served::Bytes(match path {
         "/" | "/index.html" => simple_response(
@@ -2232,5 +2238,35 @@ mod tests {
             .expect("BMP part");
         let width = u32::from_le_bytes(response[start + 18..start + 22].try_into().unwrap());
         assert_eq!(width, 1, "the streamed part is downscaled");
+    }
+
+    #[test]
+    fn http_stream_png_serves_png_parts() {
+        // N453: `/stream.png` streams PNG parts.
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(10)))
+            .unwrap();
+        client
+            .write_all(b"GET /stream.png HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+        let pixels = vec![0x40u8; 2 * 2 * 4];
+        server.publish(&ShadowFrame {
+            width: 2,
+            height: 2,
+            generation: 1,
+            frame_id: 1,
+            pixels: &pixels,
+        });
+        let mut response = Vec::new();
+        drain(&mut server, &mut client, &mut response);
+        let text = String::from_utf8_lossy(&response);
+        assert!(text.contains("Content-Type: image/png"), "PNG part header");
+        assert!(
+            response.windows(8).any(|w| w == b"\x89PNG\r\n\x1a\n"),
+            "PNG signature present"
+        );
     }
 }
