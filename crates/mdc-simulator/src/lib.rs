@@ -751,6 +751,10 @@ fn hit_test_node(
     x: u16,
     y: u16,
 ) -> Option<String> {
+    // N450: a hidden node (and its children) is not hit-testable.
+    if !node.is_visible() {
+        return None;
+    }
     let drawable = !matches!(node.kind.as_str(), "group" | "clip");
     let child_transform = if drawable {
         transform
@@ -795,6 +799,10 @@ fn fill_scene(
     transform: SceneTransform,
     drew: &mut bool,
 ) {
+    // N450: a hidden node (and its children) is not drawn.
+    if !node.is_visible() {
+        return;
+    }
     let drawable = matches!(
         node.kind.as_str(),
         "rect" | "text" | "image" | "sprite" | "circle" | "line" | "gradient" | "rounded-rect"
@@ -2913,6 +2921,7 @@ mod tests {
             children: Vec::new(),
             value: value.map(str::to_string),
             opacity: None,
+            visible: None,
             value2: None,
         };
         let mut root = leaf("root", "rect", None);
@@ -3243,6 +3252,7 @@ mod tests {
             children: Vec::new(),
             value: Some(color.into()),
             opacity: None,
+            visible: None,
             value2: None,
         };
         // Background red covers all; a green child on top; a third clipped.
@@ -3256,6 +3266,7 @@ mod tests {
             ],
             value: Some("#FF0000".into()),
             opacity: None,
+            visible: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3296,6 +3307,7 @@ mod tests {
                     value: Some("H".into()),
                     children: Vec::new(),
                     opacity: None,
+                    visible: None,
                     value2: None,
                 },
                 SceneNode {
@@ -3305,10 +3317,12 @@ mod tests {
                     value: Some("07e0".into()),
                     children: Vec::new(),
                     opacity: None,
+                    visible: None,
                     value2: None,
                 },
             ],
             opacity: None,
+            visible: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3350,6 +3364,7 @@ mod tests {
             value: Some("H".into()),
             children: Vec::new(),
             opacity: None,
+            visible: None,
             value2: None,
         };
         // rect 0×0 -> scale 1, so (1,1) stays clear on the fresh framebuffer.
@@ -3415,6 +3430,7 @@ mod tests {
             value: Some("hello world".into()),
             children: Vec::new(),
             opacity: None,
+            visible: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3443,6 +3459,7 @@ mod tests {
             value: Some(color.into()),
             opacity,
             value2: None,
+            visible: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -3451,6 +3468,7 @@ mod tests {
             rect: None,
             value: None,
             opacity: None,
+            visible: None,
             children: vec![
                 rect("bg", "#FFFFFF", None),
                 rect("fg", "#FF0000", Some(128)),
@@ -3502,6 +3520,7 @@ mod tests {
             value: Some("#FF0000".into()),
             value2: Some("#0000FF".into()),
             opacity: None,
+            visible: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -3512,6 +3531,53 @@ mod tests {
             (mid >> 11) > 0 && (mid & 0x1f) > 0,
             "mid blended: {mid:#06x}"
         );
+    }
+
+    #[test]
+    fn hidden_scene_nodes_are_skipped() {
+        use mdc_protocol::SceneNode;
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 8,
+            height: 8,
+            ..BoardProfile::default()
+        });
+        device.scene = Some(SceneNode {
+            name: "root".into(),
+            kind: "group".into(),
+            rect: None,
+            value: None,
+            value2: None,
+            opacity: None,
+            visible: None,
+            children: vec![
+                SceneNode {
+                    name: "hidden".into(),
+                    kind: "rect".into(),
+                    rect: Some([0, 0, 8, 8]),
+                    value: Some("#FFFFFF".into()),
+                    value2: None,
+                    opacity: None,
+                    visible: Some(false),
+                    children: Vec::new(),
+                },
+                SceneNode {
+                    name: "shown".into(),
+                    kind: "rect".into(),
+                    rect: Some([0, 0, 4, 4]),
+                    value: Some("#00FF00".into()),
+                    value2: None,
+                    opacity: None,
+                    visible: None,
+                    children: Vec::new(),
+                },
+            ],
+        });
+        assert!(device.render_scene());
+        // The hidden full-surface rect is skipped; the shown 4x4 rect is drawn.
+        assert_eq!(device.pixel_rgb565(0, 0), Some(0x07E0), "shown rect drawn");
+        assert_eq!(device.pixel_rgb565(7, 7), Some(0), "hidden rect skipped");
+        assert_eq!(device.hit_test(7, 7), None, "hidden node not hit");
+        assert_eq!(device.hit_test(1, 1).as_deref(), Some("shown"));
     }
 
     #[test]
@@ -3529,6 +3595,7 @@ mod tests {
             value: Some("#FFFFFF".into()),
             value2: None,
             opacity: None,
+            visible: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -3538,6 +3605,7 @@ mod tests {
             value: None,
             value2: None,
             opacity: None,
+            visible: None,
             children: vec![rect("back", [0, 0, 8, 8]), rect("front", [2, 2, 4, 4])],
         });
         // The overlapping topmost child wins.
@@ -3563,6 +3631,7 @@ mod tests {
             value: Some("#FFFFFF".into()),
             value2: None,
             opacity: None,
+            visible: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -3572,6 +3641,7 @@ mod tests {
             value: None,
             value2: None,
             opacity: None,
+            visible: None,
             // The child fills 8x8 relative to the clip origin, so it would cover
             // everything without the clip rect.
             children: vec![fill([0, 0, 8, 8])],
@@ -3607,6 +3677,7 @@ mod tests {
             value: Some("#FFFFFF".into()),
             value2: Some("4".into()),
             opacity: None,
+            visible: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -3661,6 +3732,7 @@ mod tests {
             children: Vec::new(),
             value: Some(value.into()),
             opacity: None,
+            visible: None,
             value2: None,
         };
         let scene = SceneNode {
@@ -3673,6 +3745,7 @@ mod tests {
                 node("diag", "line", [0, 15, 15, 0], "#00FF00"),
             ],
             opacity: None,
+            visible: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3708,6 +3781,7 @@ mod tests {
             children: Vec::new(),
             value: Some(color.into()),
             opacity: None,
+            visible: None,
             value2: None,
         };
         // Group offset (4, 2) and 2× scale: [0,0,2,2] red -> [4,2,4,4].
@@ -3718,6 +3792,7 @@ mod tests {
             children: vec![rect("bg", [0, 0, 2, 2], "#FF0000")],
             value: None,
             opacity: None,
+            visible: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3794,6 +3869,7 @@ mod tests {
                 children: Vec::new(),
                 value: Some("#FFFFFF".into()),
                 opacity: None,
+                visible: None,
                 value2: None,
             })
             .unwrap();
@@ -3946,6 +4022,7 @@ mod tests {
                 children: Vec::new(),
                 value: Some("0".into()),
                 opacity: None,
+                visible: None,
                 value2: None,
             })
             .unwrap();
@@ -4096,6 +4173,7 @@ mod tests {
                 children: Vec::new(),
                 value: Some("#0000FF".into()),
                 opacity: None,
+                visible: None,
                 value2: None,
             })
             .unwrap();
@@ -4499,6 +4577,7 @@ mod tests {
                 children: Vec::new(),
                 value: Some("#000000".into()),
                 opacity: None,
+                visible: None,
                 value2: None,
             })
             .unwrap();
@@ -4524,6 +4603,7 @@ mod tests {
                 children: Vec::new(),
                 value: Some("#FF0000".into()),
                 opacity: None,
+                visible: None,
                 value2: None,
             })
             .unwrap();

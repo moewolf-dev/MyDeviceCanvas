@@ -60,6 +60,8 @@ A device that accepts a scene rasterizes it locally:
 - N368: `clip` treats `rect` as a scissor: its children are offset by the rect's
   origin (not scaled) but only pixels inside the rect are composited, so children
   extending past it are cut off. Nesting is supported.
+- N450: `visible: false` hides a node and its children from drawing and hit-testing
+  (`true`/absent is visible).
 - `image` blits tightly packed RGB565 when `value` is `w*h` hex words (4 digits
   each, little-endian on the framebuffer). A short or malformed string draws nothing.
 - `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour.

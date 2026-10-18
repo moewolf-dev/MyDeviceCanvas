@@ -477,6 +477,10 @@ pub struct SceneNode {
     /// N338: source opacity for rasterised kinds (0..=255; `None` = opaque).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<u8>,
+    /// N450: `Some(false)` hides the node and its children from drawing and
+    /// hit-testing (`None` = visible).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible: Option<bool>,
 }
 /// N417: the default scene limits used by [`SceneNode::lint`] (matching a typical
 /// `SceneCapability`).
@@ -494,6 +498,11 @@ pub struct SceneLint {
 }
 
 impl SceneNode {
+    /// N450: whether the node is visible (default true).
+    pub fn is_visible(&self) -> bool {
+        self.visible.unwrap_or(true)
+    }
+
     /// N417: lint the scene tree (unknown kinds, missing geometry/values, zero
     /// extents, duplicate names, and capability limits).
     pub fn lint(&self) -> SceneLint {
@@ -2056,10 +2065,12 @@ mod tests {
                     children: Vec::new(),
                     value: Some("hi".into()),
                     opacity: None,
+                    visible: None,
                     value2: None,
                 }],
                 value: None,
                 opacity: None,
+                visible: None,
                 value2: None,
             }),
         }
@@ -2074,6 +2085,7 @@ mod tests {
             children: Vec::new(),
             value: Some(value.into()),
             opacity: None,
+            visible: None,
             value2: None,
         };
         // #RGB expands each nibble.
@@ -2096,6 +2108,7 @@ mod tests {
             children: Vec::new(),
             value: Some("#FF0000".into()),
             opacity: None,
+            visible: None,
             value2: None,
         };
         assert_eq!(node.color_rgb565(), 0xF800);
@@ -2107,6 +2120,7 @@ mod tests {
                 children: Vec::new(),
                 value: None,
                 opacity: None,
+                visible: None,
                 value2: None,
             }
             .color_rgb565(),
