@@ -734,7 +734,16 @@ fn fill_circle(pixels: &mut [u8], width: u32, height: u32, rect: [u16; 4], color
 }
 
 /// N157: Bresenham line from `rect[0..2]` to `rect[2..4]`, clipped to bounds.
-fn draw_line(pixels: &mut [u8], width: u32, height: u32, rect: [u16; 4], color: u16, alpha: u8) {
+fn draw_line(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    rect: [u16; 4],
+    color: u16,
+    alpha: u8,
+    // N497: 0 draws a solid line; otherwise this is the dash length in pixels.
+    dash: u16,
+) {
     let (mut x0, mut y0) = (i64::from(rect[0]), i64::from(rect[1]));
     let (x1, y1) = (i64::from(rect[2]), i64::from(rect[3]));
     let dx = (x1 - x0).abs();
@@ -742,11 +751,16 @@ fn draw_line(pixels: &mut [u8], width: u32, height: u32, rect: [u16; 4], color: 
     let dy = -(y1 - y0).abs();
     let sy = if y0 < y1 { 1 } else { -1 };
     let mut err = dx + dy;
+    let mut step: u32 = 0;
     loop {
-        if x0 >= 0 && y0 >= 0 && (x0 as u32) < width && (y0 as u32) < height {
+        // N497: in a dashed line, only the first `dash` pixels of each period
+        // are painted.
+        let paint = dash == 0 || step % (2 * u32::from(dash)) < u32::from(dash);
+        if paint && x0 >= 0 && y0 >= 0 && (x0 as u32) < width && (y0 as u32) < height {
             let index = ((y0 as u32 * width + x0 as u32) * 2) as usize;
             put_pixel(pixels, index, color, alpha);
         }
+        step = step.saturating_add(1);
         if x0 == x1 && y0 == y1 {
             break;
         }
@@ -1048,6 +1062,12 @@ fn fill_scene(
         }
     } else if node.kind == "line" {
         if let Some(rect) = rect {
+            // N497: `value2` is an optional dash length.
+            let dash = node
+                .value2
+                .as_deref()
+                .and_then(|v| v.trim().parse::<u16>().ok())
+                .unwrap_or(0);
             draw_line(
                 pixels,
                 width,
@@ -1055,6 +1075,7 @@ fn fill_scene(
                 transform.apply(rect),
                 node.color_rgb565(),
                 alpha,
+                dash,
             );
             *drew = true;
         }
@@ -3925,6 +3946,50 @@ mod tests {
         assert!(
             ((green >> 5) & 0x3f) > 8 && green >> 11 < 8,
             "green on top: {green:#06x}"
+        );
+    }
+
+    #[test]
+    fn dashed_lines_leave_gaps() {
+        // N497: a dash length paints the first pixels of each period.
+        use mdc_protocol::SceneNode;
+        let lit = |dash: Option<&str>| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 16,
+                height: 1,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "rule".into(),
+                kind: "line".into(),
+                rect: Some([0, 0, 15, 0]),
+                value: Some("#FFFFFF".into()),
+                value2: dash.map(str::to_string),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                children: Vec::new(),
+            });
+            assert!(device.render_scene());
+            (0..16u16)
+                .map(|x| device.pixel_rgb565(x, 0).unwrap() != 0)
+                .collect::<Vec<_>>()
+        };
+        let solid = lit(None);
+        assert!(solid.iter().all(|v| *v), "a solid line paints every pixel");
+        let dashed = lit(Some("2"));
+        assert_eq!(
+            dashed,
+            vec![
+                true, true, false, false, true, true, false, false, true, true, false, false, true,
+                true, false, false
+            ],
+            "dash length 2 leaves 2-pixel gaps"
         );
     }
 
