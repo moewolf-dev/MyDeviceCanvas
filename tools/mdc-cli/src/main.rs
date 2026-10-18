@@ -1755,6 +1755,8 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
     let mut quality: u8 = 80;
     let mut scale: u32 = 1;
     let mut sequence = false;
+    // N496: `h`/`v`/`hv` mirror the written frames.
+    let mut flip = String::new();
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -1778,6 +1780,8 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
             "--scale" => scale = iter.next().and_then(|v| v.parse().ok()).unwrap_or(scale),
             // N470: write numbered frames instead of overwriting one file.
             "--sequence" => sequence = true,
+            // N496: mirror the written frames horizontally/vertically.
+            "--flip" => flip = iter.next().cloned().unwrap_or(flip),
             _ => {}
         }
     }
@@ -1903,6 +1907,19 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
                 frame.bytes.as_slice(),
             ),
         };
+        // N496: an optional mirror for the written frames.
+        let flipped = if flip.contains('h') || flip.contains('v') {
+            Some(mdc_mirror::flip_bgra(
+                out_w as u16,
+                out_h as u16,
+                out_bytes,
+                flip.contains('h'),
+                flip.contains('v'),
+            ))
+        } else {
+            None
+        };
+        let out_bytes = flipped.as_deref().unwrap_or(out_bytes);
         let shadow = |generation: u64| mdc_mirror::ShadowFrame {
             width: frame.width,
             height: frame.height,
@@ -3594,7 +3611,7 @@ fn usage() {
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices [--compact]|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
-authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--scale N] [--sequence] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
+authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--scale N] [--sequence] [--flip h/v] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents] [--variant NAME] [--report] [--texture-mips N]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--mip-linear] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
@@ -5087,6 +5104,37 @@ mod tests {
             "unexpected PPM header"
         );
         assert!(written.len() > 14);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mirror_command_accepts_a_flip_flag() {
+        // N496: `--flip h` mirrors the written frame (same geometry, and the
+        // flag is accepted end-to-end).
+        let dir = std::env::temp_dir().join(format!("mdc-cli-flip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let opts = GlobalOpts {
+            sim: true,
+            address: None,
+            port: None,
+            board: "linux-virt".into(),
+        };
+        let extra = vec![
+            "--frames".to_string(),
+            "1".to_string(),
+            "--flip".to_string(),
+            "hv".to_string(),
+            "--scale".to_string(),
+            "4".to_string(),
+            "--write-dir".to_string(),
+            dir.to_string_lossy().into_owned(),
+        ];
+        cmd_mirror(&opts, &extra).unwrap();
+        let written = std::fs::read(dir.join("frame.ppm")).unwrap();
+        assert!(
+            written.starts_with(b"P6\n200 120\n255\n"),
+            "flipped+scaled header"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

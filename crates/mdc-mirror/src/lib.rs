@@ -1454,7 +1454,13 @@ fn scaled_frame<'a>(frame: &'a ServedFrame, query: &str) -> (u16, u16, std::borr
 }
 
 /// N486: mirror a BGRA frame horizontally and/or vertically.
-fn flip_bgra(width: u16, height: u16, bytes: &[u8], horizontal: bool, vertical: bool) -> Vec<u8> {
+pub fn flip_bgra(
+    width: u16,
+    height: u16,
+    bytes: &[u8],
+    horizontal: bool,
+    vertical: bool,
+) -> Vec<u8> {
     let (w, h) = (usize::from(width), usize::from(height));
     let mut out = vec![0u8; bytes.len()];
     for y in 0..h {
@@ -2243,6 +2249,36 @@ mod tests {
         // The JPEG endpoint still serves with a quality hint.
         let jpg = http_get(&mut server, "/frame.jpg?quality=20");
         assert!(jpg.windows(2).any(|w| w == [0xFF, 0xD8]), "JPEG body");
+    }
+
+    #[test]
+    fn http_flip_query_mirrors_the_frame() {
+        // N486: `?flip=h` swaps the columns of the served frame.
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        let pixels = vec![1u8, 2, 3, 255, 4, 5, 6, 255]; // 2x1 BGRA
+        server.publish(&ShadowFrame {
+            width: 2,
+            height: 1,
+            generation: 1,
+            frame_id: 1,
+            pixels: &pixels,
+        });
+        let body = |response: &[u8]| {
+            let start = response
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .expect("HTTP body")
+                + 4;
+            response[start..].to_vec()
+        };
+        let plain = body(&http_get(&mut server, "/frame.ppm"));
+        let flipped = body(&http_get(&mut server, "/frame.ppm?flip=h"));
+        let header = b"P6\n2 1\n255\n".len();
+        assert_eq!(&flipped[header..header + 3], &plain[header + 3..header + 6]);
+        assert_eq!(&flipped[header + 3..header + 6], &plain[header..header + 3]);
+        // A vertical flip of a single row is a no-op.
+        let vflip = body(&http_get(&mut server, "/frame.ppm?flip=v"));
+        assert_eq!(&vflip[header..], &plain[header..]);
     }
 
     #[test]
