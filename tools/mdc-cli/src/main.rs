@@ -1776,6 +1776,8 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
     let mut sequence = false;
     // N496: `h`/`v`/`hv` mirror the written frames.
     let mut flip = String::new();
+    // N510: write a JSON manifest describing the recorded sequence.
+    let mut manifest: Option<String> = None;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -1801,6 +1803,8 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
             "--sequence" => sequence = true,
             // N496: mirror the written frames horizontally/vertically.
             "--flip" => flip = iter.next().cloned().unwrap_or(flip),
+            // N510: write a manifest of the recorded frames.
+            "--manifest" => manifest = iter.next().cloned(),
             _ => {}
         }
     }
@@ -1872,6 +1876,9 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
     let mut frames_seen = 0u64;
     let mut paced_deferred = 0u64;
     let mut paced_dropped = 0u64;
+    // N510: the sequence actually written to disk.
+    let mut written: Vec<String> = Vec::new();
+    let mut last_dims = (0u32, 0u32);
     for index in 0..frames {
         // Each loop step models one source frame at `source_fps`; the device
         // clock advances so device-side animation keeps moving.
@@ -1939,6 +1946,7 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
             None
         };
         let out_bytes = flipped.as_deref().unwrap_or(out_bytes);
+        last_dims = (out_w, out_h);
         let shadow = |generation: u64| mdc_mirror::ShadowFrame {
             width: frame.width,
             height: frame.height,
@@ -1967,21 +1975,25 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
         if let Some(dir) = &ppm_dir {
             let ppm = mdc_mirror::encode_ppm(out_w as u16, out_h as u16, out_bytes);
             std::fs::write(dir.join(name("ppm")), ppm)?;
+            written.push(name("ppm"));
         }
         if let Some(dir) = &bmp_dir {
             let bmp = mdc_mirror::encode_bmp(out_w as u16, out_h as u16, out_bytes);
             std::fs::write(dir.join(name("bmp")), bmp)?;
+            written.push(name("bmp"));
         }
         if let Some(dir) = &png_dir {
             // N328: PNG for a smaller OBS image source.
             let png = mdc_mirror::encode_png(out_w as u16, out_h as u16, out_bytes);
             std::fs::write(dir.join(name("png")), png)?;
+            written.push(name("png"));
         }
         if let Some(dir) = &jpg_dir {
             // N336/N346: baseline JPEG, the smallest OBS image source.
             let jpg =
                 mdc_mirror::encode_jpeg(out_w as u16, out_h as u16, out_bytes, quality.max(1));
             std::fs::write(dir.join(name("jpg")), jpg)?;
+            written.push(name("jpg"));
         }
         if let Some(server) = server.as_mut() {
             let _ = server.accept_pending();
@@ -1992,6 +2004,22 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
             server.publish(&shadow(frames_seen));
             let _ = server.pump();
         }
+    }
+    // N510: a manifest makes a recorded sequence reproducible.
+    if let Some(path) = &manifest {
+        let manifest_json = serde_json::json!({
+            "board": opts.board,
+            "format": format,
+            "scale": scale,
+            "flip": flip,
+            "source_fps": source_fps,
+            "frames_requested": frames,
+            "frames_written": written.len(),
+            "width": last_dims.0,
+            "height": last_dims.1,
+            "files": written,
+        });
+        std::fs::write(path, serde_json::to_string_pretty(&manifest_json)?)?;
     }
     let stats = session.mirror_stats();
     let out = serde_json::json!({
@@ -2014,9 +2042,54 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
         // N507: control frames handled on the WebSocket mirror.
         "ws_pings": http_server.as_ref().map(|s| s.ws_pings()),
         "ws_closes": http_server.as_ref().map(|s| s.ws_closes()),
+        // N510: the recorded sequence manifest, when requested.
+        "manifest": manifest,
+        "frames_written": written.len(),
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
+}
+
+/// N510: record a numbered frame sequence plus a manifest. A thin wrapper over
+/// `mirror --sequence` with recording-oriented defaults.
+fn cmd_record(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut frames = "30".to_string();
+    let mut fps = "10".to_string();
+    let mut dir = "mdc-record".to_string();
+    let mut format = "ppm".to_string();
+    let mut scale = "1".to_string();
+    let mut iter = extra.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--frames" => frames = iter.next().cloned().unwrap_or(frames),
+            "--fps" => fps = iter.next().cloned().unwrap_or(fps),
+            "--dir" => dir = iter.next().cloned().unwrap_or(dir),
+            "--format" => format = iter.next().cloned().unwrap_or(format),
+            "--scale" => scale = iter.next().cloned().unwrap_or(scale),
+            _ => {}
+        }
+    }
+    let dir = PathBuf::from(dir);
+    std::fs::create_dir_all(&dir)?;
+    let manifest = dir.join("manifest.json");
+    let args = vec![
+        "--frames".to_string(),
+        frames,
+        "--source-fps".to_string(),
+        fps.clone(),
+        "--max-fps".to_string(),
+        fps,
+        "--format".to_string(),
+        format,
+        "--scale".to_string(),
+        scale,
+        "--sequence".to_string(),
+        "--write-dir".to_string(),
+        dir.to_string_lossy().into_owned(),
+        "--manifest".to_string(),
+        manifest.to_string_lossy().into_owned(),
+    ];
+    cmd_mirror(opts, &args)
 }
 
 /// N316: read the device diagnostics channel (metrics + boot info) and print it.
@@ -3642,7 +3715,7 @@ fn usage() {
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices [--compact]|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
-authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--scale N] [--sequence] [--flip h/v] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
+authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--scale N] [--sequence] [--flip h/v] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|record [--frames N] [--fps N] [--dir DIR] [--format ppm|bmp|png|jpg] [--scale N]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents] [--variant NAME] [--report] [--texture-mips N] [--mip-level N]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--mip-linear] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
@@ -3727,6 +3800,11 @@ fn main() {
             let mut o = opts.clone();
             o.sim = true;
             cmd_mirror(&o, &args[1..])
+        }
+        Some("record") => {
+            let mut o = opts.clone();
+            o.sim = true;
+            cmd_record(&o, &args[1..])
         }
         Some("package") => {
             let path = args.get(1).cloned().unwrap_or_default();
@@ -5189,6 +5267,49 @@ mod tests {
             "unexpected PPM header"
         );
         assert!(written.len() > 14);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn record_writes_a_sequence_and_manifest() {
+        // N510: `mdc record` writes numbered frames and a manifest.
+        let dir = std::env::temp_dir().join(format!("mdc-record-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let opts = GlobalOpts {
+            sim: true,
+            address: None,
+            port: None,
+            board: "linux-virt".into(),
+        };
+        cmd_record(
+            &opts,
+            &[
+                "--frames".into(),
+                "3".into(),
+                "--fps".into(),
+                "10".into(),
+                "--scale".into(),
+                "8".into(),
+                "--dir".into(),
+                dir.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        // Three numbered PPM frames and a manifest.
+        for index in 1..=3 {
+            assert!(
+                dir.join(format!("frame{index:04}.ppm")).is_file(),
+                "frame {index} written"
+            );
+        }
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["format"], "ppm");
+        assert_eq!(manifest["frames_written"], 3);
+        assert_eq!(manifest["width"], 100);
+        assert_eq!(manifest["height"], 60);
+        assert_eq!(manifest["files"].as_array().unwrap().len(), 3);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
