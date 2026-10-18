@@ -1426,12 +1426,58 @@ fn scaled_frame<'a>(frame: &'a ServedFrame, query: &str) -> (u16, u16, std::borr
         / 90)
         % 4)
         * 90;
-    if degrees == 0 {
+    let (w, h, raw) = if degrees == 0 {
         (w, h, raw)
     } else {
         let (rw, rh, rotated) = rotate_bgra(w, h, &raw, degrees);
         (rw, rh, std::borrow::Cow::Owned(rotated))
+    };
+    // N469: `?crop=x,y,w,h` selects a sub-rectangle of the (scaled/rotated) frame.
+    if let Some((cx, cy, cw, ch)) = query_crop(query) {
+        let (cw, ch, cropped) = crop_bgra(w, h, &raw, cx, cy, cw, ch);
+        return (cw, ch, std::borrow::Cow::Owned(cropped));
     }
+    (w, h, raw)
+}
+
+/// N469: parse `crop=x,y,w,h`.
+fn query_crop(query: &str) -> Option<(u16, u16, u16, u16)> {
+    let value = query_param(query, "crop")?;
+    let parts: Vec<u16> = value
+        .split(',')
+        .filter_map(|p| p.trim().parse::<u16>().ok())
+        .collect();
+    (parts.len() == 4 && parts[2] > 0 && parts[3] > 0)
+        .then(|| (parts[0], parts[1], parts[2], parts[3]))
+}
+
+/// N469: copy a BGRA sub-rectangle (clamped to the source).
+fn crop_bgra(
+    width: u16,
+    height: u16,
+    bytes: &[u8],
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+) -> (u16, u16, Vec<u8>) {
+    let (cw, ch) = (
+        w.min(width.saturating_sub(x)),
+        h.min(height.saturating_sub(y)),
+    );
+    if cw == 0 || ch == 0 {
+        return (width, height, bytes.to_vec());
+    }
+    let mut out = vec![0u8; usize::from(cw) * usize::from(ch) * 4];
+    for row in 0..ch {
+        let src = (usize::from(y + row) * usize::from(width) + usize::from(x)) * 4;
+        let dst = usize::from(row) * usize::from(cw) * 4;
+        let len = usize::from(cw) * 4;
+        if let (Some(s), Some(d)) = (bytes.get(src..src + len), out.get_mut(dst..dst + len)) {
+            d.copy_from_slice(s);
+        }
+    }
+    (cw, ch, out)
 }
 
 /// N459: rotate a BGRA frame by 90/180/270 degrees clockwise.
@@ -2303,6 +2349,18 @@ mod tests {
             .expect("BMP part");
         let width = u32::from_le_bytes(response[start + 18..start + 22].try_into().unwrap());
         assert_eq!(width, 1, "the streamed part is downscaled");
+    }
+
+    #[test]
+    fn crop_bgra_selects_a_sub_rectangle() {
+        // N469: crop 1,0,1,2 from a 2x2 frame returns the right column.
+        let bytes: Vec<u8> = (1u8..=16).collect();
+        // 2x2 BGRA: the right column is [5..8] over [13..16].
+        let (w, h, out) = crop_bgra(2, 2, &bytes, 1, 0, 1, 2);
+        assert_eq!((w, h), (1, 2));
+        assert_eq!(out, vec![5, 6, 7, 8, 13, 14, 15, 16]);
+        // An out-of-range crop falls back to the source.
+        assert_eq!(crop_bgra(2, 2, &bytes, 9, 9, 1, 1), (2, 2, bytes.clone()));
     }
 
     #[test]
