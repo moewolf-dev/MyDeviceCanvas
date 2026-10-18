@@ -1498,6 +1498,49 @@ impl FakeDevice {
     pub fn overlay_pixels(&self) -> &[u8] {
         &self.overlay_pixels
     }
+    /// N465: read one overlay pixel as RGB565.
+    pub fn overlay_pixel_rgb565(&self, x: u16, y: u16) -> Option<u16> {
+        if x >= self.profile.overlay_width || y >= self.profile.overlay_height {
+            return None;
+        }
+        let index =
+            ((u32::from(y) * u32::from(self.profile.overlay_width) + u32::from(x)) * 2) as usize;
+        let bytes = self.overlay_pixels.get(index..index + 2)?;
+        Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+    /// N465: render into the overlay surface (the scene when one is set, else a
+    /// white fill). Returns false when the device has no overlay.
+    pub fn render_overlay(&mut self) -> bool {
+        if self.profile.overlay_width == 0 || self.profile.overlay_height == 0 {
+            return false;
+        }
+        let width = u32::from(self.profile.overlay_width);
+        let height = u32::from(self.profile.overlay_height);
+        self.overlay_pixels.fill(0);
+        match self.scene.clone() {
+            Some(mut scene) => {
+                mdc_protocol::apply_scene_animation(&mut scene, self.clock.tick);
+                let mut drew = false;
+                fill_scene(
+                    &scene,
+                    &mut self.overlay_pixels,
+                    width,
+                    height,
+                    self.atlas.as_ref(),
+                    SceneTransform::identity(),
+                    &mut drew,
+                );
+                drew
+            }
+            None => {
+                // A visible placeholder so the surface is not blank.
+                for chunk in self.overlay_pixels.chunks_exact_mut(2) {
+                    chunk.copy_from_slice(&0xFFFFu16.to_le_bytes());
+                }
+                true
+            }
+        }
+    }
     fn surface_size(&self, surface_id: &str) -> Option<(u16, u16)> {
         if surface_id == "main" {
             Some((self.profile.width, self.profile.height))
@@ -3555,6 +3598,38 @@ mod tests {
             (mid >> 11) > 0 && (mid & 0x1f) > 0,
             "mid blended: {mid:#06x}"
         );
+    }
+
+    #[test]
+    fn overlay_surface_renders_independently() {
+        // N465: the overlay has its own buffer and rasterises the scene there.
+        use mdc_protocol::SceneNode;
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 4,
+            height: 4,
+            overlay_width: 2,
+            overlay_height: 2,
+            ..BoardProfile::default()
+        });
+        // No scene: a white placeholder fills the overlay, main stays untouched.
+        assert!(device.render_overlay());
+        assert_eq!(device.overlay_pixel_rgb565(0, 0), Some(0xFFFF));
+        assert_eq!(device.pixel_rgb565(0, 0), Some(0), "main untouched");
+
+        // A scene renders into the overlay at its own size.
+        device.scene = Some(SceneNode {
+            name: "o".into(),
+            kind: "rect".into(),
+            rect: Some([0, 0, 2, 2]),
+            value: Some("#00FF00".into()),
+            value2: None,
+            opacity: None,
+            visible: None,
+            anim: None,
+            children: Vec::new(),
+        });
+        assert!(device.render_overlay());
+        assert_eq!(device.overlay_pixel_rgb565(1, 1), Some(0x07E0));
     }
 
     #[test]
