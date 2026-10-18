@@ -231,6 +231,147 @@ impl Default for SessionConfig {
     }
 }
 
+/// N464: a recognised pointer gesture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GestureKind {
+    Tap,
+    LongPress,
+    Drag,
+}
+
+/// N464: a gesture derived from raw input events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Gesture {
+    pub kind: GestureKind,
+    pub pointer_id: u16,
+    pub x: u16,
+    pub y: u16,
+}
+
+/// N464: thresholds for gesture recognition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GestureConfig {
+    /// A press released within this window (and without dragging) is a tap.
+    pub tap_max_ms: u64,
+    /// A press held this long emits `LongPress`.
+    pub long_press_ms: u64,
+    /// Movement beyond this many pixels becomes a drag.
+    pub drag_threshold: u16,
+}
+
+impl Default for GestureConfig {
+    fn default() -> Self {
+        Self {
+            tap_max_ms: 250,
+            long_press_ms: 600,
+            drag_threshold: 6,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PointerState {
+    down_ms: u64,
+    x: u16,
+    y: u16,
+    dragged: bool,
+    long_pressed: bool,
+}
+
+/// N464: derive tap/long-press/drag gestures from a pointer's input events.
+#[derive(Debug, Clone, Default)]
+pub struct GestureTracker {
+    config: GestureConfig,
+    pointers: std::collections::BTreeMap<u16, PointerState>,
+}
+
+impl GestureTracker {
+    pub fn new(config: GestureConfig) -> Self {
+        Self {
+            config,
+            pointers: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Feed one input event; returns a gesture when it completes one.
+    pub fn on_event(&mut self, event: &mdc_protocol::InputEvent, now_ms: u64) -> Option<Gesture> {
+        match event.phase.as_str() {
+            "down" => {
+                self.pointers.insert(
+                    event.pointer_id,
+                    PointerState {
+                        down_ms: now_ms,
+                        x: event.x,
+                        y: event.y,
+                        dragged: false,
+                        long_pressed: false,
+                    },
+                );
+                None
+            }
+            "move" => {
+                let state = self.pointers.get_mut(&event.pointer_id)?;
+                let dx = i32::from(event.x) - i32::from(state.x);
+                let dy = i32::from(event.y) - i32::from(state.y);
+                if !state.dragged && dx.abs().max(dy.abs()) >= i32::from(self.config.drag_threshold)
+                {
+                    state.dragged = true;
+                    return Some(Gesture {
+                        kind: GestureKind::Drag,
+                        pointer_id: event.pointer_id,
+                        x: event.x,
+                        y: event.y,
+                    });
+                }
+                None
+            }
+            "up" | "cancel" => {
+                let state = self.pointers.remove(&event.pointer_id)?;
+                if state.dragged {
+                    return Some(Gesture {
+                        kind: GestureKind::Drag,
+                        pointer_id: event.pointer_id,
+                        x: event.x,
+                        y: event.y,
+                    });
+                }
+                if state.long_pressed {
+                    return None;
+                }
+                if now_ms.saturating_sub(state.down_ms) <= self.config.tap_max_ms {
+                    Some(Gesture {
+                        kind: GestureKind::Tap,
+                        pointer_id: event.pointer_id,
+                        x: event.x,
+                        y: event.y,
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Advance held pointers; emits `LongPress` once per pointer.
+    pub fn tick(&mut self, now_ms: u64) -> Option<Gesture> {
+        for (pointer_id, state) in self.pointers.iter_mut() {
+            if !state.long_pressed
+                && now_ms.saturating_sub(state.down_ms) >= self.config.long_press_ms
+            {
+                state.long_pressed = true;
+                return Some(Gesture {
+                    kind: GestureKind::LongPress,
+                    pointer_id: *pointer_id,
+                    x: state.x,
+                    y: state.y,
+                });
+            }
+        }
+        None
+    }
+}
+
 /// N398: host-side session counters.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionStats {
@@ -4526,6 +4667,66 @@ mod tests {
             node: None,
         };
         assert_eq!(session.send_input(event), Err(CoreError::Unsupported));
+    }
+
+    #[test]
+    fn gesture_tracker_recognises_tap_drag_and_long_press() {
+        // N464: tap, drag, and long-press derive from raw input events.
+        let event = |phase: &str, x: u16, y: u16| mdc_protocol::InputEvent {
+            surface_id: "main".into(),
+            pointer_id: 1,
+            phase: phase.into(),
+            x,
+            y,
+            node: None,
+        };
+        let mut tracker = GestureTracker::new(GestureConfig::default());
+        assert_eq!(tracker.on_event(&event("down", 10, 10), 0), None);
+        assert_eq!(
+            tracker.on_event(&event("up", 10, 10), 100),
+            Some(Gesture {
+                kind: GestureKind::Tap,
+                pointer_id: 1,
+                x: 10,
+                y: 10
+            })
+        );
+
+        // Moving beyond the threshold becomes a drag.
+        assert_eq!(tracker.on_event(&event("down", 10, 10), 200), None);
+        assert_eq!(
+            tracker.on_event(&event("move", 20, 10), 220),
+            Some(Gesture {
+                kind: GestureKind::Drag,
+                pointer_id: 1,
+                x: 20,
+                y: 10
+            })
+        );
+        assert_eq!(
+            tracker.on_event(&event("up", 20, 10), 240),
+            Some(Gesture {
+                kind: GestureKind::Drag,
+                pointer_id: 1,
+                x: 20,
+                y: 10
+            })
+        );
+
+        // Holding past the long-press window emits once.
+        assert_eq!(tracker.on_event(&event("down", 5, 5), 1000), None);
+        assert_eq!(tracker.tick(1500), None);
+        assert_eq!(
+            tracker.tick(1600),
+            Some(Gesture {
+                kind: GestureKind::LongPress,
+                pointer_id: 1,
+                x: 5,
+                y: 5
+            })
+        );
+        assert_eq!(tracker.tick(2000), None, "long-press emits once");
+        assert_eq!(tracker.on_event(&event("up", 5, 5), 2100), None);
     }
 
     #[test]
