@@ -3911,7 +3911,7 @@ mod tests {
         let geometry = model.meshes[0].geometry.as_ref().expect("geometry");
         assert_eq!(geometry.positions.len(), 4);
         assert_eq!(geometry.positions[0], [0.0, 0.0, 0.0]);
-        // An unsupported stream (a version-0 index buffer) is a clear error.
+        // A malformed meshopt stream is a clear error, not garbage geometry.
         let bad = serde_json::json!({
             "asset": {"version": "2.0"},
             "extensionsRequired": ["EXT_meshopt_compression"],
@@ -3932,7 +3932,7 @@ mod tests {
         let error = GltfImporter
             .import(&bytes, &ImportLimits::default())
             .unwrap_err();
-        assert!(error.to_string().contains("version 0"), "{error}");
+        assert!(error.to_string().contains("meshopt"), "{error}");
     }
 
     #[test]

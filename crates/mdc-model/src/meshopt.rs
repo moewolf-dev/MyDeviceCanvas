@@ -7,13 +7,14 @@
 //!
 //! * vertex buffers (`0xa0`/`0xa1`) with the `OCTAHEDRAL`, `QUATERNION`,
 //!   `EXPONENTIAL` and `COLOR` filters,
-//! * index sequences (`0xd1`),
-//! * index buffers (`0xe1`).
+//! * index sequences (`0xd0`/`0xd1`),
+//! * index buffers (`0xe0`/`0xe1`), with the version-0/1 differences in the free
+//!   index code (version 1 reserves codes 13/14 for the previous/next index).
 //!
-//! Index buffers written with the older version-0 stream (`0xe0`) are rejected
-//! with a clear error rather than misread (see the module tests for the covered
-//! vectors). Every read is bounds-checked, so a malformed stream is an error and
-//! never a panic.
+//! Every read is bounds-checked, so a malformed stream is an error and never a
+//! panic. The module tests run the golden fixtures from the reference test suite
+//! (`js/meshopt_decoder.test.js`), so the port is checked against the reference
+//! decoder's expected output rather than a self-consistent pair.
 
 use crate::ir::ModelError;
 
@@ -531,13 +532,12 @@ pub fn decode_index_buffer(
     source: &[u8],
 ) -> Result<Vec<u8>, ModelError> {
     let header = at(source, 0)?;
-    if header == 0xe0 {
-        return Err(malformed(
-            "index buffer version 0 (0xe0) is not supported yet",
-        ));
+    if header & 0xf0 != 0xe0 {
+        return Err(malformed("index buffer header must be 0xe0 or 0xe1"));
     }
-    if header != 0xe1 {
-        return Err(malformed("index buffer header must be 0xe1"));
+    let version = header & 0x0f;
+    if version > 1 {
+        return Err(malformed("index buffer version must be 0 or 1"));
     }
     if !count.is_multiple_of(3) {
         return Err(malformed("index count must be a multiple of 3"));
@@ -545,6 +545,14 @@ pub fn decode_index_buffer(
     if byte_stride != 2 && byte_stride != 4 {
         return Err(malformed("index stride must be 2 or 4"));
     }
+    // The minimum valid encoding is a header, one byte per triangle and a 16-byte
+    // codeaux table.
+    if source.len() < 1 + count / 3 + 16 {
+        return Err(malformed("index buffer is too short"));
+    }
+    // Version 0 stores free indices in a 4-bit code (0..=14 use the vertex FIFO),
+    // version 1 reserves 13/14 for the previous/next index.
+    let fecmax: u8 = if version >= 1 { 13 } else { 15 };
 
     let tri_count = count / 3;
     let code_offs = 1usize;
@@ -571,19 +579,22 @@ pub fn decode_index_buffer(
         if b0 < 0x0f {
             a = edge_fifo.read(usize::from(b0) << 1);
             b = edge_fifo.read((usize::from(b0) << 1) + 1);
-            c = if b1 == 0x00 {
-                let value = next;
-                next += 1;
-                vertex_fifo.push(value);
-                value
-            } else if b1 < 0x0d {
-                vertex_fifo.read(usize::from(b1))
-            } else if b1 == 0x0d {
+            c = if b1 < fecmax {
+                if b1 == 0x00 {
+                    let value = next;
+                    next += 1;
+                    vertex_fifo.push(value);
+                    value
+                } else {
+                    // 1..fecmax-1 reference the vertex FIFO without a push.
+                    vertex_fifo.read(usize::from(b1))
+                }
+            } else if version >= 1 && b1 == 0x0d {
                 last -= 1;
                 let value = last as u32;
                 vertex_fifo.push(value);
                 value
-            } else if b1 == 0x0e {
+            } else if version >= 1 && b1 == 0x0e {
                 last += 1;
                 let value = last as u32;
                 vertex_fifo.push(value);
@@ -713,16 +724,19 @@ pub fn decode_index_sequence(
     source: &[u8],
 ) -> Result<Vec<u8>, ModelError> {
     let header = at(source, 0)?;
-    if header == 0xd0 {
-        return Err(malformed(
-            "index sequence version 0 (0xd0) is not supported yet",
-        ));
+    if header & 0xf0 != 0xd0 {
+        return Err(malformed("index sequence header must be 0xd0 or 0xd1"));
     }
-    if header != 0xd1 {
-        return Err(malformed("index sequence header must be 0xd1"));
+    let version = header & 0x0f;
+    if version > 1 {
+        return Err(malformed("index sequence version must be 0 or 1"));
     }
     if byte_stride != 2 && byte_stride != 4 {
         return Err(malformed("index stride must be 2 or 4"));
+    }
+    // A header, one byte per index and a 4-byte tail are the minimum.
+    if source.len() < 1 + count + 4 {
+        return Err(malformed("index sequence is too short"));
     }
 
     let mut data_offs = 1usize;
@@ -895,6 +909,35 @@ mod tests {
         .flat_map(|v| v.to_le_bytes())
         .collect();
         let decoded = unwrap_decode(decode_vertex_buffer(4, 16, &encoded, MeshoptFilter::None));
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn decode_index_buffer_v0_16_matches_the_reference_vector() {
+        // N534: the version-0 stream (0xe0) from the reference test suite.
+        let encoded = hex(&[
+            0xe0, 0xf0, 0x10, 0xfe, 0xff, 0xf0, 0x0c, 0xff, 0x02, 0x02, 0x02, 0x00, 0x76, 0x87,
+            0x56, 0x67, 0x78, 0xa9, 0x86, 0x65, 0x89, 0x68, 0x98, 0x01, 0x69, 0x00, 0x00,
+        ]);
+        let expected: Vec<u8> = [0u16, 1, 2, 2, 1, 3, 4, 6, 5, 7, 8, 9]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let decoded = unwrap_decode(decode_index_buffer(12, 2, &encoded));
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn decode_index_buffer_v0_32_matches_the_reference_vector() {
+        let encoded = hex(&[
+            0xe0, 0xf0, 0x10, 0xfe, 0xff, 0xf0, 0x0c, 0xff, 0x02, 0x02, 0x02, 0x00, 0x76, 0x87,
+            0x56, 0x67, 0x78, 0xa9, 0x86, 0x65, 0x89, 0x68, 0x98, 0x01, 0x69, 0x00, 0x00,
+        ]);
+        let expected: Vec<u8> = [0u32, 1, 2, 2, 1, 3, 4, 6, 5, 7, 8, 9]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let decoded = unwrap_decode(decode_index_buffer(12, 4, &encoded));
         assert_eq!(decoded, expected);
     }
 
@@ -1110,10 +1153,10 @@ mod tests {
         // A wrong header, a truncated stream and a v0 index buffer are errors.
         assert!(decode_vertex_buffer(4, 4, &[0x00, 1, 2, 3], MeshoptFilter::None).is_err());
         assert!(decode_vertex_buffer(4, 12, &[0xa0, 0x01], MeshoptFilter::None).is_err());
-        assert!(decode_index_buffer(3, 4, &[0xe0, 0x00]).is_err());
+        assert!(decode_index_buffer(3, 4, &[0xe2, 0x00]).is_err());
         assert!(decode_index_buffer(4, 4, &[0xe1, 0x00]).is_err());
         assert!(decode_index_sequence(2, 3, &[0xd1]).is_err());
-        assert!(decode_index_sequence(2, 4, &[0xd0]).is_err());
+        assert!(decode_index_sequence(2, 4, &[0xd2]).is_err());
         // Filters validate their stride.
         assert!(decode_vertex_buffer(1, 4, &[0xa0; 64], MeshoptFilter::Quaternion).is_err());
     }
