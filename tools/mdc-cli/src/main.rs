@@ -3379,6 +3379,33 @@ fn cmd_asset(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             let total = cache.total_bytes().map_err(|e| e.to_string())?;
             println!("removed {removed}; total {total} bytes");
         }
+        // N487: re-hash every stored entry and compare with its content key.
+        "verify" => {
+            let entries = cache.list().map_err(|e| e.to_string())?;
+            let mut mismatched = Vec::new();
+            for (key, _) in &entries {
+                let path = cache.dir().join(&key.0);
+                match std::fs::read(&path) {
+                    Ok(bytes) => {
+                        if mdc_assets::AssetKey::from_bytes(&bytes) != *key {
+                            mismatched.push(key.0.clone());
+                        }
+                    }
+                    Err(_) => mismatched.push(key.0.clone()),
+                }
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "checked": entries.len(),
+                    "mismatched": mismatched,
+                    "valid": mismatched.is_empty(),
+                }))?
+            );
+            if !mismatched.is_empty() {
+                std::process::exit(1);
+            }
+        }
         other => return Err(format!("unknown asset action: {other}").into()),
     }
     Ok(())
@@ -3554,7 +3581,7 @@ render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprit
 motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] [--clip NAME] [--time T] [--mip N] [--smooth] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> [--time MS] --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss]|\
-asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|\
+asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|asset verify <dir>|\
 model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg>|diff <a.mdcpkg> <b.mdcpkg>"
     );
 }
@@ -4222,6 +4249,33 @@ mod tests {
         assert!(averaged != 0);
         // Oversized inputs and bad lengths produce an empty chain.
         assert!(mdc_bake::bake_mipmaps(2, 2, &[0, 0], 4).is_empty());
+    }
+
+    #[test]
+    fn asset_verify_detects_a_corrupted_entry() {
+        // N487: a stored entry whose bytes no longer hash to its name is flagged.
+        let base = std::env::temp_dir().join(format!("mdc-verify-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let src = base.join("src.bin");
+        std::fs::write(&src, [7u8, 8, 9]).unwrap();
+        let store = base.join("store").to_string_lossy().into_owned();
+        cmd_asset(&[
+            "put".into(),
+            store.clone(),
+            src.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        // Healthy store verifies.
+        cmd_asset(&["verify".into(), store.clone()]).unwrap();
+        // Corrupt the stored file; verify must fail (exit is not asserted here).
+        let cache = mdc_assets::DiskCache::open(&store, 1 << 20, 8 << 20).unwrap();
+        let key = cache.list().unwrap()[0].0 .0.clone();
+        std::fs::write(cache.dir().join(&key), [0u8, 0, 0]).unwrap();
+        let corrupted = mdc_assets::DiskCache::open(&store, 1 << 20, 8 << 20).unwrap();
+        let bytes = std::fs::read(corrupted.dir().join(&key)).unwrap();
+        assert_ne!(mdc_assets::AssetKey::from_bytes(&bytes).0, key);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
