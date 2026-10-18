@@ -196,6 +196,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | `package --tangents` (N428) | sim-verified (fills missing tangents) | n/a |
 | Clip by name (N429) | sim-verified (`render_package_scene_clip_named`) | n/a |
 | Node `connectSerial` (N430) | sim-verified (rejects an unusable path) | physical: pending |
+| Variant mappings (N433) | sim-verified (`package --variant`) | n/a |
+| `KHR_materials_volume` (N434) | sim-verified (thickness fades) | physical: pending |
+| `KHR_materials_iridescence` (N435) | sim-verified (thin-film highlight) | physical: pending |
+| Extended session stats (N436) | sim-verified (`bytes_received`, `dropped_frames`) | n/a |
+| `devices --compact` (N437) | sim-verified (JSONL) | n/a |
+| Package mip chain (N438) | sim-verified (`AtlasBlob.mips`) | physical: pending |
+| `render-package --mip` (N439) | sim-verified (stored level) | n/a |
+| C `session_stats` (N440) | sim-verified (out-params) | n/a |
 
 ## G03 sim exit
 

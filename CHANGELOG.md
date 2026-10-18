@@ -2,6 +2,25 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.56] — Variants, volume, iridescence, session stats, JSONL devices, package mips (N433–N442)
+
+### Added
+
+- `KHR_materials_variants` per-mesh `mappings` import (`Mesh.variant_materials`)
+  and `mdc package --variant NAME` to swap in a variant's materials (N433)
+- `KHR_materials_volume` (`thicknessFactor` over `attenuationDistance`) deepens the
+  transmission fade (N434)
+- `KHR_materials_iridescence` adds a thin-film highlight, its hue shifting with the
+  view angle and IOR (N435)
+- `SessionStats` gained `bytes_received` and `dropped_frames`, surfaced by
+  `mdc inspect --watch` (N436)
+- `mdc devices --compact` streams one JSON object per device (JSONL) (N437)
+- sprite packages can carry a bounded mip chain (`AtlasBlob.mips`) via
+  `bake_to_package_mipped` / `mdc bake --mipmaps --package` (N438)
+- `mdc render-package --mip N` renders a stored mip level (N439)
+- C ABI `mdc_session_stats` writes the host counters to out-params (N440)
+- memory coverage for mipped package round trips (N441)
+
 ## [0.1.55] — Generated/skinned tangents, sheen, transmission, C node out-param, `--tangents`, clip-by-name, Node serial (N423–N432)
 
 ### Added
