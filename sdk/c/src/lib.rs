@@ -1096,6 +1096,42 @@ pub unsafe extern "C" fn mdc_start_mirror(
     }
 }
 
+/// N538: like [`mdc_start_mirror`], and also selects the mirror mode
+/// (`full-frame` or `dirty-region`) for parity with the Node/Swift SDKs.
+/// A NULL or empty mode keeps `full-frame`.
+///
+/// # Safety
+/// `session` must come from a create/connect function and be alive; `mode` is
+/// optional.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_start_mirror_mode(
+    session: *mut MdcSession,
+    surface_id: *const c_char,
+    mode: *const c_char,
+    max_fps: u16,
+) -> c_int {
+    let Some(session) = session.as_mut() else {
+        return -1;
+    };
+    let surface = mirror_surface(surface_id);
+    let mode = if mode.is_null() {
+        "full-frame".to_string()
+    } else {
+        match CStr::from_ptr(mode).to_str() {
+            Ok(text) if !text.trim().is_empty() => text.trim().to_string(),
+            Ok(_) => "full-frame".to_string(),
+            Err(_) => return -2,
+        }
+    };
+    match session.session.start_mirror(&surface, &mode, max_fps) {
+        Ok(_) => {
+            let _ = pump(session);
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
 /// # Safety
 /// `session` must come from a create/connect function and be alive.
 #[no_mangle]
@@ -1932,6 +1968,33 @@ mod tests {
                     std::ptr::null_mut(),
                     0
                 ),
+                -1
+            );
+            mdc_session_destroy(session);
+        }
+    }
+
+    #[test]
+    fn mirror_mode_round_trips_via_c_abi() {
+        // N538: the mirror mode is selectable (parity with Node/Swift).
+        unsafe {
+            let board = std::ffi::CString::new("linux-virt").unwrap();
+            let session = mdc_session_create_board(board.as_ptr());
+            assert!(!session.is_null());
+            let mode = std::ffi::CString::new("dirty-region").unwrap();
+            assert_eq!(
+                mdc_start_mirror_mode(session, std::ptr::null(), mode.as_ptr(), 15),
+                0
+            );
+            assert_eq!(mdc_stop_mirror(session, std::ptr::null()), 0);
+            // A NULL mode falls back to a full-frame mirror.
+            assert_eq!(
+                mdc_start_mirror_mode(session, std::ptr::null(), std::ptr::null(), 10),
+                0
+            );
+            assert_eq!(mdc_stop_mirror(session, std::ptr::null()), 0);
+            assert_eq!(
+                mdc_start_mirror_mode(std::ptr::null_mut(), std::ptr::null(), std::ptr::null(), 1),
                 -1
             );
             mdc_session_destroy(session);

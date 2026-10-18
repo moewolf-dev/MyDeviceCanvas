@@ -153,6 +153,11 @@ int mdc_session_gesture_config(const MdcSession* session, uint64_t* tap_max_ms,
 /** Form B: ask the device to start mirroring `surface_id` (NULL = "main"). 0 or negative. */
 int mdc_start_mirror(MdcSession* session, const char* surface_id, uint16_t max_fps);
 
+/** N538: like mdc_start_mirror, and also selects `full-frame` | `dirty-region`
+ *  (a NULL mode keeps full-frame). 0 or negative. */
+int mdc_start_mirror_mode(MdcSession* session, const char* surface_id, const char* mode,
+                         uint16_t max_fps);
+
 /** Form B: stop mirroring. 0 or negative. */
 int mdc_stop_mirror(MdcSession* session, const char* surface_id);
 
