@@ -502,6 +502,9 @@ pub struct SceneNode {
     /// N480: `source-over` (default) or `additive` blending for rect/gradient.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blend: Option<String>,
+    /// N484: `left` (default) | `center` | `right` alignment for `text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub align: Option<String>,
 }
 
 /// N463: a keyframed scene animation. Keyframes are `[time_ms, value]` and are
@@ -2206,6 +2209,7 @@ mod tests {
                     anim: None,
                     rotate: None,
                     blend: None,
+                    align: None,
                     value2: None,
                 }],
                 value: None,
@@ -2214,6 +2218,7 @@ mod tests {
                 anim: None,
                 rotate: None,
                 blend: None,
+                align: None,
                 value2: None,
             }),
         }
@@ -2232,6 +2237,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             value2: None,
         };
         // #RGB expands each nibble.
@@ -2258,6 +2264,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             value2: None,
         };
         assert_eq!(node.color_rgb565(), 0xF800);
@@ -2273,6 +2280,7 @@ mod tests {
                 anim: None,
                 rotate: None,
                 blend: None,
+                align: None,
                 value2: None,
             }
             .color_rgb565(),

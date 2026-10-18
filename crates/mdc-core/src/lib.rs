@@ -4729,6 +4729,7 @@ mod tests {
             visible: None,
             rotate: None,
             blend: None,
+            align: None,
             anim: Some(mdc_protocol::SceneAnim {
                 duration_ms: 100,
                 looping: true,

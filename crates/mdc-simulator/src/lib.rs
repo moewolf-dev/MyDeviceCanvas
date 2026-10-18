@@ -948,8 +948,24 @@ fn fill_scene(
                 if ly >= height {
                     break;
                 }
+                // N484: align the line within the rect width.
+                let line_width = line.chars().count() as u32 * 6 * scale_x;
+                let offset = match node.align.as_deref() {
+                    Some("center") => u32::from(w).saturating_sub(line_width) / 2,
+                    Some("right") => u32::from(w).saturating_sub(line_width),
+                    _ => 0,
+                };
                 draw_text(
-                    pixels, width, height, x, ly as u16, line, color, scale_x, scale_y, alpha,
+                    pixels,
+                    width,
+                    height,
+                    x.saturating_add(offset.min(u32::from(u16::MAX)) as u16),
+                    ly as u16,
+                    line,
+                    color,
+                    scale_x,
+                    scale_y,
+                    alpha,
                 );
             }
             *drew = true;
@@ -3076,6 +3092,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             value2: None,
         };
         let mut root = leaf("root", "rect", None);
@@ -3410,6 +3427,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             value2: None,
         };
         // Background red covers all; a green child on top; a third clipped.
@@ -3427,6 +3445,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3471,6 +3490,7 @@ mod tests {
                     anim: None,
                     rotate: None,
                     blend: None,
+                    align: None,
                     value2: None,
                 },
                 SceneNode {
@@ -3484,6 +3504,7 @@ mod tests {
                     anim: None,
                     rotate: None,
                     blend: None,
+                    align: None,
                     value2: None,
                 },
             ],
@@ -3492,6 +3513,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3538,6 +3560,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             value2: None,
         };
         // rect 0×0 -> scale 1, so (1,1) stays clear on the fresh framebuffer.
@@ -3607,6 +3630,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3643,6 +3667,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -3655,6 +3680,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             children: vec![
                 rect("bg", "#FFFFFF", None),
                 rect("fg", "#FF0000", Some(128)),
@@ -3710,6 +3736,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -3719,6 +3746,47 @@ mod tests {
         assert!(
             (mid >> 11) > 0 && (mid & 0x1f) > 0,
             "mid blended: {mid:#06x}"
+        );
+    }
+
+    #[test]
+    fn text_align_shifts_lines_within_the_rect() {
+        // N484: centre alignment moves the glyphs right of the rect origin.
+        use mdc_protocol::SceneNode;
+        let render = |align: Option<&str>| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 24,
+                height: 8,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "label".into(),
+                kind: "text".into(),
+                rect: Some([0, 0, 24, 7]),
+                value: Some("hi".into()),
+                value2: None,
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: align.map(str::to_string),
+                children: Vec::new(),
+            });
+            assert!(device.render_scene());
+            let mut row = Vec::new();
+            for x in 0..24u16 {
+                row.push(device.pixel_rgb565(x, 0).unwrap());
+            }
+            row
+        };
+        let left = render(None);
+        let center = render(Some("center"));
+        assert_ne!(left, center, "centred text differs");
+        let first_lit = |row: &[u16]| row.iter().position(|v| *v != 0).unwrap_or(usize::MAX);
+        assert!(
+            first_lit(&center) > first_lit(&left),
+            "centre alignment starts further right"
         );
     }
 
@@ -3743,6 +3811,7 @@ mod tests {
                 anim: None,
                 rotate: None,
                 blend: blend.map(str::to_string),
+                align: None,
                 children: Vec::new(),
             };
             device.scene = Some(SceneNode {
@@ -3756,6 +3825,7 @@ mod tests {
                 anim: None,
                 rotate: None,
                 blend: None,
+                align: None,
                 children: vec![
                     rect("base", "#00FF00", None),
                     rect("glow", "#FF0000", blend),
@@ -3821,6 +3891,7 @@ mod tests {
             anim: None,
             rotate: Some(90),
             blend: None,
+            align: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -3859,6 +3930,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             children: Vec::new(),
         });
         assert!(device.render_overlay());
@@ -3890,6 +3962,7 @@ mod tests {
             }),
             rotate: None,
             blend: None,
+            align: None,
             children: Vec::new(),
         });
         // t=0: fully transparent, so the black background remains.
@@ -3925,6 +3998,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             children: vec![
                 SceneNode {
                     name: "hidden".into(),
@@ -3937,6 +4011,7 @@ mod tests {
                     anim: None,
                     rotate: None,
                     blend: None,
+                    align: None,
                     children: Vec::new(),
                 },
                 SceneNode {
@@ -3950,6 +4025,7 @@ mod tests {
                     anim: None,
                     rotate: None,
                     blend: None,
+                    align: None,
                     children: Vec::new(),
                 },
             ],
@@ -4010,6 +4086,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -4023,6 +4100,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             children: vec![rect("back", [0, 0, 8, 8]), rect("front", [2, 2, 4, 4])],
         });
         // The overlapping topmost child wins.
@@ -4052,6 +4130,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -4065,6 +4144,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             // The child fills 8x8 relative to the clip origin, so it would cover
             // everything without the clip rect.
             children: vec![fill([0, 0, 8, 8])],
@@ -4104,6 +4184,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -4162,6 +4243,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             value2: None,
         };
         let scene = SceneNode {
@@ -4178,6 +4260,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -4217,6 +4300,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             value2: None,
         };
         // Group offset (4, 2) and 2× scale: [0,0,2,2] red -> [4,2,4,4].
@@ -4231,6 +4315,7 @@ mod tests {
             anim: None,
             rotate: None,
             blend: None,
+            align: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -4311,6 +4396,7 @@ mod tests {
                 anim: None,
                 rotate: None,
                 blend: None,
+                align: None,
                 value2: None,
             })
             .unwrap();
@@ -4467,6 +4553,7 @@ mod tests {
                 anim: None,
                 rotate: None,
                 blend: None,
+                align: None,
                 value2: None,
             })
             .unwrap();
@@ -4621,6 +4708,7 @@ mod tests {
                 anim: None,
                 rotate: None,
                 blend: None,
+                align: None,
                 value2: None,
             })
             .unwrap();
@@ -5029,6 +5117,7 @@ mod tests {
                 anim: None,
                 rotate: None,
                 blend: None,
+                align: None,
                 value2: None,
             })
             .unwrap();
@@ -5058,6 +5147,7 @@ mod tests {
                 anim: None,
                 rotate: None,
                 blend: None,
+                align: None,
                 value2: None,
             })
             .unwrap();
