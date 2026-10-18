@@ -535,6 +535,11 @@ pub struct DirtyTracker {
     updates: u64,
 }
 
+/// N541: the most dirty rectangles a tracker holds before coalescing them into
+/// one bounding rectangle, so a caller that forgets to `take` cannot grow it
+/// without bound.
+pub const MAX_PENDING_RECTS: usize = 256;
+
 impl DirtyTracker {
     pub fn new(surface: (u16, u16), tile_size: u16, full_threshold: f64) -> Self {
         Self {
@@ -546,11 +551,36 @@ impl DirtyTracker {
         }
     }
 
-    /// Accumulate one dirty rectangle (or the whole surface when it is oversized).
+    /// Accumulate one dirty rectangle. N541: past [`MAX_PENDING_RECTS`] the
+    /// pending list is coalesced into one bounding rectangle so it stays bounded.
     pub fn mark(&mut self, rect: DirtyRect) {
-        if rect.2 > 0 && rect.3 > 0 {
-            self.pending.push(rect);
+        if rect.2 == 0 || rect.3 == 0 {
+            return;
         }
+        if self.pending.len() >= MAX_PENDING_RECTS {
+            self.coalesce();
+        }
+        self.pending.push(rect);
+    }
+
+    /// N541: replace the pending list with its bounding rectangle.
+    pub fn coalesce(&mut self) {
+        let Some(first) = self.pending.first().copied() else {
+            return;
+        };
+        let mut x0 = first.0;
+        let mut y0 = first.1;
+        let mut x1 = first.0.saturating_add(first.2);
+        let mut y1 = first.1.saturating_add(first.3);
+        for &(x, y, w, h) in &self.pending {
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x.saturating_add(w));
+            y1 = y1.max(y.saturating_add(h));
+        }
+        self.pending.clear();
+        self.pending
+            .push((x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0)));
     }
 
     /// Mark the whole surface dirty.

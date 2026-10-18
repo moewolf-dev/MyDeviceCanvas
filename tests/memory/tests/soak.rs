@@ -2312,6 +2312,27 @@ fn websocket_fragmented_messages_stay_bounded() {
 }
 
 #[test]
+fn dirty_tracker_pending_stays_bounded() {
+    // N541: a tracker that is never drained coalesces instead of growing.
+    let mut tracker = mdc_core::DirtyTracker::new((256, 256), 16, 0.9);
+    for i in 0..10_000u32 {
+        let x = (i % 240) as u16;
+        let y = ((i / 240) % 240) as u16;
+        tracker.mark((x, y, 2, 2));
+    }
+    assert!(
+        tracker.pending().len() <= mdc_core::MAX_PENDING_RECTS,
+        "pending stayed bounded: {}",
+        tracker.pending().len()
+    );
+    // The accumulated area still covers what was marked, so a decision is made.
+    assert!(!matches!(
+        tracker.decide(),
+        mdc_core::UpdateDecision::Partial(0)
+    ));
+}
+
+#[test]
 fn disk_asset_cache_stays_within_quota() {
     // N369/N371: the on-disk asset store never exceeds its byte quota, however
     // many payloads are inserted.

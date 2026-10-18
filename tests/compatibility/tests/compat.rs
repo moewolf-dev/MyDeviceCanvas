@@ -3863,6 +3863,80 @@ fn scene_circle_and_line_edge_cases_do_not_panic() {
 }
 
 #[test]
+fn meshopt_compressed_model_bakes_and_installs() {
+    // N533/N541: a meshopt-compressed glTF imports, compiles and installs.
+    use mdc_core::{ConnectionState, Session};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    // The golden version-0 vertex fixture decodes to 4 x 12 bytes; interpreted as
+    // VEC3 f32 positions it gives a usable (if tiny) mesh.
+    let stream: Vec<u8> = vec![
+        0xa0, 0x01, 0x3f, 0x00, 0x00, 0x00, 0x58, 0x57, 0x58, 0x01, 0x26, 0x00, 0x00, 0x00, 0x01,
+        0x0c, 0x00, 0x00, 0x00, 0x58, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        0x3f, 0x00, 0x00, 0x00, 0x17, 0x18, 0x17, 0x01, 0x26, 0x00, 0x00, 0x00, 0x01, 0x0c, 0x00,
+        0x00, 0x00, 0x17, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+    let mut json = String::from(
+        r#"{"asset":{"version":"2.0"},
+        "extensionsUsed":["EXT_meshopt_compression"],
+        "extensionsRequired":["EXT_meshopt_compression"],
+        "buffers":[{"byteLength":STREAM}],
+        "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":STREAM,
+            "extensions":{"EXT_meshopt_compression":{"buffer":0,"byteOffset":0,"byteLength":STREAM,
+                "byteStride":12,"count":4,"mode":"ATTRIBUTES"}}}],
+        "accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3"}],
+        "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+        "nodes":[{"name":"root","mesh":0}]}"#,
+    );
+    json = json.replace("STREAM", &stream.len().to_string());
+    // GLB: JSON chunk then the compressed BIN chunk.
+    let mut json_chunk = json.into_bytes();
+    while !json_chunk.len().is_multiple_of(4) {
+        json_chunk.push(0x20);
+    }
+    let mut bin_chunk = stream.clone();
+    while !bin_chunk.len().is_multiple_of(4) {
+        bin_chunk.push(0x00);
+    }
+    let total = 12 + 8 + json_chunk.len() + 8 + bin_chunk.len();
+    let mut glb = Vec::new();
+    glb.extend_from_slice(b"glTF");
+    glb.extend_from_slice(&2u32.to_le_bytes());
+    glb.extend_from_slice(&(total as u32).to_le_bytes());
+    glb.extend_from_slice(&(json_chunk.len() as u32).to_le_bytes());
+    glb.extend_from_slice(&0x4E4F_534Au32.to_le_bytes());
+    glb.extend_from_slice(&json_chunk);
+    glb.extend_from_slice(&(bin_chunk.len() as u32).to_le_bytes());
+    glb.extend_from_slice(&0x004E_4942u32.to_le_bytes());
+    glb.extend_from_slice(&bin_chunk);
+
+    let model = mdc_model::GltfImporter
+        .import(&glb, &mdc_model::ImportLimits::default())
+        .unwrap();
+    assert_eq!(
+        model.meshes[0].geometry.as_ref().unwrap().positions.len(),
+        4
+    );
+    let package =
+        mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d()).unwrap();
+    assert!(package.verify().valid);
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .install_package(&package.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.package_ready());
+}
+
+#[test]
 fn dirty_tiles_reconcile_with_the_device() {
     // N536: every tile the host sends is counted by the device, so a partial
     // update can be reconciled end to end.
