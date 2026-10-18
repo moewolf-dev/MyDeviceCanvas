@@ -302,7 +302,9 @@ materials (`Model::variant_materials`). N434: `KHR_materials_volume`
 (`thicknessFactor` over `attenuationDistance`) deepens the transmission fade.
 N435: `KHR_materials_iridescence` adds a thin-film highlight, its hue shifting with
 the view angle and IOR. N444: `KHR_materials_anisotropy` adds a brushed highlight
-stretched along the tangent (rotation-aware). N403: `texCoord` is
+stretched along the tangent (rotation-aware). N445: `EXT_texture_webp` is honoured
+(a texture without `source` uses the extension's image) and WebP bytes decode
+through the `image` crate's `webp` feature. N403: `texCoord` is
 honoured per slot — `Material.uv_set` selects the base-colour UV set and
 `uv_set2` (defaulting to `uv_set`) selects the secondary maps' set, so normal/
 occlusion/emissive/metallicRoughness maps can sample `TEXCOORD_1`. N393:

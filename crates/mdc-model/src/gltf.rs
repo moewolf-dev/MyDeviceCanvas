@@ -239,17 +239,32 @@ impl GltfImporter {
             .and_then(Value::as_array)
             .unwrap_or(&empty);
         let resolve_texture = |tex_index: u64| -> Option<usize> {
-            textures_json
-                .get(tex_index as usize)
-                .and_then(|t| t.get("source"))
+            let texture = textures_json.get(tex_index as usize)?;
+            // N445: EXT_texture_webp supplies the image source when `source` is absent.
+            texture
+                .get("source")
                 .and_then(Value::as_u64)
+                .or_else(|| {
+                    texture
+                        .get("extensions")
+                        .and_then(|e| e.get("EXT_texture_webp"))
+                        .and_then(|w| w.get("source"))
+                        .and_then(Value::as_u64)
+                })
                 .map(|source| source as usize)
         };
 
         // N334: record the sampler wrap on the image-indexed texture.
         let samplers_json = doc.get("samplers").and_then(Value::as_array);
         for texture in textures_json {
-            let Some(source) = texture.get("source").and_then(Value::as_u64) else {
+            // N445: fall back to EXT_texture_webp's source.
+            let Some(source) = texture.get("source").and_then(Value::as_u64).or_else(|| {
+                texture
+                    .get("extensions")
+                    .and_then(|e| e.get("EXT_texture_webp"))
+                    .and_then(|w| w.get("source"))
+                    .and_then(Value::as_u64)
+            }) else {
                 continue;
             };
             let wrap = texture
@@ -2624,6 +2639,26 @@ mod tests {
         assert_eq!(material.specular_factor(), 0.25);
         assert_eq!(material.specular_color, Some([255, 128, 0]));
         assert!((material.ior() - 1.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ext_texture_webp_source_resolves() {
+        // N445: a texture with no `source` uses EXT_texture_webp's.
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "extensionsUsed": ["EXT_texture_webp"],
+            "images": [{"name": "w", "mimeType": "image/webp", "width": 1, "height": 1}],
+            "textures": [{"extensions": {"EXT_texture_webp": {"source": 0}}}],
+            "materials": [{"name": "m", "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "nodes": [{"name": "root", "mesh": 0}],
+            "accessors": [{"count": 4, "type": "VEC3"}]
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        assert_eq!(model.materials[0].texture, Some(0), "WebP image resolved");
+        assert_eq!(model.textures.len(), 1);
     }
 
     #[test]
