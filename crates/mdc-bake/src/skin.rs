@@ -1165,6 +1165,9 @@ struct SceneDrawable<'a> {
     /// N425: sheen strength (0 = none) and roughness.
     sheen: f32,
     sheen_roughness: f32,
+    /// N435: iridescence factor (0 = none) and its IOR.
+    iridescence: f32,
+    iridescence_ior: f32,
 }
 
 /// N327: default key light (straight down -z, i.e. toward +z-facing surfaces) and
@@ -1332,6 +1335,8 @@ fn draw_scene_sorted(
                     clearcoat_shininess: d.clearcoat_shininess,
                     sheen: d.sheen,
                     sheen_roughness: d.sheen_roughness,
+                    iridescence: d.iridescence,
+                    iridescence_ior: d.iridescence_ior,
                 }),
                 _ => None,
             },
@@ -1482,6 +1487,8 @@ pub fn render_scene_at(
             clearcoat_shininess: 1.0,
             sheen: 0.0,
             sheen_roughness: 0.0,
+            iridescence: 0.0,
+            iridescence_ior: 1.3,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -2130,12 +2137,19 @@ pub fn render_package_scene_clip_mode(
             .and_then(|mi| package.materials.get(mi))
             .map(|material| material.sheen())
             .unwrap_or((0.0, 0.0));
+        // N435: iridescence.
+        let (iridescence, iridescence_ior) = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .map(|material| material.iridescence())
+            .unwrap_or((0.0, 1.3));
         let per_pixel = (usable_normal_map
             || smooth
             || roughness_map.is_some()
             || occlusion_map.is_some()
             || clearcoat > 0.0
-            || sheen > 0.0)
+            || sheen > 0.0
+            || iridescence > 0.0)
             && has_normals;
         // N387: material-derived Blinn-Phong parameters for the specular mode.
         let (specular, shininess) = if mode == ShadeMode::SmoothSpecular {
@@ -2289,6 +2303,8 @@ pub fn render_package_scene_clip_mode(
             clearcoat_shininess,
             sheen,
             sheen_roughness,
+            iridescence,
+            iridescence_ior,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -3144,6 +3160,59 @@ mod tests {
     }
 
     #[test]
+    fn iridescence_tints_the_highlight() {
+        // N435: an iridescent material adds a coloured highlight.
+        let build = |iridescence: f32| Model {
+            source: "t".into(),
+            nodes: vec![Node {
+                name: "n".into(),
+                mesh: Some(0),
+                ..Node::default()
+            }],
+            meshes: vec![mdc_model::Mesh {
+                name: "q".into(),
+                vertices: 4,
+                indices: 6,
+                material: Some(0),
+                geometry: Some(mdc_model::MeshGeometry {
+                    normals: vec![[0.0, 0.0, 1.0]; 4],
+                    ..quad_geometry()
+                }),
+                ..mdc_model::Mesh::default()
+            }],
+            materials: vec![mdc_model::Material {
+                name: "coat".into(),
+                color: Some([64, 64, 64]),
+                iridescence_factor: Some(iridescence),
+                ..mdc_model::Material::default()
+            }],
+            ..Model::default()
+        };
+        let render = |iridescence: f32| {
+            let package = mdc_model::compile_to_package(
+                &build(iridescence),
+                &mdc_model::RendererCapability::full_3d(),
+            )
+            .unwrap();
+            render_package_scene(&package.package, 0.0, (16, 16)).unwrap()
+        };
+        let at = |frame: &BakedTexture| {
+            u16::from_le_bytes([
+                frame.rgb565[(8 * 16 + 8) * 2],
+                frame.rgb565[(8 * 16 + 8) * 2 + 1],
+            ])
+        };
+        let plain = at(&render(0.0));
+        let irid = at(&render(1.0));
+        assert!(
+            irid != plain,
+            "iridescence changes the pixel: {plain:#06x} -> {irid:#06x}"
+        );
+        // The highlight tints toward cyan head-on (blue/green rise).
+        assert!((irid & 0x1f) > (plain & 0x1f) || ((irid >> 5) & 0x3f) > ((plain >> 5) & 0x3f));
+    }
+
+    #[test]
     fn volume_thickness_fades_like_transmission() {
         // N434: a thick volume reads opaque even without an explicit transmission.
         let render = |thickness: f32, distance: f32| {
@@ -3167,6 +3236,8 @@ mod tests {
                     color: Some([255, 0, 0]),
                     volume_thickness: Some(thickness),
                     volume_attenuation_distance: Some(distance),
+                    iridescence_factor: None,
+                    iridescence_ior: None,
                     ..mdc_model::Material::default()
                 }],
                 ..Model::default()
@@ -3213,6 +3284,8 @@ mod tests {
                     transmission: Some(transmission),
                     volume_thickness: None,
                     volume_attenuation_distance: None,
+                    iridescence_factor: None,
+                    iridescence_ior: None,
                     ..mdc_model::Material::default()
                 }],
                 ..Model::default()

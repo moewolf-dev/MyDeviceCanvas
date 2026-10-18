@@ -299,7 +299,9 @@ N426: `KHR_materials_transmission` folds into the blend alpha
 background. N433: `KHR_materials_variants` per-primitive `mappings` are imported
 (`Mesh.variant_materials`) and `mdc package --variant NAME` swaps in that variant's
 materials (`Model::variant_materials`). N434: `KHR_materials_volume`
-(`thicknessFactor` over `attenuationDistance`) deepens the transmission fade. N403: `texCoord` is
+(`thicknessFactor` over `attenuationDistance`) deepens the transmission fade.
+N435: `KHR_materials_iridescence` adds a thin-film highlight, its hue shifting with
+the view angle and IOR. N403: `texCoord` is
 honoured per slot — `Material.uv_set` selects the base-colour UV set and
 `uv_set2` (defaulting to `uv_set`) selects the secondary maps' set, so normal/
 occlusion/emissive/metallicRoughness maps can sample `TEXCOORD_1`. N393:

@@ -891,6 +891,8 @@ fn packaged_masked_texture_cuts_out_on_render() {
             transmission: None,
             volume_thickness: None,
             volume_attenuation_distance: None,
+            iridescence_factor: None,
+            iridescence_ior: None,
         }],
         lights: Vec::new(),
         skeletons: Vec::new(),
@@ -992,6 +994,8 @@ fn masked_material_cuts_out_transparent_texels() {
             transmission: None,
             volume_thickness: None,
             volume_attenuation_distance: None,
+            iridescence_factor: None,
+            iridescence_ior: None,
         }],
         ..Model::default()
     };
@@ -1666,6 +1670,8 @@ fn unlit_material_and_vertex_colours_render_on_the_device() {
                 transmission: None,
                 volume_thickness: None,
                 volume_attenuation_distance: None,
+                iridescence_factor: None,
+                iridescence_ior: None,
                 ..Material::default()
             }],
             ..Model::default()
@@ -1784,6 +1790,8 @@ fn occlusion_texture_darkens_the_shadowed_triangles() {
             transmission: None,
             volume_thickness: None,
             volume_attenuation_distance: None,
+            iridescence_factor: None,
+            iridescence_ior: None,
             ..Material::default()
         }],
         textures: vec![
@@ -1933,6 +1941,8 @@ fn normal_map_perturbs_per_pixel_shading() {
             transmission: None,
             volume_thickness: None,
             volume_attenuation_distance: None,
+            iridescence_factor: None,
+            iridescence_ior: None,
             ..Material::default()
         }],
         textures: vec![
@@ -3025,6 +3035,8 @@ fn clearcoat_adds_a_second_highlight() {
             transmission: None,
             volume_thickness: None,
             volume_attenuation_distance: None,
+            iridescence_factor: None,
+            iridescence_ior: None,
             ..Material::default()
         }],
         ..Model::default()
@@ -3173,6 +3185,8 @@ fn sheen_adds_a_rim_highlight() {
             transmission: None,
             volume_thickness: None,
             volume_attenuation_distance: None,
+            iridescence_factor: None,
+            iridescence_ior: None,
             ..Material::default()
         }],
         ..Model::default()

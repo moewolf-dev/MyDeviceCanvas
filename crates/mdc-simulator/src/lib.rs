@@ -4415,6 +4415,8 @@ mod tests {
                 transmission: None,
                 volume_thickness: None,
                 volume_attenuation_distance: None,
+                iridescence_factor: None,
+                iridescence_ior: None,
             }],
             lights: Vec::new(),
             skeletons: Vec::new(),

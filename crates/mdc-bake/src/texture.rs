@@ -469,6 +469,9 @@ pub(crate) struct NormalMap<'a> {
     /// N425: sheen strength (0 = none) and roughness.
     pub sheen: f32,
     pub sheen_roughness: f32,
+    /// N435: iridescence factor (0 = none) and its IOR.
+    pub iridescence: f32,
+    pub iridescence_ior: f32,
 }
 
 /// N393: an additive emissive texture layered on top of the shaded colour.
@@ -477,6 +480,17 @@ pub(crate) struct EmissiveMap<'a> {
     pub strength: f32,
     /// N395: the emissive texture's own UV transform.
     pub uv_transform: mdc_model::UvTransform,
+}
+
+/// N435: per-channel RGB565 interpolation (`t = 0` -> `a`, `255` -> `b`).
+fn lerp_rgb565(a: u16, b: u16, t: u8) -> u16 {
+    let mix = |av: u16, bv: u16| -> u16 {
+        ((u32::from(av) * u32::from(255 - t) + u32::from(bv) * u32::from(t)) / 255) as u16
+    };
+    let r = mix((a >> 11) & 0x1f, (b >> 11) & 0x1f) << 11;
+    let g = mix((a >> 5) & 0x3f, (b >> 5) & 0x3f) << 5;
+    let bl = mix(a & 0x1f, b & 0x1f);
+    r | g | bl
 }
 
 /// N387: saturating per-channel RGB565 add (for an additive specular term).
@@ -584,6 +598,17 @@ pub(crate) fn apply_normal_map(
         let spec = nm.clearcoat * v3_dot(n, half).max(0.0).powf(nm.clearcoat_shininess);
         if spec > 0.0 {
             value = rgb565_add(value, rgb565_scale(0xFFFF, spec.clamp(0.0, 1.0)));
+        }
+    }
+    // N435: an iridescent thin-film highlight, hue-shifted by the view angle.
+    if nm.iridescence > 0.0 {
+        let half = v3_normalize([nm.light[0], nm.light[1], nm.light[2] + 1.0]);
+        let spec = nm.iridescence * v3_dot(world, half).max(0.0).powf(24.0);
+        if spec > 0.0 {
+            // Magenta at grazing angles, cyan head-on (IOR shifts the balance).
+            let t = ((n[2] * 0.5 + 0.5) * (nm.iridescence_ior / 1.3)).clamp(0.0, 1.0);
+            let tint = lerp_rgb565(0xF81F, 0x07FF, (t * 255.0) as u8);
+            value = rgb565_add(value, rgb565_scale(tint, spec.clamp(0.0, 1.0)));
         }
     }
     // N425: a sheen rim highlight (view is +z).

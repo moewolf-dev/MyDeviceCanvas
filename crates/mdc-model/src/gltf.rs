@@ -445,6 +445,16 @@ impl GltfImporter {
                 .and_then(|v| v.get("attenuationDistance"))
                 .and_then(Value::as_f64)
                 .map(|v| v.max(0.0) as f32);
+            // N435: KHR_materials_iridescence.
+            let iridescence_ext = material_ext.and_then(|e| e.get("KHR_materials_iridescence"));
+            let iridescence_factor = iridescence_ext
+                .and_then(|i| i.get("iridescenceFactor"))
+                .and_then(Value::as_f64)
+                .map(|v| v.clamp(0.0, 1.0) as f32);
+            let iridescence_ior = iridescence_ext
+                .and_then(|i| i.get("iridescenceIor"))
+                .and_then(Value::as_f64)
+                .map(|v| v.clamp(1.0, 3.0) as f32);
             // N379: normalTexture (tangent-space normal map).
             let normal_texture = material
                 .get("normalTexture")
@@ -537,6 +547,8 @@ impl GltfImporter {
                 transmission,
                 volume_thickness,
                 volume_attenuation_distance,
+                iridescence_factor,
+                iridescence_ior,
             });
         }
 

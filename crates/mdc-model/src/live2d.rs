@@ -284,6 +284,8 @@ impl Live2DImporter {
                 transmission: None,
                 volume_thickness: None,
                 volume_attenuation_distance: None,
+                iridescence_factor: None,
+                iridescence_ior: None,
             });
             nodes.push(Node {
                 name: name.clone(),

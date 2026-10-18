@@ -406,6 +406,12 @@ pub struct Material {
     /// N434: `KHR_materials_volume` `attenuationDistance` (default infinite).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume_attenuation_distance: Option<f32>,
+    /// N435: `KHR_materials_iridescence` `iridescenceFactor` (0..1; default 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iridescence_factor: Option<f32>,
+    /// N435: `KHR_materials_iridescence` `iridescenceIor` (default 1.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iridescence_ior: Option<f32>,
 }
 
 /// N373: glTF `KHR_texture_transform`. `rotation` is in radians; the transform is
@@ -606,6 +612,14 @@ impl Material {
             return 0.0;
         }
         (thickness / distance).clamp(0.0, 1.0)
+    }
+
+    /// N435: `KHR_materials_iridescence` factor and index of refraction.
+    pub fn iridescence(&self) -> (f32, f32) {
+        (
+            self.iridescence_factor.unwrap_or(0.0).clamp(0.0, 1.0),
+            self.iridescence_ior.unwrap_or(1.3).clamp(1.0, 3.0),
+        )
     }
 }
 
