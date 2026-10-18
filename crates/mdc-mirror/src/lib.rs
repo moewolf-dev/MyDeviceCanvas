@@ -1433,11 +1433,42 @@ fn scaled_frame<'a>(frame: &'a ServedFrame, query: &str) -> (u16, u16, std::borr
         (rw, rh, std::borrow::Cow::Owned(rotated))
     };
     // N469: `?crop=x,y,w,h` selects a sub-rectangle of the (scaled/rotated) frame.
-    if let Some((cx, cy, cw, ch)) = query_crop(query) {
-        let (cw, ch, cropped) = crop_bgra(w, h, &raw, cx, cy, cw, ch);
-        return (cw, ch, std::borrow::Cow::Owned(cropped));
+    let (w, h, raw) = match query_crop(query) {
+        Some((cx, cy, cw, ch)) => {
+            let (cw, ch, cropped) = crop_bgra(w, h, &raw, cx, cy, cw, ch);
+            (cw, ch, std::borrow::Cow::Owned(cropped))
+        }
+        None => (w, h, raw),
+    };
+    // N486: `?flip=h|v|hv` mirrors the frame.
+    let flip = query_param(query, "flip").unwrap_or_default();
+    let (horizontal, vertical) = (flip.contains('h'), flip.contains('v'));
+    if horizontal || vertical {
+        return (
+            w,
+            h,
+            std::borrow::Cow::Owned(flip_bgra(w, h, &raw, horizontal, vertical)),
+        );
     }
     (w, h, raw)
+}
+
+/// N486: mirror a BGRA frame horizontally and/or vertically.
+fn flip_bgra(width: u16, height: u16, bytes: &[u8], horizontal: bool, vertical: bool) -> Vec<u8> {
+    let (w, h) = (usize::from(width), usize::from(height));
+    let mut out = vec![0u8; bytes.len()];
+    for y in 0..h {
+        for x in 0..w {
+            let src = (y * w + x) * 4;
+            let dx = if horizontal { w - 1 - x } else { x };
+            let dy = if vertical { h - 1 - y } else { y };
+            let dst = (dy * w + dx) * 4;
+            if let (Some(s), Some(d)) = (bytes.get(src..src + 4), out.get_mut(dst..dst + 4)) {
+                d.copy_from_slice(s);
+            }
+        }
+    }
+    out
 }
 
 /// N469: parse `crop=x,y,w,h`.
@@ -2349,6 +2380,22 @@ mod tests {
             .expect("BMP part");
         let width = u32::from_le_bytes(response[start + 18..start + 22].try_into().unwrap());
         assert_eq!(width, 1, "the streamed part is downscaled");
+    }
+
+    #[test]
+    fn flip_bgra_mirrors_axes() {
+        // N486: horizontal flip swaps the columns; vertical swaps the rows.
+        let bytes: Vec<u8> = (1u8..=16).collect();
+        let h_flip = flip_bgra(2, 2, &bytes, true, false);
+        assert_eq!(
+            h_flip,
+            vec![5, 6, 7, 8, 1, 2, 3, 4, 13, 14, 15, 16, 9, 10, 11, 12]
+        );
+        let v_flip = flip_bgra(2, 2, &bytes, false, true);
+        assert_eq!(&v_flip[0..8], &[9, 10, 11, 12, 13, 14, 15, 16]);
+        // Both flips is a 180-degree rotation: bottom-right moves to top-left.
+        let both = flip_bgra(2, 2, &bytes, true, true);
+        assert_eq!(&both[0..4], &[13, 14, 15, 16]);
     }
 
     #[test]
