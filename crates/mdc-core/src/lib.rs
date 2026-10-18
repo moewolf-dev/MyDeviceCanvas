@@ -1701,7 +1701,10 @@ impl<T: Transport> Session<T> {
     /// N54: set a vector scene, gated on the device's advertised scene limits.
     pub fn set_scene(&mut self, scene: mdc_protocol::SceneNode) -> Result<u32, CoreError> {
         let caps = self.scene_gate()?;
-        if scene.count() > caps.max_nodes || scene.depth() > caps.max_depth {
+        if scene.count() > caps.max_nodes
+            || scene.depth() > caps.max_depth
+            || scene.anim_keys() > caps.max_anim_keys
+        {
             return Err(CoreError::TooLarge);
         }
         let command = mdc_protocol::SceneCommand {
@@ -4688,6 +4691,53 @@ mod tests {
             session.stats().mirror_frames,
             session.stats().pacing_dropped,
         );
+    }
+
+    #[test]
+    fn set_scene_gates_on_the_animation_budget() {
+        // N477: a scene with more keys than the device allows is refused.
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        let mut advertised = caps();
+        advertised.scene = mdc_protocol::SceneCapability::enabled_with_animation(64, 4, 1);
+        let hello = Packet::decode(&device.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: hello.request_id,
+                    payload: encode_control(&advertised).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        assert_eq!(session.state, ConnectionState::Ready);
+        let scene = |keys: u64| mdc_protocol::SceneNode {
+            name: "root".into(),
+            kind: "rect".into(),
+            rect: Some([0, 0, 2, 2]),
+            value: Some("#fff".into()),
+            value2: None,
+            opacity: None,
+            visible: None,
+            rotate: None,
+            anim: Some(mdc_protocol::SceneAnim {
+                duration_ms: 100,
+                looping: true,
+                opacity: (0..keys).map(|k| [k as u16, 128]).collect(),
+                rect: Vec::new(),
+            }),
+            children: Vec::new(),
+        };
+        assert!(session.set_scene(scene(1)).is_ok(), "one key fits");
+        assert_eq!(session.set_scene(scene(2)), Err(CoreError::TooLarge));
     }
 
     #[test]

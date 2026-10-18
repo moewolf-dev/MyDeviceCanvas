@@ -444,12 +444,24 @@ pub struct Capabilities {
 pub struct SceneCapability {
     pub max_nodes: u32,
     pub max_depth: u32,
+    /// N477: animation keyframes accepted across the whole scene.
+    #[serde(default)]
+    pub max_anim_keys: u32,
 }
 impl SceneCapability {
     pub fn enabled(max_nodes: u32, max_depth: u32) -> Self {
         Self {
             max_nodes,
             max_depth,
+            max_anim_keys: SCENE_MAX_ANIM_KEYS,
+        }
+    }
+    /// N477: enable scene animation with an explicit keyframe budget.
+    pub fn enabled_with_animation(max_nodes: u32, max_depth: u32, max_anim_keys: u32) -> Self {
+        Self {
+            max_nodes,
+            max_depth,
+            max_anim_keys,
         }
     }
     pub fn is_disabled(&self) -> bool {
@@ -589,6 +601,8 @@ pub fn apply_scene_animation(node: &mut SceneNode, time_ms: u64) {
 /// `SceneCapability`).
 pub const SCENE_MAX_NODES: u32 = 512;
 pub const SCENE_MAX_DEPTH: u32 = 16;
+/// N477: the default animation-keyframe budget for a scene.
+pub const SCENE_MAX_ANIM_KEYS: u32 = 256;
 
 /// N417: the result of linting a scene tree.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -680,6 +694,18 @@ impl SceneNode {
         for child in &self.children {
             child.lint_into(report, names);
         }
+    }
+
+    /// N477: animation keyframes across the tree (opacity + rect).
+    pub fn anim_keys(&self) -> u32 {
+        let own = self
+            .anim
+            .as_ref()
+            .map(|anim| (anim.opacity.len() + anim.rect.len()) as u32)
+            .unwrap_or(0);
+        self.children
+            .iter()
+            .fold(own, |total, child| total.saturating_add(child.anim_keys()))
     }
 
     /// Total node count including this one.
