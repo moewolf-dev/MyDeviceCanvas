@@ -242,6 +242,45 @@ public final class MdcSession {
         }
     }
 
+    /// N447: the host-side session counters.
+    public struct Stats {
+        public let packetsSent: UInt64
+        public let bytesSent: UInt64
+        public let bytesReceived: UInt64
+        public let acksReceived: UInt64
+        public let framesSent: UInt64
+        public let droppedFrames: UInt64
+    }
+
+    public func stats() -> Stats? {
+        guard let raw else { return nil }
+        var packetsSent: UInt64 = 0
+        var bytesSent: UInt64 = 0
+        var bytesReceived: UInt64 = 0
+        var acksReceived: UInt64 = 0
+        var framesSent: UInt64 = 0
+        var droppedFrames: UInt64 = 0
+        guard mdc_session_stats(
+            raw,
+            &packetsSent,
+            &bytesSent,
+            &bytesReceived,
+            &acksReceived,
+            &framesSent,
+            &droppedFrames
+        ) == 0 else {
+            return nil
+        }
+        return Stats(
+            packetsSent: packetsSent,
+            bytesSent: bytesSent,
+            bytesReceived: bytesReceived,
+            acksReceived: acksReceived,
+            framesSent: framesSent,
+            droppedFrames: droppedFrames
+        )
+    }
+
     /// N409: send a pointer event from the host to the device (requires the
     /// `touch` capability). Returns 0 on success.
     public func sendInput(

@@ -102,6 +102,12 @@ struct MdcSwiftHello {
         }
         gpu.close()
 
+        // N447: the host-side session counters are readable.
+        guard let stats = session.stats(), stats.packetsSent >= 1 else {
+            fputs("session stats unavailable\n", stderr)
+            exit(1)
+        }
+
         // N409: the host can send a pointer event to a touch-capable device.
         if session.sendInput(pointerId: 1, phase: "down", x: 3, y: 4) != 0 {
             fputs("sendInput failed\n", stderr)
