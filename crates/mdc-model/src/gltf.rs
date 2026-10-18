@@ -19,6 +19,125 @@ const GLB_CHUNK_BIN: u32 = 0x004E_4942;
 /// N123: most morph targets imported per mesh (a preview budget, not a promise).
 pub const MAX_MORPH_TARGETS: usize = 16;
 
+/// N503: extensions the importer recognises but does not decode. A model that
+/// requires one of these is rejected instead of silently reading raw bytes as
+/// geometry.
+pub const RESERVED_EXTENSIONS: [&str; 3] = [
+    "EXT_meshopt_compression",
+    "KHR_draco_mesh_compression",
+    "KHR_texture_basisu",
+];
+
+/// N503: the reserved extensions a glTF document references, in first-seen order.
+/// Checks `extensionsRequired`/`extensionsUsed` and the per-object extensions on
+/// bufferViews and images.
+pub fn reserved_extensions(document: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |name: &str| {
+        if RESERVED_EXTENSIONS.contains(&name) && !out.iter().any(|seen| seen == name) {
+            out.push(name.to_string());
+        }
+    };
+    for key in ["extensionsRequired", "extensionsUsed"] {
+        for name in document
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            push(name);
+        }
+    }
+    for key in ["bufferViews", "images"] {
+        for object in document
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            for name in object
+                .get("extensions")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flat_map(|map| map.keys())
+            {
+                push(name);
+            }
+        }
+    }
+    out
+}
+
+/// N503: reserved extensions referenced by a raw glTF/GLB document.
+pub fn reserved_extensions_in_bytes(bytes: &[u8]) -> Vec<String> {
+    let Ok((json, _)) = split_container(bytes) else {
+        return Vec::new();
+    };
+    match serde_json::from_slice::<Value>(json) {
+        Ok(document) => reserved_extensions(&document),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// N503: reject a document that needs a reserved extension we cannot decode.
+fn check_reserved_extensions(doc: &Value) -> Result<(), ModelError> {
+    for name in doc
+        .get("extensionsRequired")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if RESERVED_EXTENSIONS.contains(&name) {
+            return Err(ModelError::Unsupported(format!(
+                "required extension {name} is not supported"
+            )));
+        }
+    }
+    for (index, view) in doc
+        .get("bufferViews")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        for name in view
+            .get("extensions")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|map| map.keys())
+        {
+            if RESERVED_EXTENSIONS.contains(&name.as_str()) {
+                return Err(ModelError::Unsupported(format!(
+                    "bufferView {index} uses {name} (compressed buffers are not decoded)"
+                )));
+            }
+        }
+    }
+    for (index, image) in doc
+        .get("images")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        for name in image
+            .get("extensions")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|map| map.keys())
+        {
+            if RESERVED_EXTENSIONS.contains(&name.as_str()) {
+                return Err(ModelError::Unsupported(format!(
+                    "image {index} uses {name} (compressed textures are not decoded)"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
 struct BufferView {
     buffer: u64,
@@ -53,6 +172,8 @@ impl GltfImporter {
                 return Err(ModelError::Unsupported(format!("glTF version {version}")));
             }
         }
+        // N503: fail loudly on compressed buffers/textures we do not decode.
+        check_reserved_extensions(&doc)?;
 
         let empty = Vec::new();
         let buffers = resolve_buffers(&doc, bin, limits.max_input_bytes)?;
@@ -3493,6 +3614,68 @@ mod tests {
         // N323: the embedded bytes are retained for the compiler.
         assert_eq!(model.embedded_texture(0), Some(jpeg.as_slice()));
         assert_eq!(model.embedded_texture(1), None);
+    }
+
+    #[test]
+    fn reserved_extensions_are_detected_and_rejected() {
+        // N503: a document that needs a compressed extension fails loudly.
+        let meshopt = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "extensionsRequired": ["EXT_meshopt_compression"],
+            "extensionsUsed": ["EXT_meshopt_compression"],
+            "buffers": [{"byteLength": 8}],
+        });
+        let bytes = serde_json::to_vec(&meshopt).unwrap();
+        assert_eq!(
+            reserved_extensions_in_bytes(&bytes),
+            vec!["EXT_meshopt_compression".to_string()]
+        );
+        let error = GltfImporter
+            .import(&bytes, &ImportLimits::default())
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("EXT_meshopt_compression"),
+            "{error}"
+        );
+        // A bufferView-level use is rejected even without `extensionsRequired`.
+        let view_level = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": 16}],
+            "bufferViews": [{
+                "buffer": 0,
+                "byteLength": 16,
+                "extensions": {"KHR_draco_mesh_compression": {"bufferView": 0}},
+            }],
+        });
+        let bytes = serde_json::to_vec(&view_level).unwrap();
+        assert_eq!(
+            reserved_extensions_in_bytes(&bytes),
+            vec!["KHR_draco_mesh_compression".to_string()]
+        );
+        let error = GltfImporter
+            .import(&bytes, &ImportLimits::default())
+            .unwrap_err();
+        assert!(error.to_string().contains("draco"), "{error}");
+        // A KTX2 image is rejected too.
+        let ktx2 = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "images": [{"mimeType": "image/ktx2", "extensions": {"KHR_texture_basisu": {"source": 0}}}],
+        });
+        let bytes = serde_json::to_vec(&ktx2).unwrap();
+        let error = GltfImporter
+            .import(&bytes, &ImportLimits::default())
+            .unwrap_err();
+        assert!(error.to_string().contains("basisu"), "{error}");
+        // Merely *using* an unrelated extension is fine and reports nothing.
+        let benign = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "extensionsUsed": ["KHR_materials_unlit"],
+        });
+        let bytes = serde_json::to_vec(&benign).unwrap();
+        assert!(reserved_extensions_in_bytes(&bytes).is_empty());
+        assert!(GltfImporter
+            .import(&bytes, &ImportLimits::default())
+            .is_ok());
     }
 
     #[test]

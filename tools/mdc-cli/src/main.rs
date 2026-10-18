@@ -3459,12 +3459,19 @@ fn cmd_model_info(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
     let bytes = std::fs::read(&path)?;
     let limits = mdc_model::ImportLimits::default();
+    // N503: report reserved (undecoded) extensions before importing, so a
+    // compressed asset is explained rather than only failing.
+    let reserved = mdc_model::reserved_extensions_in_bytes(&bytes);
     let model = if path.to_ascii_lowercase().ends_with(".json") {
         mdc_model::Live2DImporter.import(&bytes, &limits)?
     } else {
         mdc_model::GltfImporter.import(&bytes, &limits)?
     };
-    println!("{}", serde_json::to_string_pretty(&model.summary())?);
+    let mut summary = serde_json::to_value(model.summary())?;
+    if let Some(map) = summary.as_object_mut() {
+        map.insert("reserved_extensions".into(), serde_json::json!(reserved));
+    }
+    println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
 }
 

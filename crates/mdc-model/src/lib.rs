@@ -22,7 +22,9 @@ pub use backend::{
     Esp32PlaneBackend, LinuxMeshBackend, PackageMode, RendererCapability, TargetBackend,
     TextureBlob, TextureMip,
 };
-pub use gltf::GltfImporter;
+pub use gltf::{
+    reserved_extensions, reserved_extensions_in_bytes, GltfImporter, RESERVED_EXTENSIONS,
+};
 pub use ir::{
     Animation, AnimationTrack, Camera, ImportLimits, Layer, Light, Material, Mesh, MeshGeometry,
     Model, ModelError, ModelSummary, Node, Skeleton, Sprite, Texture, UvTransform,
