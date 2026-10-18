@@ -19,6 +19,10 @@ const GLB_CHUNK_BIN: u32 = 0x004E_4942;
 /// N123: most morph targets imported per mesh (a preview budget, not a promise).
 pub const MAX_MORPH_TARGETS: usize = 16;
 
+/// N513: most `EXT_mesh_gpu_instancing` instances expanded per node (a preview
+/// budget; the group keeps the node transform and each instance its own TRS).
+pub const MAX_INSTANCES: usize = 64;
+
 /// N503: extensions the importer recognises but does not decode. A model that
 /// requires one of these is rejected instead of silently reading raw bytes as
 /// geometry.
@@ -279,6 +283,30 @@ impl GltfImporter {
             .collect();
         let accessor_bytes = |index: u64| -> Option<&[u8]> {
             resolved.get(index as usize).and_then(|b| b.as_deref())
+        };
+
+        // N513: read a whole accessor as `f32` vectors (for instancing TRS).
+        let read_accessor_f32 = |index: u64, components: usize| -> Option<Vec<Vec<f32>>> {
+            let accessor = accessors.get(index as usize)?;
+            let component = accessor.get("componentType").and_then(Value::as_u64)?;
+            let normalized = accessor
+                .get("normalized")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let count = accessor.get("count").and_then(Value::as_u64)? as usize;
+            let component_size = accessor_component_size(component)?;
+            let bytes = accessor_bytes(index)?;
+            let element = component_size.checked_mul(components)?;
+            let mut out = Vec::with_capacity(count);
+            for k in 0..count {
+                let mut values = Vec::with_capacity(components);
+                for c in 0..components {
+                    let offset = k.checked_mul(element)?.checked_add(c * component_size)?;
+                    values.push(read_component(bytes, offset, component, normalized)?);
+                }
+                out.push(values);
+            }
+            Some(out)
         };
 
         // Accessor count is validated against its bufferView before use.
@@ -1003,6 +1031,85 @@ impl GltfImporter {
                 rotation,
                 scale,
             });
+        }
+
+        // N513: `EXT_mesh_gpu_instancing` turns a node into a group that carries
+        // the node transform, with one child per instance. Instances are appended
+        // so no existing node index (children/scene roots) shifts.
+        for index in 0..nodes_json.len() {
+            let Some(attributes) = nodes_json
+                .get(index)
+                .and_then(|node| node.get("extensions"))
+                .and_then(|ext| ext.get("EXT_mesh_gpu_instancing"))
+                .and_then(|instancing| instancing.get("attributes"))
+            else {
+                continue;
+            };
+            let attribute = |key: &str| attributes.get(key).and_then(Value::as_u64);
+            let (translation_attr, rotation_attr, scale_attr) = (
+                attribute("TRANSLATION"),
+                attribute("ROTATION"),
+                attribute("SCALE"),
+            );
+            let count = [translation_attr, rotation_attr, scale_attr]
+                .into_iter()
+                .flatten()
+                .filter_map(|attr| {
+                    accessors
+                        .get(attr as usize)
+                        .and_then(|a| a.get("count"))
+                        .and_then(Value::as_u64)
+                })
+                .max()
+                .unwrap_or(0) as usize;
+            let count = count.min(MAX_INSTANCES);
+            if count == 0 {
+                continue;
+            }
+            let mesh = nodes_json
+                .get(index)
+                .and_then(|node| node.get("mesh"))
+                .and_then(Value::as_u64)
+                .map(|v| v as usize);
+            let translations = translation_attr.and_then(|attr| read_accessor_f32(attr, 3));
+            let rotations = rotation_attr.and_then(|attr| read_accessor_f32(attr, 4));
+            let scales = scale_attr.and_then(|attr| read_accessor_f32(attr, 3));
+            let base_name = nodes[index].name.clone();
+            // The original node becomes a mesh-less group holding the transform.
+            nodes[index].mesh = None;
+            for k in 0..count {
+                let vec3 = |values: &Option<Vec<Vec<f32>>>, default: [f32; 3]| -> [f32; 3] {
+                    values
+                        .as_ref()
+                        .and_then(|list| list.get(k))
+                        .and_then(|v| v.get(0..3))
+                        .map(|v| [v[0], v[1], v[2]])
+                        .unwrap_or(default)
+                };
+                let rotation = rotations
+                    .as_ref()
+                    .and_then(|list| list.get(k))
+                    .and_then(|v| v.get(0..4))
+                    .map(|v| [v[0], v[1], v[2], v[3]])
+                    .unwrap_or([0.0, 0.0, 0.0, 1.0]);
+                nodes.push(Node {
+                    name: format!("{base_name}_instance{k}"),
+                    mesh,
+                    children: Vec::new(),
+                    translation: vec3(&translations, [0.0, 0.0, 0.0]),
+                    rotation,
+                    scale: vec3(&scales, [1.0, 1.0, 1.0]),
+                });
+                let child = nodes.len() - 1;
+                nodes[index].children.push(child);
+            }
+        }
+        if nodes.len() > limits.max_nodes {
+            return Err(ModelError::Budget(format!(
+                "{} nodes (with instances) over {} limit",
+                nodes.len(),
+                limits.max_nodes
+            )));
         }
 
         // N375: when `scenes` is declared, only the default scene's nodes are
@@ -3614,6 +3721,57 @@ mod tests {
         // N323: the embedded bytes are retained for the compiler.
         assert_eq!(model.embedded_texture(0), Some(jpeg.as_slice()));
         assert_eq!(model.embedded_texture(1), None);
+    }
+
+    #[test]
+    fn gpu_instancing_expands_into_instance_children() {
+        // N513: EXT_mesh_gpu_instancing expands one node into per-instance
+        // children, keeping the node's own transform on the group.
+        // Three TRANSLATION vec3s (0,0,0) (2,0,0) (4,0,0) as f32.
+        let mut bin = Vec::new();
+        for x in [0.0f32, 2.0, 4.0] {
+            bin.extend_from_slice(&x.to_le_bytes());
+            bin.extend_from_slice(&0.0f32.to_le_bytes());
+            bin.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        let document = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "extensionsUsed": ["EXT_mesh_gpu_instancing"],
+            "buffers": [{"byteLength": bin.len()}],
+            "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": bin.len()}],
+            "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "nodes": [{
+                "name": "tile",
+                "mesh": 0,
+                "translation": [10.0, 0.0, 0.0],
+                "extensions": {
+                    "EXT_mesh_gpu_instancing": {"attributes": {"TRANSLATION": 0}}
+                }
+            }],
+            "scenes": [{"nodes": [0]}],
+            "scene": 0,
+        });
+        let bytes = glb(serde_json::to_vec(&document).unwrap().as_slice(), &bin);
+        let model = GltfImporter
+            .import(&bytes, &ImportLimits::default())
+            .unwrap();
+        // The original node is a mesh-less group carrying the node transform.
+        assert_eq!(model.nodes[0].mesh, None);
+        assert_eq!(model.nodes[0].translation, [10.0, 0.0, 0.0]);
+        // Three instances were appended as children.
+        assert_eq!(model.nodes[0].children.len(), 3);
+        assert_eq!(model.nodes.len(), 4);
+        for (k, child) in model.nodes[0].children.iter().enumerate() {
+            let instance = &model.nodes[*child];
+            assert_eq!(instance.mesh, Some(0), "instance carries the mesh");
+            assert_eq!(instance.translation, [k as f32 * 2.0, 0.0, 0.0]);
+            assert_eq!(instance.rotation, [0.0, 0.0, 0.0, 1.0]);
+            assert_eq!(instance.scale, [1.0, 1.0, 1.0]);
+            assert!(instance.name.ends_with(&format!("_instance{k}")));
+        }
+        // The expansion is bounded.
+        assert_eq!(MAX_INSTANCES, 64);
     }
 
     #[test]
