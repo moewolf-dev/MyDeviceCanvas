@@ -1874,6 +1874,7 @@ pub fn pack_material_atlas(package: &mut mdc_model::DevicePackage, max_page: u32
         alpha: if has_alpha { page_alpha } else { Vec::new() },
         palette: Vec::new(),
         indices: Vec::new(),
+        mips: Vec::new(),
     }];
     package.texture = package.texture_blobs.first().cloned();
     true
@@ -3696,6 +3697,7 @@ mod tests {
             alpha: Vec::new(),
             palette: Vec::new(),
             indices: Vec::new(),
+            mips: Vec::new(),
         };
         package.texture_blobs = vec![
             blob(vec![0x00, 0xF8, 0xE0, 0x07]), // red, green

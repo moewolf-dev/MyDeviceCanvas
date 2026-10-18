@@ -623,6 +623,7 @@ fn textured_mesh_package_soak_is_bounded() {
         alpha: Vec::new(),
         palette: Vec::new(),
         indices: Vec::new(),
+        mips: Vec::new(),
     };
     let caps = mdc_model::RendererCapability::full_3d();
     let mut size = 0usize;
@@ -1765,6 +1766,7 @@ fn indexed_texture_blobs_survive_a_package_round_trip() {
         alpha: Vec::new(),
         palette: Vec::new(),
         indices: Vec::new(),
+        mips: Vec::new(),
     };
     for _ in 0..50 {
         let dithered = mdc_bake::dither_texture_blob(&blob, 4);
@@ -1879,6 +1881,7 @@ fn pbr_textured_rendering_stays_bounded() {
         alpha: Vec::new(),
         palette: Vec::new(),
         indices: Vec::new(),
+        mips: Vec::new(),
     };
     package.package.texture_blobs = vec![blob.clone(), blob.clone(), blob.clone(), blob.clone()];
     package.package.texture = Some(blob);
@@ -1969,6 +1972,7 @@ fn material_atlas_pack_stays_within_the_page() {
             alpha: Vec::new(),
             palette: Vec::new(),
             indices: Vec::new(),
+            mips: Vec::new(),
         }
     };
     for _ in 0..200 {

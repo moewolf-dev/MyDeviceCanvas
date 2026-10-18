@@ -815,6 +815,7 @@ fn material_colour_tints_the_package_texture_on_the_device() {
             alpha: Vec::new(),
             palette: Vec::new(),
             indices: Vec::new(),
+            mips: Vec::new(),
         }),
         texture_blobs: Vec::new(),
     };
@@ -938,6 +939,7 @@ fn packaged_masked_texture_cuts_out_on_render() {
             alpha: vec![0b01],
             palette: Vec::new(),
             indices: Vec::new(),
+            mips: Vec::new(),
         }),
         texture_blobs: Vec::new(),
     };
@@ -3221,6 +3223,7 @@ fn indexed_texture_blob_renders_on_the_device() {
         alpha: Vec::new(),
         palette: Vec::new(),
         indices: Vec::new(),
+        mips: Vec::new(),
     };
     let indexed = mdc_bake::index_texture_blob(&blob, 2);
     assert!(indexed.is_indexed());
@@ -3634,6 +3637,7 @@ fn textured_geometry_package_renders_on_the_device() {
         alpha: Vec::new(),
         palette: Vec::new(),
         indices: Vec::new(),
+        mips: Vec::new(),
     };
     let package = DevicePackage {
         target: "linux-mesh".into(),

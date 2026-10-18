@@ -505,6 +505,7 @@ fn cmd_package(
     let mut tangents = false;
     let mut variant: Option<String> = None;
     let mut report = false;
+    let mut texture_mips: usize = 0;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -524,6 +525,10 @@ fn cmd_package(
             "--variant" => variant = iter.next().cloned(),
             // N458: print an extended compile report.
             "--report" => report = true,
+            // N490: attach a mip chain to each texture blob.
+            "--texture-mips" => {
+                texture_mips = iter.next().and_then(|v| v.parse().ok()).unwrap_or(8)
+            }
             other => out = Some(other.to_string()),
         }
     }
@@ -587,6 +592,22 @@ fn cmd_package(
         }
     };
     let texture_error: Option<String> = None;
+    // N490: optionally attach a mip chain to the textures.
+    let package = if texture_mips >= 2 {
+        let mut inner = package.package.clone();
+        inner.texture_blobs = inner
+            .texture_blobs
+            .iter()
+            .map(|blob| mdc_bake::mip_texture_blob(blob, texture_mips, false))
+            .collect();
+        inner.texture = inner
+            .texture
+            .as_ref()
+            .map(|blob| mdc_bake::mip_texture_blob(blob, texture_mips, false));
+        mdc_model::MdcPackage::seal(inner)?
+    } else {
+        package
+    };
     // N416: optionally dither the textures before any palette step.
     let package = if dither > 0 {
         let mut inner = package.package.clone();
@@ -3574,7 +3595,7 @@ fn usage() {
          devices [--compact]|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--scale N] [--sequence] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
-package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents] [--variant NAME] [--report]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
+package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents] [--variant NAME] [--report] [--texture-mips N]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--mip-linear] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] [--srgb] --out f.ppm|\
@@ -4167,6 +4188,7 @@ mod tests {
             alpha: Vec::new(),
             palette: Vec::new(),
             indices: Vec::new(),
+            mips: Vec::new(),
         };
         let dithered = mdc_bake::dither_texture_blob(&blob, 4);
         assert_ne!(dithered.rgb565, blob.rgb565);
@@ -4186,6 +4208,7 @@ mod tests {
             alpha: Vec::new(),
             palette: Vec::new(),
             indices: Vec::new(),
+            mips: Vec::new(),
         };
         let indexed = mdc_bake::index_texture_blob(&blob, 4);
         assert!(indexed.is_indexed());

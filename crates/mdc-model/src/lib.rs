@@ -20,7 +20,7 @@ pub use atlas::{AtlasBaker, AtlasPlan, MotionFrames};
 pub use backend::{
     compile, compile_auto, compile_with, AtlasBlob, AtlasClip, AtlasMip, DevicePackage,
     Esp32PlaneBackend, LinuxMeshBackend, PackageMode, RendererCapability, TargetBackend,
-    TextureBlob,
+    TextureBlob, TextureMip,
 };
 pub use gltf::GltfImporter;
 pub use ir::{

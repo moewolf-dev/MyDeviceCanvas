@@ -139,6 +139,18 @@ pub struct TextureBlob {
     /// N415: one palette index per pixel (`width * height` bytes).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub indices: Vec<u8>,
+    /// N490: optional downsampled levels (level 1 first; level 0 is the blob).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mips: Vec<TextureMip>,
+}
+
+/// N490: one downsampled texture level.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextureMip {
+    pub width: u32,
+    pub height: u32,
+    /// RGB565 little-endian, `width * height * 2` bytes.
+    pub rgb565: Vec<u8>,
 }
 
 impl TextureBlob {
@@ -158,7 +170,16 @@ impl TextureBlob {
         if !pixels_ok {
             return false;
         }
-        self.alpha.is_empty() || self.alpha.len() as u64 == pixels.div_ceil(8)
+        if !(self.alpha.is_empty() || self.alpha.len() as u64 == pixels.div_ceil(8)) {
+            return false;
+        }
+        // N490: every mip must match its declared geometry.
+        self.mips.iter().all(|mip| {
+            mip.width > 0
+                && mip.height > 0
+                && mip.rgb565.len() as u64
+                    == u64::from(mip.width).saturating_mul(u64::from(mip.height)) * 2
+        })
     }
 
     /// N415: whether this blob is palette-indexed.

@@ -5213,6 +5213,7 @@ mod tests {
                 alpha: vec![0b01],
                 palette: Vec::new(),
                 indices: Vec::new(),
+                mips: Vec::new(),
             }),
             texture_blobs: Vec::new(),
         };

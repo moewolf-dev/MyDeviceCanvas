@@ -603,6 +603,7 @@ pub fn bake_texture_blob(
         alpha: if has_transparency { alpha } else { Vec::new() },
         palette: Vec::new(),
         indices: Vec::new(),
+        mips: Vec::new(),
     })
 }
 
@@ -662,6 +663,7 @@ pub fn empty_texture_blob() -> mdc_model::TextureBlob {
         alpha: Vec::new(),
         palette: Vec::new(),
         indices: Vec::new(),
+        mips: Vec::new(),
     }
 }
 
@@ -814,7 +816,32 @@ pub fn dither_texture_blob(blob: &mdc_model::TextureBlob, strength: u8) -> mdc_m
         alpha: blob.alpha.clone(),
         palette: Vec::new(),
         indices: Vec::new(),
+        mips: Vec::new(),
     }
+}
+
+/// N490: attach a bounded mip chain to a blob's RGB565. Indexed or invalid blobs
+/// are returned unchanged.
+pub fn mip_texture_blob(
+    blob: &mdc_model::TextureBlob,
+    levels: usize,
+    linear: bool,
+) -> mdc_model::TextureBlob {
+    if blob.is_indexed() || !blob.validate() {
+        return blob.clone();
+    }
+    let chain = bake_mipmaps_with(blob.width, blob.height, &blob.rgb565, levels, linear);
+    let mut out = blob.clone();
+    out.mips = chain
+        .into_iter()
+        .skip(1)
+        .map(|(width, height, rgb565)| mdc_model::TextureMip {
+            width,
+            height,
+            rgb565,
+        })
+        .collect();
+    out
 }
 
 /// N415: quantize a blob's RGB565 to a palette, returning a palette-indexed blob
@@ -835,6 +862,7 @@ pub fn index_texture_blob(
         alpha: blob.alpha.clone(),
         palette: quantized.palette,
         indices: quantized.indices,
+        mips: Vec::new(),
     }
 }
 
@@ -1128,6 +1156,39 @@ mod tests {
             decode_resize_rgb565(&png, (8, 8), &limits),
             Err(BakeError::Dimensions(64, 64, 16))
         ));
+    }
+
+    #[test]
+    fn texture_blob_mips_are_bounded() {
+        // N490: a blob gains a bounded mip chain (level 0 is the blob).
+        let blob = mdc_model::TextureBlob {
+            width: 4,
+            height: 4,
+            rgb565: {
+                let mut rgb = Vec::new();
+                for i in 0..16u16 {
+                    rgb.extend_from_slice(&(i.wrapping_mul(2000)).to_le_bytes());
+                }
+                rgb
+            },
+            alpha: Vec::new(),
+            palette: Vec::new(),
+            indices: Vec::new(),
+            mips: Vec::new(),
+        };
+        let mipped = mip_texture_blob(&blob, 8, false);
+        assert!(!mipped.mips.is_empty());
+        assert_eq!(
+            (
+                mipped.mips.last().unwrap().width,
+                mipped.mips.last().unwrap().height
+            ),
+            (1, 1)
+        );
+        assert!(mipped.validate(), "mips validate");
+        // Indexed blobs are unchanged.
+        let indexed = index_texture_blob(&blob, 4);
+        assert!(mip_texture_blob(&indexed, 8, false).mips.is_empty());
     }
 
     #[test]
