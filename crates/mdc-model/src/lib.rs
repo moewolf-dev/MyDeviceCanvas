@@ -22,6 +22,7 @@ pub use backend::{
     Esp32PlaneBackend, LinuxMeshBackend, PackageMode, RendererCapability, TargetBackend,
     TextureBlob, TextureMip,
 };
+mod meshopt;
 pub use gltf::{
     reserved_extensions, reserved_extensions_in_bytes, GltfImporter, RESERVED_EXTENSIONS,
 };
@@ -33,6 +34,10 @@ pub use ir::{
 pub use live2d::{
     sample_segments, ImportedBundle, Live2DBundle, Live2DImporter, MotionCurve, MotionInfo,
     MAX_MOTION_SEGMENTS,
+};
+pub use meshopt::{
+    decode_gltf_buffer, decode_index_buffer, decode_index_sequence, decode_vertex_buffer,
+    MeshoptFilter, MeshoptMode,
 };
 pub use optimizer::{plan as plan_optimization, OptimizerPlan, TexturePlan};
 pub use package::{

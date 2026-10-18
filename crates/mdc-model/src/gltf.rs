@@ -32,6 +32,10 @@ pub const RESERVED_EXTENSIONS: [&str; 3] = [
     "KHR_texture_basisu",
 ];
 
+/// N503/N533: the reserved extensions that are still rejected. `EXT_meshopt_compression`
+/// moved out of this set when the decoder landed.
+pub const UNSUPPORTED_EXTENSIONS: [&str; 2] = ["KHR_draco_mesh_compression", "KHR_texture_basisu"];
+
 /// N503: the reserved extensions a glTF document references, in first-seen order.
 /// Checks `extensionsRequired`/`extensionsUsed` and the per-object extensions on
 /// bufferViews and images.
@@ -84,7 +88,9 @@ pub fn reserved_extensions_in_bytes(bytes: &[u8]) -> Vec<String> {
     }
 }
 
-/// N503: reject a document that needs a reserved extension we cannot decode.
+/// N503: reject a document that needs a compressed extension we cannot decode.
+/// N533: `EXT_meshopt_compression` is now decoded, so it is allowed here (and
+/// only its bufferViews carry it).
 fn check_reserved_extensions(doc: &Value) -> Result<(), ModelError> {
     for name in doc
         .get("extensionsRequired")
@@ -93,7 +99,7 @@ fn check_reserved_extensions(doc: &Value) -> Result<(), ModelError> {
         .flatten()
         .filter_map(Value::as_str)
     {
-        if RESERVED_EXTENSIONS.contains(&name) {
+        if UNSUPPORTED_EXTENSIONS.contains(&name) {
             return Err(ModelError::Unsupported(format!(
                 "required extension {name} is not supported"
             )));
@@ -112,7 +118,7 @@ fn check_reserved_extensions(doc: &Value) -> Result<(), ModelError> {
             .into_iter()
             .flat_map(|map| map.keys())
         {
-            if RESERVED_EXTENSIONS.contains(&name.as_str()) {
+            if UNSUPPORTED_EXTENSIONS.contains(&name.as_str()) {
                 return Err(ModelError::Unsupported(format!(
                     "bufferView {index} uses {name} (compressed buffers are not decoded)"
                 )));
@@ -132,7 +138,7 @@ fn check_reserved_extensions(doc: &Value) -> Result<(), ModelError> {
             .into_iter()
             .flat_map(|map| map.keys())
         {
-            if RESERVED_EXTENSIONS.contains(&name.as_str()) {
+            if UNSUPPORTED_EXTENSIONS.contains(&name.as_str()) {
                 return Err(ModelError::Unsupported(format!(
                     "image {index} uses {name} (compressed textures are not decoded)"
                 )));
@@ -142,13 +148,16 @@ fn check_reserved_extensions(doc: &Value) -> Result<(), ModelError> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct BufferView {
     buffer: u64,
     byte_offset: u64,
     byte_length: u64,
     /// N377: `byteStride` for interleaved accessors (0/absent = tightly packed).
     byte_stride: u64,
+    /// N533: decoded bytes for an `EXT_meshopt_compression` view (the stored
+    /// buffer holds the compressed stream, so the view keeps its own data).
+    decoded: Option<Vec<u8>>,
 }
 
 struct Buffer {
@@ -189,6 +198,10 @@ impl GltfImporter {
 
         let view_bytes = |index: u64| -> Option<&[u8]> {
             let view = buffer_views.get(index as usize)?;
+            // N533: a meshopt view carries its decoded bytes.
+            if let Some(decoded) = view.decoded.as_deref() {
+                return Some(decoded);
+            }
             if !view_has_valid_data(view, &buffers) {
                 return None;
             }
@@ -1596,16 +1609,88 @@ fn read_buffer_views(doc: &Value, buffers: &[Buffer]) -> Result<Vec<BufferView>,
     let Some(views) = doc.get("bufferViews").and_then(Value::as_array) else {
         return Ok(out);
     };
-    for view in views {
+    for (view_index, view) in views.iter().enumerate() {
         let buffer = view.get("buffer").and_then(Value::as_u64).unwrap_or(0);
         let byte_offset = view.get("byteOffset").and_then(Value::as_u64).unwrap_or(0);
         let byte_length = view.get("byteLength").and_then(Value::as_u64).unwrap_or(0);
         let byte_stride = view.get("byteStride").and_then(Value::as_u64).unwrap_or(0);
+        // N533: `EXT_meshopt_compression` replaces the view's bytes with the
+        // decoded stream; everything downstream stays stride/sparse aware.
+        if let Some(meshopt) = view
+            .get("extensions")
+            .and_then(|ext| ext.get("EXT_meshopt_compression"))
+        {
+            let src_buffer = meshopt
+                .get("buffer")
+                .and_then(Value::as_u64)
+                .unwrap_or(buffer);
+            let src_offset = meshopt
+                .get("byteOffset")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let src_length = meshopt
+                .get("byteLength")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let decoded_stride = meshopt
+                .get("byteStride")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let count = meshopt.get("count").and_then(Value::as_u64).unwrap_or(0);
+            let mode_name = meshopt.get("mode").and_then(Value::as_str).unwrap_or("");
+            let filter_name = meshopt.get("filter").and_then(Value::as_str).unwrap_or("");
+            let source = buffers
+                .get(src_buffer as usize)
+                .and_then(|target| target.data.as_deref())
+                .ok_or_else(|| {
+                    ModelError::Unsupported(format!(
+                        "bufferView {view_index} is meshopt-compressed but its buffer is not embedded"
+                    ))
+                })?;
+            let start = usize::try_from(src_offset).map_err(|_| {
+                ModelError::Unsupported(format!("meshopt bufferView {view_index} offset overflows"))
+            })?;
+            let length = usize::try_from(src_length).map_err(|_| {
+                ModelError::Unsupported(format!("meshopt bufferView {view_index} length overflows"))
+            })?;
+            let compressed = source
+                .get(start..start.saturating_add(length))
+                .ok_or_else(|| {
+                    ModelError::Unsupported(format!(
+                        "meshopt bufferView {view_index} stream is out of bounds"
+                    ))
+                })?;
+            let mode = crate::meshopt::MeshoptMode::from_name(mode_name).ok_or_else(|| {
+                ModelError::Unsupported(format!("meshopt mode {mode_name:?} is not supported"))
+            })?;
+            let filter =
+                crate::meshopt::MeshoptFilter::from_name(filter_name).ok_or_else(|| {
+                    ModelError::Unsupported(format!(
+                        "meshopt filter {filter_name:?} is not supported"
+                    ))
+                })?;
+            let decoded = crate::meshopt::decode_gltf_buffer(
+                count as usize,
+                decoded_stride as usize,
+                compressed,
+                mode,
+                filter,
+            )?;
+            out.push(BufferView {
+                buffer: src_buffer,
+                byte_offset: 0,
+                byte_length: decoded.len() as u64,
+                byte_stride: decoded_stride,
+                decoded: Some(decoded),
+            });
+            continue;
+        }
         let parsed = BufferView {
             buffer,
             byte_offset,
             byte_length,
             byte_stride,
+            decoded: None,
         };
         if !buffers.is_empty() {
             let target = buffers.get(buffer as usize).ok_or_else(|| {
@@ -3785,6 +3870,72 @@ mod tests {
     }
 
     #[test]
+    fn meshopt_compressed_positions_are_decoded() {
+        // N533: a bufferView carrying EXT_meshopt_compression is decoded and its
+        // accessor reads the decoded bytes (the golden v0 fixture from the
+        // reference decoder's test suite).
+        let stream: Vec<u8> = vec![
+            0xa0, 0x01, 0x3f, 0x00, 0x00, 0x00, 0x58, 0x57, 0x58, 0x01, 0x26, 0x00, 0x00, 0x00,
+            0x01, 0x0c, 0x00, 0x00, 0x00, 0x58, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x01, 0x3f, 0x00, 0x00, 0x00, 0x17, 0x18, 0x17, 0x01, 0x26, 0x00, 0x00, 0x00,
+            0x01, 0x0c, 0x00, 0x00, 0x00, 0x17, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let document = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "extensionsUsed": ["EXT_meshopt_compression"],
+            "extensionsRequired": ["EXT_meshopt_compression"],
+            "buffers": [{"byteLength": stream.len()}],
+            "bufferViews": [{
+                "buffer": 0,
+                "byteOffset": 0,
+                "byteLength": stream.len(),
+                "extensions": {"EXT_meshopt_compression": {
+                    "buffer": 0,
+                    "byteOffset": 0,
+                    "byteLength": stream.len(),
+                    "byteStride": 12,
+                    "count": 4,
+                    "mode": "ATTRIBUTES",
+                }},
+            }],
+            "accessors": [{"bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3"}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "nodes": [{"name": "root", "mesh": 0}],
+        });
+        let bytes = glb(serde_json::to_vec(&document).unwrap().as_slice(), &stream);
+        let model = GltfImporter
+            .import(&bytes, &ImportLimits::default())
+            .unwrap();
+        let geometry = model.meshes[0].geometry.as_ref().expect("geometry");
+        assert_eq!(geometry.positions.len(), 4);
+        assert_eq!(geometry.positions[0], [0.0, 0.0, 0.0]);
+        // An unsupported stream (a version-0 index buffer) is a clear error.
+        let bad = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "extensionsRequired": ["EXT_meshopt_compression"],
+            "buffers": [{"byteLength": 4}],
+            "bufferViews": [{
+                "buffer": 0,
+                "byteLength": 4,
+                "extensions": {"EXT_meshopt_compression": {
+                    "buffer": 0, "byteOffset": 0, "byteLength": 4,
+                    "byteStride": 2, "count": 3, "mode": "TRIANGLES",
+                }},
+            }],
+        });
+        let bytes = glb(
+            serde_json::to_vec(&bad).unwrap().as_slice(),
+            &[0xe0, 0x00, 0x00, 0x00],
+        );
+        let error = GltfImporter
+            .import(&bytes, &ImportLimits::default())
+            .unwrap_err();
+        assert!(error.to_string().contains("version 0"), "{error}");
+    }
+
+    #[test]
     fn webp_headers_are_probed_and_sniffed() {
         // N523: VP8 (lossy), VP8L (lossless), and VP8X (extended) headers.
         let mut vp8 = Vec::new();
@@ -3927,13 +4078,29 @@ mod tests {
             reserved_extensions_in_bytes(&bytes),
             vec!["EXT_meshopt_compression".to_string()]
         );
+        // N533: meshopt is decoded now, so requiring it imports; a meshopt
+        // bufferView with no embedded stream is still a clear error.
+        assert!(GltfImporter
+            .import(&bytes, &ImportLimits::default())
+            .is_ok());
+        let missing = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "extensionsRequired": ["EXT_meshopt_compression"],
+            "buffers": [{"byteLength": 16}],
+            "bufferViews": [{
+                "buffer": 0,
+                "byteLength": 16,
+                "extensions": {"EXT_meshopt_compression": {
+                    "buffer": 0, "byteOffset": 0, "byteLength": 16,
+                    "byteStride": 4, "count": 4, "mode": "ATTRIBUTES",
+                }},
+            }],
+        });
+        let bytes = serde_json::to_vec(&missing).unwrap();
         let error = GltfImporter
             .import(&bytes, &ImportLimits::default())
             .unwrap_err();
-        assert!(
-            error.to_string().contains("EXT_meshopt_compression"),
-            "{error}"
-        );
+        assert!(error.to_string().contains("meshopt"), "{error}");
         // A bufferView-level use is rejected even without `extensionsRequired`.
         let view_level = serde_json::json!({
             "asset": {"version": "2.0"},

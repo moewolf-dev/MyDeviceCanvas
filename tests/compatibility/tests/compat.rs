@@ -4032,7 +4032,7 @@ fn multi_stop_gradient_and_reserved_extension_diagnostics() {
     use mdc_protocol::SceneNode;
     use mdc_simulator::{BoardProfile, FakeDevice};
 
-    // N503: a meshopt asset is detected without importing.
+    // N503/N533: meshopt is detected and now decoded; draco is still rejected.
     let meshopt = br#"{"asset":{"version":"2.0"},
         "extensionsRequired":["EXT_meshopt_compression"]}"#;
     assert_eq!(
@@ -4041,6 +4041,11 @@ fn multi_stop_gradient_and_reserved_extension_diagnostics() {
     );
     assert!(mdc_model::GltfImporter
         .import(meshopt, &mdc_model::ImportLimits::default())
+        .is_ok());
+    let draco = br#"{"asset":{"version":"2.0"},
+        "extensionsRequired":["KHR_draco_mesh_compression"]}"#;
+    assert!(mdc_model::GltfImporter
+        .import(draco, &mdc_model::ImportLimits::default())
         .is_err());
 
     let (host, mut device) = FakeDevice::pair(BoardProfile {
