@@ -1969,6 +1969,15 @@ impl FakeDevice {
         self.metrics.mirror_commands = self.metrics.mirror_commands.saturating_add(1);
         match cmd.action.as_str() {
             "start" => {
+                // N457: the simulator only rasterises `main`; refuse another
+                // surface instead of silently sending the wrong frames.
+                if !cmd.surface_id.is_empty() && cmd.surface_id != "main" {
+                    return self.reply_error(
+                        packet.request_id,
+                        "E_UNSUPPORTED",
+                        &format!("surface {} is not mirrored", cmd.surface_id),
+                    );
+                }
                 self.mirror_active = true;
                 self.mirror_mode = cmd.mode.clone();
                 self.mirror_prev.clear();
@@ -3578,6 +3587,35 @@ mod tests {
         assert_eq!(device.pixel_rgb565(7, 7), Some(0), "hidden rect skipped");
         assert_eq!(device.hit_test(7, 7), None, "hidden node not hit");
         assert_eq!(device.hit_test(1, 1).as_deref(), Some("shown"));
+    }
+
+    #[test]
+    fn mirror_refuses_a_non_primary_surface() {
+        // N457: only `main` is mirrored; `overlay` is refused explicitly.
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            overlay_width: 4,
+            overlay_height: 2,
+            mirror: true,
+            ..BoardProfile::default()
+        });
+        let command = |surface: &str| mdc_protocol::MirrorCommand {
+            action: "start".into(),
+            surface_id: surface.into(),
+            mode: "full-frame".into(),
+            max_fps: 15,
+            format: "rgb565".into(),
+        };
+        let packet = |surface: &str| Packet {
+            version: mdc_protocol::VERSION,
+            kind: MessageType::MirrorCtrl,
+            flags: 0,
+            request_id: 1,
+            payload: mdc_protocol::encode_control(&command(surface)).unwrap(),
+        };
+        assert!(device.handle_mirror_ctrl(packet("overlay")).is_ok());
+        assert!(!device.mirror_active, "overlay is refused");
+        assert!(device.handle_mirror_ctrl(packet("main")).is_ok());
+        assert!(device.mirror_active, "main is mirrored");
     }
 
     #[test]
