@@ -2107,6 +2107,105 @@ fn cmd_record(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
     cmd_mirror(opts, &args)
 }
 
+/// N520: probe the pixel dimensions of a recorded frame (PPM/BMP/PNG/JPEG).
+fn probe_frame_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.starts_with(b"P6") {
+        let header = std::str::from_utf8(bytes.get(..bytes.len().min(64))?).ok()?;
+        let mut parts = header.lines().nth(1)?.split_whitespace();
+        return Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?));
+    }
+    if bytes.starts_with(b"BM") {
+        let w = i32::from_le_bytes(bytes.get(18..22)?.try_into().ok()?);
+        let h = i32::from_le_bytes(bytes.get(22..26)?.try_into().ok()?);
+        return Some((w.unsigned_abs(), h.unsigned_abs()));
+    }
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        let w = u32::from_be_bytes(bytes.get(16..20)?.try_into().ok()?);
+        let h = u32::from_be_bytes(bytes.get(20..24)?.try_into().ok()?);
+        return Some((w, h));
+    }
+    if bytes.starts_with(&[0xFF, 0xD8]) {
+        let mut offset = 2usize;
+        while offset + 4 <= bytes.len() {
+            if bytes[offset] != 0xFF {
+                return None;
+            }
+            let marker = bytes[offset + 1];
+            if marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
+                offset += 2;
+                continue;
+            }
+            let length = usize::from(u16::from_be_bytes([bytes[offset + 2], bytes[offset + 3]]));
+            if length < 2 {
+                return None;
+            }
+            let is_sof = (0xC0..=0xCF).contains(&marker) && !matches!(marker, 0xC4 | 0xC8 | 0xCC);
+            if is_sof {
+                let h = u32::from(u16::from_be_bytes([bytes[offset + 5], bytes[offset + 6]]));
+                let w = u32::from(u16::from_be_bytes([bytes[offset + 7], bytes[offset + 8]]));
+                return Some((w, h));
+            }
+            offset += 2 + length;
+        }
+        return None;
+    }
+    None
+}
+
+/// N520: verify a recorded sequence against its manifest.
+fn verify_sequence(dir: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let base = PathBuf::from(dir);
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(base.join("manifest.json"))?)?;
+    let width = manifest["width"].as_u64().unwrap_or(0) as u32;
+    let height = manifest["height"].as_u64().unwrap_or(0) as u32;
+    let files = manifest["files"].as_array().cloned().unwrap_or_default();
+    let mut verified = 0usize;
+    let mut missing = Vec::new();
+    let mut mismatched = Vec::new();
+    for file in &files {
+        let Some(name) = file.as_str() else {
+            continue;
+        };
+        match std::fs::read(base.join(name)) {
+            Err(_) => missing.push(name.to_string()),
+            Ok(bytes) => match probe_frame_size(&bytes) {
+                Some(size) if size == (width, height) => verified += 1,
+                _ => mismatched.push(name.to_string()),
+            },
+        }
+    }
+    Ok(serde_json::json!({
+        "dir": dir,
+        "format": manifest["format"],
+        "width": width,
+        "height": height,
+        "frames": files.len(),
+        "verified": verified,
+        "missing": missing,
+        "mismatched": mismatched,
+        "valid": missing.is_empty() && mismatched.is_empty(),
+    }))
+}
+
+/// N520: `mdc record --play --dir DIR` verifies a recorded sequence.
+fn cmd_record_play(extra: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut dir = "mdc-record".to_string();
+    let mut iter = extra.iter();
+    while let Some(flag) = iter.next() {
+        if flag == "--dir" {
+            dir = iter.next().cloned().unwrap_or(dir);
+        }
+    }
+    let report = verify_sequence(&dir)?;
+    let valid = report["valid"].as_bool().unwrap_or(false);
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    if !valid {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 /// N316: read the device diagnostics channel (metrics + boot info) and print it.
 fn cmd_diag(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut metric = "fps".to_string();
@@ -3730,7 +3829,7 @@ fn usage() {
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices [--compact]|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
-authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--scale N] [--sequence] [--flip h/v] [--serve ADDR] [--http ADDR] [--ws-heartbeat N] [--ws-timeout M] [--source-fps N] [--max-fps N] [--bandwidth BPS]|record [--frames N] [--fps N] [--dir DIR] [--format ppm|bmp|png|jpg] [--scale N]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
+authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--scale N] [--sequence] [--flip h/v] [--serve ADDR] [--http ADDR] [--ws-heartbeat N] [--ws-timeout M] [--source-fps N] [--max-fps N] [--bandwidth BPS]|record [--frames N] [--fps N] [--dir DIR] [--play] [--format ppm|bmp|png|jpg] [--scale N]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents] [--variant NAME] [--report] [--texture-mips N] [--mip-level N]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--mip-linear] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
@@ -3817,9 +3916,14 @@ fn main() {
             cmd_mirror(&o, &args[1..])
         }
         Some("record") => {
-            let mut o = opts.clone();
-            o.sim = true;
-            cmd_record(&o, &args[1..])
+            // N520: `record --play --dir DIR` verifies an existing sequence.
+            if args.iter().any(|a| a == "--play") {
+                cmd_record_play(&args[1..])
+            } else {
+                let mut o = opts.clone();
+                o.sim = true;
+                cmd_record(&o, &args[1..])
+            }
         }
         Some("package") => {
             let path = args.get(1).cloned().unwrap_or_default();
@@ -5325,6 +5429,50 @@ mod tests {
         assert_eq!(manifest["width"], 100);
         assert_eq!(manifest["height"], 60);
         assert_eq!(manifest["files"].as_array().unwrap().len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn record_play_verifies_the_sequence() {
+        // N520: a recorded sequence verifies against its manifest; a corrupted
+        // frame is reported.
+        let dir = std::env::temp_dir().join(format!("mdc-replay-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let opts = GlobalOpts {
+            sim: true,
+            address: None,
+            port: None,
+            board: "linux-virt".into(),
+        };
+        cmd_record(
+            &opts,
+            &[
+                "--frames".into(),
+                "2".into(),
+                "--scale".into(),
+                "8".into(),
+                "--dir".into(),
+                dir.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        let report = verify_sequence(&dir.to_string_lossy()).unwrap();
+        assert_eq!(report["frames"], 2);
+        assert_eq!(report["verified"], 2);
+        assert!(report["valid"].as_bool().unwrap());
+        // Corrupt one frame: its size no longer matches the manifest.
+        std::fs::write(dir.join("frame0002.ppm"), b"P6\n1 1\n255\n\x00\x00\x00").unwrap();
+        let report = verify_sequence(&dir.to_string_lossy()).unwrap();
+        assert_eq!(report["verified"], 1);
+        assert_eq!(report["mismatched"].as_array().unwrap().len(), 1);
+        assert!(!report["valid"].as_bool().unwrap());
+        // A missing frame is reported too.
+        std::fs::remove_file(dir.join("frame0001.ppm")).unwrap();
+        let report = verify_sequence(&dir.to_string_lossy()).unwrap();
+        assert_eq!(report["missing"].as_array().unwrap().len(), 1);
+        // The frame-size probe reads each format's header.
+        assert_eq!(probe_frame_size(b"P6\n100 60\n255\n"), Some((100, 60)));
+        assert_eq!(probe_frame_size(b"not an image"), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
