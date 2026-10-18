@@ -1042,6 +1042,9 @@ pub struct HttpMirrorServer {
     max_clients: usize,
     frames: u64,
     last: Option<ServedFrame>,
+    /// N507: WebSocket ping/close frames received from peers.
+    ws_pings: u64,
+    ws_closes: u64,
 }
 
 struct HttpClient {
@@ -1061,6 +1064,12 @@ struct HttpClient {
     stream_scale: u16,
     /// N500: a WebSocket consumer (`/ws`) rather than a multipart stream.
     websocket: bool,
+    /// N507: buffered bytes read from a WebSocket peer (bounded).
+    ws_in: Vec<u8>,
+    /// N507: pending control frames (pong/close) queued for the peer.
+    ws_control: Vec<u8>,
+    /// N507: a close frame is queued; drop the client once it drains.
+    ws_closing: bool,
     /// The peer closed or errored; dropped on the next pump.
     dead: bool,
     /// Frames skipped because the previous part was still being written.
@@ -1125,6 +1134,8 @@ impl HttpMirrorServer {
             max_clients: 8,
             frames: 0,
             last: None,
+            ws_pings: 0,
+            ws_closes: 0,
         })
     }
 
@@ -1186,6 +1197,9 @@ impl HttpMirrorServer {
                         stream_format: StreamFormat::Bmp,
                         stream_scale: 1,
                         websocket: false,
+                        ws_in: Vec::new(),
+                        ws_control: Vec::new(),
+                        ws_closing: false,
                         dead: false,
                         clipped: 0,
                     });
@@ -1206,12 +1220,15 @@ impl HttpMirrorServer {
         // N361: a bounded health snapshot for a monitoring consumer.
         let health = {
             let body = format!(
-                "{{\"frames\":{},\"clients\":{},\"streaming\":{},\"clipped\":{},\"ws\":{}}}",
+                "{{\"frames\":{},\"clients\":{},\"streaming\":{},\"clipped\":{},\"ws\":{},\
+                  \"ws_pings\":{},\"ws_closes\":{}}}",
                 self.frames,
                 self.clients.len(),
                 self.streaming_clients(),
                 self.clipped_frames(),
-                self.ws_clients()
+                self.ws_clients(),
+                self.ws_pings,
+                self.ws_closes
             );
             simple_response(200, "application/json", body.as_bytes())
         };
@@ -1244,6 +1261,11 @@ impl HttpMirrorServer {
                                 (Some(key), true) => {
                                     client.websocket = true;
                                     client.streaming = true;
+                                    // N507: keep any bytes sent after the upgrade
+                                    // (skip the request's terminating CRLFCRLF).
+                                    client.ws_in = client.request
+                                        [(end + 4).min(client.request.len())..]
+                                        .to_vec();
                                     client.stream_headers = ws_handshake(key);
                                     client.stream_part = last
                                         .map(|frame| {
@@ -1277,11 +1299,23 @@ impl HttpMirrorServer {
                 }
             }
         }
+        // N507: service WebSocket control frames, then flush pending output.
+        let (mut pings, mut closes) = (0u64, 0u64);
         for client in &mut self.clients {
-            if client.streaming && !client.dead {
+            if client.dead || !client.streaming {
+                continue;
+            }
+            if client.websocket {
+                let (seen_pings, seen_closes) = pump_websocket(client);
+                pings += seen_pings;
+                closes += seen_closes;
+            }
+            if !client.dead {
                 flush_stream(client);
             }
         }
+        self.ws_pings = self.ws_pings.saturating_add(pings);
+        self.ws_closes = self.ws_closes.saturating_add(closes);
         self.clients.retain_mut(|client| {
             if client.dead {
                 return false;
@@ -1319,6 +1353,16 @@ impl HttpMirrorServer {
             .iter()
             .filter(|client| client.websocket)
             .count()
+    }
+
+    /// N507: WebSocket ping frames answered.
+    pub fn ws_pings(&self) -> u64 {
+        self.ws_pings
+    }
+
+    /// N507: WebSocket close frames received.
+    pub fn ws_closes(&self) -> u64 {
+        self.ws_closes
     }
 
     /// N313: frames skipped because a streaming client was still writing.
@@ -1374,6 +1418,23 @@ fn stream_part_for(frame: &ServedFrame, format: StreamFormat, scale: u16) -> Vec
 /// Write the pending preamble and part. Never buffers more than one part; a
 /// `WouldBlock` leaves the remainder for the next pump.
 fn flush_stream(client: &mut HttpClient) {
+    // N507: control frames (pong/close) take priority.
+    if !client.ws_control.is_empty() {
+        match client.stream.write(&client.ws_control) {
+            Ok(0) => {
+                client.dead = true;
+                return;
+            }
+            Ok(written) => {
+                client.ws_control.drain(..written);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
+            Err(_) => {
+                client.dead = true;
+                return;
+            }
+        }
+    }
     if !client.stream_headers.is_empty() {
         match client.stream.write(&client.stream_headers) {
             Ok(0) => {
@@ -1400,6 +1461,113 @@ fn flush_stream(client: &mut HttpClient) {
             Err(_) => client.dead = true,
         }
     }
+    // N507: once the queued close frame is gone, the client is done.
+    if client.ws_closing && client.ws_control.is_empty() {
+        client.dead = true;
+    }
+}
+
+/// N507: read and answer WebSocket control frames (ping/pong/close).
+/// Returns `(pings, closes)` observed.
+fn pump_websocket(client: &mut HttpClient) -> (u64, u64) {
+    let mut buffer = [0u8; 512];
+    match client.stream.read(&mut buffer) {
+        Ok(0) => {
+            client.dead = true;
+            return (0, 0);
+        }
+        Ok(read) => {
+            if client.ws_in.len() + read <= 4096 {
+                client.ws_in.extend_from_slice(&buffer[..read]);
+            } else {
+                client.ws_in.clear();
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => return (0, 0),
+        Err(_) => {
+            client.dead = true;
+            return (0, 0);
+        }
+    }
+    let (mut pings, mut closes) = (0u64, 0u64);
+    loop {
+        let Some((opcode, payload)) = ws_parse_client_frame(&mut client.ws_in) else {
+            break;
+        };
+        match opcode {
+            0x9 => {
+                // Ping: answer with a pong echoing the payload.
+                pings += 1;
+                client
+                    .ws_control
+                    .extend_from_slice(&ws_frame_opcode(0xA, &payload));
+            }
+            0x8 => {
+                closes += 1;
+                client
+                    .ws_control
+                    .extend_from_slice(&ws_frame_opcode(0x8, &payload));
+                client.ws_closing = true;
+            }
+            _ => {}
+        }
+    }
+    (pings, closes)
+}
+
+/// N507: parse one masked client frame from the front of `bytes`, consuming it.
+/// Returns the opcode and payload, or `None` when more bytes are needed.
+fn ws_parse_client_frame(bytes: &mut Vec<u8>) -> Option<(u8, Vec<u8>)> {
+    if bytes.len() < 2 {
+        return None;
+    }
+    let opcode = bytes[0] & 0x0f;
+    let masked = bytes[1] & 0x80 != 0;
+    let (mut header, payload_len) = match bytes[1] & 0x7f {
+        126 => {
+            if bytes.len() < 4 {
+                return None;
+            }
+            (
+                4usize,
+                usize::from(u16::from_be_bytes([bytes[2], bytes[3]])),
+            )
+        }
+        127 => {
+            if bytes.len() < 10 {
+                return None;
+            }
+            (
+                10usize,
+                u64::from_be_bytes(bytes[2..10].try_into().ok()?) as usize,
+            )
+        }
+        len => (2usize, usize::from(len)),
+    };
+    if masked {
+        header += 4;
+    }
+    if payload_len > 1 << 20 || bytes.len() < header + payload_len {
+        return None;
+    }
+    let mask: [u8; 4] = if masked {
+        [
+            bytes[header - 4],
+            bytes[header - 3],
+            bytes[header - 2],
+            bytes[header - 1],
+        ]
+    } else {
+        [0, 0, 0, 0]
+    };
+    let mut payload = bytes[header..header + payload_len].to_vec();
+    if masked {
+        for (i, byte) in payload.iter_mut().enumerate() {
+            *byte ^= mask[i % 4];
+        }
+    }
+    bytes.drain(..header + payload_len);
+    Some((opcode, payload))
 }
 
 fn find_header_end(request: &[u8]) -> Option<usize> {
@@ -1655,8 +1823,13 @@ fn ws_accept(key: &str) -> String {
 
 /// N500: wrap a payload in an unmasked binary WebSocket frame (server -> client).
 fn ws_frame(payload: &[u8]) -> Vec<u8> {
+    ws_frame_opcode(0x2, payload)
+}
+
+/// N507: wrap a payload in an unmasked WebSocket frame with an explicit opcode.
+fn ws_frame_opcode(opcode: u8, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(payload.len() + 10);
-    out.push(0x82); // FIN + binary opcode
+    out.push(0x80 | (opcode & 0x0f)); // FIN + opcode
     match payload.len() {
         len if len < 126 => out.push(len as u8),
         len if len <= usize::from(u16::MAX) => {
@@ -2458,6 +2631,77 @@ mod tests {
         assert_eq!(ws_frame(b"hi"), vec![0x82, 0x02, b'h', b'i']);
         let long = ws_frame(&[0u8; 200]);
         assert_eq!(&long[..4], &[0x82, 126, 0x00, 0xc8]);
+    }
+
+    #[test]
+    fn websocket_answers_ping_and_close() {
+        // N507: a client ping is answered with a pong; a close drops the client.
+        fn client_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
+            let mask = [0x12u8, 0x34, 0x56, 0x78];
+            let mut out = vec![0x80 | opcode, 0x80 | payload.len() as u8];
+            out.extend_from_slice(&mask);
+            out.extend(
+                payload
+                    .iter()
+                    .enumerate()
+                    .map(|(i, byte)| byte ^ mask[i % 4]),
+            );
+            out
+        }
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
+        client
+            .write_all(
+                b"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+                  Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+            )
+            .unwrap();
+        let mut seen = Vec::new();
+        for _ in 0..100 {
+            let _ = server.pump();
+            let mut buffer = [0u8; 4096];
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => seen.extend_from_slice(&buffer[..n]),
+                Err(_) => std::thread::sleep(Duration::from_millis(2)),
+            }
+            if seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        // A ping (with a payload) is answered by a pong that echoes it.
+        client.write_all(&client_frame(0x9, b"hi")).unwrap();
+        let mut reply = Vec::new();
+        for _ in 0..100 {
+            let _ = server.pump();
+            let mut buffer = [0u8; 256];
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => reply.extend_from_slice(&buffer[..n]),
+                Err(_) => std::thread::sleep(Duration::from_millis(2)),
+            }
+            if reply.len() >= 4 {
+                break;
+            }
+        }
+        assert_eq!(server.ws_pings(), 1);
+        assert_eq!(reply[0], 0x8A, "pong opcode");
+        assert_eq!(&reply[2..4], b"hi", "pong echoes the ping payload");
+        // A close frame ends the connection.
+        client.write_all(&client_frame(0x8, &[])).unwrap();
+        for _ in 0..100 {
+            let _ = server.pump();
+            if server.ws_clients() == 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(server.ws_closes(), 1);
+        assert_eq!(server.ws_clients(), 0, "the client was dropped");
     }
 
     #[test]

@@ -2011,6 +2011,9 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
         "http_frames": http_server.as_ref().map(|s| s.frames_published()),
         // N500: WebSocket (`/ws`) consumers on the HTTP mirror.
         "ws_clients": http_server.as_ref().map(|s| s.ws_clients()),
+        // N507: control frames handled on the WebSocket mirror.
+        "ws_pings": http_server.as_ref().map(|s| s.ws_pings()),
+        "ws_closes": http_server.as_ref().map(|s| s.ws_closes()),
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
