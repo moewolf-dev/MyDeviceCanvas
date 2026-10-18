@@ -653,6 +653,16 @@ fn add_pixel(pixels: &mut [u8], index: usize, value: u16, alpha: u8) {
     pixels[index..index + 2].copy_from_slice(&out.to_le_bytes());
 }
 
+/// N489: mix a new e-ink pixel over the old one, keeping a faint remnant.
+fn ghost_mix(old: u16, new: u16) -> u16 {
+    let mix = |shift: u32, mask: u16| -> u16 {
+        let o = u32::from((old >> shift) & mask);
+        let n = u32::from((new >> shift) & mask);
+        ((o * 15 + n * 85) / 100) as u16
+    };
+    (mix(11, 0x1f) << 11) | (mix(5, 0x3f) << 5) | mix(0, 0x1f)
+}
+
 fn put_pixel(pixels: &mut [u8], index: usize, value: u16, alpha: u8) {
     if index + 1 >= pixels.len() || alpha == 0 {
         return;
@@ -2967,12 +2977,24 @@ impl FakeDevice {
         } else {
             &mut self.pixels
         };
+        // N489: an e-ink partial refresh leaves a faint ghost of the old pixel.
+        let ghost = !self.profile.color_fps && !overlay;
         for row in 0..usize::from(core_tile.height) {
             let dst_y = usize::from(core_tile.y) + row;
             let dst_off = dst_y * stride + usize::from(core_tile.x) * 2;
             let src_off = row * row_bytes;
-            pixels[dst_off..dst_off + row_bytes]
-                .copy_from_slice(&core_tile.bytes[src_off..src_off + row_bytes]);
+            let incoming = &core_tile.bytes[src_off..src_off + row_bytes];
+            if ghost {
+                for col in (0..row_bytes).step_by(2) {
+                    let old =
+                        u16::from_le_bytes([pixels[dst_off + col], pixels[dst_off + col + 1]]);
+                    let new = u16::from_le_bytes([incoming[col], incoming[col + 1]]);
+                    let mixed = ghost_mix(old, new);
+                    pixels[dst_off + col..dst_off + col + 2].copy_from_slice(&mixed.to_le_bytes());
+                }
+            } else {
+                pixels[dst_off..dst_off + row_bytes].copy_from_slice(incoming);
+            }
         }
         self.metrics.tiles_received = self.metrics.tiles_received.saturating_add(1);
         self.ack(packet.request_id, self.current_frame_id, true, true)
@@ -3763,6 +3785,37 @@ mod tests {
         assert!(
             (mid >> 11) > 0 && (mid & 0x1f) > 0,
             "mid blended: {mid:#06x}"
+        );
+    }
+
+    #[test]
+    fn eink_tiles_leave_a_ghost() {
+        // N489: a white tile over black is not fully white on e-ink.
+        let apply = |board: &str| {
+            let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id(board));
+            let mut session = Session::new(host);
+            session.connect().unwrap();
+            device.poll().unwrap();
+            assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+            let _ = session.send_tile(mdc_core::Tile {
+                surface_id: "main".into(),
+                base_frame_id: device.current_frame_id(),
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                bytes: vec![0xff, 0xff],
+            });
+            device.poll().unwrap();
+            session.poll().unwrap();
+            device.pixel_rgb565(0, 0).unwrap()
+        };
+        let color = apply("linux-virt");
+        assert_eq!(color, 0xffff, "a colour panel replaces the pixel");
+        let eink = apply("waveshare-eink");
+        assert!(
+            eink != 0 && eink != 0xffff,
+            "e-ink keeps a ghost: {eink:#06x}"
         );
     }
 
