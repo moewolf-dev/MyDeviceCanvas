@@ -2,6 +2,23 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.58] — PNG stream, mesh smooth mode, Node stats, dispersion, mirror surface guard, package report, frame rotate, inspector stats (N453–N462)
+
+### Added
+
+- `/stream.png` streams lossless PNG parts alongside BMP/JPEG (N453)
+- `render_package_mesh_mode` and `mdc render-package --smooth` shade the static
+  mesh renderer per pixel (N454)
+- Node `_native.stats()` exposes the host session counters (N455)
+- `KHR_materials_dispersion` widens the iridescent highlight's hue split (N456)
+- the simulator refuses to mirror a non-primary surface instead of sending the
+  wrong frames (N457)
+- `mdc package --report` prints an extended compile summary (textures, palette,
+  mips, checksum) (N458)
+- `?rotate=90|180|270` rotates served frames (N459)
+- the inspector JSONL series carries the session counters (N460)
+- memory coverage for the smooth mesh renderer (N461)
+
 ## [0.1.57] — Texture-transform UV override, anisotropy, WebP, full stats, Swift stats, mirror scale, cameras, scene visibility (N443–N452)
 
 ### Added

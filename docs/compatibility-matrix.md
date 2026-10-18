@@ -212,6 +212,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | `mirror --scale` (N448) | sim-verified (box downscale) | n/a |
 | glTF cameras (N449) | sim-verified (metadata) | n/a |
 | Scene `visible` (N450) | sim-verified (draw + hit-test skipped) | physical: pending |
+| PNG live stream (N453) | sim-verified (`/stream.png` parts) | n/a |
+| Mesh smooth mode (N454) | sim-verified (`render_package_mesh_mode`) | n/a |
+| Node `stats()` (N455) | sim-verified (session counters) | n/a |
+| `KHR_materials_dispersion` (N456) | sim-verified (wider hue split) | physical: pending |
+| Mirror surface guard (N457) | sim-verified (non-primary refused) | physical: pending |
+| `package --report` (N458) | sim-verified (extended summary) | n/a |
+| Frame rotate (N459) | sim-verified (`?rotate=90|180|270`) | n/a |
+| Inspector session stats (N460) | sim-verified (JSONL field) | n/a |
 
 ## G03 sim exit
 
