@@ -1416,6 +1416,31 @@ fn http_stream_scale_requests_stay_bounded() {
 }
 
 #[test]
+fn variant_selection_stays_bounded() {
+    // N451: selecting a material variant repeatedly stays bounded.
+    let gltf = br#"{"asset":{"version":"2.0"},
+        "extensionsUsed":["KHR_materials_variants"],
+        "extensions":{"KHR_materials_variants":{"variants":[{"name":"day"},{"name":"night"}]}},
+        "materials":[{"name":"base"},{"name":"dark"}],
+        "meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0,
+            "extensions":{"KHR_materials_variants":{"mappings":[{"variants":[1],"material":1}]}}}]}],
+        "nodes":[{"name":"root","mesh":0}],
+        "accessors":[{"count":4,"type":"VEC3"}]}"#;
+    for _ in 0..100 {
+        let mut model = mdc_model::GltfImporter
+            .import(gltf, &mdc_model::ImportLimits::default())
+            .unwrap();
+        let materials = model.variant_materials(1);
+        for (mesh, material) in model.meshes.iter_mut().zip(materials) {
+            if let Some(material) = material {
+                mesh.material = Some(material);
+            }
+        }
+        assert_eq!(model.meshes[0].material, Some(1));
+    }
+}
+
+#[test]
 fn mipped_package_round_trips_stay_bounded() {
     // N441: a mipped sprite package seals and reopens with a bounded mip chain.
     let source = mdc_bake::SpriteSource {
