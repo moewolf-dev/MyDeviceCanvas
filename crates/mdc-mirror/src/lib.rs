@@ -1052,6 +1052,8 @@ pub struct HttpMirrorServer {
     /// N517: pings the server sent and peers it dropped for silence.
     ws_pings_sent: u64,
     ws_timeouts: u64,
+    /// N527: fragment payload size for WebSocket messages (0 = one frame).
+    ws_fragment: usize,
 }
 
 struct HttpClient {
@@ -1079,6 +1081,8 @@ struct HttpClient {
     ws_closing: bool,
     /// N517: the frame counter when the peer was last heard from.
     ws_last_seen: u64,
+    /// N527: pending WebSocket fragments for the current message.
+    ws_pending: std::collections::VecDeque<Vec<u8>>,
     /// The peer closed or errored; dropped on the next pump.
     dead: bool,
     /// Frames skipped because the previous part was still being written.
@@ -1149,6 +1153,7 @@ impl HttpMirrorServer {
             ws_timeout: 0,
             ws_pings_sent: 0,
             ws_timeouts: 0,
+            ws_fragment: 0,
         })
     }
 
@@ -1162,6 +1167,13 @@ impl HttpMirrorServer {
     pub fn with_ws_heartbeat(mut self, interval: u64, timeout: u64) -> Self {
         self.ws_heartbeat = interval;
         self.ws_timeout = timeout;
+        self
+    }
+
+    /// N527: split WebSocket messages into fragments of at most `bytes` payload
+    /// (0 keeps one frame per message, the RFC 6455 default for small payloads).
+    pub fn with_ws_fragment(mut self, bytes: usize) -> Self {
+        self.ws_fragment = bytes;
         self
     }
 
@@ -1205,15 +1217,38 @@ impl HttpMirrorServer {
                         .extend_from_slice(&ws_frame_opcode(0x9, b""));
                     pings_sent += 1;
                 }
+                if client.websocket {
+                    // N527: the previous message must drain before the next one.
+                    if !client.ws_pending.is_empty() {
+                        client.clipped = client.clipped.saturating_add(1);
+                        continue;
+                    }
+                    let payload = encode_jpeg(frame.width, frame.height, &frame.bgra, 80);
+                    // N500: one binary WebSocket message per published frame;
+                    // N527: optionally split into fragments.
+                    if self.ws_fragment > 0 && payload.len() > self.ws_fragment {
+                        let mut chunks = payload.chunks(self.ws_fragment);
+                        if let Some(first) = chunks.next() {
+                            client
+                                .ws_pending
+                                .push_back(ws_frame_part(false, 0x2, first));
+                        }
+                        let rest: Vec<&[u8]> = chunks.collect();
+                        let count = rest.len();
+                        for (index, chunk) in rest.into_iter().enumerate() {
+                            let last = index + 1 == count;
+                            client.ws_pending.push_back(ws_frame_part(last, 0x0, chunk));
+                        }
+                    } else {
+                        client.ws_pending.push_back(ws_frame(&payload));
+                    }
+                    continue;
+                }
                 if !client.stream_part.is_empty() {
                     client.clipped = client.clipped.saturating_add(1);
                     continue;
                 }
-                if client.websocket {
-                    // N500: one binary WebSocket message per published frame.
-                    client.stream_part =
-                        ws_frame(&encode_jpeg(frame.width, frame.height, &frame.bgra, 80));
-                } else {
+                {
                     // N356: honour the client's `?scale=` on the live stream.
                     client.stream_part =
                         stream_part_for(frame, client.stream_format, client.stream_scale);
@@ -1242,6 +1277,7 @@ impl HttpMirrorServer {
                         ws_control: Vec::new(),
                         ws_closing: false,
                         ws_last_seen: 0,
+                        ws_pending: std::collections::VecDeque::new(),
                         dead: false,
                         clipped: 0,
                     });
@@ -1471,6 +1507,28 @@ fn stream_part_for(frame: &ServedFrame, format: StreamFormat, scale: u16) -> Vec
 /// Write the pending preamble and part. Never buffers more than one part; a
 /// `WouldBlock` leaves the remainder for the next pump.
 fn flush_stream(client: &mut HttpClient) {
+    // N527: WebSocket message fragments are written in order.
+    while let Some(fragment) = client.ws_pending.front_mut() {
+        match client.stream.write(fragment) {
+            Ok(0) => {
+                client.dead = true;
+                return;
+            }
+            Ok(written) => {
+                fragment.drain(..written);
+                if fragment.is_empty() {
+                    client.ws_pending.pop_front();
+                } else {
+                    return;
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
+            Err(_) => {
+                client.dead = true;
+                return;
+            }
+        }
+    }
     // N507: control frames (pong/close) take priority.
     if !client.ws_control.is_empty() {
         match client.stream.write(&client.ws_control) {
@@ -1884,8 +1942,14 @@ fn ws_frame(payload: &[u8]) -> Vec<u8> {
 
 /// N507: wrap a payload in an unmasked WebSocket frame with an explicit opcode.
 fn ws_frame_opcode(opcode: u8, payload: &[u8]) -> Vec<u8> {
+    ws_frame_part(true, opcode, payload)
+}
+
+/// N527: wrap a payload in an unmasked WebSocket frame with an explicit FIN and
+/// opcode (used for continuation fragments).
+fn ws_frame_part(fin: bool, opcode: u8, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(payload.len() + 10);
-    out.push(0x80 | (opcode & 0x0f)); // FIN + opcode
+    out.push(if fin { 0x80 } else { 0x00 } | (opcode & 0x0f));
     match payload.len() {
         len if len < 126 => out.push(len as u8),
         len if len <= usize::from(u16::MAX) => {
@@ -2687,6 +2751,121 @@ mod tests {
         assert_eq!(ws_frame(b"hi"), vec![0x82, 0x02, b'h', b'i']);
         let long = ws_frame(&[0u8; 200]);
         assert_eq!(&long[..4], &[0x82, 126, 0x00, 0xc8]);
+    }
+
+    #[test]
+    fn websocket_fragments_a_large_message() {
+        // N527: a message over the fragment size is split into a first binary
+        // frame (FIN=0) plus continuation frames, the last with FIN=1.
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0")
+            .unwrap()
+            .with_ws_fragment(64);
+        let addr = server.local_addr().unwrap();
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
+        client
+            .write_all(
+                b"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+                  Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+            )
+            .unwrap();
+        let mut seen = Vec::new();
+        for _ in 0..100 {
+            let _ = server.pump();
+            let mut buffer = [0u8; 4096];
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => seen.extend_from_slice(&buffer[..n]),
+                Err(_) => std::thread::sleep(Duration::from_millis(2)),
+            }
+            if seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        // A noisy 32x32 frame compresses to well over 64 bytes.
+        let pixels: Vec<u8> = (0..32 * 32 * 4).map(|i| ((i * 53) % 251) as u8).collect();
+        server.publish(&ShadowFrame {
+            width: 32,
+            height: 32,
+            generation: 1,
+            frame_id: 1,
+            pixels: &pixels,
+        });
+        // Read until a complete message (a final fragment) has arrived.
+        let parse = |body: &[u8]| -> (Vec<(bool, u8, Vec<u8>)>, bool) {
+            let mut offset = 0usize;
+            let mut fragments = Vec::new();
+            let mut complete = false;
+            while offset + 2 <= body.len() {
+                let fin = body[offset] & 0x80 != 0;
+                let opcode = body[offset] & 0x0f;
+                let (header, len) = match body[offset + 1] {
+                    126 if offset + 4 <= body.len() => (
+                        4,
+                        usize::from(u16::from_be_bytes([body[offset + 2], body[offset + 3]])),
+                    ),
+                    126 => break,
+                    len => (2, usize::from(len)),
+                };
+                if offset + header + len > body.len() {
+                    break;
+                }
+                fragments.push((
+                    fin,
+                    opcode,
+                    body[offset + header..offset + header + len].to_vec(),
+                ));
+                offset += header + len;
+                if fin {
+                    complete = true;
+                    break;
+                }
+            }
+            (fragments, complete)
+        };
+        let mut body = seen[seen.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4..].to_vec();
+        let mut complete = parse(&body).1;
+        for _ in 0..400 {
+            if complete {
+                break;
+            }
+            let _ = server.pump();
+            let mut buffer = [0u8; 8192];
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => body.extend_from_slice(&buffer[..n]),
+                Err(_) => std::thread::sleep(Duration::from_millis(2)),
+            }
+            complete = parse(&body).1;
+        }
+        assert!(complete, "the whole message arrived");
+        let (fragments, _) = parse(&body);
+        assert!(fragments.len() >= 2, "the message was split");
+        assert_eq!(fragments[0].1, 0x2, "first fragment is binary");
+        assert!(!fragments[0].0, "the first fragment is not final");
+        for (_, opcode, payload) in &fragments[1..] {
+            assert_eq!(*opcode, 0x0, "continuation opcode");
+            assert!(payload.len() <= 64, "fragments respect the size");
+        }
+        assert!(fragments.last().unwrap().0, "the last fragment is final");
+        // Reassembled, it is the JPEG the server published.
+        let mut reassembled = Vec::new();
+        for (_, _, payload) in &fragments {
+            reassembled.extend_from_slice(payload);
+        }
+        assert_eq!(&reassembled[..2], &[0xFF, 0xD8], "a JPEG was reassembled");
+        // Without a fragment size the whole message is one frame.
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        server.publish(&ShadowFrame {
+            width: 4,
+            height: 4,
+            generation: 1,
+            frame_id: 1,
+            pixels: &pixels[..64],
+        });
+        assert_eq!(server.frames_published(), 1);
     }
 
     #[test]
