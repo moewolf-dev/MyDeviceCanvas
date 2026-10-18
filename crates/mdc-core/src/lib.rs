@@ -4802,6 +4802,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             anim: Some(mdc_protocol::SceneAnim {
                 duration_ms: 100,
                 looping: true,

@@ -1157,9 +1157,36 @@ fn fill_scene(
             let end = node.color2_rgb565();
             // N505: a comma-separated `value2` becomes a multi-stop gradient.
             let stops = parse_gradient_stops(start, end, node.value2.as_deref());
+            // N515: `mode: "radial"` interpolates by distance from the centre.
+            let radial = node.mode.as_deref() == Some("radial");
             // N475: a quarter turn makes the gradient run horizontally.
             let horizontal = matches!(rotate, 90 | 270);
-            if horizontal {
+            if radial {
+                let cx = f32::from(w) / 2.0;
+                let cy = f32::from(h) / 2.0;
+                let max_r = (cx * cx + cy * cy).sqrt().max(1.0);
+                for yy in y..y.saturating_add(h) {
+                    if u32::from(yy) >= height {
+                        break;
+                    }
+                    for xx in x..x.saturating_add(w) {
+                        if u32::from(xx) >= width {
+                            break;
+                        }
+                        let dx = f32::from(xx.saturating_sub(x)) + 0.5 - cx;
+                        let dy = f32::from(yy.saturating_sub(y)) + 0.5 - cy;
+                        let distance = (dx * dx + dy * dy).sqrt() / max_r;
+                        let t = (distance.clamp(0.0, 1.0) * 255.0) as u8;
+                        let color = gradient_color(&stops, t);
+                        let index = ((u32::from(yy) * width + u32::from(xx)) * 2) as usize;
+                        if node.is_additive() {
+                            add_pixel(pixels, index, color, alpha);
+                        } else {
+                            put_pixel(pixels, index, color, alpha);
+                        }
+                    }
+                }
+            } else if horizontal {
                 let span = u32::from(w.saturating_sub(1)).max(1);
                 for xx in x..x.saturating_add(w) {
                     if u32::from(xx) >= width {
@@ -3230,6 +3257,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             value2: None,
         };
         let mut root = leaf("root", "rect", None);
@@ -3567,6 +3595,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             value2: None,
         };
         // Background red covers all; a green child on top; a third clipped.
@@ -3587,6 +3616,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3634,6 +3664,7 @@ mod tests {
                     align: None,
                     z: None,
                     wrap: None,
+                    mode: None,
                     value2: None,
                 },
                 SceneNode {
@@ -3650,6 +3681,7 @@ mod tests {
                     align: None,
                     z: None,
                     wrap: None,
+                    mode: None,
                     value2: None,
                 },
             ],
@@ -3661,6 +3693,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3713,6 +3746,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             value2: None,
         };
         // rect 0×0 -> scale 1, so (1,1) stays clear on the fresh framebuffer.
@@ -3785,6 +3819,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3824,6 +3859,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -3839,6 +3875,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             children: vec![
                 rect("bg", "#FFFFFF", None),
                 rect("fg", "#FF0000", Some(128)),
@@ -3897,6 +3934,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -4031,6 +4069,7 @@ mod tests {
                 align: None,
                 z,
                 wrap: None,
+                mode: None,
                 children: Vec::new(),
             };
             device.scene = Some(SceneNode {
@@ -4047,6 +4086,7 @@ mod tests {
                 align: None,
                 z: None,
                 wrap: None,
+                mode: None,
                 children: vec![
                     rect("green", "#00FF00", green_z),
                     rect("red", "#FF0000", None),
@@ -4067,6 +4107,55 @@ mod tests {
             ((green >> 5) & 0x3f) > 8 && green >> 11 < 8,
             "green on top: {green:#06x}"
         );
+    }
+
+    #[test]
+    fn radial_gradients_are_brighter_at_the_centre() {
+        // N515: a radial gradient is brightest (the start colour) at the centre;
+        // linear mode still ramps top-to-bottom.
+        use mdc_protocol::SceneNode;
+        let render = |width: u16, height: u16, mode: Option<&str>| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width,
+                height,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "glow".into(),
+                kind: "gradient".into(),
+                rect: Some([0, 0, width, height]),
+                value: Some("#FFFFFF".into()),
+                value2: Some("#000000".into()),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: mode.map(str::to_string),
+                children: Vec::new(),
+            });
+            assert!(device.render_scene());
+            let mut pixels = Vec::new();
+            for y in 0..height {
+                for x in 0..width {
+                    pixels.push(device.pixel_rgb565(x, y).unwrap());
+                }
+            }
+            pixels
+        };
+        // Radial: the centre is the start colour, the corner much darker.
+        let radial = render(9, 9, Some("radial"));
+        let centre = radial[4 * 9 + 4];
+        let corner = radial[0];
+        assert!(centre > 0xC000, "bright centre: {centre:#06x}");
+        assert!(centre > corner, "centre brighter than corner");
+        // Linear: the top is bright and the bottom dark.
+        let linear = render(1, 9, None);
+        assert!(linear[0] > linear[8], "linear ramps down");
+        assert_eq!(linear[0], 0xFFFF);
     }
 
     #[test]
@@ -4093,6 +4182,7 @@ mod tests {
                 align: None,
                 z: None,
                 wrap: None,
+                mode: None,
                 children: Vec::new(),
             });
             assert!(device.render_scene());
@@ -4150,6 +4240,7 @@ mod tests {
                 align: None,
                 z: None,
                 wrap: None,
+                mode: None,
                 children: Vec::new(),
             });
             assert!(device.render_scene());
@@ -4194,6 +4285,7 @@ mod tests {
                 align: None,
                 z: None,
                 wrap: wrap.map(str::to_string),
+                mode: None,
                 children: Vec::new(),
             });
             assert!(device.render_scene());
@@ -4246,6 +4338,7 @@ mod tests {
                 align: align.map(str::to_string),
                 z: None,
                 wrap: None,
+                mode: None,
                 children: Vec::new(),
             });
             assert!(device.render_scene());
@@ -4289,6 +4382,7 @@ mod tests {
                 align: None,
                 z: None,
                 wrap: None,
+                mode: None,
                 children: Vec::new(),
             };
             device.scene = Some(SceneNode {
@@ -4305,6 +4399,7 @@ mod tests {
                 align: None,
                 z: None,
                 wrap: None,
+                mode: None,
                 children: vec![
                     rect("base", "#00FF00", None),
                     rect("glow", "#FF0000", blend),
@@ -4373,6 +4468,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -4414,6 +4510,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             children: Vec::new(),
         });
         assert!(device.render_overlay());
@@ -4448,6 +4545,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             children: Vec::new(),
         });
         // t=0: fully transparent, so the black background remains.
@@ -4486,6 +4584,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             children: vec![
                 SceneNode {
                     name: "hidden".into(),
@@ -4501,6 +4600,7 @@ mod tests {
                     align: None,
                     z: None,
                     wrap: None,
+                    mode: None,
                     children: Vec::new(),
                 },
                 SceneNode {
@@ -4517,6 +4617,7 @@ mod tests {
                     align: None,
                     z: None,
                     wrap: None,
+                    mode: None,
                     children: Vec::new(),
                 },
             ],
@@ -4580,6 +4681,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -4596,6 +4698,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             children: vec![rect("back", [0, 0, 8, 8]), rect("front", [2, 2, 4, 4])],
         });
         // The overlapping topmost child wins.
@@ -4628,6 +4731,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -4644,6 +4748,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             // The child fills 8x8 relative to the clip origin, so it would cover
             // everything without the clip rect.
             children: vec![fill([0, 0, 8, 8])],
@@ -4686,6 +4791,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -4747,6 +4853,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             value2: None,
         };
         let scene = SceneNode {
@@ -4766,6 +4873,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -4808,6 +4916,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             value2: None,
         };
         // Group offset (4, 2) and 2× scale: [0,0,2,2] red -> [4,2,4,4].
@@ -4825,6 +4934,7 @@ mod tests {
             align: None,
             z: None,
             wrap: None,
+            mode: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -4908,6 +5018,7 @@ mod tests {
                 align: None,
                 z: None,
                 wrap: None,
+                mode: None,
                 value2: None,
             })
             .unwrap();
@@ -5067,6 +5178,7 @@ mod tests {
                 align: None,
                 z: None,
                 wrap: None,
+                mode: None,
                 value2: None,
             })
             .unwrap();
@@ -5224,6 +5336,7 @@ mod tests {
                 align: None,
                 z: None,
                 wrap: None,
+                mode: None,
                 value2: None,
             })
             .unwrap();
@@ -5636,6 +5749,7 @@ mod tests {
                 align: None,
                 z: None,
                 wrap: None,
+                mode: None,
                 value2: None,
             })
             .unwrap();
@@ -5668,6 +5782,7 @@ mod tests {
                 align: None,
                 z: None,
                 wrap: None,
+                mode: None,
                 value2: None,
             })
             .unwrap();
