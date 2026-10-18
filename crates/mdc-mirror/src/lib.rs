@@ -1092,6 +1092,9 @@ struct HttpClient {
 /// N313: multipart boundary for the live stream.
 const MULTIPART_BOUNDARY: &str = "mdcframe";
 
+/// N537: the smallest WebSocket fragment payload the server will use.
+pub const MIN_WS_FRAGMENT: usize = 64;
+
 /// The path a request for a live stream uses.
 const STREAM_PATHS: [&str; 4] = ["/stream", "/stream.bmp", "/stream.jpg", "/stream.png"];
 
@@ -1172,8 +1175,14 @@ impl HttpMirrorServer {
 
     /// N527: split WebSocket messages into fragments of at most `bytes` payload
     /// (0 keeps one frame per message, the RFC 6455 default for small payloads).
+    /// N537: a non-zero size is raised to at least [`MIN_WS_FRAGMENT`] so a tiny
+    /// value cannot turn one message into thousands of frames.
     pub fn with_ws_fragment(mut self, bytes: usize) -> Self {
-        self.ws_fragment = bytes;
+        self.ws_fragment = if bytes == 0 {
+            0
+        } else {
+            bytes.max(MIN_WS_FRAGMENT)
+        };
         self
     }
 
@@ -2866,6 +2875,117 @@ mod tests {
             pixels: &pixels[..64],
         });
         assert_eq!(server.frames_published(), 1);
+    }
+
+    #[test]
+    fn websocket_fragments_and_heartbeat_do_not_interleave() {
+        // N537: a heartbeat must not inject a control frame inside a fragmented
+        // message, and a tiny fragment size is raised to the floor.
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0")
+            .unwrap()
+            .with_ws_heartbeat(1, 1000)
+            .with_ws_fragment(1);
+        let addr = server.local_addr().unwrap();
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
+        client
+            .write_all(
+                b"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+                  Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+            )
+            .unwrap();
+        let mut seen = Vec::new();
+        for _ in 0..100 {
+            let _ = server.pump();
+            let mut buffer = [0u8; 4096];
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => seen.extend_from_slice(&buffer[..n]),
+                Err(_) => std::thread::sleep(Duration::from_millis(2)),
+            }
+            if seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let pixels: Vec<u8> = (0..64 * 64 * 4).map(|i| ((i * 41) % 251) as u8).collect();
+        server.publish(&ShadowFrame {
+            width: 64,
+            height: 64,
+            generation: 1,
+            frame_id: 1,
+            pixels: &pixels,
+        });
+        // Read until the message's final fragment.
+        let parse = |body: &[u8]| -> (Vec<(bool, u8, Vec<u8>)>, bool) {
+            let mut offset = 0usize;
+            let mut fragments = Vec::new();
+            let mut complete = false;
+            while offset + 2 <= body.len() {
+                let fin = body[offset] & 0x80 != 0;
+                let opcode = body[offset] & 0x0f;
+                let (header, len) = match body[offset + 1] {
+                    126 if offset + 4 <= body.len() => (
+                        4,
+                        usize::from(u16::from_be_bytes([body[offset + 2], body[offset + 3]])),
+                    ),
+                    126 => break,
+                    len => (2, usize::from(len)),
+                };
+                if offset + header + len > body.len() {
+                    break;
+                }
+                fragments.push((
+                    fin,
+                    opcode,
+                    body[offset + header..offset + header + len].to_vec(),
+                ));
+                offset += header + len;
+                if fin {
+                    complete = true;
+                    break;
+                }
+            }
+            (fragments, complete)
+        };
+        let mut body = seen[seen.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4..].to_vec();
+        let mut complete = parse(&body).1;
+        for _ in 0..400 {
+            if complete {
+                break;
+            }
+            let _ = server.pump();
+            let mut buffer = [0u8; 8192];
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => body.extend_from_slice(&buffer[..n]),
+                Err(_) => std::thread::sleep(Duration::from_millis(2)),
+            }
+            complete = parse(&body).1;
+        }
+        assert!(complete, "the fragmented message completed");
+        let (fragments, _) = parse(&body);
+        // The floor was applied: every non-final fragment is at least
+        // MIN_WS_FRAGMENT (the last one is the remainder).
+        let last = fragments.len().saturating_sub(1);
+        for (index, (_, opcode, payload)) in fragments.iter().enumerate() {
+            if (*opcode == 0x2 || *opcode == 0x0) && index < last {
+                assert!(
+                    payload.len() >= MIN_WS_FRAGMENT,
+                    "fragment below the floor: {}",
+                    payload.len()
+                );
+            }
+        }
+        let mut reassembled = Vec::new();
+        for (_, opcode, payload) in &fragments {
+            if *opcode == 0x2 || *opcode == 0x0 {
+                reassembled.extend_from_slice(payload);
+            }
+        }
+        assert_eq!(&reassembled[..2], &[0xFF, 0xD8], "a clean JPEG message");
+        assert!(server.ws_pings_sent() >= 1, "a heartbeat was queued");
     }
 
     #[test]
