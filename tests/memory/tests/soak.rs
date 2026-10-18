@@ -1423,6 +1423,32 @@ fn http_stream_scale_requests_stay_bounded() {
 }
 
 #[test]
+fn disk_chunked_upload_stays_bounded() {
+    // N471: repeated spooled uploads leave only content files behind.
+    let dir = std::env::temp_dir().join(format!("mdc-upload-soak-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for i in 0..100usize {
+        let mut upload = mdc_assets::DiskChunkedUpload::begin(&dir, 64).unwrap();
+        let payload = [(i % 251) as u8; 32];
+        upload.push_chunk(&payload[..16]).unwrap();
+        upload.push_chunk(&payload[16..]).unwrap();
+        assert_eq!(
+            upload.push_chunk(&[0; 40]),
+            Err(mdc_assets::AssetError::TooLarge)
+        );
+        let key = upload.finish().unwrap();
+        assert!(dir.join(&key.0).is_file());
+    }
+    let temp_files = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".upload-"))
+        .count();
+    assert_eq!(temp_files, 0, "no temp files remain");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn smooth_mesh_rendering_stays_bounded() {
     // N461: the static mesh renderer's smooth mode keeps a constant frame size.
     use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};

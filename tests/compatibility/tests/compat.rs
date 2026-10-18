@@ -2881,6 +2881,57 @@ fn occlusion_is_sampled_per_pixel() {
 }
 
 #[test]
+fn animated_scene_reaches_the_mirror() {
+    use mdc_core::{ConnectionState, Session};
+    use mdc_protocol::{SceneAnim, SceneNode};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    // The scene is set through the session so the device rasterises it.
+    session
+        .set_scene(SceneNode {
+            name: "fade".into(),
+            kind: "rect".into(),
+            rect: Some([0, 0, 800, 480]),
+            value: Some("#FFFFFF".into()),
+            value2: None,
+            opacity: Some(255),
+            visible: None,
+            anim: Some(SceneAnim {
+                duration_ms: 100,
+                looping: false,
+                opacity: vec![[0, 0], [100, 255]],
+                rect: Vec::new(),
+            }),
+            children: Vec::new(),
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    session.start_mirror("main", "full-frame", 30).unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    // N463: the mirrored frame follows the scene animation.
+    device.clock.advance(100);
+    device.emit_mirror_frame().unwrap();
+    session.poll().unwrap();
+    let end = session.take_mirror_frame().expect("frame");
+    assert_eq!(end.bytes[0], 0xFF, "opaque at the end (white)");
+    assert_eq!(end.bytes[1], 0xFF);
+
+    device.clock.tick = 0;
+    device.emit_mirror_frame().unwrap();
+    session.poll().unwrap();
+    let start = session.take_mirror_frame().expect("frame");
+    assert_eq!(&start.bytes[0..2], &[0, 0], "transparent at t=0 (black)");
+}
+
+#[test]
 fn full_pbr_material_renders_on_the_device() {
     use mdc_core::{ConnectionState, Session};
     use mdc_model::{Material, Mesh, MeshGeometry, Model, Node, Texture};
