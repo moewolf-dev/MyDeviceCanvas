@@ -11,6 +11,12 @@ public struct MdcUiEvent {
     public let phase: String
     public let x: UInt16
     public let y: UInt16
+
+    /// N483: poll kind 8 carries a recognised gesture.
+    public var isGesture: Bool { kind == 8 }
+
+    /// N483: `tap` | `long-press` | `drag` when this event is a gesture.
+    public var gestureKind: String? { isGesture ? phase : nil }
 }
 
 /// A Form B mirrored frame (RGB565) copied out of the C ABI.

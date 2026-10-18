@@ -108,6 +108,21 @@ struct MdcSwiftHello {
             exit(1)
         }
 
+        // N483: a down+up pair is reported as a tap gesture.
+        _ = session.simulateInput(phase: "down", x: 2, y: 3)
+        _ = session.simulateInput(phase: "up", x: 2, y: 3)
+        var sawGesture = false
+        for _ in 0..<16 {
+            if let event = session.pollEvent(), event.gestureKind == "tap" {
+                sawGesture = true
+                break
+            }
+        }
+        if !sawGesture {
+            fputs("gesture not reported\n", stderr)
+            exit(1)
+        }
+
         // N409: the host can send a pointer event to a touch-capable device.
         if session.sendInput(pointerId: 1, phase: "down", x: 3, y: 4) != 0 {
             fputs("sendInput failed\n", stderr)
