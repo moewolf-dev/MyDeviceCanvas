@@ -1409,7 +1409,7 @@ fn scaled_frame<'a>(frame: &'a ServedFrame, query: &str) -> (u16, u16, std::borr
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(1)
         .clamp(1, 8);
-    if scale == 1 {
+    let (w, h, raw): (u16, u16, std::borrow::Cow<'_, [u8]>) = if scale == 1 {
         (
             frame.width,
             frame.height,
@@ -1418,6 +1418,71 @@ fn scaled_frame<'a>(frame: &'a ServedFrame, query: &str) -> (u16, u16, std::borr
     } else {
         let (w, h, raw) = downscale_bgra(frame.width, frame.height, &frame.bgra, scale);
         (w, h, std::borrow::Cow::Owned(raw))
+    };
+    // N459: `?rotate=90|180|270` rotates the served frame.
+    let degrees = ((query_param(query, "rotate")
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(0)
+        / 90)
+        % 4)
+        * 90;
+    if degrees == 0 {
+        (w, h, raw)
+    } else {
+        let (rw, rh, rotated) = rotate_bgra(w, h, &raw, degrees);
+        (rw, rh, std::borrow::Cow::Owned(rotated))
+    }
+}
+
+/// N459: rotate a BGRA frame by 90/180/270 degrees clockwise.
+fn rotate_bgra(width: u16, height: u16, bytes: &[u8], degrees: u16) -> (u16, u16, Vec<u8>) {
+    let (w, h) = (usize::from(width), usize::from(height));
+    match degrees % 360 {
+        90 => {
+            let mut out = vec![0u8; w * h * 4];
+            for y in 0..h {
+                for x in 0..w {
+                    let src = (y * w + x) * 4;
+                    // (x, y) -> (h - 1 - y, x) in the h x w output.
+                    let dst = (x * h + (h - 1 - y)) * 4;
+                    if let (Some(s), Some(d)) = (bytes.get(src..src + 4), out.get_mut(dst..dst + 4))
+                    {
+                        d.copy_from_slice(s);
+                    }
+                }
+            }
+            (height, width, out)
+        }
+        180 => {
+            let mut out = bytes.to_vec();
+            for y in 0..h {
+                for x in 0..w {
+                    let src = (y * w + x) * 4;
+                    let dst = ((h - 1 - y) * w + (w - 1 - x)) * 4;
+                    if let (Some(s), Some(d)) = (bytes.get(src..src + 4), out.get_mut(dst..dst + 4))
+                    {
+                        d.copy_from_slice(s);
+                    }
+                }
+            }
+            (width, height, out)
+        }
+        270 => {
+            let mut out = vec![0u8; w * h * 4];
+            for y in 0..h {
+                for x in 0..w {
+                    let src = (y * w + x) * 4;
+                    // (x, y) -> (y, w - 1 - x) in the h x w output.
+                    let dst = ((w - 1 - x) * h + y) * 4;
+                    if let (Some(s), Some(d)) = (bytes.get(src..src + 4), out.get_mut(dst..dst + 4))
+                    {
+                        d.copy_from_slice(s);
+                    }
+                }
+            }
+            (height, width, out)
+        }
+        _ => (width, height, bytes.to_vec()),
     }
 }
 
@@ -2238,6 +2303,16 @@ mod tests {
             .expect("BMP part");
         let width = u32::from_le_bytes(response[start + 18..start + 22].try_into().unwrap());
         assert_eq!(width, 1, "the streamed part is downscaled");
+    }
+
+    #[test]
+    fn rotate_bgra_swaps_axes_for_90_degrees() {
+        // N459: a 2x1 frame becomes 1x2 and moves the right pixel down.
+        let (w, h, out) = rotate_bgra(2, 1, &[1, 0, 0, 255, 2, 0, 0, 255], 90);
+        assert_eq!((w, h), (1, 2));
+        // Clockwise: the left pixel stays on top, the right pixel moves below.
+        assert_eq!(&out[0..4], &[1, 0, 0, 255]);
+        assert_eq!(&out[4..8], &[2, 0, 0, 255]);
     }
 
     #[test]
