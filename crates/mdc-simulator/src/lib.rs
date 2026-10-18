@@ -1605,8 +1605,10 @@ impl FakeDevice {
     /// Emit a touch/input event toward the host session (capability-gated).
     /// N418: the topmost scene node under a device-space point.
     pub fn hit_test(&self, x: u16, y: u16) -> Option<String> {
-        let scene = self.scene.as_ref()?;
-        hit_test_node(scene, SceneTransform::identity(), x, y)
+        let mut scene = self.scene.clone()?;
+        // N463: hit-test against the animated geometry.
+        mdc_protocol::apply_scene_animation(&mut scene, self.clock.tick);
+        hit_test_node(&scene, SceneTransform::identity(), x, y)
     }
 
     pub fn emit_input(&mut self, event: InputEvent) -> Result<(), SimError> {
@@ -2148,9 +2150,11 @@ impl FakeDevice {
     /// framebuffer is cleared first so repeated renders are deterministic.
     /// Returns true when at least one primitive was drawn.
     pub fn render_scene(&mut self) -> bool {
-        let Some(scene) = self.scene.clone() else {
+        let Some(mut scene) = self.scene.clone() else {
             return false;
         };
+        // N463: sample keyframed scene animation on the device clock.
+        mdc_protocol::apply_scene_animation(&mut scene, self.clock.tick);
         let width = u32::from(self.profile.width);
         let height = u32::from(self.profile.height);
         self.pixels.fill(0);
@@ -2931,6 +2935,7 @@ mod tests {
             value: value.map(str::to_string),
             opacity: None,
             visible: None,
+            anim: None,
             value2: None,
         };
         let mut root = leaf("root", "rect", None);
@@ -3262,6 +3267,7 @@ mod tests {
             value: Some(color.into()),
             opacity: None,
             visible: None,
+            anim: None,
             value2: None,
         };
         // Background red covers all; a green child on top; a third clipped.
@@ -3276,6 +3282,7 @@ mod tests {
             value: Some("#FF0000".into()),
             opacity: None,
             visible: None,
+            anim: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3317,6 +3324,7 @@ mod tests {
                     children: Vec::new(),
                     opacity: None,
                     visible: None,
+                    anim: None,
                     value2: None,
                 },
                 SceneNode {
@@ -3327,11 +3335,13 @@ mod tests {
                     children: Vec::new(),
                     opacity: None,
                     visible: None,
+                    anim: None,
                     value2: None,
                 },
             ],
             opacity: None,
             visible: None,
+            anim: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3374,6 +3384,7 @@ mod tests {
             children: Vec::new(),
             opacity: None,
             visible: None,
+            anim: None,
             value2: None,
         };
         // rect 0×0 -> scale 1, so (1,1) stays clear on the fresh framebuffer.
@@ -3440,6 +3451,7 @@ mod tests {
             children: Vec::new(),
             opacity: None,
             visible: None,
+            anim: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3469,6 +3481,7 @@ mod tests {
             opacity,
             value2: None,
             visible: None,
+            anim: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -3478,6 +3491,7 @@ mod tests {
             value: None,
             opacity: None,
             visible: None,
+            anim: None,
             children: vec![
                 rect("bg", "#FFFFFF", None),
                 rect("fg", "#FF0000", Some(128)),
@@ -3530,6 +3544,7 @@ mod tests {
             value2: Some("#0000FF".into()),
             opacity: None,
             visible: None,
+            anim: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -3540,6 +3555,45 @@ mod tests {
             (mid >> 11) > 0 && (mid & 0x1f) > 0,
             "mid blended: {mid:#06x}"
         );
+    }
+
+    #[test]
+    fn scene_animation_samples_on_the_device_clock() {
+        // N463: opacity keyframes drive the rendered alpha over time.
+        use mdc_protocol::{SceneAnim, SceneNode};
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 4,
+            height: 4,
+            ..BoardProfile::default()
+        });
+        device.scene = Some(SceneNode {
+            name: "fade".into(),
+            kind: "rect".into(),
+            rect: Some([0, 0, 4, 4]),
+            value: Some("#FFFFFF".into()),
+            value2: None,
+            opacity: Some(255),
+            visible: None,
+            anim: Some(SceneAnim {
+                duration_ms: 100,
+                looping: false,
+                opacity: vec![[0, 0], [100, 255]],
+                rect: Vec::new(),
+            }),
+            children: Vec::new(),
+        });
+        // t=0: fully transparent, so the black background remains.
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(0, 0), Some(0), "transparent at t=0");
+        // t=duration: fully opaque white.
+        device.clock.advance(100);
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(0, 0), Some(0xFFFF), "opaque at the end");
+        // Midway: a blend between the two.
+        device.clock.tick = 50;
+        assert!(device.render_scene());
+        let mid = device.pixel_rgb565(0, 0).unwrap();
+        assert!(mid != 0 && mid != 0xFFFF, "blended midway: {mid:#06x}");
     }
 
     #[test]
@@ -3558,6 +3612,7 @@ mod tests {
             value2: None,
             opacity: None,
             visible: None,
+            anim: None,
             children: vec![
                 SceneNode {
                     name: "hidden".into(),
@@ -3567,6 +3622,7 @@ mod tests {
                     value2: None,
                     opacity: None,
                     visible: Some(false),
+                    anim: None,
                     children: Vec::new(),
                 },
                 SceneNode {
@@ -3577,6 +3633,7 @@ mod tests {
                     value2: None,
                     opacity: None,
                     visible: None,
+                    anim: None,
                     children: Vec::new(),
                 },
             ],
@@ -3634,6 +3691,7 @@ mod tests {
             value2: None,
             opacity: None,
             visible: None,
+            anim: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -3644,6 +3702,7 @@ mod tests {
             value2: None,
             opacity: None,
             visible: None,
+            anim: None,
             children: vec![rect("back", [0, 0, 8, 8]), rect("front", [2, 2, 4, 4])],
         });
         // The overlapping topmost child wins.
@@ -3670,6 +3729,7 @@ mod tests {
             value2: None,
             opacity: None,
             visible: None,
+            anim: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -3680,6 +3740,7 @@ mod tests {
             value2: None,
             opacity: None,
             visible: None,
+            anim: None,
             // The child fills 8x8 relative to the clip origin, so it would cover
             // everything without the clip rect.
             children: vec![fill([0, 0, 8, 8])],
@@ -3716,6 +3777,7 @@ mod tests {
             value2: Some("4".into()),
             opacity: None,
             visible: None,
+            anim: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -3771,6 +3833,7 @@ mod tests {
             value: Some(value.into()),
             opacity: None,
             visible: None,
+            anim: None,
             value2: None,
         };
         let scene = SceneNode {
@@ -3784,6 +3847,7 @@ mod tests {
             ],
             opacity: None,
             visible: None,
+            anim: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3820,6 +3884,7 @@ mod tests {
             value: Some(color.into()),
             opacity: None,
             visible: None,
+            anim: None,
             value2: None,
         };
         // Group offset (4, 2) and 2× scale: [0,0,2,2] red -> [4,2,4,4].
@@ -3831,6 +3896,7 @@ mod tests {
             value: None,
             opacity: None,
             visible: None,
+            anim: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3908,6 +3974,7 @@ mod tests {
                 value: Some("#FFFFFF".into()),
                 opacity: None,
                 visible: None,
+                anim: None,
                 value2: None,
             })
             .unwrap();
@@ -4061,6 +4128,7 @@ mod tests {
                 value: Some("0".into()),
                 opacity: None,
                 visible: None,
+                anim: None,
                 value2: None,
             })
             .unwrap();
@@ -4212,6 +4280,7 @@ mod tests {
                 value: Some("#0000FF".into()),
                 opacity: None,
                 visible: None,
+                anim: None,
                 value2: None,
             })
             .unwrap();
@@ -4617,6 +4686,7 @@ mod tests {
                 value: Some("#000000".into()),
                 opacity: None,
                 visible: None,
+                anim: None,
                 value2: None,
             })
             .unwrap();
@@ -4643,6 +4713,7 @@ mod tests {
                 value: Some("#FF0000".into()),
                 opacity: None,
                 visible: None,
+                anim: None,
                 value2: None,
             })
             .unwrap();

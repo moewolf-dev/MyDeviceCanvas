@@ -481,6 +481,106 @@ pub struct SceneNode {
     /// hit-testing (`None` = visible).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible: Option<bool>,
+    /// N463: keyframed opacity/rect animation, sampled on the device clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anim: Option<SceneAnim>,
+}
+
+/// N463: a keyframed scene animation. Keyframes are `[time_ms, value]` and are
+/// linearly interpolated; `duration_ms` bounds the clip.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneAnim {
+    /// Clip length in milliseconds (0 is treated as 1).
+    #[serde(default)]
+    pub duration_ms: u32,
+    /// Whether the clip repeats (otherwise it holds the last keyframe).
+    #[serde(default)]
+    pub looping: bool,
+    /// Opacity keyframes: `[time_ms, opacity 0..=255]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub opacity: Vec<[u16; 2]>,
+    /// Rect keyframes: `[time_ms, x, y, w, h]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rect: Vec<[u16; 5]>,
+}
+
+impl SceneAnim {
+    /// The clip-local time for `time_ms`.
+    pub fn local_time(&self, time_ms: u64) -> u32 {
+        let duration = u64::from(self.duration_ms.max(1));
+        let local = if self.looping {
+            time_ms % duration
+        } else {
+            time_ms.min(duration)
+        };
+        local as u32
+    }
+
+    /// The sampled opacity at `time_ms`, or `None` when there are no keyframes.
+    pub fn opacity_at(&self, time_ms: u64) -> Option<u8> {
+        let t = self.local_time(time_ms);
+        sample_keys(&self.opacity, t, |k, value| {
+            (u32::from(k), u32::from(value))
+        })
+        .map(|value| value.min(255) as u8)
+    }
+
+    /// The sampled rect at `time_ms`, or `None` when there are no keyframes.
+    pub fn rect_at(&self, time_ms: u64) -> Option<[u16; 4]> {
+        if self.rect.is_empty() {
+            return None;
+        }
+        let t = self.local_time(time_ms);
+        let channel = |k: usize| -> Option<u16> {
+            let keys: Vec<[u16; 2]> = self.rect.iter().map(|frame| [frame[0], frame[k]]).collect();
+            sample_keys(&keys, t, |k, value| (u32::from(k), u32::from(value)))
+                .map(|value| value.min(u16::MAX as u32) as u16)
+        };
+        Some([channel(1)?, channel(2)?, channel(3)?, channel(4)?])
+    }
+}
+
+/// Interpolate `[time, value]` keyframes at `t`; returns the last value past the end.
+fn sample_keys<F>(keys: &[[u16; 2]], t: u32, map: F) -> Option<u32>
+where
+    F: Fn(u16, u16) -> (u32, u32),
+{
+    if keys.is_empty() {
+        return None;
+    }
+    let mut frames: Vec<(u32, u32)> = keys.iter().map(|k| map(k[0], k[1])).collect();
+    frames.sort_by_key(|(time, _)| *time);
+    if t <= frames[0].0 {
+        return Some(frames[0].1);
+    }
+    for pair in frames.windows(2) {
+        let (t0, v0) = pair[0];
+        let (t1, v1) = pair[1];
+        if t <= t1 && t1 > t0 {
+            let span = f32::from((t1 - t0) as u16);
+            let f = f32::from((t - t0) as u16) / span;
+            return Some(
+                (f32::from(v0 as u16) + (f32::from(v1 as u16) - f32::from(v0 as u16)) * f).round()
+                    as u32,
+            );
+        }
+    }
+    frames.last().map(|(_, value)| *value)
+}
+
+/// N463: apply a node's animation (in place) at `time_ms`, recursively.
+pub fn apply_scene_animation(node: &mut SceneNode, time_ms: u64) {
+    if let Some(anim) = node.anim.clone() {
+        if let Some(opacity) = anim.opacity_at(time_ms) {
+            node.opacity = Some(opacity);
+        }
+        if let Some(rect) = anim.rect_at(time_ms) {
+            node.rect = Some(rect);
+        }
+    }
+    for child in &mut node.children {
+        apply_scene_animation(child, time_ms);
+    }
 }
 /// N417: the default scene limits used by [`SceneNode::lint`] (matching a typical
 /// `SceneCapability`).
@@ -2066,11 +2166,13 @@ mod tests {
                     value: Some("hi".into()),
                     opacity: None,
                     visible: None,
+                    anim: None,
                     value2: None,
                 }],
                 value: None,
                 opacity: None,
                 visible: None,
+                anim: None,
                 value2: None,
             }),
         }
@@ -2086,6 +2188,7 @@ mod tests {
             value: Some(value.into()),
             opacity: None,
             visible: None,
+            anim: None,
             value2: None,
         };
         // #RGB expands each nibble.
@@ -2109,6 +2212,7 @@ mod tests {
             value: Some("#FF0000".into()),
             opacity: None,
             visible: None,
+            anim: None,
             value2: None,
         };
         assert_eq!(node.color_rgb565(), 0xF800);
@@ -2121,6 +2225,7 @@ mod tests {
                 value: None,
                 opacity: None,
                 visible: None,
+                anim: None,
                 value2: None,
             }
             .color_rgb565(),
