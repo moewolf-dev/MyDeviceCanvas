@@ -653,6 +653,11 @@ pub enum ManagerEvent {
         device_id: String,
         event: InputEvent,
     },
+    /// N473: a recognised gesture (tap / long-press / drag).
+    Gesture {
+        device_id: String,
+        gesture: Gesture,
+    },
     /// Form B (N24): a complete mirrored frame was stored. Metadata only — the
     /// pixels stay in the session inbox (`take_mirror_frame`) so the event queue
     /// stays small.
@@ -765,6 +770,15 @@ impl DeviceManager {
     }
 
     /// Coalesce consecutive moves. A full queue keeps down/up/cancel, reports an error, and cancels that pointer.
+    /// N473: queue a recognised gesture.
+    pub fn push_gesture(&mut self, device_id: String, gesture: Gesture) {
+        self.events
+            .push_back(ManagerEvent::Gesture { device_id, gesture });
+        if self.events.len() >= MAX_MANAGER_EVENTS {
+            self.events.pop_front();
+        }
+    }
+
     pub fn push_input(&mut self, device_id: String, event: InputEvent) {
         if event.phase == "move" {
             if let Some(ManagerEvent::Input {
@@ -938,6 +952,8 @@ pub struct Session<T: Transport> {
     stats: SessionStats,
     /// N419: the highest OTA phase sent (0 none, 1 begin, 2 chunk, 3 confirm).
     ota_phase: u8,
+    /// N473: derives gestures from incoming input events.
+    gestures: GestureTracker,
 }
 impl<T: Transport> Session<T> {
     pub fn new(transport: T) -> Self {
@@ -996,6 +1012,7 @@ impl<T: Transport> Session<T> {
             pacing_dropped: 0,
             stats: SessionStats::default(),
             ota_phase: 0,
+            gestures: GestureTracker::default(),
         }
     }
     pub fn set_manager(&mut self, manager: Arc<Mutex<DeviceManager>>) {
@@ -1162,6 +1179,10 @@ impl<T: Transport> Session<T> {
     /// Advance virtual clock; drives heartbeat, ack timeout, and reconnect edges.
     pub fn tick(&mut self, virtual_ms: u64) -> Result<ConnectionState, CoreError> {
         self.virtual_ms = virtual_ms;
+        // N473: held pointers may become long-presses on the virtual clock.
+        while let Some(gesture) = self.gestures.tick(virtual_ms) {
+            self.emit_gesture(gesture);
+        }
         match self.state {
             ConnectionState::Connecting | ConnectionState::Handshaking => {
                 if self.config.connect_timeout_ms > 0
@@ -1613,6 +1634,20 @@ impl<T: Transport> Session<T> {
             _ => self.ota_phase,
         };
         Ok(request_id)
+    }
+
+    /// N473: push a recognised gesture to the manager (if attached).
+    fn emit_gesture(&mut self, gesture: Gesture) {
+        let device_id = self
+            .device
+            .as_ref()
+            .map(|device| device.capabilities.device_id.clone())
+            .unwrap_or_default();
+        if let Some(manager) = &self.manager {
+            if let Ok(mut manager) = manager.lock() {
+                manager.push_gesture(device_id, gesture);
+            }
+        }
     }
 
     /// N419: the highest OTA phase sent (0 none, 1 begin, 2 chunk, 3 confirm).
@@ -2239,10 +2274,15 @@ impl<T: Transport> Session<T> {
                     .as_ref()
                     .map(|d| d.capabilities.device_id.clone())
                     .unwrap_or_default();
+                // N473: feed the gesture tracker before forwarding the raw event.
+                let gesture = self.gestures.on_event(&event, self.virtual_ms);
                 if let Some(mgr) = &self.manager {
                     mgr.lock()
                         .map_err(|e| CoreError::Transport(e.to_string()))?
                         .push_input(device_id, event);
+                }
+                if let Some(gesture) = gesture {
+                    self.emit_gesture(gesture);
                 }
                 Ok(())
             }
@@ -4648,6 +4688,54 @@ mod tests {
             session.stats().mirror_frames,
             session.stats().pacing_dropped,
         );
+    }
+
+    #[test]
+    fn gestures_reach_the_manager_event_queue() {
+        // N473: down+up inside the tap window becomes a `Gesture` event.
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        let manager = std::sync::Arc::new(std::sync::Mutex::new(DeviceManager::new()));
+        session.set_manager(manager.clone());
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        let input = |phase: &str| mdc_protocol::InputEvent {
+            surface_id: "main".into(),
+            pointer_id: 3,
+            phase: phase.into(),
+            x: 4,
+            y: 5,
+            node: None,
+        };
+        for (phase, id) in [("down", 10u32), ("up", 11)] {
+            device
+                .write(
+                    &Packet {
+                        version: VERSION,
+                        kind: MessageType::Input,
+                        flags: 0,
+                        request_id: id,
+                        payload: encode_control(&input(phase)).unwrap(),
+                    }
+                    .encode(4096)
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        session.poll().unwrap();
+        let events: Vec<ManagerEvent> = manager.lock().unwrap().drain_events().collect();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ManagerEvent::Gesture {
+                gesture: Gesture {
+                    kind: GestureKind::Tap,
+                    pointer_id: 3,
+                    x: 4,
+                    y: 5
+                },
+                ..
+            }
+        )));
     }
 
     #[test]

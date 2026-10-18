@@ -22,6 +22,14 @@ export interface TileRequest {
   baseFrameId: number;
   bytes: Uint8Array;
 }
+/** N474: a recognised pointer gesture. */
+export interface GestureDto {
+  kind: "tap" | "long-press" | "drag";
+  pointerId: number;
+  x: number;
+  y: number;
+}
+
 export interface InputEventDto {
   /** N418: the hit-tested scene node, when the device reports one. */
   node?: string;
@@ -59,6 +67,8 @@ export interface NativeEvent {
   kind: string;
   deviceId?: string;
   input?: InputEventDto;
+  /** N474: a recognised gesture. */
+  gesture?: GestureDto;
   message?: string;
   mirror?: MirrorInfo;
 }

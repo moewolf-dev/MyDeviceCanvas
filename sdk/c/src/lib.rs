@@ -133,6 +133,15 @@ fn surface_wh(session: &MdcSession) -> Option<(u16, u16)> {
         .map(|surface| (surface.width, surface.height))
 }
 
+/// N474: the gesture kind as a stable string.
+fn gesture_kind(kind: mdc_core::GestureKind) -> &'static str {
+    match kind {
+        mdc_core::GestureKind::Tap => "tap",
+        mdc_core::GestureKind::LongPress => "long-press",
+        mdc_core::GestureKind::Drag => "drag",
+    }
+}
+
 fn copy_cstr(dst: *mut c_char, cap: usize, text: &str) {
     if dst.is_null() || cap == 0 {
         return;
@@ -691,6 +700,15 @@ pub unsafe extern "C" fn mdc_session_poll_event(
             event.x,
             event.y,
         ),
+        // N474: kind 8 carries the gesture kind in `phase`.
+        ManagerEvent::Gesture { device_id, gesture } => (
+            8,
+            device_id,
+            gesture_kind(gesture.kind).to_string(),
+            gesture.pointer_id,
+            gesture.x,
+            gesture.y,
+        ),
         ManagerEvent::Error { device_id, message } => (2, device_id, message, 0, 0, 0),
         ManagerEvent::Connected(id) | ManagerEvent::Added(id) => (3, id, String::new(), 0, 0, 0),
         ManagerEvent::Disconnected(id) | ManagerEvent::Removed(id) => {
@@ -759,6 +777,14 @@ pub unsafe extern "C" fn mdc_session_poll_event_with_node(
             event.node.unwrap_or_default(),
             event.x,
             event.y,
+        ),
+        ManagerEvent::Gesture { device_id, gesture } => (
+            8,
+            device_id,
+            gesture_kind(gesture.kind).to_string(),
+            String::new(),
+            gesture.x,
+            gesture.y,
         ),
         ManagerEvent::Error { device_id, message } => (2, device_id, message, String::new(), 0, 0),
         ManagerEvent::Connected(id) | ManagerEvent::Added(id) => {
@@ -868,6 +894,15 @@ pub unsafe extern "C" fn mdc_session_poll_event_with_pointer(
             event.pointer_id,
             event.x,
             event.y,
+        ),
+        // N474: kind 8 carries the gesture kind in `phase`.
+        ManagerEvent::Gesture { device_id, gesture } => (
+            8,
+            device_id,
+            gesture_kind(gesture.kind).to_string(),
+            gesture.pointer_id,
+            gesture.x,
+            gesture.y,
         ),
         ManagerEvent::Error { device_id, message } => (2, device_id, message, 0, 0, 0),
         ManagerEvent::Connected(id) | ManagerEvent::Added(id) => (3, id, String::new(), 0, 0, 0),

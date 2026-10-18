@@ -131,8 +131,21 @@ pub struct NativeEvent {
     #[napi(js_name = "deviceId")]
     pub device_id: Option<String>,
     pub input: Option<InputEventDto>,
+    /// N474: a recognised gesture (tap / long-press / drag).
+    pub gesture: Option<GestureDto>,
     pub message: Option<String>,
     pub mirror: Option<MirrorInfoDto>,
+}
+
+/// N474: a recognised pointer gesture.
+#[napi(object)]
+pub struct GestureDto {
+    /// tap | long-press | drag
+    pub kind: String,
+    #[napi(js_name = "pointerId")]
+    pub pointer_id: u16,
+    pub x: u16,
+    pub y: u16,
 }
 
 struct SimSession {
@@ -262,6 +275,7 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
         out.push(match event {
             ManagerEvent::Added(id) | ManagerEvent::Connected(id) => NativeEvent {
                 kind: "connected".into(),
+                gesture: None,
                 device_id: Some(id),
                 input: None,
                 message: None,
@@ -269,6 +283,7 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
             },
             ManagerEvent::Removed(id) | ManagerEvent::Disconnected(id) => NativeEvent {
                 kind: "disconnected".into(),
+                gesture: None,
                 device_id: Some(id),
                 input: None,
                 message: None,
@@ -276,6 +291,7 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
             },
             ManagerEvent::EndpointSwitched { device_id } => NativeEvent {
                 kind: "endpointSwitched".into(),
+                gesture: None,
                 device_id: Some(device_id),
                 input: None,
                 message: None,
@@ -283,6 +299,7 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
             },
             ManagerEvent::Input { device_id, event } => NativeEvent {
                 kind: "input".into(),
+                gesture: None,
                 device_id: Some(device_id.clone()),
                 input: Some(InputEventDto {
                     device_id,
@@ -296,8 +313,26 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                 message: None,
                 mirror: None,
             },
+            ManagerEvent::Gesture { device_id, gesture } => NativeEvent {
+                kind: "gesture".into(),
+                gesture: Some(GestureDto {
+                    kind: match gesture.kind {
+                        mdc_core::GestureKind::Tap => "tap".into(),
+                        mdc_core::GestureKind::LongPress => "long-press".into(),
+                        mdc_core::GestureKind::Drag => "drag".into(),
+                    },
+                    pointer_id: gesture.pointer_id,
+                    x: gesture.x,
+                    y: gesture.y,
+                }),
+                device_id: Some(device_id),
+                input: None,
+                message: None,
+                mirror: None,
+            },
             ManagerEvent::Error { device_id, message } => NativeEvent {
                 kind: "error".into(),
+                gesture: None,
                 device_id: Some(device_id),
                 input: None,
                 message: Some(message),
@@ -310,6 +345,7 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
             } => NativeEvent {
                 // N357: telemetry metadata (the full record is in takeDiagnostics).
                 kind: "telemetry".into(),
+                gesture: None,
                 device_id: Some(device_id),
                 input: None,
                 message: Some(match level {
@@ -327,6 +363,7 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                 ..
             } => NativeEvent {
                 kind: "mirror".into(),
+                gesture: None,
                 device_id: Some(device_id),
                 input: None,
                 message: None,
