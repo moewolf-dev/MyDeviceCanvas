@@ -220,6 +220,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | `package --report` (N458) | sim-verified (extended summary) | n/a |
 | Frame rotate (N459) | sim-verified (`?rotate=90|180|270`) | n/a |
 | Inspector session stats (N460) | sim-verified (JSONL field) | n/a |
+| Scene animation (N463) | sim-verified (opacity/rect keyframes) | physical: pending |
+| Gestures (N464) | sim-verified (tap/long-press/drag) | physical: pending |
+| Overlay rendering (N465) | sim-verified (`render_overlay`) | physical: pending |
+| `validate --strict` (N466) | sim-verified (warnings fail) | n/a |
+| Disk chunked uploads (N467) | sim-verified (spool + rename) | n/a |
+| Linear mips (N468) | sim-verified (`bake_mipmaps_with`) | n/a |
+| Frame crop (N469) | sim-verified (`?crop=`) | n/a |
+| Numbered frames (N470) | sim-verified (`mirror --sequence`) | n/a |
 
 ## G03 sim exit
 

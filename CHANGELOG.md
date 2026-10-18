@@ -2,6 +2,24 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.59] — Scene animation, gestures, overlay rendering, verify strict, disk uploads, linear mips, crop, frame sequences (N463–N472)
+
+### Added
+
+- scene nodes accept keyframed `anim` (opacity/rect) sampled on the device clock,
+  driving render and hit-testing (N463)
+- `GestureTracker` derives tap / long-press / drag from input events (N464)
+- `FakeDevice::render_overlay` rasterises the scene into the overlay surface, with
+  `overlay_pixel_rgb565` for checks (N465)
+- `mdc validate --strict` treats warnings as failures (N466)
+- `mdc-assets::DiskChunkedUpload` spools chunks to a temp file and finishes by
+  renaming to the content key (N467)
+- `bake_mipmaps_with(..., linear)` and `mdc bake --mip-linear` average mips in
+  linear light (N468)
+- `/frame.*?crop=x,y,w,h` selects a sub-rectangle (N469)
+- `mdc mirror --sequence` writes numbered frames (N470)
+- compatibility/memory coverage for scene animation and spooled uploads (N471)
+
 ## [0.1.58] — PNG stream, mesh smooth mode, Node stats, dispersion, mirror surface guard, package report, frame rotate, inspector stats (N453–N462)
 
 ### Added

@@ -62,6 +62,9 @@ A device that accepts a scene rasterizes it locally:
   extending past it are cut off. Nesting is supported.
 - N450: `visible: false` hides a node and its children from drawing and hit-testing
   (`true`/absent is visible).
+- N463: `anim` is `{duration_ms, looping, opacity: [[time_ms, opacity]...],
+  rect: [[time_ms, x, y, w, h]...]}`. Keyframes are linearly interpolated on the
+  device clock; a looping clip wraps, otherwise it holds the last frame.
 - `image` blits tightly packed RGB565 when `value` is `w*h` hex words (4 digits
   each, little-endian on the framebuffer). A short or malformed string draws nothing.
 - `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour.
