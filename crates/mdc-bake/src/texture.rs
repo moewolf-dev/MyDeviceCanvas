@@ -475,6 +475,8 @@ pub(crate) struct NormalMap<'a> {
     /// N444: anisotropy strength (0 = none) and rotation in radians.
     pub anisotropy: f32,
     pub anisotropy_rotation: f32,
+    /// N456: dispersion (widens the iridescent hue spread; 0 = none).
+    pub dispersion: f32,
 }
 
 impl<'a> NormalMap<'a> {
@@ -511,6 +513,7 @@ impl<'a> NormalMap<'a> {
             iridescence_ior: 1.3,
             anisotropy: 0.0,
             anisotropy_rotation: 0.0,
+            dispersion: 0.0,
         }
     }
 }
@@ -663,8 +666,13 @@ pub(crate) fn apply_normal_map(
         if spec > 0.0 {
             // Magenta at grazing angles, cyan head-on (IOR shifts the balance).
             let t = ((n[2] * 0.5 + 0.5) * (nm.iridescence_ior / 1.3)).clamp(0.0, 1.0);
-            let tint = lerp_rgb565(0xF81F, 0x07FF, (t * 255.0) as u8);
+            // N456: dispersion widens the hue split (a red-shifted lobe).
+            let spread = (t + nm.dispersion / 20.0).clamp(0.0, 1.0);
+            let tint = lerp_rgb565(0xF81F, 0x07FF, (spread * 255.0) as u8);
             value = rgb565_add(value, rgb565_scale(tint, spec.clamp(0.0, 1.0)));
+            if nm.dispersion > 0.0 {
+                value = rgb565_add(value, rgb565_scale(0xF800, (spec * 0.35).clamp(0.0, 1.0)));
+            }
         }
     }
     // N425: a sheen rim highlight (view is +z).

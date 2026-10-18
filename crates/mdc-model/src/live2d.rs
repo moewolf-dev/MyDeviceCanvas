@@ -288,6 +288,7 @@ impl Live2DImporter {
                 iridescence_ior: None,
                 anisotropy_strength: None,
                 anisotropy_rotation: None,
+                dispersion: None,
             });
             nodes.push(Node {
                 name: name.clone(),

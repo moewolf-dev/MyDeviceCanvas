@@ -4511,6 +4511,7 @@ mod tests {
                 iridescence_ior: None,
                 anisotropy_strength: None,
                 anisotropy_rotation: None,
+                dispersion: None,
             }],
             lights: Vec::new(),
             skeletons: Vec::new(),

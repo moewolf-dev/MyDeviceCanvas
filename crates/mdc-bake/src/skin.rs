@@ -1171,6 +1171,8 @@ struct SceneDrawable<'a> {
     /// N444: anisotropy strength (0 = none) and rotation in radians.
     anisotropy: f32,
     anisotropy_rotation: f32,
+    /// N456: dispersion.
+    dispersion: f32,
 }
 
 /// N327: default key light (straight down -z, i.e. toward +z-facing surfaces) and
@@ -1342,6 +1344,7 @@ fn draw_scene_sorted(
                     iridescence_ior: d.iridescence_ior,
                     anisotropy: d.anisotropy,
                     anisotropy_rotation: d.anisotropy_rotation,
+                    dispersion: d.dispersion,
                 }),
                 _ => None,
             },
@@ -1496,6 +1499,7 @@ pub fn render_scene_at(
             iridescence_ior: 1.3,
             anisotropy: 0.0,
             anisotropy_rotation: 0.0,
+            dispersion: 0.0,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -2200,6 +2204,12 @@ pub fn render_package_scene_clip_mode(
             .and_then(|mi| package.materials.get(mi))
             .map(|material| material.anisotropy())
             .unwrap_or((0.0, 0.0));
+        // N456: dispersion.
+        let dispersion = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .map(|material| material.dispersion())
+            .unwrap_or(0.0);
         let per_pixel = (usable_normal_map
             || smooth
             || roughness_map.is_some()
@@ -2365,6 +2375,7 @@ pub fn render_package_scene_clip_mode(
             iridescence_ior,
             anisotropy,
             anisotropy_rotation,
+            dispersion,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -3282,6 +3293,51 @@ mod tests {
     }
 
     #[test]
+    fn dispersion_widens_the_iridescent_highlight() {
+        // N456: adding dispersion changes the iridescent frame.
+        let build = |dispersion: f32| Model {
+            source: "t".into(),
+            nodes: vec![Node {
+                name: "n".into(),
+                mesh: Some(0),
+                ..Node::default()
+            }],
+            meshes: vec![mdc_model::Mesh {
+                name: "q".into(),
+                vertices: 4,
+                indices: 6,
+                material: Some(0),
+                geometry: Some(mdc_model::MeshGeometry {
+                    normals: vec![[0.0, 0.0, 1.0]; 4],
+                    ..quad_geometry()
+                }),
+                ..mdc_model::Mesh::default()
+            }],
+            materials: vec![mdc_model::Material {
+                name: "prism".into(),
+                color: Some([64, 64, 64]),
+                iridescence_factor: Some(1.0),
+                dispersion: Some(dispersion),
+                ..mdc_model::Material::default()
+            }],
+            ..Model::default()
+        };
+        let render = |dispersion: f32| {
+            let package = mdc_model::compile_to_package(
+                &build(dispersion),
+                &mdc_model::RendererCapability::full_3d(),
+            )
+            .unwrap();
+            render_package_scene(&package.package, 0.0, (16, 16)).unwrap()
+        };
+        assert_ne!(
+            render(0.0).rgb565,
+            render(5.0).rgb565,
+            "dispersion shifts the highlight"
+        );
+    }
+
+    #[test]
     fn anisotropy_stretches_the_highlight() {
         // N444: an anisotropic material adds a brushed highlight.
         let build = |anisotropy: f32| Model {
@@ -3420,6 +3476,7 @@ mod tests {
                     iridescence_ior: None,
                     anisotropy_strength: None,
                     anisotropy_rotation: None,
+                    dispersion: None,
                     ..mdc_model::Material::default()
                 }],
                 ..Model::default()
@@ -3470,6 +3527,7 @@ mod tests {
                     iridescence_ior: None,
                     anisotropy_strength: None,
                     anisotropy_rotation: None,
+                    dispersion: None,
                     ..mdc_model::Material::default()
                 }],
                 ..Model::default()

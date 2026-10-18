@@ -419,6 +419,9 @@ pub struct Material {
     /// N444: `KHR_materials_anisotropy` rotation in radians (default 0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anisotropy_rotation: Option<f32>,
+    /// N456: `KHR_materials_dispersion` (>= 0; default 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispersion: Option<f32>,
 }
 
 /// N373: glTF `KHR_texture_transform`. `rotation` is in radians; the transform is
@@ -635,6 +638,11 @@ impl Material {
             self.anisotropy_strength.unwrap_or(0.0).clamp(0.0, 1.0),
             self.anisotropy_rotation.unwrap_or(0.0),
         )
+    }
+
+    /// N456: `KHR_materials_dispersion` (0..=10; default 0).
+    pub fn dispersion(&self) -> f32 {
+        self.dispersion.unwrap_or(0.0).clamp(0.0, 10.0)
     }
 }
 

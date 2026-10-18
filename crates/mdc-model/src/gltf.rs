@@ -480,6 +480,12 @@ impl GltfImporter {
                 .and_then(|a| a.get("anisotropyRotation"))
                 .and_then(Value::as_f64)
                 .map(|v| v as f32);
+            // N456: KHR_materials_dispersion.
+            let dispersion = material_ext
+                .and_then(|e| e.get("KHR_materials_dispersion"))
+                .and_then(|d| d.get("dispersion"))
+                .and_then(Value::as_f64)
+                .map(|v| v.max(0.0) as f32);
             // N379: normalTexture (tangent-space normal map).
             let normal_texture = material
                 .get("normalTexture")
@@ -563,6 +569,7 @@ impl GltfImporter {
                 iridescence_ior,
                 anisotropy_strength,
                 anisotropy_rotation,
+                dispersion,
             });
         }
 
