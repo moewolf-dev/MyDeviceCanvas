@@ -1578,6 +1578,20 @@ pub fn render_package_mesh(
     render_package_mesh_mode(package, size, ShadeMode::Flat)
 }
 
+/// N514: the texture blob for a render target, sampled at the coarsest mip level
+/// that still covers `size` in both axes. Blobs with an alpha plane (mips carry
+/// no alpha) or without a chain are returned unchanged.
+fn blob_for_target(blob: &mdc_model::TextureBlob, size: (u32, u32)) -> mdc_model::TextureBlob {
+    if !blob.alpha.is_empty() {
+        return blob.clone();
+    }
+    let level = crate::select_mip_level(blob.width, blob.height, size.0, size.1);
+    if level == 0 {
+        return blob.clone();
+    }
+    crate::blob_mip_level(blob, level).unwrap_or_else(|| blob.clone())
+}
+
 /// N454: like [`render_package_mesh`] but with an explicit shade mode (`Smooth`
 /// shades per pixel from the interpolated normals).
 pub fn render_package_mesh_mode(
@@ -1589,6 +1603,9 @@ pub fn render_package_mesh_mode(
         return Err(BakeError::Budget(size.0, size.1));
     }
     let build = |blob: &mdc_model::TextureBlob| -> Result<crate::TextureMap, BakeError> {
+        // N514: auto-select a mip level for this render target.
+        let selected = blob_for_target(blob, size);
+        let blob = &selected;
         // N415: expand a palette-indexed blob, otherwise use the RGB565 buffer.
         let map = if blob.is_indexed() {
             crate::TextureMap::from_indexed(blob.width, blob.height, &blob.palette, &blob.indices)?
@@ -2024,6 +2041,9 @@ pub fn render_package_scene_clip_mode(
         return Err(BakeError::Decode("package has no mesh geometry".into()));
     };
     let build_texture = |blob: &mdc_model::TextureBlob| -> Result<crate::TextureMap, BakeError> {
+        // N514: auto-select a mip level for this render target.
+        let selected = blob_for_target(blob, size);
+        let blob = &selected;
         // N415: expand a palette-indexed blob, otherwise use the RGB565 buffer.
         let map = if blob.is_indexed() {
             crate::TextureMap::from_indexed(blob.width, blob.height, &blob.palette, &blob.indices)?
@@ -2590,6 +2610,36 @@ pub fn bake_textured_to_package(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn blob_for_target_selects_a_coarser_level() {
+        // N514: a mipped texture is sampled from a level sized for the target.
+        let base = mdc_model::TextureBlob {
+            width: 8,
+            height: 8,
+            rgb565: (0..64u16)
+                .flat_map(|i| i.wrapping_mul(1021).to_le_bytes())
+                .collect(),
+            alpha: Vec::new(),
+            palette: Vec::new(),
+            indices: Vec::new(),
+            mips: Vec::new(),
+        };
+        let mipped = crate::mip_texture_blob(&base, 8, false);
+        // A large target keeps the base level.
+        assert_eq!(blob_for_target(&mipped, (8, 8)).width, 8);
+        // A 2x2 target picks the 2x2 level.
+        let small = blob_for_target(&mipped, (2, 2));
+        assert_eq!((small.width, small.height), (2, 2));
+        assert!(small.mips.is_empty());
+        // A blob without a chain is unchanged, as is one with an alpha plane.
+        assert_eq!(blob_for_target(&base, (2, 2)).width, 8);
+        let with_alpha = mdc_model::TextureBlob {
+            alpha: vec![0xff; 8],
+            ..mipped.clone()
+        };
+        assert_eq!(blob_for_target(&with_alpha, (2, 2)).width, 8);
+    }
+
     use super::*;
     use mdc_model::{AnimationTrack, Node};
 
