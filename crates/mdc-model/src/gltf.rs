@@ -476,29 +476,16 @@ impl GltfImporter {
                 .and_then(|o| o.get("extensions"))
                 .and_then(|e| e.get("KHR_texture_transform"))
                 .and_then(parse_uv_transform);
-            // N383: which UV set the material samples (`texCoord`).
-            let tex_coord = |slot: &str| {
-                material
-                    .get(slot)
-                    .and_then(|s| s.get("texCoord"))
-                    .and_then(Value::as_u64)
-                    .map(|v| v.min(u64::from(u8::MAX)) as u8)
-            };
-            let uv_set = pbr
-                .and_then(|p| p.get("baseColorTexture"))
-                .and_then(|b| b.get("texCoord"))
-                .and_then(Value::as_u64)
-                .map(|v| v.min(u64::from(u8::MAX)) as u8)
+            // N383/N443: which UV set each slot samples (`KHR_texture_transform`
+            // may override the textureInfo's `texCoord`).
+            let uv_set = texture_tex_coord(pbr.and_then(|p| p.get("baseColorTexture")))
                 .filter(|set| *set != 0);
             // N403: the secondary maps may use their own UV set.
             let secondary = [
-                tex_coord("normalTexture"),
-                tex_coord("occlusionTexture"),
-                tex_coord("emissiveTexture"),
-                pbr.and_then(|p| p.get("metallicRoughnessTexture"))
-                    .and_then(|m| m.get("texCoord"))
-                    .and_then(Value::as_u64)
-                    .map(|v| v.min(u64::from(u8::MAX)) as u8),
+                texture_tex_coord(material.get("normalTexture")),
+                texture_tex_coord(material.get("occlusionTexture")),
+                texture_tex_coord(material.get("emissiveTexture")),
+                texture_tex_coord(pbr.and_then(|p| p.get("metallicRoughnessTexture"))),
             ];
             let uv_set2 = secondary
                 .iter()
@@ -1178,6 +1165,18 @@ fn convert_specular_glossiness(spec_gloss: &Value) -> Value {
         serde_json::json!(1.0 - glossiness),
     );
     Value::Object(out)
+}
+
+/// N443: the UV set a textureInfo samples. `KHR_texture_transform.texCoord`
+/// overrides the textureInfo's own `texCoord`.
+fn texture_tex_coord(info: Option<&Value>) -> Option<u8> {
+    let info = info?;
+    info.get("extensions")
+        .and_then(|e| e.get("KHR_texture_transform"))
+        .and_then(|t| t.get("texCoord"))
+        .or_else(|| info.get("texCoord"))
+        .and_then(Value::as_u64)
+        .map(|v| v.min(u64::from(u8::MAX)) as u8)
 }
 
 /// N373/N395: parse a `KHR_texture_transform` object into a [`UvTransform`].
@@ -2613,6 +2612,34 @@ mod tests {
         assert_eq!(material.specular_factor(), 0.25);
         assert_eq!(material.specular_color, Some([255, 128, 0]));
         assert!((material.ior() - 1.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn texture_transform_tex_coord_overrides_the_slot() {
+        // N443: KHR_texture_transform.texCoord wins over textureInfo.texCoord.
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "extensionsUsed": ["KHR_texture_transform"],
+            "materials": [{
+                "name": "m",
+                "pbrMetallicRoughness": {"baseColorTexture": {
+                    "index": 0,
+                    "texCoord": 0,
+                    "extensions": {"KHR_texture_transform": {"texCoord": 1}}
+                }}
+            }],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "nodes": [{"name": "root", "mesh": 0}],
+            "accessors": [{"count": 4, "type": "VEC3"}]
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        assert_eq!(
+            model.materials[0].uv_set(),
+            1,
+            "extension overrides texCoord"
+        );
     }
 
     #[test]
