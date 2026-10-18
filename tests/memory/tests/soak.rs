@@ -1416,6 +1416,68 @@ fn http_stream_scale_requests_stay_bounded() {
 }
 
 #[test]
+fn smooth_mesh_rendering_stays_bounded() {
+    // N461: the static mesh renderer's smooth mode keeps a constant frame size.
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};
+    let model = Model {
+        source: "soak".into(),
+        nodes: vec![Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Node::default()
+        }],
+        meshes: vec![Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(MeshGeometry {
+                positions: vec![
+                    [-0.5, -0.5, 0.0],
+                    [0.5, -0.5, 0.0],
+                    [0.5, 0.5, 0.0],
+                    [-0.5, 0.5, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                uv2: Vec::new(),
+                normals: vec![[0.2, 0.0, 0.98]; 4],
+                colors: Vec::new(),
+                tangents: Vec::new(),
+                skin_joints: Vec::new(),
+                skin_weights: Vec::new(),
+                skin_joints2: Vec::new(),
+                skin_weights2: Vec::new(),
+                morph_targets: Vec::new(),
+            }),
+            ..Mesh::default()
+        }],
+        materials: vec![Material {
+            name: "m".into(),
+            color: Some([255, 255, 255]),
+            ..Material::default()
+        }],
+        ..Model::default()
+    };
+    let package =
+        mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d()).unwrap();
+    let mut size = None;
+    for _ in 0..100 {
+        let frame = mdc_bake::render_package_mesh_mode(
+            &package.package,
+            (32, 32),
+            mdc_bake::ShadeMode::Smooth,
+        )
+        .unwrap();
+        match size {
+            None => size = Some(frame.rgb565.len()),
+            Some(expected) => assert_eq!(frame.rgb565.len(), expected),
+        }
+    }
+    assert!(size.unwrap() > 0);
+}
+
+#[test]
 fn variant_selection_stays_bounded() {
     // N451: selecting a material variant repeatedly stays bounded.
     let gltf = br#"{"asset":{"version":"2.0"},
