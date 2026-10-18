@@ -62,3 +62,10 @@ A malformed package rejects with the device error; `packageReady()` stays false.
 - No serial transport in the Node binding yet (TCP + in-process simulator; N340 adds WebSocket).
 - No native artifact vendored: build per platform (see `sdk/node/package.json`).
 - No physical-board claim; D05/G03 remain open.
+
+## Gestures (N473/N474)
+
+`pollEvents()` also yields `kind: "gesture"` events with
+`gesture: { kind: "tap" | "long-press" | "drag", pointerId, x, y }`; the core
+derives them from the raw input stream (`GestureTracker`). The C ABI reports the
+same events as poll kind `8` with the gesture kind in `phase`.

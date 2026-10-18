@@ -65,6 +65,10 @@ A device that accepts a scene rasterizes it locally:
 - N463: `anim` is `{duration_ms, looping, opacity: [[time_ms, opacity]...],
   rect: [[time_ms, x, y, w, h]...]}`. Keyframes are linearly interpolated on the
   device clock; a looping clip wraps, otherwise it holds the last frame.
+- N475: `rotate: 90|180|270` swaps the rect axes for axis-aligned fills; a rotated
+  `gradient` runs horizontally.
+- N480: `blend: "additive"` adds a `rect`/`gradient` to the framebuffer (saturating
+  per channel) instead of covering it; the default is `source-over`.
 - `image` blits tightly packed RGB565 when `value` is `w*h` hex words (4 digits
   each, little-endian on the framebuffer). A short or malformed string draws nothing.
 - `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour.

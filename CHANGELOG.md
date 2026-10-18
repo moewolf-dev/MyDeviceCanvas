@@ -2,6 +2,24 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.60] — Gesture events, scene rotate/additive, lowercase text, animation budget, resumable uploads (N473–N482)
+
+### Added
+
+- `ManagerEvent::Gesture` derived from input events, with C ABI poll kind 8 and Node
+  `gesture` events (N473, N474)
+- scene nodes accept `rotate: 90|180|270` (axis swap; rotated gradients run
+  horizontally) (N475)
+- lowercase `a–z` 5×7 glyphs (no longer folded to uppercase) (N476)
+- `SceneCapability.max_anim_keys` plus `SceneNode::anim_keys()` linting and a
+  `set_scene` gate (N477)
+- `DiskChunkedUpload::begin_named`/`resume`/`keep` for resumable spooled uploads
+  (N478)
+- `mdc scene-render --time MS` renders an animated scene frame (N479)
+- `blend: "additive"` for scene rect/gradient overlays (N480)
+- compatibility/memory coverage for animated scene rendering (N481)
+
+
 ## [0.1.59] — Scene animation, gestures, overlay rendering, verify strict, disk uploads, linear mips, crop, frame sequences (N463–N472)
 
 ### Added

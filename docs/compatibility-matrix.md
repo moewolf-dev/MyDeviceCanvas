@@ -228,6 +228,13 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Linear mips (N468) | sim-verified (`bake_mipmaps_with`) | n/a |
 | Frame crop (N469) | sim-verified (`?crop=`) | n/a |
 | Numbered frames (N470) | sim-verified (`mirror --sequence`) | n/a |
+| Gesture events (N473/N474) | sim-verified (`ManagerEvent::Gesture`, C/Node) | physical: pending |
+| Scene rotate (N475) | sim-verified (axis swap + gradient) | physical: pending |
+| Lowercase text (N476) | sim-verified (a–z glyphs) | physical: pending |
+| Animation-key budget (N477) | sim-verified (`max_anim_keys` + lint/gate) | n/a |
+| Resumable uploads (N478) | sim-verified (`begin_named`/`resume`) | n/a |
+| `scene-render --time` (N479) | sim-verified (animated frame) | n/a |
+| Additive blend (N480) | sim-verified (saturating add) | physical: pending |
 
 ## G03 sim exit
 

@@ -77,6 +77,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 63 | N443–N452: texture-transform UV override, `KHR_materials_anisotropy`, `EXT_texture_webp`, full session stats, Swift stats, `mirror --scale`, glTF cameras, scene `visible` | sim-verified |
 | 64 | N453–N462: PNG live stream, mesh smooth mode, Node stats, `KHR_materials_dispersion`, mirror surface guard, `package --report`, frame rotate, inspector session stats | sim-verified |
 | 65 | N463–N472: keyframed scene animation, gesture tracker, overlay rendering, `validate --strict`, disk chunked uploads, linear mips, frame crop, numbered mirror frames | sim-verified |
+| 66 | N473–N482: gesture events (C/Node), scene rotate + additive blend, lowercase glyphs, animation-key budget, resumable uploads, `scene-render --time` | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 
