@@ -792,6 +792,46 @@ pub unsafe extern "C" fn mdc_session_poll_event_with_node(
     1
 }
 
+/// N440: write the host-side session counters into the out-params (any of which
+/// may be null). Returns 0 on success, negative when `session` is null.
+///
+/// # Safety
+/// Every non-null pointer must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_stats(
+    session: *const MdcSession,
+    packets_sent: *mut u64,
+    bytes_sent: *mut u64,
+    bytes_received: *mut u64,
+    acks_received: *mut u64,
+    frames_sent: *mut u64,
+    dropped_frames: *mut u64,
+) -> c_int {
+    let Some(session) = session.as_ref() else {
+        return -1;
+    };
+    let stats = session.session.stats();
+    if !packets_sent.is_null() {
+        *packets_sent = stats.packets_sent;
+    }
+    if !bytes_sent.is_null() {
+        *bytes_sent = stats.bytes_sent;
+    }
+    if !bytes_received.is_null() {
+        *bytes_received = stats.bytes_received;
+    }
+    if !acks_received.is_null() {
+        *acks_received = stats.acks_received;
+    }
+    if !frames_sent.is_null() {
+        *frames_sent = stats.frames_sent;
+    }
+    if !dropped_frames.is_null() {
+        *dropped_frames = stats.dropped_frames;
+    }
+    0
+}
+
 /// # Safety
 /// Same as [`mdc_session_poll_event`]. `pointer_id` may be null.
 #[no_mangle]
@@ -1185,6 +1225,46 @@ mod tests {
         let url = std::ffi::CString::new("ws://127.0.0.1:1").unwrap();
         let session = unsafe { mdc_session_connect_ws(url.as_ptr()) };
         assert!(session.is_null());
+    }
+
+    #[test]
+    fn c_abi_session_stats_reports_counters() {
+        // N440: the counters are readable from C.
+        let session = mdc_session_create();
+        assert!(!session.is_null());
+        unsafe {
+            let (mut sent, mut bytes, mut received, mut acks, mut frames, mut dropped) =
+                (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+            assert_eq!(
+                mdc_session_stats(
+                    session,
+                    &mut sent,
+                    &mut bytes,
+                    &mut received,
+                    &mut acks,
+                    &mut frames,
+                    &mut dropped,
+                ),
+                0
+            );
+            // A fresh session has sent its HELLO, so the counters are non-zero.
+            assert!(sent >= 1, "packets sent: {sent}");
+            assert!(bytes > 0);
+            // Null out-params are ignored.
+            assert_eq!(
+                mdc_session_stats(
+                    session,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                ),
+                0
+            );
+            mdc_session_destroy(session);
+        }
     }
 
     #[test]

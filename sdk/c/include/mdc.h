@@ -115,6 +115,11 @@ MdcSession* mdc_session_connect_ws(const char* url);
 int mdc_session_poll_event(MdcSession* session, int* kind, char* device_id, size_t device_id_len,
                            char* phase, size_t phase_len, uint16_t* x, uint16_t* y);
 
+/** N440: write the host-side session counters (null out-params are ignored). */
+int mdc_session_stats(const MdcSession* session, uint64_t* packets_sent, uint64_t* bytes_sent,
+                      uint64_t* bytes_received, uint64_t* acks_received, uint64_t* frames_sent,
+                      uint64_t* dropped_frames);
+
 /** N427: like poll_event, and also writes the hit-tested scene node. */
 int mdc_session_poll_event_with_node(MdcSession* session, int* kind, char* device_id,
                                      size_t device_id_len, char* phase, size_t phase_len,
