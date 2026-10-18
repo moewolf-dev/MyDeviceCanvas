@@ -17,6 +17,38 @@ fn glyph_columns(ch: u8) -> Option<[u8; 5]> {
     if ch == b' ' {
         return Some([0, 0, 0, 0, 0]);
     }
+    // N476: lowercase glyphs are distinct from uppercase.
+    if ch.is_ascii_lowercase() {
+        const LOWER: [[u8; 5]; 26] = [
+            [0x20, 0x54, 0x54, 0x54, 0x78], // a
+            [0x7f, 0x48, 0x44, 0x44, 0x38], // b
+            [0x38, 0x44, 0x44, 0x44, 0x20], // c
+            [0x38, 0x44, 0x44, 0x48, 0x7f], // d
+            [0x38, 0x54, 0x54, 0x54, 0x18], // e
+            [0x08, 0x7e, 0x09, 0x01, 0x02], // f
+            [0x18, 0xa4, 0xa4, 0xa4, 0x7c], // g
+            [0x7f, 0x08, 0x04, 0x04, 0x78], // h
+            [0x00, 0x44, 0x7d, 0x40, 0x00], // i
+            [0x20, 0x40, 0x44, 0x3d, 0x00], // j
+            [0x7f, 0x10, 0x28, 0x44, 0x00], // k
+            [0x00, 0x41, 0x7f, 0x40, 0x00], // l
+            [0x7c, 0x04, 0x18, 0x04, 0x78], // m
+            [0x7c, 0x08, 0x04, 0x04, 0x78], // n
+            [0x38, 0x44, 0x44, 0x44, 0x38], // o
+            [0xfc, 0x24, 0x24, 0x24, 0x18], // p
+            [0x18, 0x24, 0x24, 0x24, 0xfc], // q
+            [0x7c, 0x08, 0x04, 0x04, 0x08], // r
+            [0x48, 0x54, 0x54, 0x54, 0x24], // s
+            [0x04, 0x3f, 0x44, 0x40, 0x20], // t
+            [0x3c, 0x40, 0x40, 0x20, 0x7c], // u
+            [0x1c, 0x20, 0x40, 0x20, 0x1c], // v
+            [0x3c, 0x40, 0x30, 0x40, 0x3c], // w
+            [0x44, 0x28, 0x10, 0x28, 0x44], // x
+            [0x4c, 0x90, 0x90, 0x90, 0x7c], // y
+            [0x44, 0x64, 0x54, 0x4c, 0x44], // z
+        ];
+        return Some(LOWER[(ch - b'a') as usize]);
+    }
     let upper = ch.to_ascii_uppercase();
     let index = match upper {
         b'0'..=b'9' => (upper - b'0') as usize,
@@ -3437,8 +3469,9 @@ mod tests {
         for ch in ".,:!?-+/()=*#".bytes() {
             assert!(glyph_columns(ch).is_some(), "missing {}", ch as char);
         }
-        // Lowercase renders as its uppercase glyph.
-        assert_eq!(glyph_columns(b'a'), glyph_columns(b'A'));
+        // N476: lowercase has its own glyph (not the uppercase one).
+        assert_ne!(glyph_columns(b'a'), glyph_columns(b'A'));
+        assert!(glyph_columns(b'z').is_some());
         assert_eq!(glyph_columns(b' '), Some([0, 0, 0, 0, 0]));
         assert!(glyph_columns(b'~').is_none());
     }
@@ -3541,8 +3574,12 @@ mod tests {
         session.poll().unwrap();
         assert!(device.render_scene());
         // Line 1 at y=0, line 2 at y=8 (line height 8 at scale 1).
-        assert_ne!(device.pixel_rgb565(0, 0), Some(0), "first line drawn");
-        assert_ne!(device.pixel_rgb565(0, 8), Some(0), "wrapped line drawn");
+        // N476: pixel positions depend on the glyph, so scan each line's band.
+        let line_lit = |y0: u16, y1: u16| {
+            (y0..y1).any(|y| (0..30).any(|x| device.pixel_rgb565(x, y) != Some(0)))
+        };
+        assert!(line_lit(0, 7), "first line drawn");
+        assert!(line_lit(8, 15), "wrapped line drawn");
         // Row 7 is the gap between the two lines and stays clear.
         assert_eq!(device.pixel_rgb565(0, 7), Some(0), "line gap is clear");
     }
@@ -3640,6 +3677,24 @@ mod tests {
             (mid >> 11) > 0 && (mid & 0x1f) > 0,
             "mid blended: {mid:#06x}"
         );
+    }
+
+    #[test]
+    fn lowercase_glyphs_are_distinct() {
+        // N476: `a` and `A` are different glyphs.
+        let lower = glyph_columns(b'a').unwrap();
+        let upper = glyph_columns(b'A').unwrap();
+        assert_ne!(lower, upper);
+        // Every letter renders (no gaps).
+        for ch in b'a'..=b'z' {
+            assert!(glyph_columns(ch).is_some(), "missing {ch}");
+        }
+        // Rendering "abc" differs from the uppercase form.
+        let (mut a, mut b) = (vec![0u8; 32 * 2], vec![0u8; 32 * 2]);
+        draw_text(&mut a, 16, 8, 0, 0, "abc", 0xFFFF, 1, 1, 255);
+        draw_text(&mut b, 16, 8, 0, 0, "ABC", 0xFFFF, 1, 1, 255);
+        assert_ne!(a, b);
+        assert!(a.iter().any(|byte| *byte != 0), "lowercase text draws");
     }
 
     #[test]
