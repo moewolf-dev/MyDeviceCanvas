@@ -2189,6 +2189,60 @@ fn websocket_control_frames_stay_bounded() {
 }
 
 #[test]
+fn websocket_heartbeat_stays_bounded() {
+    // N517/N521: with a heartbeat enabled, many frames are published to a silent
+    // peer; the server pings, then drops it, and memory stays bounded.
+    use std::io::{Read, Write};
+
+    let mut server = mdc_mirror::HttpMirrorServer::bind("127.0.0.1:0")
+        .unwrap()
+        .with_ws_heartbeat(4, 8);
+    let addr = server.local_addr().unwrap();
+    let mut client = std::net::TcpStream::connect(addr).unwrap();
+    client
+        .set_read_timeout(Some(std::time::Duration::from_millis(5)))
+        .unwrap();
+    client
+        .write_all(
+            b"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+              Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        )
+        .unwrap();
+    let mut seen = Vec::new();
+    for _ in 0..50 {
+        let _ = server.pump();
+        let mut buffer = [0u8; 4096];
+        match client.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => seen.extend_from_slice(&buffer[..n]),
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(2)),
+        }
+        if seen.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+    assert_eq!(server.ws_clients(), 1);
+    let pixels: Vec<u8> = (0..64 * 64 * 4).map(|i| ((i * 29) % 251) as u8).collect();
+    for frame in 0..100 {
+        server.publish(&mdc_mirror::ShadowFrame {
+            width: 64,
+            height: 64,
+            generation: frame,
+            frame_id: frame,
+            pixels: &pixels,
+        });
+        let _ = server.pump();
+        // Drain a little so the socket does not wedge, but never answer pings.
+        let mut buffer = [0u8; 1024];
+        let _ = client.read(&mut buffer);
+    }
+    assert!(server.ws_pings_sent() > 0, "pings were sent");
+    assert_eq!(server.ws_timeouts(), 1, "the silent peer was dropped");
+    assert_eq!(server.ws_clients(), 0);
+    assert_eq!(server.frames_published(), 100);
+}
+
+#[test]
 fn disk_asset_cache_stays_within_quota() {
     // N369/N371: the on-disk asset store never exceeds its byte quota, however
     // many payloads are inserted.

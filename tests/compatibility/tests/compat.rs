@@ -3856,6 +3856,98 @@ fn scene_circle_and_line_edge_cases_do_not_panic() {
 }
 
 #[test]
+fn gpu_instancing_imports_and_reaches_a_device() {
+    // N513/N521: EXT_mesh_gpu_instancing expands into instance children that
+    // compile and install on a device.
+    use mdc_core::{ConnectionState, Session};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    // Accessor 0 declares 3 instances (no bufferView, so the transforms default
+    // to identity); accessor 1 is the quad's POSITION.
+    let gltf = br#"{"asset":{"version":"2.0"},
+        "extensionsUsed":["EXT_mesh_gpu_instancing"],
+        "nodes":[{"name":"tile","mesh":0,
+            "extensions":{"EXT_mesh_gpu_instancing":{"attributes":{"TRANSLATION":0}}}}],
+        "meshes":[{"primitives":[{"attributes":{"POSITION":1}}]}],
+        "accessors":[{"count":3,"type":"VEC3"},{"count":4,"type":"VEC3"}]}"#;
+    let model = mdc_model::GltfImporter
+        .import(gltf, &mdc_model::ImportLimits::default())
+        .unwrap();
+    // One group plus three instances.
+    assert_eq!(model.nodes.len(), 4);
+    assert_eq!(model.nodes[0].mesh, None, "the group is mesh-less");
+    assert_eq!(model.nodes[0].children.len(), 3);
+    assert_eq!(
+        model
+            .nodes
+            .iter()
+            .filter(|node| node.mesh == Some(0))
+            .count(),
+        3,
+        "each instance carries the mesh"
+    );
+
+    let package =
+        mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::sprite_only())
+            .unwrap();
+    let (host, mut device) = FakeDevice::pair(BoardProfile::default());
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .install_package(&package.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.package_ready());
+}
+
+#[test]
+fn radial_gradient_renders_on_the_device() {
+    // N515/N521: a radial gradient is brightest at the centre on the device.
+    use mdc_core::{ConnectionState, Session};
+    use mdc_protocol::SceneNode;
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 9,
+        height: 9,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .set_scene(SceneNode {
+            name: "glow".into(),
+            kind: "gradient".into(),
+            rect: Some([0, 0, 9, 9]),
+            value: Some("#FFFFFF".into()),
+            value2: Some("#000000".into()),
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: Some("radial".into()),
+            children: Vec::new(),
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.render_scene());
+    let centre = device.pixel_rgb565(4, 4).unwrap();
+    let corner = device.pixel_rgb565(0, 0).unwrap();
+    assert!(centre > 0xC000, "bright centre: {centre:#06x}");
+    assert!(centre > corner, "centre brighter than corner");
+}
+
+#[test]
 fn multi_stop_gradient_and_reserved_extension_diagnostics() {
     // N503/N505: a reserved extension is reported, and a multi-stop gradient
     // renders through each stop on the device.
