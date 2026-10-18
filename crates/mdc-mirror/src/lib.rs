@@ -1045,6 +1045,13 @@ pub struct HttpMirrorServer {
     /// N507: WebSocket ping/close frames received from peers.
     ws_pings: u64,
     ws_closes: u64,
+    /// N517: server-initiated ping interval in published frames (0 = disabled).
+    ws_heartbeat: u64,
+    /// N517: drop a WebSocket peer after this many frames without a reply.
+    ws_timeout: u64,
+    /// N517: pings the server sent and peers it dropped for silence.
+    ws_pings_sent: u64,
+    ws_timeouts: u64,
 }
 
 struct HttpClient {
@@ -1070,6 +1077,8 @@ struct HttpClient {
     ws_control: Vec<u8>,
     /// N507: a close frame is queued; drop the client once it drains.
     ws_closing: bool,
+    /// N517: the frame counter when the peer was last heard from.
+    ws_last_seen: u64,
     /// The peer closed or errored; dropped on the next pump.
     dead: bool,
     /// Frames skipped because the previous part was still being written.
@@ -1136,12 +1145,34 @@ impl HttpMirrorServer {
             last: None,
             ws_pings: 0,
             ws_closes: 0,
+            ws_heartbeat: 0,
+            ws_timeout: 0,
+            ws_pings_sent: 0,
+            ws_timeouts: 0,
         })
     }
 
     pub fn with_max_clients(mut self, max_clients: usize) -> Self {
         self.max_clients = max_clients.max(1);
         self
+    }
+
+    /// N517: ping WebSocket peers every `interval` published frames and drop a
+    /// silent peer after `timeout` frames without a reply (0 disables either).
+    pub fn with_ws_heartbeat(mut self, interval: u64, timeout: u64) -> Self {
+        self.ws_heartbeat = interval;
+        self.ws_timeout = timeout;
+        self
+    }
+
+    /// N517: server-initiated pings sent.
+    pub fn ws_pings_sent(&self) -> u64 {
+        self.ws_pings_sent
+    }
+
+    /// N517: WebSocket peers dropped for silence.
+    pub fn ws_timeouts(&self) -> u64 {
+        self.ws_timeouts
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -1160,10 +1191,19 @@ impl HttpMirrorServer {
             });
         }
         self.frames = self.frames.saturating_add(1);
+        let heartbeat = self.ws_heartbeat > 0 && self.frames.is_multiple_of(self.ws_heartbeat);
+        let mut pings_sent = 0u64;
         if let Some(frame) = self.last.as_ref() {
             for client in &mut self.clients {
                 if !client.streaming {
                     continue;
+                }
+                // N517: a server ping keeps a quiet WebSocket peer alive.
+                if client.websocket && heartbeat {
+                    client
+                        .ws_control
+                        .extend_from_slice(&ws_frame_opcode(0x9, b""));
+                    pings_sent += 1;
                 }
                 if !client.stream_part.is_empty() {
                     client.clipped = client.clipped.saturating_add(1);
@@ -1180,6 +1220,7 @@ impl HttpMirrorServer {
                 }
             }
         }
+        self.ws_pings_sent = self.ws_pings_sent.saturating_add(pings_sent);
     }
 
     fn accept_pending(&mut self) -> io::Result<()> {
@@ -1200,6 +1241,7 @@ impl HttpMirrorServer {
                         ws_in: Vec::new(),
                         ws_control: Vec::new(),
                         ws_closing: false,
+                        ws_last_seen: 0,
                         dead: false,
                         clipped: 0,
                     });
@@ -1221,14 +1263,15 @@ impl HttpMirrorServer {
         let health = {
             let body = format!(
                 "{{\"frames\":{},\"clients\":{},\"streaming\":{},\"clipped\":{},\"ws\":{},\
-                  \"ws_pings\":{},\"ws_closes\":{}}}",
+                  \"ws_pings\":{},\"ws_closes\":{},\"ws_timeouts\":{}}}",
                 self.frames,
                 self.clients.len(),
                 self.streaming_clients(),
                 self.clipped_frames(),
                 self.ws_clients(),
                 self.ws_pings,
-                self.ws_closes
+                self.ws_closes,
+                self.ws_timeouts
             );
             simple_response(200, "application/json", body.as_bytes())
         };
@@ -1301,14 +1344,23 @@ impl HttpMirrorServer {
         }
         // N507: service WebSocket control frames, then flush pending output.
         let (mut pings, mut closes) = (0u64, 0u64);
+        let mut timeouts = 0u64;
         for client in &mut self.clients {
             if client.dead || !client.streaming {
                 continue;
             }
             if client.websocket {
-                let (seen_pings, seen_closes) = pump_websocket(client);
+                let (seen_pings, seen_closes) = pump_websocket(client, self.frames);
                 pings += seen_pings;
                 closes += seen_closes;
+                // N517: drop a peer that has been silent past the timeout.
+                if self.ws_timeout > 0
+                    && self.frames.saturating_sub(client.ws_last_seen) > self.ws_timeout
+                {
+                    client.dead = true;
+                    timeouts += 1;
+                    continue;
+                }
             }
             if !client.dead {
                 flush_stream(client);
@@ -1316,6 +1368,7 @@ impl HttpMirrorServer {
         }
         self.ws_pings = self.ws_pings.saturating_add(pings);
         self.ws_closes = self.ws_closes.saturating_add(closes);
+        self.ws_timeouts = self.ws_timeouts.saturating_add(timeouts);
         self.clients.retain_mut(|client| {
             if client.dead {
                 return false;
@@ -1468,8 +1521,9 @@ fn flush_stream(client: &mut HttpClient) {
 }
 
 /// N507: read and answer WebSocket control frames (ping/pong/close).
-/// Returns `(pings, closes)` observed.
-fn pump_websocket(client: &mut HttpClient) -> (u64, u64) {
+/// Returns `(pings, closes)` observed. N517: any bytes from the peer refresh the
+/// heartbeat (`frames` is the server's current published-frame counter).
+fn pump_websocket(client: &mut HttpClient, frames: u64) -> (u64, u64) {
     let mut buffer = [0u8; 512];
     match client.stream.read(&mut buffer) {
         Ok(0) => {
@@ -1477,6 +1531,8 @@ fn pump_websocket(client: &mut HttpClient) -> (u64, u64) {
             return (0, 0);
         }
         Ok(read) => {
+            // N517: any traffic from the peer counts as a heartbeat.
+            client.ws_last_seen = frames;
             if client.ws_in.len() + read <= 4096 {
                 client.ws_in.extend_from_slice(&buffer[..read]);
             } else {
@@ -2631,6 +2687,93 @@ mod tests {
         assert_eq!(ws_frame(b"hi"), vec![0x82, 0x02, b'h', b'i']);
         let long = ws_frame(&[0u8; 200]);
         assert_eq!(&long[..4], &[0x82, 126, 0x00, 0xc8]);
+    }
+
+    #[test]
+    fn websocket_heartbeat_pings_and_drops_a_silent_peer() {
+        // N517: the server pings on an interval and drops a silent peer.
+        fn upgrade(server: &mut HttpMirrorServer) -> std::net::TcpStream {
+            let addr = server.local_addr().unwrap();
+            let mut client = std::net::TcpStream::connect(addr).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_millis(20)))
+                .unwrap();
+            client
+                .write_all(
+                    b"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+                      Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+                )
+                .unwrap();
+            for _ in 0..100 {
+                let _ = server.pump();
+                let mut buffer = [0u8; 4096];
+                match client.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(_) => std::thread::sleep(Duration::from_millis(2)),
+                }
+                if server.ws_clients() == 1 {
+                    break;
+                }
+            }
+            client
+        }
+        let pixels = vec![0x40u8; 4 * 4 * 4];
+        let publish = |server: &mut HttpMirrorServer, frame_id: u64| {
+            server.publish(&ShadowFrame {
+                width: 4,
+                height: 4,
+                generation: frame_id,
+                frame_id,
+                pixels: &pixels,
+            });
+            let _ = server.pump();
+        };
+
+        // A silent peer: pings are sent, then it is dropped.
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0")
+            .unwrap()
+            .with_ws_heartbeat(2, 4);
+        let _client = upgrade(&mut server);
+        for frame in 0..20 {
+            publish(&mut server, frame);
+        }
+        assert!(
+            server.ws_pings_sent() >= 2,
+            "pings sent: {}",
+            server.ws_pings_sent()
+        );
+        assert!(server.ws_timeouts() >= 1, "silent peer dropped");
+        assert_eq!(server.ws_clients(), 0);
+
+        // A peer that answers keeps its connection.
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0")
+            .unwrap()
+            .with_ws_heartbeat(2, 4);
+        let mut client = upgrade(&mut server);
+        let pong = {
+            let mask = [0x01u8, 0x02, 0x03, 0x04];
+            let payload = b"p";
+            let mut frame = vec![0x8A, 0x80 | payload.len() as u8];
+            frame.extend_from_slice(&mask);
+            frame.extend(
+                payload
+                    .iter()
+                    .enumerate()
+                    .map(|(i, byte)| byte ^ mask[i % 4]),
+            );
+            frame
+        };
+        for frame in 0..20 {
+            publish(&mut server, frame);
+            // Read whatever the server sent (ping/frame) and answer with a pong.
+            let mut buffer = [0u8; 4096];
+            let _ = client.read(&mut buffer);
+            client.write_all(&pong).unwrap();
+            let _ = server.pump();
+        }
+        assert_eq!(server.ws_timeouts(), 0, "an answering peer is kept");
+        assert_eq!(server.ws_clients(), 1);
     }
 
     #[test]
