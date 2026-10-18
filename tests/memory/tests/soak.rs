@@ -2243,6 +2243,65 @@ fn websocket_heartbeat_stays_bounded() {
 }
 
 #[test]
+fn websocket_fragmented_messages_stay_bounded() {
+    // N527/N531: with fragmentation enabled and a slow consumer, only one
+    // message's fragments are pending; newer frames are clipped, not queued.
+    use std::io::{Read, Write};
+
+    let mut server = mdc_mirror::HttpMirrorServer::bind("127.0.0.1:0")
+        .unwrap()
+        .with_ws_fragment(1024);
+    let addr = server.local_addr().unwrap();
+    let mut client = std::net::TcpStream::connect(addr).unwrap();
+    client
+        .set_read_timeout(Some(std::time::Duration::from_millis(5)))
+        .unwrap();
+    client
+        .write_all(
+            b"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+              Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        )
+        .unwrap();
+    let mut seen = Vec::new();
+    for _ in 0..50 {
+        let _ = server.pump();
+        let mut buffer = [0u8; 4096];
+        match client.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => seen.extend_from_slice(&buffer[..n]),
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(2)),
+        }
+        if seen.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+    assert_eq!(server.ws_clients(), 1);
+    // Large noisy frames, published faster than the client drains them.
+    let pixels: Vec<u8> = (0..256 * 256 * 4).map(|i| ((i * 31) % 251) as u8).collect();
+    for frame in 0..64 {
+        server.publish(&mdc_mirror::ShadowFrame {
+            width: 256,
+            height: 256,
+            generation: frame,
+            frame_id: frame,
+            pixels: &pixels,
+        });
+        let _ = server.pump();
+    }
+    assert_eq!(server.frames_published(), 64);
+    assert!(
+        server.clipped_frames() > 0,
+        "frames were clipped rather than queued"
+    );
+    // The peer is still connected and its pending fragments are bounded by one
+    // message (drain a little and publish once more).
+    let mut buffer = [0u8; 8192];
+    let _ = client.read(&mut buffer);
+    let _ = server.pump();
+    assert_eq!(server.ws_clients(), 1);
+}
+
+#[test]
 fn disk_asset_cache_stays_within_quota() {
     // N369/N371: the on-disk asset store never exceeds its byte quota, however
     // many payloads are inserted.

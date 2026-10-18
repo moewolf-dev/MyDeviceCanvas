@@ -3856,6 +3856,83 @@ fn scene_circle_and_line_edge_cases_do_not_panic() {
 }
 
 #[test]
+fn vertex_budget_trim_installs_on_a_device() {
+    // N524/N531: a trimmed package installs and reports the reduced draw budget.
+    use mdc_core::{ConnectionState, Session};
+    use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let quad = |name: &str| Mesh {
+        name: name.into(),
+        vertices: 4,
+        indices: 6,
+        material: Some(0),
+        geometry: Some(MeshGeometry {
+            positions: vec![
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            ..Default::default()
+        }),
+        ..Mesh::default()
+    };
+    let model = Model {
+        source: "budget".into(),
+        nodes: vec![
+            Node {
+                name: "root".into(),
+                children: vec![1, 2],
+                ..Node::default()
+            },
+            Node {
+                name: "a".into(),
+                mesh: Some(0),
+                translation: [-0.5, 0.0, 0.0],
+                ..Node::default()
+            },
+            Node {
+                name: "b".into(),
+                mesh: Some(1),
+                translation: [0.5, 0.0, 0.0],
+                ..Node::default()
+            },
+        ],
+        meshes: vec![quad("a"), quad("b")],
+        materials: vec![Material {
+            name: "red".into(),
+            texture: None,
+            color: Some([255, 0, 0]),
+            ..Default::default()
+        }],
+        ..Model::default()
+    };
+    let package =
+        mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d()).unwrap();
+    assert_eq!(mdc_bake::draw_vertices(&package.package), 8);
+    // Trim to one quad's worth of vertices.
+    let mut inner = package.package.clone();
+    assert_eq!(mdc_bake::trim_to_vertex_budget(&mut inner, 4), 1);
+    assert_eq!(mdc_bake::draw_vertices(&inner), 4);
+    let package = mdc_model::MdcPackage::seal(inner).unwrap();
+    assert!(package.verify().valid);
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .install_package(&package.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.package_ready());
+}
+
+#[test]
 fn gpu_instancing_imports_and_reaches_a_device() {
     // N513/N521: EXT_mesh_gpu_instancing expands into instance children that
     // compile and install on a device.
