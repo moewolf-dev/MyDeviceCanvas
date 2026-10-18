@@ -1,6 +1,7 @@
 //! C ABI: opaque MdcSession over FakeDevice or a TCP simulator peer.
 use mdc_core::{
-    ConnectionState, DeviceManager, DiagnosticRecord, Frame, ManagerEvent, Session, Tile,
+    ConnectionState, DeviceManager, DiagnosticRecord, Frame, GestureConfig, ManagerEvent, Session,
+    Tile,
 };
 use mdc_protocol::InputEvent;
 use mdc_simulator::{BoardProfile, FakeDevice};
@@ -152,6 +153,58 @@ fn copy_cstr(dst: *mut c_char, cap: usize, text: &str) {
         ptr::copy_nonoverlapping(bytes.as_ptr(), dst as *mut u8, n);
         *dst.add(n) = 0;
     }
+}
+
+/// N498: tune gesture recognition (tap window, long-press window, drag distance).
+/// Returns 0 on success, negative on error.
+///
+/// # Safety
+///
+/// `session` must be a valid pointer returned by a `mdc_session_*` constructor.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_set_gesture_config(
+    session: *mut MdcSession,
+    tap_max_ms: u64,
+    long_press_ms: u64,
+    drag_threshold: u16,
+) -> c_int {
+    let Some(session) = session.as_mut() else {
+        return -1;
+    };
+    session.session.set_gesture_config(GestureConfig {
+        tap_max_ms,
+        long_press_ms,
+        drag_threshold,
+    });
+    0
+}
+
+/// N498: write the current gesture thresholds (null out-params are ignored).
+///
+/// # Safety
+///
+/// `session` must be a valid pointer returned by a `mdc_session_*` constructor.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_gesture_config(
+    session: *const MdcSession,
+    tap_max_ms: *mut u64,
+    long_press_ms: *mut u64,
+    drag_threshold: *mut u16,
+) -> c_int {
+    let Some(session) = session.as_ref() else {
+        return -1;
+    };
+    let config = session.session.gesture_config();
+    if !tap_max_ms.is_null() {
+        *tap_max_ms = config.tap_max_ms;
+    }
+    if !long_press_ms.is_null() {
+        *long_press_ms = config.long_press_ms;
+    }
+    if !drag_threshold.is_null() {
+        *drag_threshold = config.drag_threshold;
+    }
+    0
 }
 
 /// # Safety
@@ -1784,6 +1837,43 @@ mod tests {
             assert_eq!(mdc_clear_scene(session), 0);
             let bad = std::ffi::CString::new("not json").unwrap();
             assert_eq!(mdc_set_scene(session, bad.as_ptr()), -2);
+            mdc_session_destroy(session);
+        }
+    }
+
+    #[test]
+    fn gesture_config_round_trips_via_c_abi() {
+        unsafe {
+            let session = mdc_session_create();
+            assert!(!session.is_null());
+            // N498: the defaults are readable...
+            let (mut tap, mut long, mut drag) = (0u64, 0u64, 0u16);
+            assert_eq!(
+                mdc_session_gesture_config(session, &mut tap, &mut long, &mut drag),
+                0
+            );
+            assert!(tap > 0 && long > 0 && drag > 0);
+            // ...and the setter replaces them.
+            assert_eq!(mdc_session_set_gesture_config(session, 111, 2222, 9), 0);
+            assert_eq!(
+                mdc_session_gesture_config(session, &mut tap, &mut long, &mut drag),
+                0
+            );
+            assert_eq!((tap, long, drag), (111, 2222, 9));
+            // Null out-params and a null session are handled.
+            assert_eq!(
+                mdc_session_gesture_config(
+                    session,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut()
+                ),
+                0
+            );
+            assert_eq!(
+                mdc_session_set_gesture_config(std::ptr::null_mut(), 1, 1, 1),
+                -1
+            );
             mdc_session_destroy(session);
         }
     }
