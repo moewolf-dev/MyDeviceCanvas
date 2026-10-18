@@ -3439,9 +3439,15 @@ fn cmd_diff(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
 /// N399: import a model and print a validation report; exit non-zero when invalid.
 fn cmd_validate(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let path = args.first().cloned().unwrap_or_default();
+    // N466: `--strict` treats warnings as failures.
+    let strict = args.iter().any(|a| a == "--strict");
+    let path = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .cloned()
+        .unwrap_or_default();
     if path.is_empty() {
-        return Err("validate <model.json|.gltf|.glb>".into());
+        return Err("validate <model.json|.gltf|.glb> [--strict]".into());
     }
     let bytes = std::fs::read(&path)?;
     let limits = mdc_model::ImportLimits::default();
@@ -3451,8 +3457,18 @@ fn cmd_validate(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         mdc_model::GltfImporter.import(&bytes, &limits)?
     };
     let report = model.validate();
-    println!("{}", serde_json::to_string_pretty(&report)?);
-    if !report.valid {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "valid": report.valid,
+            "strict": strict,
+            "problems": report.problems,
+            "warnings": report.warnings,
+            "summary": report.summary,
+        }))?
+    );
+    // N466: in strict mode a warning is also a failure.
+    if !report.valid || (strict && !report.warnings.is_empty()) {
         std::process::exit(1);
     }
     Ok(())
@@ -3507,7 +3523,7 @@ motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] [--clip NAME] [--time T] [--mip N] [--smooth] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|\
-model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb>|verify <file.mdcpkg>|diff <a.mdcpkg> <b.mdcpkg>"
+model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg>|diff <a.mdcpkg> <b.mdcpkg>"
     );
 }
 
@@ -3767,6 +3783,32 @@ mod tests {
         .unwrap();
         assert!(good.lint().valid);
         assert_eq!(good.lint().nodes, 1);
+    }
+
+    #[test]
+    fn validate_strict_flags_warnings_as_failures() {
+        // N466: a model with no geometry validates, but `--strict` treats the
+        // "mesh has no geometry" warning as a failure (exit is not asserted here).
+        let dir = std::env::temp_dir().join(format!("mdc-strict-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("m.gltf");
+        std::fs::write(
+            &path,
+            br#"{"asset":{"version":"2.0"},"nodes":[{"name":"root","mesh":0}],
+                "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+                "accessors":[{"count":4,"type":"VEC3"}]}"#,
+        )
+        .unwrap();
+        let model = mdc_model::GltfImporter
+            .import(
+                &std::fs::read(&path).unwrap(),
+                &mdc_model::ImportLimits::default(),
+            )
+            .unwrap();
+        let report = model.validate();
+        assert!(report.valid);
+        assert!(report.warnings.iter().any(|w| w.contains("no geometry")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
