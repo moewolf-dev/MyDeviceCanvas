@@ -75,7 +75,9 @@ a WebSocket endpoint (RFC 6455) that pushes one binary JPEG message per publishe
 frame — use it from a browser or any WebSocket client when multipart is awkward.
 N507 answers client ping frames with a pong (echoing the payload) and closes the
 connection cleanly on a close frame; `/health` reports `ws`, `ws_pings`, and
-`ws_closes`.
+`ws_closes`. N517 adds a heartbeat: `mirror --http ADDR --ws-heartbeat N
+[--ws-timeout M]` pings every N published frames and drops a peer that has been
+silent for M frames (`/health` also reports `ws_timeouts`).
 
 ## Guarantees
 

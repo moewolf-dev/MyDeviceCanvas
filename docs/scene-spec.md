@@ -55,6 +55,8 @@ A device that accepts a scene rasterizes it locally:
   whatever is already on the framebuffer (`255`/absent is opaque).
 - N348: `gradient` fills `rect` with a vertical linear gradient from `value` (top)
   to `value2` (bottom; a missing `value2` is a flat fill).
+- N515: `mode: "radial"` makes a `gradient` interpolate by distance from the
+  rect centre (the start stop is the centre); the default is a linear ramp.
 - N505: `gradient` accepts a comma-separated stop list in `value2`
   (`0:#FF0000,50:#00FF00,100:#0000FF`), interpolating between stops; a value
   without a comma keeps the two-stop `value`/`value2` ramp.

@@ -2,6 +2,27 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.64] — GPU instancing, automatic mip selection, radial gradients, dirty tiles, WS heartbeat, C mirror parity, heap timeline, `record --play` (N513–N522)
+
+### Added
+
+- `EXT_mesh_gpu_instancing` expands a node into per-instance children (bounded by
+  `MAX_INSTANCES`) (N513)
+- the device picks the coarsest mip level that covers the render target
+  (`blob_for_target`) (N514)
+- scene `gradient` accepts `mode: "radial"` (N515)
+- `mdc_core::plan_dirty_tiles`/`extract_tile` and `Session::send_dirty_tiles`
+  coalesce dirty rectangles into the minimal tile set (N516)
+- `mdc-mirror` `/ws` heartbeat: `with_ws_heartbeat(interval, timeout)`,
+  `mdc mirror --ws-heartbeat/--ws-timeout`, `ws_pings_sent`/`ws_timeouts` (N517)
+- C `mdc_take_mirror_frame_with_surface` and `mdc_mirror_skips` (N518)
+- `mdc-inspector --jsonl N --heap` reports a per-tick peak-memory timeline (N519)
+- `mdc record --play --dir DIR` verifies a recorded sequence against its
+  manifest (N520)
+- compatibility + memory coverage for instancing, radial gradients, and the WS
+  heartbeat (N521)
+
+
 ## [0.1.63] — reserved-extension diagnostics, mip-level selection, multi-stop gradients, tile counters, WebSocket control frames, Swift mirror backpressure, heap probe, `mdc record` (N503–N512)
 
 ### Added

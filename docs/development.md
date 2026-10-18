@@ -51,6 +51,9 @@ cargo run -p mdc-inspector -- --jsonl 60 --interval 100 --board linux-virt
 cargo run -p mdc-inspector -- --rss                     # one host memory sample (N370)
 cargo run -p mdc-inspector -- --rss-delta --count 5 --interval 20   # RSS growth (N410)
 cargo run -p mdc-inspector -- --heap --count 8 --size-kb 1024       # peak memory (N509)
+cargo run -p mdc-inspector -- --jsonl 20 --heap --size-kb 512       # peak timeline (N519)
+cargo run -p mdc -- --board linux-virt record --frames 30 --fps 10 --dir out
+cargo run -p mdc -- record --play --dir out                          # verify (N520)
 cargo run -p mdc -- --board linux-virt inspect --watch --count 3 --rss
 cargo run -p mdc -- --board linux-virt diag --metric fps --value 29.5 --unit fps
 ```

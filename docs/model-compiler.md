@@ -353,6 +353,20 @@ textures as declared/derived sizes. Intermediate buffers are bounded by
 package `estimated_bytes` is advisory (textures for the MCU backend; textures +
 12 B/vertex for the GPU backend).
 
+## Extensions
+
+- N513: `EXT_mesh_gpu_instancing` expands a node into a mesh-less group (holding
+  the node transform) with one child per instance (its own TRS), bounded by
+  `MAX_INSTANCES` (64). Instances are appended so node indices stay stable.
+- N503: `EXT_meshopt_compression`, `KHR_draco_mesh_compression`, and
+  `KHR_texture_basisu` are **detected and rejected** with a clear error (a
+  document that merely lists them in `extensionsUsed` still imports);
+  `mdc model-info` reports them under `reserved_extensions`. Decoding them is a
+  known gap — reading compressed bytes as geometry would be silent corruption.
+- N504: a texture with a mip chain (`--texture-mips`) can bake from a coarser
+  level (`--mip-level N`); at render time the device picks the coarsest level
+  that still covers the target size (`select_mip_level`).
+
 ## Non-goals (this wave)
 
 - No pixel decode, texture re-encoding, or sprite-atlas packing.

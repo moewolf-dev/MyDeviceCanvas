@@ -250,6 +250,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Swift bounded mirror (N508) | sim-verified (bufferingNewest) | physical: pending |
 | Heap probe (N509) | sim-verified (peak growth) | n/a |
 | `mdc record` (N510) | sim-verified (sequence + manifest) | n/a |
+| GPU instancing (N513) | sim-verified (expansion + install) | physical: pending |
+| Automatic mip selection (N514) | sim-verified (target-sized level) | physical: pending |
+| Radial gradients (N515) | sim-verified (centre bright) | physical: pending |
+| Dirty-tile planning (N516) | sim-verified (coalesced rects) | n/a |
+| WS heartbeat (N517) | sim-verified (ping + silent drop) | n/a |
+| C mirror parity (N518) | sim-verified (surface id, skips) | n/a |
+| Heap timeline (N519) | sim-verified (per-tick peak) | n/a |
+| `record --play` (N520) | sim-verified (manifest check) | n/a |
 | Swift gestures (N483) | sim-verified (`isGesture`/`gestureKind` + smoke) | physical: pending |
 | Text align (N484) | sim-verified (left/center/right) | physical: pending |
 | Scene z-order (N485) | sim-verified (draw + hit order) | physical: pending |
