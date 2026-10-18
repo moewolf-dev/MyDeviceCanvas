@@ -91,3 +91,10 @@ poll `packageReady()` before treating the renderer as ready. `getConfig` returns
 rejects the value.
 
 License: Apache-2.0
+
+## Mirror backpressure (N508)
+
+`mirrorFrames()` is a pull-based `AsyncStream` (one frame per iteration, no
+queue). `mirrorFramesBounded(maxFps:)` instead runs a paced producer task with a
+`.bufferingNewest(1)` buffer: a slow consumer drops older frames rather than
+queueing them, and `mirrorStats().dropped` reports how many were skipped.

@@ -396,4 +396,28 @@ public final class MdcSession {
             return nil
         })
     }
+
+    /// N508: a bounded, paced mirror stream. Unlike `mirrorFrames`, a producer
+    /// task pulls frames and buffers at most one; a slow consumer drops older
+    /// frames instead of queueing them (`mirrorStats().dropped` counts them).
+    public func mirrorFramesBounded(
+        surfaceId: String = "main", maxFps: UInt16 = 15
+    ) -> AsyncStream<MdcMirrorFrame> {
+        let session = self
+        _ = startMirror(surfaceId: surfaceId, maxFps: maxFps)
+        let interval = UInt64(1_000 / max(1, Int(maxFps))) * 1_000_000
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let task = Task {
+                while !Task.isCancelled {
+                    _ = session.emitMirrorFrame()
+                    if let frame = session.takeMirrorFrame(surfaceId: surfaceId) {
+                        continuation.yield(frame)
+                    }
+                    try? await Task.sleep(nanoseconds: interval)
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
 }

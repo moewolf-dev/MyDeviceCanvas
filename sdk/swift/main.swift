@@ -100,6 +100,23 @@ struct MdcSwiftHello {
             fputs("async stream missed mirror frame\n", stderr)
             exit(1)
         }
+        // N508: the bounded (latest-wins) mirror stream also yields a frame.
+        let bounded = try! MdcSession(boardId: "linux-virt")
+        let boundedTask = Task {
+            for await frame in bounded.mirrorFramesBounded(maxFps: 15) {
+                if frame.width == 800 && frame.height == 480 {
+                    return true
+                }
+            }
+            return false
+        }
+        let sawBounded = await boundedTask.value
+        boundedTask.cancel()
+        if !sawBounded {
+            fputs("bounded mirror stream missed a frame\n", stderr)
+            exit(1)
+        }
+        bounded.close()
         gpu.close()
 
         // N447: the host-side session counters are readable.
