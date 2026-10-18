@@ -777,6 +777,11 @@ fn hit_test_node(
     }
     if drawable {
         if let Some(rect) = node.rect {
+            // N475: hit-test against the rotated geometry.
+            let rect = match node.rotate.unwrap_or(0) % 360 {
+                90 | 270 => [rect[0], rect[1], rect[3], rect[2]],
+                _ => rect,
+            };
             let [rx, ry, rw, rh] = transform.apply(rect);
             let inside =
                 x >= rx && y >= ry && x < rx.saturating_add(rw) && y < ry.saturating_add(rh);
@@ -809,10 +814,16 @@ fn fill_scene(
     );
     // N338: source alpha for every rasterised kind.
     let alpha = node.opacity_u8();
+    // N475: a quarter-turn swaps the rect's axes for axis-aligned fills.
+    let rotate = node.rotate.unwrap_or(0) % 360;
+    let rect = node.rect.map(|[x, y, w, h]| match rotate {
+        90 | 270 => [x, y, h, w],
+        _ => [x, y, w, h],
+    });
     // N368: a `clip` node bounds its children to its rect. Children draw into a
     // copy of the target, then only the clip rect is composited back.
     if node.kind == "clip" {
-        if let Some(rect) = node.rect {
+        if let Some(rect) = rect {
             let [x, y, w, h] = transform.apply(rect);
             let mut scratch = pixels.to_vec();
             let mut child_drew = false;
@@ -845,7 +856,7 @@ fn fill_scene(
         return;
     }
     if node.kind == "rect" {
-        if let Some(rect) = node.rect {
+        if let Some(rect) = rect {
             let [x, y, w, h] = transform.apply(rect);
             let color = node.color_rgb565();
             for yy in y..y.saturating_add(h) {
@@ -863,7 +874,7 @@ fn fill_scene(
             *drew = true;
         }
     } else if node.kind == "text" {
-        if let (Some(rect), Some(text)) = (node.rect, node.value.as_deref()) {
+        if let (Some(rect), Some(text)) = (rect, node.value.as_deref()) {
             let [x, y, w, h] = transform.apply(rect);
             // N128/N318: the rect height sets a uniform glyph scale (1..=8); the
             // rect width bounds how many columns a line may use.
@@ -888,7 +899,7 @@ fn fill_scene(
             *drew = true;
         }
     } else if node.kind == "image" {
-        if let (Some(rect), Some(hex)) = (node.rect, node.value.as_deref()) {
+        if let (Some(rect), Some(hex)) = (rect, node.value.as_deref()) {
             let [x, y, w, h] = transform.apply(rect);
             if blit_hex_rgb565(pixels, width, height, x, y, w, h, hex, alpha) {
                 *drew = true;
@@ -897,7 +908,7 @@ fn fill_scene(
     } else if node.kind == "sprite" {
         if let (Some(atlas), Some(rect), Some(index)) = (
             atlas,
-            node.rect,
+            rect,
             node.value.as_deref().and_then(|v| v.parse::<u32>().ok()),
         ) {
             let [x, y, w, h] = transform.apply(rect);
@@ -906,7 +917,7 @@ fn fill_scene(
             }
         }
     } else if node.kind == "circle" {
-        if let Some(rect) = node.rect {
+        if let Some(rect) = rect {
             fill_circle(
                 pixels,
                 width,
@@ -918,7 +929,7 @@ fn fill_scene(
             *drew = true;
         }
     } else if node.kind == "line" {
-        if let Some(rect) = node.rect {
+        if let Some(rect) = rect {
             draw_line(
                 pixels,
                 width,
@@ -931,7 +942,7 @@ fn fill_scene(
         }
     } else if node.kind == "rounded-rect" {
         // N355: a rect with rounded corners; `value2` is the corner radius.
-        if let Some(rect) = node.rect {
+        if let Some(rect) = rect {
             let radius = node
                 .value2
                 .as_deref()
@@ -950,23 +961,43 @@ fn fill_scene(
         }
     } else if node.kind == "gradient" {
         // N348: vertical linear gradient from `value` to `value2` over `rect`.
-        if let Some(rect) = node.rect {
+        if let Some(rect) = rect {
             let [x, y, w, h] = transform.apply(rect);
             let start = node.color_rgb565();
             let end = node.color2_rgb565();
-            let span = u32::from(h.saturating_sub(1)).max(1);
-            for yy in y..y.saturating_add(h) {
-                if u32::from(yy) >= height {
-                    break;
-                }
-                let t = (u32::from(yy.saturating_sub(y)) * 255 / span).min(255) as u8;
-                let color = lerp_rgb565(start, end, t);
+            // N475: a quarter turn makes the gradient run horizontally.
+            let horizontal = matches!(rotate, 90 | 270);
+            if horizontal {
+                let span = u32::from(w.saturating_sub(1)).max(1);
                 for xx in x..x.saturating_add(w) {
                     if u32::from(xx) >= width {
                         break;
                     }
-                    let index = ((u32::from(yy) * width + u32::from(xx)) * 2) as usize;
-                    put_pixel(pixels, index, color, alpha);
+                    let t = (u32::from(xx.saturating_sub(x)) * 255 / span).min(255) as u8;
+                    let color = lerp_rgb565(start, end, t);
+                    for yy in y..y.saturating_add(h) {
+                        if u32::from(yy) >= height {
+                            break;
+                        }
+                        let index = ((u32::from(yy) * width + u32::from(xx)) * 2) as usize;
+                        put_pixel(pixels, index, color, alpha);
+                    }
+                }
+            } else {
+                let span = u32::from(h.saturating_sub(1)).max(1);
+                for yy in y..y.saturating_add(h) {
+                    if u32::from(yy) >= height {
+                        break;
+                    }
+                    let t = (u32::from(yy.saturating_sub(y)) * 255 / span).min(255) as u8;
+                    let color = lerp_rgb565(start, end, t);
+                    for xx in x..x.saturating_add(w) {
+                        if u32::from(xx) >= width {
+                            break;
+                        }
+                        let index = ((u32::from(yy) * width + u32::from(xx)) * 2) as usize;
+                        put_pixel(pixels, index, color, alpha);
+                    }
                 }
             }
             *drew = true;
@@ -2979,6 +3010,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             value2: None,
         };
         let mut root = leaf("root", "rect", None);
@@ -3311,6 +3343,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             value2: None,
         };
         // Background red covers all; a green child on top; a third clipped.
@@ -3326,6 +3359,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3368,6 +3402,7 @@ mod tests {
                     opacity: None,
                     visible: None,
                     anim: None,
+                    rotate: None,
                     value2: None,
                 },
                 SceneNode {
@@ -3379,12 +3414,14 @@ mod tests {
                     opacity: None,
                     visible: None,
                     anim: None,
+                    rotate: None,
                     value2: None,
                 },
             ],
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3428,6 +3465,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             value2: None,
         };
         // rect 0×0 -> scale 1, so (1,1) stays clear on the fresh framebuffer.
@@ -3495,6 +3533,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3525,6 +3564,7 @@ mod tests {
             value2: None,
             visible: None,
             anim: None,
+            rotate: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -3535,6 +3575,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             children: vec![
                 rect("bg", "#FFFFFF", None),
                 rect("fg", "#FF0000", Some(128)),
@@ -3588,6 +3629,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -3598,6 +3640,35 @@ mod tests {
             (mid >> 11) > 0 && (mid & 0x1f) > 0,
             "mid blended: {mid:#06x}"
         );
+    }
+
+    #[test]
+    fn scene_rotate_swaps_the_rect_axes() {
+        // N475: rotating a wide rect by 90 degrees draws it tall.
+        use mdc_protocol::SceneNode;
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 8,
+            height: 8,
+            ..BoardProfile::default()
+        });
+        device.scene = Some(SceneNode {
+            name: "wide".into(),
+            kind: "rect".into(),
+            rect: Some([0, 0, 8, 2]),
+            value: Some("#FFFFFF".into()),
+            value2: None,
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: Some(90),
+            children: Vec::new(),
+        });
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(0, 0), Some(0xFFFF));
+        // Rotated: 2 wide x 8 tall, so (1,7) is filled and (7,1) is not.
+        assert_eq!(device.pixel_rgb565(1, 7), Some(0xFFFF), "tall after rotate");
+        assert_eq!(device.pixel_rgb565(7, 1), Some(0), "not wide after rotate");
+        assert_eq!(device.hit_test(1, 7).as_deref(), Some("wide"));
     }
 
     #[test]
@@ -3626,6 +3697,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             children: Vec::new(),
         });
         assert!(device.render_overlay());
@@ -3655,6 +3727,7 @@ mod tests {
                 opacity: vec![[0, 0], [100, 255]],
                 rect: Vec::new(),
             }),
+            rotate: None,
             children: Vec::new(),
         });
         // t=0: fully transparent, so the black background remains.
@@ -3688,6 +3761,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             children: vec![
                 SceneNode {
                     name: "hidden".into(),
@@ -3698,6 +3772,7 @@ mod tests {
                     opacity: None,
                     visible: Some(false),
                     anim: None,
+                    rotate: None,
                     children: Vec::new(),
                 },
                 SceneNode {
@@ -3709,6 +3784,7 @@ mod tests {
                     opacity: None,
                     visible: None,
                     anim: None,
+                    rotate: None,
                     children: Vec::new(),
                 },
             ],
@@ -3767,6 +3843,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -3778,6 +3855,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             children: vec![rect("back", [0, 0, 8, 8]), rect("front", [2, 2, 4, 4])],
         });
         // The overlapping topmost child wins.
@@ -3805,6 +3883,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -3816,6 +3895,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             // The child fills 8x8 relative to the clip origin, so it would cover
             // everything without the clip rect.
             children: vec![fill([0, 0, 8, 8])],
@@ -3853,6 +3933,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -3909,6 +3990,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             value2: None,
         };
         let scene = SceneNode {
@@ -3923,6 +4005,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3960,6 +4043,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             value2: None,
         };
         // Group offset (4, 2) and 2× scale: [0,0,2,2] red -> [4,2,4,4].
@@ -3972,6 +4056,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -4050,6 +4135,7 @@ mod tests {
                 opacity: None,
                 visible: None,
                 anim: None,
+                rotate: None,
                 value2: None,
             })
             .unwrap();
@@ -4204,6 +4290,7 @@ mod tests {
                 opacity: None,
                 visible: None,
                 anim: None,
+                rotate: None,
                 value2: None,
             })
             .unwrap();
@@ -4356,6 +4443,7 @@ mod tests {
                 opacity: None,
                 visible: None,
                 anim: None,
+                rotate: None,
                 value2: None,
             })
             .unwrap();
@@ -4762,6 +4850,7 @@ mod tests {
                 opacity: None,
                 visible: None,
                 anim: None,
+                rotate: None,
                 value2: None,
             })
             .unwrap();
@@ -4789,6 +4878,7 @@ mod tests {
                 opacity: None,
                 visible: None,
                 anim: None,
+                rotate: None,
                 value2: None,
             })
             .unwrap();

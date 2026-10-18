@@ -484,6 +484,9 @@ pub struct SceneNode {
     /// N463: keyframed opacity/rect animation, sampled on the device clock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anim: Option<SceneAnim>,
+    /// N475: a quarter-turn rotation (0/90/180/270) for axis-aligned fills.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotate: Option<u16>,
 }
 
 /// N463: a keyframed scene animation. Keyframes are `[time_ms, value]` and are
@@ -2167,12 +2170,14 @@ mod tests {
                     opacity: None,
                     visible: None,
                     anim: None,
+                    rotate: None,
                     value2: None,
                 }],
                 value: None,
                 opacity: None,
                 visible: None,
                 anim: None,
+                rotate: None,
                 value2: None,
             }),
         }
@@ -2189,6 +2194,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             value2: None,
         };
         // #RGB expands each nibble.
@@ -2213,6 +2219,7 @@ mod tests {
             opacity: None,
             visible: None,
             anim: None,
+            rotate: None,
             value2: None,
         };
         assert_eq!(node.color_rgb565(), 0xF800);
@@ -2226,6 +2233,7 @@ mod tests {
                 opacity: None,
                 visible: None,
                 anim: None,
+                rotate: None,
                 value2: None,
             }
             .color_rgb565(),
