@@ -109,6 +109,8 @@ pub struct DiskChunkedUpload {
     hasher: Sha256,
     received: usize,
     limit: usize,
+    /// N478: keep the temp file on drop so the upload can be resumed.
+    keep: bool,
 }
 
 impl DiskChunkedUpload {
@@ -126,7 +128,71 @@ impl DiskChunkedUpload {
             hasher: Sha256::new(),
             received: 0,
             limit,
+            keep: false,
         })
+    }
+
+    /// N478: a named upload that can be resumed later by the same name.
+    pub fn begin_named(
+        dir: impl Into<PathBuf>,
+        name: &str,
+        limit: usize,
+    ) -> Result<Self, AssetError> {
+        let dir = dir.into();
+        std::fs::create_dir_all(&dir).map_err(|e| AssetError::Io(e.to_string()))?;
+        let path = dir.join(format!(".upload-{}", sanitize_upload_name(name)));
+        let file = std::fs::File::create(&path).map_err(|e| AssetError::Io(e.to_string()))?;
+        Ok(Self {
+            dir,
+            path,
+            file: Some(file),
+            hasher: Sha256::new(),
+            received: 0,
+            limit,
+            keep: false,
+        })
+    }
+
+    /// N478: reopen a named upload, re-hashing the bytes already spooled.
+    pub fn resume(dir: impl Into<PathBuf>, name: &str, limit: usize) -> Result<Self, AssetError> {
+        let dir = dir.into();
+        let path = dir.join(format!(".upload-{}", sanitize_upload_name(name)));
+        let mut reader = std::fs::File::open(&path).map_err(|e| AssetError::Io(e.to_string()))?;
+        use std::io::Read;
+        let mut hasher = Sha256::new();
+        let mut received = 0usize;
+        let mut buffer = [0u8; 8192];
+        loop {
+            let read = reader
+                .read(&mut buffer)
+                .map_err(|e| AssetError::Io(e.to_string()))?;
+            if read == 0 {
+                break;
+            }
+            received = received.saturating_add(read);
+            if received > limit {
+                return Err(AssetError::TooLarge);
+            }
+            hasher.update(&buffer[..read]);
+        }
+        let file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .map_err(|e| AssetError::Io(e.to_string()))?;
+        Ok(Self {
+            dir,
+            path,
+            file: Some(file),
+            hasher,
+            received,
+            limit,
+            keep: false,
+        })
+    }
+
+    /// N478: keep the spooled file after this handle is dropped (for a resume).
+    pub fn keep(mut self) {
+        self.keep = true;
     }
 
     pub fn received(&self) -> usize {
@@ -181,10 +247,23 @@ impl DiskChunkedUpload {
 
 impl Drop for DiskChunkedUpload {
     fn drop(&mut self) {
-        if self.file.is_some() {
+        if !self.keep && self.file.is_some() {
             let _ = std::fs::remove_file(&self.path);
         }
     }
+}
+
+/// N478: restrict a resumable upload name to a safe filename fragment.
+fn sanitize_upload_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// N369: a bounded, content-addressed cache on disk. Files are named by their
@@ -462,6 +541,25 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with(".upload-"))
             .collect();
         assert!(leftovers.is_empty(), "no temp files remain");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn named_upload_resumes_from_its_offset() {
+        // N478: a kept upload resumes and finishes with the full content key.
+        let dir = std::env::temp_dir().join(format!("mdc-resume-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut upload = DiskChunkedUpload::begin_named(&dir, "asset-1", 8).unwrap();
+        upload.push_chunk(&[1, 2, 3, 4]).unwrap();
+        upload.keep();
+
+        let mut resumed = DiskChunkedUpload::resume(&dir, "asset-1", 8).unwrap();
+        assert_eq!(resumed.received(), 4, "offset is reported");
+        resumed.push_chunk(&[5, 6, 7, 8]).unwrap();
+        assert_eq!(resumed.push_chunk(&[9]), Err(AssetError::TooLarge));
+        let key = resumed.finish().unwrap();
+        assert_eq!(key, AssetKey::from_bytes(&[1, 2, 3, 4, 5, 6, 7, 8]));
+        assert!(dir.join(&key.0).is_file());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
