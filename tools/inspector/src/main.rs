@@ -130,6 +130,15 @@ fn watch<W: Write>(
             "diagnostics": diagnostics,
             "diagnostics_total": device.metrics_snapshot().diagnostics_emitted,
             "rss_bytes": resident_bytes(),
+            // N460: host-side session counters (parity with `mdc inspect --watch`).
+            "session": {
+                "packets_sent": session.stats().packets_sent,
+                "bytes_sent": session.stats().bytes_sent,
+                "bytes_received": session.stats().bytes_received,
+                "acks_received": session.stats().acks_received,
+                "frames_sent": session.stats().frames_sent,
+                "mirror_frames": session.stats().mirror_frames,
+            },
         });
         writeln!(out, "{}", serde_json::to_string(&line)?)?;
     }
@@ -246,6 +255,8 @@ mod tests {
         watch(2, 10, "default", &mut out).unwrap();
         for line in parse_lines(&out) {
             assert!(line.get("rss_bytes").is_some(), "rss present");
+            // N460: session counters ride along.
+            assert!(line.get("session").is_some(), "session stats present");
         }
     }
 
