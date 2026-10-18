@@ -282,6 +282,9 @@ pub struct Mesh {
     /// N163: bounded full geometry when the primitive bytes are embedded and fit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geometry: Option<MeshGeometry>,
+    /// N433: `KHR_materials_variants` mappings as `[variant_index, material_index]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variant_materials: Vec<[usize; 2]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -758,6 +761,20 @@ impl Model {
     pub fn total_vertices(&self) -> u64 {
         self.meshes.iter().map(|m| u64::from(m.vertices)).sum()
     }
+    /// N433: the material each mesh should use for a `KHR_materials_variants`
+    /// variant (`None` keeps the mesh's own material).
+    pub fn variant_materials(&self, variant: usize) -> Vec<Option<usize>> {
+        self.meshes
+            .iter()
+            .map(|mesh| {
+                mesh.variant_materials
+                    .iter()
+                    .find(|mapping| mapping[0] == variant)
+                    .map(|mapping| mapping[1])
+            })
+            .collect()
+    }
+
     /// N388: a compact import report (counts and feature flags).
     pub fn summary(&self) -> ModelSummary {
         let geometry = self.meshes.iter().filter_map(|m| m.geometry.as_ref());

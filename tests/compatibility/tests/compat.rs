@@ -658,6 +658,7 @@ fn full_geometry_reaches_the_device_and_renders() {
         indices: 6,
         material: None,
         geometry: Some(geometry),
+        variant_materials: Vec::new(),
         ..mdc_model::Mesh::default()
     };
     let package = mdc_model::DevicePackage {
@@ -1630,6 +1631,7 @@ fn unlit_material_and_vertex_colours_render_on_the_device() {
                 indices: 6,
                 material: Some(0),
                 geometry: Some(geometry),
+                variant_materials: Vec::new(),
                 ..Mesh::default()
             }],
             materials: vec![Material {
@@ -2696,6 +2698,7 @@ fn secondary_maps_can_use_a_second_uv_set() {
                 indices: 6,
                 material: Some(0),
                 geometry: Some(geometry),
+                variant_materials: Vec::new(),
                 ..Mesh::default()
             }],
             materials: vec![Material {

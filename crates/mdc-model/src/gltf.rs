@@ -743,6 +743,36 @@ impl GltfImporter {
                         .collect()
                 })
                 .unwrap_or_default();
+            // N433: per-primitive KHR_materials_variants mappings.
+            let variant_materials = mesh
+                .get("primitives")
+                .and_then(Value::as_array)
+                .map(|primitives| {
+                    let mut out: Vec<[usize; 2]> = Vec::new();
+                    for primitive in primitives {
+                        let mappings = primitive
+                            .get("extensions")
+                            .and_then(|e| e.get("KHR_materials_variants"))
+                            .and_then(|v| v.get("mappings"))
+                            .and_then(Value::as_array);
+                        let Some(mappings) = mappings else { continue };
+                        for mapping in mappings {
+                            let Some(material) = mapping.get("material").and_then(Value::as_u64)
+                            else {
+                                continue;
+                            };
+                            if let Some(variants) =
+                                mapping.get("variants").and_then(Value::as_array)
+                            {
+                                for variant in variants.iter().filter_map(Value::as_u64) {
+                                    out.push([variant as usize, material as usize]);
+                                }
+                            }
+                        }
+                    }
+                    out
+                })
+                .unwrap_or_default();
             meshes.push(Mesh {
                 name: json_name(mesh, &format!("mesh{i}")),
                 vertices: vertices.min(u64::from(u32::MAX)) as u32,
@@ -762,6 +792,7 @@ impl GltfImporter {
                 morph_targets,
                 morph_weights,
                 geometry,
+                variant_materials,
             });
         }
         if meshes.iter().map(|m| u64::from(m.vertices)).sum::<u64>() > limits.max_vertices {
@@ -2614,6 +2645,34 @@ mod tests {
             (material.metallic() - 0.587).abs() < 0.01,
             "specular -> metallic"
         );
+    }
+
+    #[test]
+    fn variant_mappings_swap_materials() {
+        // N433: a per-mesh mapping selects the variant's material.
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "extensionsUsed": ["KHR_materials_variants"],
+            "extensions": {"KHR_materials_variants": {"variants": [{"name": "day"}, {"name": "night"}]}},
+            "materials": [{"name": "base"}, {"name": "dark"}],
+            "meshes": [{"primitives": [{
+                "attributes": {"POSITION": 0},
+                "material": 0,
+                "extensions": {"KHR_materials_variants": {"mappings": [
+                    {"variants": [1], "material": 1}
+                ]}}
+            }]}],
+            "nodes": [{"name": "root", "mesh": 0}],
+            "accessors": [{"count": 4, "type": "VEC3"}]
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        assert_eq!(model.variants, vec!["day".to_string(), "night".to_string()]);
+        assert_eq!(model.meshes[0].material, Some(0));
+        // Variant 1 (night) maps mesh 0 to material 1; variant 0 keeps its own.
+        assert_eq!(model.variant_materials(1), vec![Some(1)]);
+        assert_eq!(model.variant_materials(0), vec![None]);
     }
 
     #[test]

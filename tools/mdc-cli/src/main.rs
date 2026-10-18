@@ -470,6 +470,7 @@ fn cmd_package(
     let mut indexed: u32 = 0;
     let mut dither: u8 = 0;
     let mut tangents = false;
+    let mut variant: Option<String> = None;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -485,6 +486,8 @@ fn cmd_package(
             "--dither" => dither = iter.next().and_then(|v| v.parse().ok()).unwrap_or(4),
             // N428: derive tangents for meshes that omit them.
             "--tangents" => tangents = true,
+            // N433: pick a KHR_materials_variants set by name.
+            "--variant" => variant = iter.next().cloned(),
             other => out = Some(other.to_string()),
         }
     }
@@ -494,6 +497,17 @@ fn cmd_package(
     } else {
         mdc_model::GltfImporter.import(&bytes, &mdc_model::ImportLimits::default())?
     };
+    // N433: swap in the materials for the requested variant.
+    if let Some(name) = &variant {
+        if let Some(index) = model.variants.iter().position(|v| v == name) {
+            let materials = model.variant_materials(index);
+            for (mesh, material) in model.meshes.iter_mut().zip(materials) {
+                if let Some(material) = material {
+                    mesh.material = Some(material);
+                }
+            }
+        }
+    }
     // N428: fill in tangents where the mesh omits them.
     if tangents {
         for mesh in &mut model.meshes {
@@ -3298,7 +3312,7 @@ fn usage() {
          devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
-package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
+package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents] [--variant NAME]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] [--srgb] --out f.ppm|\

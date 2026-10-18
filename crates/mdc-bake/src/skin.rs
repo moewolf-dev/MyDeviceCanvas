@@ -3221,6 +3221,7 @@ mod tests {
                     indices: 6,
                     material: Some(0),
                     geometry: Some(geometry),
+                    variant_materials: Vec::new(),
                     ..mdc_model::Mesh::default()
                 }],
                 materials: vec![mdc_model::Material {
@@ -3449,6 +3450,7 @@ mod tests {
                 indices: 6,
                 material: Some(0),
                 geometry: Some(geometry),
+                variant_materials: Vec::new(),
                 ..mdc_model::Mesh::default()
             }],
             materials: vec![mdc_model::Material {
@@ -3724,6 +3726,7 @@ mod tests {
                 indices: 6,
                 material: Some(0),
                 geometry: Some(geometry),
+                variant_materials: Vec::new(),
                 morph_weights: vec![0.0],
                 ..mdc_model::Mesh::default()
             }],
