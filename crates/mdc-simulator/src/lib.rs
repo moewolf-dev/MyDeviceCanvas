@@ -1159,8 +1159,6 @@ fn fill_scene(
             let stops = parse_gradient_stops(start, end, node.value2.as_deref());
             // N515: `mode: "radial"` interpolates by distance from the centre.
             let radial = node.mode.as_deref() == Some("radial");
-            // N475: a quarter turn makes the gradient run horizontally.
-            let horizontal = matches!(rotate, 90 | 270);
             if radial {
                 let cx = f32::from(w) / 2.0;
                 let cy = f32::from(h) / 2.0;
@@ -1186,38 +1184,41 @@ fn fill_scene(
                         }
                     }
                 }
-            } else if horizontal {
-                let span = u32::from(w.saturating_sub(1)).max(1);
-                for xx in x..x.saturating_add(w) {
-                    if u32::from(xx) >= width {
-                        break;
-                    }
-                    let t = (u32::from(xx.saturating_sub(x)) * 255 / span).min(255) as u8;
-                    let color = gradient_color(&stops, t);
-                    for yy in y..y.saturating_add(h) {
-                        if u32::from(yy) >= height {
-                            break;
-                        }
-                        let index = ((u32::from(yy) * width + u32::from(xx)) * 2) as usize;
-                        if node.is_additive() {
-                            add_pixel(pixels, index, color, alpha);
-                        } else {
-                            put_pixel(pixels, index, color, alpha);
-                        }
-                    }
-                }
             } else {
-                let span = u32::from(h.saturating_sub(1)).max(1);
+                // N525: the ramp direction follows `rotate` (0 = top-to-bottom,
+                // 90 = left-to-right, 180/270 reverse, any other angle is a
+                // diagonal). The projection is normalised across the rect.
+                let theta = (f64::from(rotate) * std::f64::consts::PI / 180.0) as f32;
+                let (dx, dy) = (theta.sin(), theta.cos());
+                let (px, py) = (dx.max(0.0), dy.max(0.0));
+                let (nx, ny) = (dx.min(0.0), dy.min(0.0));
+                let span = ((px - nx) + (py - ny)).max(f32::EPSILON);
+                // Pixel-index coordinates so the rect's edges hit the exact
+                // endpoint colours (matching the pre-N525 integer ramp).
+                let (fx, fy) = (
+                    f32::from(w.saturating_sub(1)).max(1.0),
+                    f32::from(h.saturating_sub(1)).max(1.0),
+                );
                 for yy in y..y.saturating_add(h) {
                     if u32::from(yy) >= height {
                         break;
                     }
-                    let t = (u32::from(yy.saturating_sub(y)) * 255 / span).min(255) as u8;
-                    let color = gradient_color(&stops, t);
+                    let v = if h > 1 {
+                        f32::from(yy.saturating_sub(y)) / fy
+                    } else {
+                        0.0
+                    };
                     for xx in x..x.saturating_add(w) {
                         if u32::from(xx) >= width {
                             break;
                         }
+                        let u = if w > 1 {
+                            f32::from(xx.saturating_sub(x)) / fx
+                        } else {
+                            0.0
+                        };
+                        let t = (((u * dx + v * dy) - (nx + ny)) / span).clamp(0.0, 1.0);
+                        let color = gradient_color(&stops, (t * 255.0) as u8);
                         let index = ((u32::from(yy) * width + u32::from(xx)) * 2) as usize;
                         if node.is_additive() {
                             add_pixel(pixels, index, color, alpha);
@@ -4107,6 +4108,66 @@ mod tests {
             ((green >> 5) & 0x3f) > 8 && green >> 11 < 8,
             "green on top: {green:#06x}"
         );
+    }
+
+    #[test]
+    fn gradient_angle_controls_the_direction() {
+        // N525: `rotate` sets the ramp direction; 180/270 reverse it and other
+        // angles give a diagonal.
+        use mdc_protocol::SceneNode;
+        let render = |rotate: Option<u16>| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 8,
+                height: 8,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "ramp".into(),
+                kind: "gradient".into(),
+                rect: Some([0, 0, 8, 8]),
+                value: Some("#FFFFFF".into()),
+                value2: Some("#000000".into()),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: None,
+                children: Vec::new(),
+            });
+            assert!(device.render_scene());
+            let mut pixels = Vec::new();
+            for y in 0..8u16 {
+                for x in 0..8u16 {
+                    pixels.push(device.pixel_rgb565(x, y).unwrap());
+                }
+            }
+            pixels
+        };
+        let at = |pixels: &[u16], x: usize, y: usize| pixels[y * 8 + x];
+        // 0: top bright, bottom dark.
+        let up = render(None);
+        assert!(at(&up, 0, 0) > at(&up, 0, 7));
+        assert_eq!(at(&up, 0, 0), 0xFFFF);
+        // 180: reversed.
+        let down = render(Some(180));
+        assert!(at(&down, 0, 7) > at(&down, 0, 0));
+        assert_eq!(at(&down, 0, 7), 0xFFFF);
+        // 90: left bright, right dark; 270 reverses it.
+        let right = render(Some(90));
+        assert!(at(&right, 0, 0) > at(&right, 7, 0));
+        let left = render(Some(270));
+        assert!(at(&left, 7, 0) > at(&left, 0, 0));
+        // 45: the diagonal runs from the top-left to the bottom-right.
+        let diagonal = render(Some(45));
+        assert!(at(&diagonal, 0, 0) > at(&diagonal, 7, 7));
+        assert!(at(&diagonal, 0, 0) > at(&diagonal, 7, 0), "corner vs side");
+        // 135: the other diagonal (bright at the bottom-left).
+        let other = render(Some(135));
+        assert!(at(&other, 0, 7) > at(&other, 7, 0));
     }
 
     #[test]
