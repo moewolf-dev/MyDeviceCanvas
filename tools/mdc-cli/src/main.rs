@@ -1990,6 +1990,8 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
         "served_clients": server.as_ref().map(|s| s.client_count()),
         "served_dropped": server.as_ref().map(|s| s.frames_dropped()),
         "http_frames": http_server.as_ref().map(|s| s.frames_published()),
+        // N500: WebSocket (`/ws`) consumers on the HTTP mirror.
+        "ws_clients": http_server.as_ref().map(|s| s.ws_clients()),
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())

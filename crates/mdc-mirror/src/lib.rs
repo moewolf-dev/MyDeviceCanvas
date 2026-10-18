@@ -1059,6 +1059,8 @@ struct HttpClient {
     stream_format: StreamFormat,
     /// N356: integer downscale applied to each streamed part (1 = full size).
     stream_scale: u16,
+    /// N500: a WebSocket consumer (`/ws`) rather than a multipart stream.
+    websocket: bool,
     /// The peer closed or errored; dropped on the next pump.
     dead: bool,
     /// Frames skipped because the previous part was still being written.
@@ -1152,12 +1154,18 @@ impl HttpMirrorServer {
                 if !client.streaming {
                     continue;
                 }
-                if client.stream_part.is_empty() {
+                if !client.stream_part.is_empty() {
+                    client.clipped = client.clipped.saturating_add(1);
+                    continue;
+                }
+                if client.websocket {
+                    // N500: one binary WebSocket message per published frame.
+                    client.stream_part =
+                        ws_frame(&encode_jpeg(frame.width, frame.height, &frame.bgra, 80));
+                } else {
                     // N356: honour the client's `?scale=` on the live stream.
                     client.stream_part =
                         stream_part_for(frame, client.stream_format, client.stream_scale);
-                } else {
-                    client.clipped = client.clipped.saturating_add(1);
                 }
             }
         }
@@ -1177,6 +1185,7 @@ impl HttpMirrorServer {
                         streaming: false,
                         stream_format: StreamFormat::Bmp,
                         stream_scale: 1,
+                        websocket: false,
                         dead: false,
                         clipped: 0,
                     });
@@ -1197,11 +1206,12 @@ impl HttpMirrorServer {
         // N361: a bounded health snapshot for a monitoring consumer.
         let health = {
             let body = format!(
-                "{{\"frames\":{},\"clients\":{},\"streaming\":{},\"clipped\":{}}}",
+                "{{\"frames\":{},\"clients\":{},\"streaming\":{},\"clipped\":{},\"ws\":{}}}",
                 self.frames,
                 self.clients.len(),
                 self.streaming_clients(),
-                self.clipped_frames()
+                self.clipped_frames(),
+                self.ws_clients()
             );
             simple_response(200, "application/json", body.as_bytes())
         };
@@ -1223,6 +1233,34 @@ impl HttpMirrorServer {
                         let (path, query) = request_target(&client.request[..end]);
                         if path == "/health" {
                             client.response = Some(health.clone());
+                        } else if path == "/ws" {
+                            // N500: upgrade to a WebSocket that pushes one binary
+                            // JPEG message per published frame.
+                            let headers = &client.request[..end];
+                            let key = header_value(headers, "sec-websocket-key");
+                            let upgraded = header_value(headers, "upgrade")
+                                .is_some_and(|value| value.eq_ignore_ascii_case("websocket"));
+                            match (key, upgraded) {
+                                (Some(key), true) => {
+                                    client.websocket = true;
+                                    client.streaming = true;
+                                    client.stream_headers = ws_handshake(key);
+                                    client.stream_part = last
+                                        .map(|frame| {
+                                            ws_frame(&encode_jpeg(
+                                                frame.width,
+                                                frame.height,
+                                                &frame.bgra,
+                                                80,
+                                            ))
+                                        })
+                                        .unwrap_or_default();
+                                }
+                                _ => {
+                                    client.response =
+                                        Some(simple_response(400, "text/plain", b"bad upgrade"));
+                                }
+                            }
                         } else {
                             match respond(last, &path, &query) {
                                 Served::Bytes(bytes) => client.response = Some(bytes),
@@ -1272,6 +1310,14 @@ impl HttpMirrorServer {
         self.clients
             .iter()
             .filter(|client| client.streaming)
+            .count()
+    }
+
+    /// N500: clients consuming the WebSocket live stream.
+    pub fn ws_clients(&self) -> usize {
+        self.clients
+            .iter()
+            .filter(|client| client.websocket)
             .count()
     }
 
@@ -1577,6 +1623,141 @@ fn query_quality(query: &str) -> u8 {
         .clamp(1, 100)
 }
 
+/// N500: the case-insensitive value of a request header.
+fn header_value<'a>(request: &'a [u8], name: &str) -> Option<&'a str> {
+    let text = std::str::from_utf8(request).ok()?;
+    for line in text.split("\r\n").skip(1) {
+        let (key, value) = line.split_once(':')?;
+        if key.trim().eq_ignore_ascii_case(name) {
+            return Some(value.trim());
+        }
+    }
+    None
+}
+
+/// N500: the RFC 6455 `101 Switching Protocols` response for a client key.
+fn ws_handshake(key: &str) -> Vec<u8> {
+    format!(
+        "HTTP/1.1 101 Switching Protocols\r\n\
+         Upgrade: websocket\r\nConnection: Upgrade\r\n\
+         Sec-WebSocket-Accept: {}\r\n\r\n",
+        ws_accept(key)
+    )
+    .into_bytes()
+}
+
+/// N500: the `Sec-WebSocket-Accept` value (base64 of SHA-1(key + GUID)).
+fn ws_accept(key: &str) -> String {
+    let mut input = key.trim().as_bytes().to_vec();
+    input.extend_from_slice(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    base64_encode(&sha1(&input))
+}
+
+/// N500: wrap a payload in an unmasked binary WebSocket frame (server -> client).
+fn ws_frame(payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(payload.len() + 10);
+    out.push(0x82); // FIN + binary opcode
+    match payload.len() {
+        len if len < 126 => out.push(len as u8),
+        len if len <= usize::from(u16::MAX) => {
+            out.push(126);
+            out.extend_from_slice(&(len as u16).to_be_bytes());
+        }
+        len => {
+            out.push(127);
+            out.extend_from_slice(&(len as u64).to_be_bytes());
+        }
+    }
+    out.extend_from_slice(payload);
+    out
+}
+
+/// N500: SHA-1 (FIPS 180-1). Only used for the WebSocket handshake.
+fn sha1(data: &[u8]) -> [u8; 20] {
+    let mut h: [u32; 5] = [
+        0x6745_2301,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
+    let bit_len = (data.len() as u64).wrapping_mul(8);
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_be_bytes());
+    for chunk in msg.chunks_exact(64) {
+        let mut w = [0u32; 80];
+        for (i, slot) in w.iter_mut().take(16).enumerate() {
+            *slot = u32::from_be_bytes([
+                chunk[i * 4],
+                chunk[i * 4 + 1],
+                chunk[i * 4 + 2],
+                chunk[i * 4 + 3],
+            ]);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
+        for (i, wi) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A82_7999u32),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*wi);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = temp;
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+    }
+    let mut out = [0u8; 20];
+    for (i, value) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&value.to_be_bytes());
+    }
+    out
+}
+
+/// N500: standard base64 (with padding).
+fn base64_encode(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        out.push(TABLE[(b0 >> 2) as usize] as char);
+        out.push(TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(b2 & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
 fn respond(last: Option<&ServedFrame>, path: &str, query: &str) -> Served {
     if STREAM_PATHS.contains(&path) {
         // N337: `/stream.jpg` serves JPEG parts; the others serve BMP.
@@ -1597,7 +1778,7 @@ fn respond(last: Option<&ServedFrame>, path: &str, query: &str) -> Served {
             200,
             "text/html; charset=utf-8",
             b"<!doctype html><title>MyDeviceCanvas mirror</title><h1>mirror</h1>\
-              <img src=\"/stream\">",
+              <img src=\"/stream\"><p>live: <code>/ws</code> (WebSocket), <code>/stream</code> (MJPEG)</p>",
         ),
         "/frame.bmp" => match last {
             Some(frame) => {
@@ -2220,6 +2401,8 @@ mod tests {
         assert!(health.starts_with("HTTP/1.1 200 OK"), "{health}");
         assert!(health.contains("application/json"));
         assert!(health.contains("\"frames\":1"), "{health}");
+        // N500: the WebSocket consumer count is reported too.
+        assert!(health.contains("\"ws\":0"), "{health}");
     }
 
     #[test]
@@ -2249,6 +2432,118 @@ mod tests {
         // The JPEG endpoint still serves with a quality hint.
         let jpg = http_get(&mut server, "/frame.jpg?quality=20");
         assert!(jpg.windows(2).any(|w| w == [0xFF, 0xD8]), "JPEG body");
+    }
+
+    #[test]
+    fn sha1_and_base64_match_the_rfc_vectors() {
+        // N500: the WebSocket handshake primitives.
+        assert_eq!(base64_encode(b"abc"), "YWJj");
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"a"), "YQ==");
+        assert_eq!(base64_encode(b"ab"), "YWI=");
+        let digest = sha1(b"abc");
+        assert_eq!(
+            digest
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
+        // RFC 6455 section 1.3 example.
+        assert_eq!(
+            ws_accept("dGhlIHNhbXBsZSBub25jZQ=="),
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+        );
+        // The binary frame header: FIN + opcode 0x82, then the length.
+        assert_eq!(ws_frame(b"hi"), vec![0x82, 0x02, b'h', b'i']);
+        let long = ws_frame(&[0u8; 200]);
+        assert_eq!(&long[..4], &[0x82, 126, 0x00, 0xc8]);
+    }
+
+    #[test]
+    fn websocket_endpoint_streams_binary_frames() {
+        // N500: `/ws` upgrades and then pushes one binary message per frame.
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .write_all(
+                b"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+                  Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+            )
+            .unwrap();
+        // Drive the handshake.
+        let mut handshake = Vec::new();
+        for _ in 0..200 {
+            let _ = server.pump();
+            let mut buffer = [0u8; 4096];
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => {
+                    handshake.extend_from_slice(&buffer[..n]);
+                    if handshake.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        let text = String::from_utf8_lossy(&handshake);
+        assert!(text.starts_with("HTTP/1.1 101"), "upgraded: {text}");
+        assert!(text.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="));
+        assert_eq!(server.ws_clients(), 1);
+        // Publish a frame; the client receives a binary message.
+        let pixels = vec![0x40u8; 4 * 4 * 4];
+        server.publish(&ShadowFrame {
+            width: 4,
+            height: 4,
+            generation: 1,
+            frame_id: 1,
+            pixels: &pixels,
+        });
+        // Read a complete WebSocket frame: header length then payload.
+        let frame_header = |message: &[u8]| -> Option<usize> {
+            if message.len() < 2 {
+                return None;
+            }
+            let (header, payload) = match message[1] {
+                126 if message.len() >= 4 => {
+                    (4, usize::from(u16::from_be_bytes([message[2], message[3]])))
+                }
+                127 if message.len() >= 10 => (
+                    10,
+                    u64::from_be_bytes(message[2..10].try_into().unwrap()) as usize,
+                ),
+                126 | 127 => return None,
+                len => (2, usize::from(len)),
+            };
+            (message.len() >= header + payload).then_some(header)
+        };
+        let mut message = Vec::new();
+        let mut header = None;
+        for _ in 0..400 {
+            let _ = server.pump();
+            let mut buffer = [0u8; 8192];
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => message.extend_from_slice(&buffer[..n]),
+                Err(_) => std::thread::sleep(Duration::from_millis(5)),
+            }
+            if let Some(found) = frame_header(&message) {
+                header = Some(found);
+                break;
+            }
+        }
+        let header = header.expect("a complete WebSocket frame");
+        assert_eq!(message[0], 0x82, "binary frame");
+        assert_eq!(
+            &message[header..header + 2],
+            &[0xFF, 0xD8],
+            "the payload is a JPEG"
+        );
     }
 
     #[test]
