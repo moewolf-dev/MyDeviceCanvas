@@ -1728,6 +1728,7 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
     let mut bandwidth: Option<u64> = None;
     let mut quality: u8 = 80;
     let mut scale: u32 = 1;
+    let mut sequence = false;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -1749,6 +1750,8 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
             "--quality" => quality = iter.next().and_then(|v| v.parse().ok()).unwrap_or(quality),
             // N448: downscale frames written to disk.
             "--scale" => scale = iter.next().and_then(|v| v.parse().ok()).unwrap_or(scale),
+            // N470: write numbered frames instead of overwriting one file.
+            "--sequence" => sequence = true,
             _ => {}
         }
     }
@@ -1778,8 +1781,13 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
     device.poll()?;
     session.poll()?;
 
-    let mut sink = match (&write_dir, format.as_str()) {
-        (Some(dir), "ppm") => Some(mdc_mirror::PpmDirectorySink::new(dir, "frame.ppm", 0)),
+    let mut sink = match (&write_dir, format.as_str(), sequence) {
+        (Some(dir), "ppm", false) => Some(mdc_mirror::PpmDirectorySink::new(dir, "frame.ppm", 0)),
+        _ => None,
+    };
+    // N470: numbered PPM frames bypass the single-file sink.
+    let ppm_dir = match (&write_dir, format.as_str(), sequence) {
+        (Some(dir), "ppm", true) => Some(PathBuf::from(dir)),
         _ => None,
     };
     let bmp_dir = match (&write_dir, format.as_str()) {
@@ -1794,7 +1802,10 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
         (Some(dir), "jpg" | "jpeg") => Some(PathBuf::from(dir)),
         _ => None,
     };
-    for dir in [&bmp_dir, &png_dir, &jpg_dir].into_iter().flatten() {
+    for dir in [&bmp_dir, &png_dir, &jpg_dir, &ppm_dir]
+        .into_iter()
+        .flatten()
+    {
         std::fs::create_dir_all(dir)?;
     }
     let mut server = match &serve {
@@ -1883,20 +1894,32 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
         if let Some(sink) = sink.as_mut() {
             sink.on_frame(scaled_shadow(frames_seen));
         }
+        // N470: `--sequence` numbers each written frame instead of overwriting.
+        let name = |extension: &str| {
+            if sequence {
+                format!("frame{frames_seen:04}.{extension}")
+            } else {
+                format!("frame.{extension}")
+            }
+        };
+        if let Some(dir) = &ppm_dir {
+            let ppm = mdc_mirror::encode_ppm(out_w as u16, out_h as u16, out_bytes);
+            std::fs::write(dir.join(name("ppm")), ppm)?;
+        }
         if let Some(dir) = &bmp_dir {
             let bmp = mdc_mirror::encode_bmp(out_w as u16, out_h as u16, out_bytes);
-            std::fs::write(dir.join("frame.bmp"), bmp)?;
+            std::fs::write(dir.join(name("bmp")), bmp)?;
         }
         if let Some(dir) = &png_dir {
             // N328: PNG for a smaller OBS image source.
             let png = mdc_mirror::encode_png(out_w as u16, out_h as u16, out_bytes);
-            std::fs::write(dir.join("frame.png"), png)?;
+            std::fs::write(dir.join(name("png")), png)?;
         }
         if let Some(dir) = &jpg_dir {
             // N336/N346: baseline JPEG, the smallest OBS image source.
             let jpg =
                 mdc_mirror::encode_jpeg(out_w as u16, out_h as u16, out_bytes, quality.max(1));
-            std::fs::write(dir.join("frame.jpg"), jpg)?;
+            std::fs::write(dir.join(name("jpg")), jpg)?;
         }
         if let Some(server) = server.as_mut() {
             let _ = server.accept_pending();
@@ -3518,7 +3541,7 @@ fn usage() {
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices [--compact]|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
-authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--scale N] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
+authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--scale N] [--sequence] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents] [--variant NAME] [--report]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--mip-linear] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
@@ -4194,6 +4217,37 @@ mod tests {
         assert!(averaged != 0);
         // Oversized inputs and bad lengths produce an empty chain.
         assert!(mdc_bake::bake_mipmaps(2, 2, &[0, 0], 4).is_empty());
+    }
+
+    #[test]
+    fn mirror_sequence_names_are_numbered() {
+        // N470: the CLI writes `frame0000.png` … in sequence mode. The naming is
+        // exercised end-to-end through `cmd_mirror`, so just check the run.
+        let dir = std::env::temp_dir().join(format!("mdc-seq-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        cmd_mirror(
+            &GlobalOpts {
+                sim: true,
+                board: "linux-virt".into(),
+                address: None,
+                port: None,
+            },
+            &[
+                "--frames".into(),
+                "2".into(),
+                "--write-dir".into(),
+                dir.to_string_lossy().into_owned(),
+                "--format".into(),
+                "png".into(),
+                "--sequence".into(),
+            ],
+        )
+        .unwrap();
+        assert!(
+            dir.join("frame0001.png").is_file(),
+            "numbered frame written"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
