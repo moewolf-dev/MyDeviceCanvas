@@ -362,11 +362,39 @@ where
     f(&empty, None)
 }
 
-fn cmd_devices(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_devices(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    // N437: `--compact` streams one JSON object per device (JSONL) for scripting.
+    let compact = extra.iter().any(|a| a == "--compact");
     with_sim_or_empty(opts, |mgr, _| {
-        println!("{}", devices_json(mgr));
+        if compact {
+            for line in devices_json_lines(mgr) {
+                println!("{line}");
+            }
+        } else {
+            println!("{}", devices_json(mgr));
+        }
         Ok(())
     })
+}
+
+/// N437: one compact JSON object per device, newest first.
+fn devices_json_lines(manager: &DeviceManager) -> Vec<String> {
+    manager
+        .devices()
+        .map(|device| {
+            serde_json::json!({
+                "device_id": device.capabilities.device_id,
+                "firmware": device.capabilities.firmware,
+                "state": format!("{:?}", device.state),
+                "surfaces": device.capabilities.surfaces.iter().map(|s| serde_json::json!({
+                    "id": s.id,
+                    "width": s.width,
+                    "height": s.height,
+                })).collect::<Vec<_>>(),
+            })
+            .to_string()
+        })
+        .collect()
 }
 
 /// N370: the host process resident set size in bytes, when the platform exposes
@@ -3311,7 +3339,7 @@ fn cmd_scene_lint(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 fn usage() {
     println!(
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
-         devices|inspect|send-image <path>|benchmark [N]|simulate|discover|\
+         devices [--compact]|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
 authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--serve ADDR] [--http ADDR] [--source-fps N] [--max-fps N] [--bandwidth BPS]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents] [--variant NAME]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
@@ -3337,7 +3365,7 @@ fn main() {
             if opts.sim || opts.address.is_none() {
                 o.sim = true;
             }
-            cmd_devices(&o)
+            cmd_devices(&o, &args[1..])
         }
         Some("inspect") => {
             let mut o = opts.clone();
@@ -3882,6 +3910,13 @@ mod tests {
         assert!(averaged != 0);
         // Oversized inputs and bad lengths produce an empty chain.
         assert!(mdc_bake::bake_mipmaps(2, 2, &[0, 0], 4).is_empty());
+    }
+
+    #[test]
+    fn devices_compact_lines_are_json() {
+        // N437: an empty manager yields no JSONL lines.
+        let lines = devices_json_lines(&DeviceManager::new());
+        assert!(lines.is_empty());
     }
 
     #[test]
