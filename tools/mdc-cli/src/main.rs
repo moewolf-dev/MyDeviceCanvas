@@ -1648,10 +1648,13 @@ fn cmd_render_package(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
 fn cmd_scene_render(opts: &GlobalOpts, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut file: Option<String> = None;
     let mut out: Option<String> = None;
+    let mut time_ms: u64 = 0;
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "--out" => out = iter.next().cloned(),
+            // N479: render an animated scene at a device-clock time.
+            "--time" => time_ms = iter.next().and_then(|v| v.parse().ok()).unwrap_or(time_ms),
             other => file = Some(other.to_string()),
         }
     }
@@ -1663,6 +1666,7 @@ fn cmd_scene_render(opts: &GlobalOpts, args: &[String]) -> Result<(), Box<dyn st
     session.set_scene(node)?;
     device.poll()?;
     session.poll()?;
+    device.clock.tick = time_ms;
     let drew = device.render_scene();
     let profile = BoardProfile::from_board_id(&opts.board);
     let pixels = device.framebuffer();
@@ -1675,6 +1679,7 @@ fn cmd_scene_render(opts: &GlobalOpts, args: &[String]) -> Result<(), Box<dyn st
         serde_json::to_string_pretty(&serde_json::json!({
             "board": opts.board,
             "drew": drew,
+            "time_ms": time_ms,
             "output": out,
         }))?
     );
@@ -3548,7 +3553,7 @@ bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animatio
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] [--srgb] --out f.ppm|\
 motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] [--clip NAME] [--time T] [--mip N] [--smooth] --out f.ppm|\
-scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss]|\
+scene <file.json>|scene clear|scene-render <file.json> [--time MS] --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|\
 model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg>|diff <a.mdcpkg> <b.mdcpkg>"
     );
@@ -4217,6 +4222,55 @@ mod tests {
         assert!(averaged != 0);
         // Oversized inputs and bad lengths produce an empty chain.
         assert!(mdc_bake::bake_mipmaps(2, 2, &[0, 0], 4).is_empty());
+    }
+
+    #[test]
+    fn scene_render_time_samples_the_animation() {
+        // N479: `--time` renders a different frame of an animated scene.
+        let dir = std::env::temp_dir().join(format!("mdc-scene-time-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let scene = dir.join("scene.json");
+        std::fs::write(
+            &scene,
+            r##"{"name":"fade","kind":"rect","rect":[0,0,800,480],"value":"#FFFFFF",
+                "anim":{"duration_ms":100,"looping":false,"opacity":[[0,0],[100,255]]}}"##,
+        )
+        .unwrap();
+        let opts = GlobalOpts {
+            sim: true,
+            board: "linux-virt".into(),
+            address: None,
+            port: None,
+        };
+        let early = dir.join("early.ppm");
+        cmd_scene_render(
+            &opts,
+            &[
+                scene.to_string_lossy().into_owned(),
+                "--time".into(),
+                "0".into(),
+                "--out".into(),
+                early.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        let late = dir.join("late.ppm");
+        cmd_scene_render(
+            &opts,
+            &[
+                scene.to_string_lossy().into_owned(),
+                "--time".into(),
+                "100".into(),
+                "--out".into(),
+                late.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        assert_ne!(
+            std::fs::read(&early).unwrap(),
+            std::fs::read(&late).unwrap()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
