@@ -2247,6 +2247,7 @@ fn fit_rgb565(src: &[u8], size: (u32, u32), target: (u32, u32)) -> Vec<u8> {
 fn render_sequence(
     dir: &str,
     board: &str,
+    fps: u32,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let base = PathBuf::from(dir);
     let manifest: serde_json::Value =
@@ -2256,10 +2257,22 @@ fn render_sequence(
     let (width, height) = (device.profile().width, device.profile().height);
     let mut rendered = 0usize;
     let mut failures: Vec<String> = Vec::new();
+    // N540: pace the replay to the requested frame rate (0 = as fast as possible).
+    let gap = if fps == 0 {
+        None
+    } else {
+        Some(std::time::Duration::from_micros(1_000_000 / u64::from(fps)))
+    };
+    let started = std::time::Instant::now();
     for file in &files {
         let Some(name) = file.as_str() else {
             continue;
         };
+        if let Some(gap) = gap {
+            if rendered > 0 {
+                std::thread::sleep(gap);
+            }
+        }
         let bytes = match std::fs::read(base.join(name)) {
             Ok(bytes) => bytes,
             Err(_) => {
@@ -2296,6 +2309,9 @@ fn render_sequence(
         "rendered": rendered,
         "failures": failures,
         "ok": failures.is_empty(),
+        // N540: the pacing target and how long the replay actually took.
+        "fps": fps,
+        "elapsed_ms": started.elapsed().as_millis() as u64,
     }))
 }
 
@@ -2304,6 +2320,8 @@ fn cmd_record_play(extra: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut dir = "mdc-record".to_string();
     let mut board = "default".to_string();
     let mut render = false;
+    // N540: replay pacing (0 = as fast as possible).
+    let mut fps = 0u32;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -2311,6 +2329,8 @@ fn cmd_record_play(extra: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "--board" => board = iter.next().cloned().unwrap_or(board),
             // N530: replay the frames onto a simulated device.
             "--render" => render = true,
+            // N540: pace the replay at `fps` frames per second.
+            "--fps" => fps = iter.next().and_then(|v| v.parse().ok()).unwrap_or(0),
             _ => {}
         }
     }
@@ -2318,7 +2338,7 @@ fn cmd_record_play(extra: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut valid = report["valid"].as_bool().unwrap_or(false);
     println!("{}", serde_json::to_string_pretty(&report)?);
     if render {
-        let rendered = render_sequence(&dir, &board)?;
+        let rendered = render_sequence(&dir, &board, fps)?;
         valid = valid && rendered["ok"].as_bool().unwrap_or(false);
         println!("{}", serde_json::to_string_pretty(&rendered)?);
     }
@@ -3951,7 +3971,7 @@ fn usage() {
         "mdc [--sim] [--board id] [--address host:port] [--port /dev/cu.usbmodem*] \
          devices [--compact]|inspect|send-image <path>|benchmark [N]|simulate|discover|\
 flash-sim <merged.bin>|h06-demo|sim-accept|ota-confirm|linux-accept|pair <id> <token>|unpair <id>|\
-authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--scale N] [--sequence] [--flip h/v] [--serve ADDR] [--http ADDR] [--ws-heartbeat N] [--ws-timeout M] [--ws-fragment N] [--source-fps N] [--max-fps N] [--bandwidth BPS]|record [--frames N] [--fps N] [--dir DIR] [--play [--render] [--board B]] [--format ppm|bmp|png|jpg] [--scale N]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
+authorize <id> <ws|tcp|serial|memory> <ep>|switch-demo|mirror [--frames N] [--write-dir DIR] [--format ppm|bmp|png|jpg] [--quality N] [--scale N] [--sequence] [--flip h/v] [--serve ADDR] [--http ADDR] [--ws-heartbeat N] [--ws-timeout M] [--ws-fragment N] [--source-fps N] [--max-fps N] [--bandwidth BPS]|record [--frames N] [--fps N] [--dir DIR] [--play [--render] [--board B] [--fps N]] [--format ppm|bmp|png|jpg] [--scale N]|diag [--metric NAME] [--value V] [--unit U] [--telemetry NAME] [--crash REASON]|\
 package <model.gltf> [out.mdcpkg] [--texture tex.png] [--out OUT.mdcpkg] [--atlas MAX_PAGE] [--indexed N] [--dither N] [--tangents] [--variant NAME] [--report] [--texture-mips N] [--mip-level N] [--max-draw-vertices N]|install-package <file.mdcpkg>|provision <file.mdcpkg>|ota <version> [--size N] [--sha256 H]|\
 config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite N] [--out DIR] [--mipmaps] [--mip-linear] [--dither N] [--palette N] [--package OUT.mdcpkg]|\
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
@@ -5624,14 +5644,14 @@ mod tests {
         )
         .unwrap();
         // Replay onto the default 480x320 board (the frames are 100x60).
-        let report = render_sequence(&dir.to_string_lossy(), "default").unwrap();
+        let report = render_sequence(&dir.to_string_lossy(), "default", 0).unwrap();
         assert_eq!(report["frames"], 2);
         assert_eq!(report["rendered"], 2);
         assert!(report["ok"].as_bool().unwrap());
         assert_eq!(report["surface"]["width"], 480);
         // A corrupted frame is reported rather than rendered.
         std::fs::write(dir.join("frame0001.ppm"), b"not an image").unwrap();
-        let report = render_sequence(&dir.to_string_lossy(), "default").unwrap();
+        let report = render_sequence(&dir.to_string_lossy(), "default", 0).unwrap();
         assert_eq!(report["rendered"], 1);
         assert_eq!(report["failures"].as_array().unwrap().len(), 1);
         assert!(!report["ok"].as_bool().unwrap());
@@ -5640,6 +5660,43 @@ mod tests {
         let fitted = fit_rgb565(&pixels, (2, 1), (4, 2));
         assert_eq!(fitted.len(), 4 * 2 * 2);
         assert_eq!(&fitted[0..2], &[0x00, 0xF8]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn record_play_render_paces_at_the_requested_fps() {
+        // N540: `--fps` paces the replay (2 gaps at 20 fps >= ~100 ms).
+        let dir = std::env::temp_dir().join(format!("mdc-render-fps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let opts = GlobalOpts {
+            sim: true,
+            address: None,
+            port: None,
+            board: "linux-virt".into(),
+        };
+        cmd_record(
+            &opts,
+            &[
+                "--frames".into(),
+                "3".into(),
+                "--scale".into(),
+                "8".into(),
+                "--dir".into(),
+                dir.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        let fast = render_sequence(&dir.to_string_lossy(), "default", 0).unwrap();
+        assert_eq!(fast["rendered"], 3);
+        assert_eq!(fast["fps"], 0);
+        let paced = render_sequence(&dir.to_string_lossy(), "default", 20).unwrap();
+        assert_eq!(paced["rendered"], 3);
+        assert_eq!(paced["fps"], 20);
+        assert!(
+            paced["elapsed_ms"].as_u64().unwrap() >= 90,
+            "paced replay took {} ms",
+            paced["elapsed_ms"]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
