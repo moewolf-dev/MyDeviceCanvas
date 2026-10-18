@@ -430,8 +430,10 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
                 "session": {
                     "packets_sent": session.stats().packets_sent,
                     "bytes_sent": session.stats().bytes_sent,
+                    "bytes_received": session.stats().bytes_received,
                     "acks_received": session.stats().acks_received,
                     "frames_sent": session.stats().frames_sent,
+                    "dropped_frames": session.stats().dropped_frames,
                 },
                 "config": inspect_json(&mgr, Some(&snapshot)),
             });

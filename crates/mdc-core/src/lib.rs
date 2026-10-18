@@ -236,8 +236,11 @@ impl Default for SessionConfig {
 pub struct SessionStats {
     pub packets_sent: u64,
     pub bytes_sent: u64,
+    pub bytes_received: u64,
     pub acks_received: u64,
     pub frames_sent: u64,
+    /// N436: frames the device dropped (reported by the device).
+    pub dropped_frames: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -957,16 +960,24 @@ impl<T: Transport> Session<T> {
         self.write_packet(MessageType::Hello, hello)?;
         Ok(())
     }
-    /// N398: the host-side session counters.
+    /// N398/N436: the host-side session counters.
     pub fn stats(&self) -> SessionStats {
-        self.stats
+        SessionStats {
+            dropped_frames: self.dropped_frames,
+            ..self.stats
+        }
     }
 
     pub fn poll(&mut self) -> Result<ConnectionState, CoreError> {
         // 已经进缓冲区的包先处理。对端先写下 cancel 再关闭时，不能让关闭错误吞掉这些包。
         loop {
             match self.transport.read() {
-                Ok(Some(bytes)) => self.rx.extend(bytes),
+                Ok(Some(bytes)) => {
+                    // N436: count inbound bytes.
+                    self.stats.bytes_received =
+                        self.stats.bytes_received.saturating_add(bytes.len() as u64);
+                    self.rx.extend(bytes)
+                }
                 Ok(None) => break,
                 Err(error) => {
                     if self.rx.is_empty() {
@@ -4479,6 +4490,8 @@ mod tests {
             .unwrap();
         session.poll().unwrap();
         assert!(session.stats().acks_received >= 1, "the frame was acked");
+        // N436: inbound bytes are counted too.
+        assert!(session.stats().bytes_received > 0, "received bytes counted");
     }
 
     #[test]
