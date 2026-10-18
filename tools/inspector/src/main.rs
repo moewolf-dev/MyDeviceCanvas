@@ -135,6 +135,14 @@ fn fresh_metrics() -> Result<String, Box<dyn std::error::Error>> {
 
 /// N317: one JSONL sample per tick. Bounded memory: each line is emitted before
 /// the next sample is produced.
+/// N529: what a `--jsonl` watch observed, so the caller can apply thresholds.
+#[derive(Debug, Clone, Copy, Default)]
+struct WatchSummary {
+    samples: u32,
+    peak_bytes: u64,
+    diagnostics_total: u64,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn watch<W: Write>(
     count: u32,
@@ -144,7 +152,7 @@ fn watch<W: Write>(
     // and reports the running peak, so the timeline shows allocation peaks.
     heap_kb: u64,
     mut out: W,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<WatchSummary, Box<dyn std::error::Error>> {
     let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id(board));
     let mut session = Session::new(host);
     session.connect()?;
@@ -157,6 +165,7 @@ fn watch<W: Write>(
     let heap_size = (heap_kb.clamp(0, 65_536) * 1024) as usize;
     let baseline = resident_bytes().unwrap_or(0);
     let mut peak = baseline;
+    let mut diagnostics_total = 0u64;
     for sample in 0..count {
         // N519: touch a buffer, sample, then release it (never accumulates).
         let heap = if heap_size > 0 {
@@ -182,6 +191,7 @@ fn watch<W: Write>(
         let _ = device.emit_metric("tick", f64::from(sample), None);
         session.poll()?;
         let diagnostics = session.take_diagnostics().len();
+        diagnostics_total = device.metrics_snapshot().diagnostics_emitted;
         let line = serde_json::json!({
             "sample": sample,
             "tick": device.clock.tick,
@@ -203,7 +213,11 @@ fn watch<W: Write>(
         });
         writeln!(out, "{}", serde_json::to_string(&line)?)?;
     }
-    Ok(())
+    Ok(WatchSummary {
+        samples: count,
+        peak_bytes: peak,
+        diagnostics_total,
+    })
 }
 
 fn main() {
@@ -256,9 +270,46 @@ fn main() {
         } else {
             0
         };
-        if let Err(error) = watch(count, interval, &board, heap_kb, std::io::stdout()) {
-            eprintln!("inspector error: {error}");
-            std::process::exit(1);
+        let summary = match watch(count, interval, &board, heap_kb, std::io::stdout()) {
+            Ok(summary) => summary,
+            Err(error) => {
+                eprintln!("inspector error: {error}");
+                std::process::exit(1);
+            }
+        };
+        // N529: optional thresholds turn the watch into an alert (exit 2).
+        let mut alerts = Vec::new();
+        if let Some(limit) = flag_value("--max-peak-bytes").and_then(|v| v.parse::<u64>().ok()) {
+            if summary.peak_bytes > limit {
+                alerts.push(format!("peak {} over {limit}", summary.peak_bytes));
+            }
+        }
+        if let Some(limit) = flag_value("--max-diagnostics").and_then(|v| v.parse::<u64>().ok()) {
+            if summary.diagnostics_total > limit {
+                alerts.push(format!(
+                    "diagnostics {} over {limit}",
+                    summary.diagnostics_total
+                ));
+            }
+        }
+        // N529: a JSON verdict makes the watch machine-checkable.
+        let thresholded =
+            flag_value("--max-peak-bytes").is_some() || flag_value("--max-diagnostics").is_some();
+        if thresholded {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "samples": summary.samples,
+                    "peak_bytes": summary.peak_bytes,
+                    "diagnostics_total": summary.diagnostics_total,
+                    "alerts": alerts,
+                    "ok": alerts.is_empty(),
+                })
+            );
+        }
+        if !alerts.is_empty() {
+            eprintln!("inspector alert: {}", alerts.join("; "));
+            std::process::exit(2);
         }
         return;
     }
@@ -328,6 +379,21 @@ mod tests {
         let mut out = Vec::new();
         watch(1, 1, "default", 0, &mut out).unwrap();
         assert!(parse_lines(&out)[0]["heap"].is_null());
+    }
+
+    #[test]
+    fn watch_summary_reports_the_peak_and_diagnostics() {
+        // N529: the watch returns the values thresholds are checked against.
+        let mut out = Vec::new();
+        let summary = watch(3, 1, "linux-virt", 128, &mut out).unwrap();
+        assert_eq!(summary.samples, 3);
+        assert!(summary.peak_bytes > 0, "a peak was observed");
+        assert!(summary.diagnostics_total >= 1, "diagnostics were emitted");
+        // Without a heap probe the peak is still a valid RSS reading.
+        let mut out = Vec::new();
+        let summary = watch(1, 1, "default", 0, &mut out).unwrap();
+        assert_eq!(summary.samples, 1);
+        assert!(summary.peak_bytes > 0);
     }
 
     #[test]
