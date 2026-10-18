@@ -367,6 +367,7 @@ fn scene_over_the_depth_limit_is_refused() {
         z: None,
         wrap: None,
         mode: None,
+        focus: None,
         value2: None,
     };
     for i in 0..5 {
@@ -385,6 +386,7 @@ fn scene_over_the_depth_limit_is_refused() {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         };
     }
@@ -501,6 +503,7 @@ fn non_rect_scene_kinds_are_recorded_but_not_rasterized() {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         })
         .unwrap();
@@ -546,6 +549,7 @@ fn out_of_bounds_rects_are_clipped_without_panicking() {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         })
         .unwrap();
@@ -2939,6 +2943,7 @@ fn animated_scene_reaches_the_mirror() {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             children: Vec::new(),
         })
         .unwrap();
@@ -3814,6 +3819,7 @@ fn scene_circle_and_line_edge_cases_do_not_panic() {
         z: None,
         wrap: None,
         mode: None,
+        focus: None,
         value2: None,
     };
     // Zero-size circle and a degenerate (single-point) line must not panic and
@@ -3837,6 +3843,7 @@ fn scene_circle_and_line_edge_cases_do_not_panic() {
         z: None,
         wrap: None,
         mode: None,
+        focus: None,
         value2: None,
     };
     session.set_scene(scene).unwrap();
@@ -4012,6 +4019,7 @@ fn radial_gradient_renders_on_the_device() {
             z: None,
             wrap: None,
             mode: Some("radial".into()),
+            focus: None,
             children: Vec::new(),
         })
         .unwrap();
@@ -4073,6 +4081,7 @@ fn multi_stop_gradient_and_reserved_extension_diagnostics() {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             children: Vec::new(),
         })
         .unwrap();
@@ -4118,6 +4127,7 @@ fn scene_align_z_wrap_and_dash_render_deterministically() {
         z,
         wrap: None,
         mode: None,
+        focus: None,
         children: Vec::new(),
     };
     let scene = SceneNode {
@@ -4135,6 +4145,7 @@ fn scene_align_z_wrap_and_dash_render_deterministically() {
         z: None,
         wrap: None,
         mode: None,
+        focus: None,
         children: vec![
             // z lifts green above red despite the document order.
             rect("green", "#00FF00", Some(5)),
@@ -4154,6 +4165,7 @@ fn scene_align_z_wrap_and_dash_render_deterministically() {
                 z: None,
                 wrap: Some("none".into()),
                 mode: None,
+                focus: None,
                 children: Vec::new(),
             },
             SceneNode {
@@ -4171,6 +4183,7 @@ fn scene_align_z_wrap_and_dash_render_deterministically() {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 children: Vec::new(),
             },
         ],
@@ -4291,6 +4304,7 @@ fn scene_group_geometry_and_named_colour_reach_the_device() {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         }],
         value: None,
@@ -4303,6 +4317,7 @@ fn scene_group_geometry_and_named_colour_reach_the_device() {
         z: None,
         wrap: None,
         mode: None,
+        focus: None,
         value2: None,
     };
     session.set_scene(scene).unwrap();

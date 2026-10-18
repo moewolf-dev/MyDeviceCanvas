@@ -187,6 +187,7 @@ fn dirty_region_mirror_soak_is_bounded() {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         })
         .unwrap();
@@ -215,6 +216,7 @@ fn dirty_region_mirror_soak_is_bounded() {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 value2: None,
             })
             .unwrap();
@@ -760,6 +762,7 @@ fn scene_primitive_soak_is_bounded() {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 value2: None,
             },
             SceneNode {
@@ -777,6 +780,7 @@ fn scene_primitive_soak_is_bounded() {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 value2: None,
             },
         ],
@@ -789,6 +793,7 @@ fn scene_primitive_soak_is_bounded() {
         z: None,
         wrap: None,
         mode: None,
+        focus: None,
         value2: None,
     };
     session.set_scene(scene).unwrap();
@@ -1220,6 +1225,7 @@ fn scene_render_soak_is_bounded() {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         })
         .unwrap();
@@ -1276,6 +1282,7 @@ fn diagnostics_and_text_wrap_stay_bounded() {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         })
         .unwrap();
@@ -1541,6 +1548,7 @@ fn animated_scene_rendering_stays_bounded() {
         z: None,
         wrap: None,
         mode: None,
+        focus: None,
         children: vec![
             SceneNode {
                 name: "spin".into(),
@@ -1562,6 +1570,7 @@ fn animated_scene_rendering_stays_bounded() {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 children: Vec::new(),
             },
             SceneNode {
@@ -1579,6 +1588,7 @@ fn animated_scene_rendering_stays_bounded() {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 children: Vec::new(),
             },
         ],

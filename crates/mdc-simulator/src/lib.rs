@@ -653,6 +653,26 @@ fn lerp_rgb565(a: u16, b: u16, t: u8) -> u16 {
     (channel(11, 0x1f) << 11) | (channel(5, 0x3f) << 5) | channel(0, 0x1f)
 }
 
+/// N535: the radial centre as fractions of the rect (`"50,50"` = centred).
+fn parse_focus(spec: Option<&str>) -> (f32, f32) {
+    let Some(spec) = spec else {
+        return (0.5, 0.5);
+    };
+    let mut parts = spec.split(',');
+    let parse = |value: Option<&str>| -> Option<f32> {
+        value?
+            .trim()
+            .trim_end_matches('%')
+            .parse::<f32>()
+            .ok()
+            .map(|v| (v / 100.0).clamp(0.0, 1.0))
+    };
+    match (parse(parts.next()), parse(parts.next())) {
+        (Some(x), Some(y)) => (x, y),
+        _ => (0.5, 0.5),
+    }
+}
+
 /// N505: parse a gradient's colour stops. `value2` may be a comma-separated
 /// `offset%:#RRGGBB` list (e.g. `0:#FF0000,50:#00FF00,100:#0000FF`); anything
 /// else falls back to the two-stop `value` -> `value2` ramp.
@@ -1160,9 +1180,13 @@ fn fill_scene(
             // N515: `mode: "radial"` interpolates by distance from the centre.
             let radial = node.mode.as_deref() == Some("radial");
             if radial {
-                let cx = f32::from(w) / 2.0;
-                let cy = f32::from(h) / 2.0;
-                let max_r = (cx * cx + cy * cy).sqrt().max(1.0);
+                // N535: `focus` moves the centre (percentages of the rect).
+                let (fx, fy) = parse_focus(node.focus.as_deref());
+                let cx = f32::from(w) * fx;
+                let cy = f32::from(h) * fy;
+                let max_r = (f32::from(w) * (1.0 - fx).max(fx))
+                    .hypot(f32::from(h) * (1.0 - fy).max(fy))
+                    .max(1.0);
                 for yy in y..y.saturating_add(h) {
                     if u32::from(yy) >= height {
                         break;
@@ -3259,6 +3283,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         };
         let mut root = leaf("root", "rect", None);
@@ -3597,6 +3622,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         };
         // Background red covers all; a green child on top; a third clipped.
@@ -3618,6 +3644,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3666,6 +3693,7 @@ mod tests {
                     z: None,
                     wrap: None,
                     mode: None,
+                    focus: None,
                     value2: None,
                 },
                 SceneNode {
@@ -3683,6 +3711,7 @@ mod tests {
                     z: None,
                     wrap: None,
                     mode: None,
+                    focus: None,
                     value2: None,
                 },
             ],
@@ -3695,6 +3724,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3748,6 +3778,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         };
         // rect 0×0 -> scale 1, so (1,1) stays clear on the fresh framebuffer.
@@ -3821,6 +3852,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3861,6 +3893,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -3877,6 +3910,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             children: vec![
                 rect("bg", "#FFFFFF", None),
                 rect("fg", "#FF0000", Some(128)),
@@ -3936,6 +3970,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -4071,6 +4106,7 @@ mod tests {
                 z,
                 wrap: None,
                 mode: None,
+                focus: None,
                 children: Vec::new(),
             };
             device.scene = Some(SceneNode {
@@ -4088,6 +4124,7 @@ mod tests {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 children: vec![
                     rect("green", "#00FF00", green_z),
                     rect("red", "#FF0000", None),
@@ -4108,6 +4145,55 @@ mod tests {
             ((green >> 5) & 0x3f) > 8 && green >> 11 < 8,
             "green on top: {green:#06x}"
         );
+    }
+
+    #[test]
+    fn radial_focus_moves_the_bright_centre() {
+        // N535: `focus` places the radial centre at a fraction of the rect.
+        use mdc_protocol::SceneNode;
+        let render = |focus: Option<&str>| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 9,
+                height: 9,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "spot".into(),
+                kind: "gradient".into(),
+                rect: Some([0, 0, 9, 9]),
+                value: Some("#FFFFFF".into()),
+                value2: Some("#000000".into()),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: Some("radial".into()),
+                focus: focus.map(str::to_string),
+                children: Vec::new(),
+            });
+            assert!(device.render_scene());
+            let at = |x: u16, y: u16| device.pixel_rgb565(x, y).unwrap();
+            (at(0, 0), at(4, 4), at(8, 8))
+        };
+        // Default: the middle is brightest.
+        let (top_left, centre, bottom_right) = render(None);
+        assert!(centre > top_left && centre > bottom_right, "centred");
+        // focus 0,0: the top-left corner is the bright one.
+        let (top_left, centre, _) = render(Some("0,0"));
+        assert!(
+            top_left > centre,
+            "focused top-left: {top_left:#06x} vs {centre:#06x}"
+        );
+        // focus 100,100: the bottom-right corner is the bright one.
+        let (_, centre, bottom_right) = render(Some("100,100"));
+        assert!(bottom_right > centre, "focused bottom-right");
+        // An unparsable focus falls back to centred.
+        let (top_left, centre, _) = render(Some("nope"));
+        assert!(centre > top_left, "fallback is centred");
     }
 
     #[test]
@@ -4136,6 +4222,7 @@ mod tests {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 children: Vec::new(),
             });
             assert!(device.render_scene());
@@ -4196,6 +4283,7 @@ mod tests {
                 z: None,
                 wrap: None,
                 mode: mode.map(str::to_string),
+                focus: None,
                 children: Vec::new(),
             });
             assert!(device.render_scene());
@@ -4244,6 +4332,7 @@ mod tests {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 children: Vec::new(),
             });
             assert!(device.render_scene());
@@ -4302,6 +4391,7 @@ mod tests {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 children: Vec::new(),
             });
             assert!(device.render_scene());
@@ -4347,6 +4437,7 @@ mod tests {
                 z: None,
                 wrap: wrap.map(str::to_string),
                 mode: None,
+                focus: None,
                 children: Vec::new(),
             });
             assert!(device.render_scene());
@@ -4400,6 +4491,7 @@ mod tests {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 children: Vec::new(),
             });
             assert!(device.render_scene());
@@ -4444,6 +4536,7 @@ mod tests {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 children: Vec::new(),
             };
             device.scene = Some(SceneNode {
@@ -4461,6 +4554,7 @@ mod tests {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 children: vec![
                     rect("base", "#00FF00", None),
                     rect("glow", "#FF0000", blend),
@@ -4530,6 +4624,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -4572,6 +4667,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             children: Vec::new(),
         });
         assert!(device.render_overlay());
@@ -4607,6 +4703,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             children: Vec::new(),
         });
         // t=0: fully transparent, so the black background remains.
@@ -4646,6 +4743,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             children: vec![
                 SceneNode {
                     name: "hidden".into(),
@@ -4662,6 +4760,7 @@ mod tests {
                     z: None,
                     wrap: None,
                     mode: None,
+                    focus: None,
                     children: Vec::new(),
                 },
                 SceneNode {
@@ -4679,6 +4778,7 @@ mod tests {
                     z: None,
                     wrap: None,
                     mode: None,
+                    focus: None,
                     children: Vec::new(),
                 },
             ],
@@ -4743,6 +4843,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -4760,6 +4861,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             children: vec![rect("back", [0, 0, 8, 8]), rect("front", [2, 2, 4, 4])],
         });
         // The overlapping topmost child wins.
@@ -4793,6 +4895,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -4810,6 +4913,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             // The child fills 8x8 relative to the clip origin, so it would cover
             // everything without the clip rect.
             children: vec![fill([0, 0, 8, 8])],
@@ -4853,6 +4957,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -4915,6 +5020,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         };
         let scene = SceneNode {
@@ -4935,6 +5041,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -4978,6 +5085,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         };
         // Group offset (4, 2) and 2× scale: [0,0,2,2] red -> [4,2,4,4].
@@ -4996,6 +5104,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -5080,6 +5189,7 @@ mod tests {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 value2: None,
             })
             .unwrap();
@@ -5240,6 +5350,7 @@ mod tests {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 value2: None,
             })
             .unwrap();
@@ -5398,6 +5509,7 @@ mod tests {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 value2: None,
             })
             .unwrap();
@@ -5811,6 +5923,7 @@ mod tests {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 value2: None,
             })
             .unwrap();
@@ -5844,6 +5957,7 @@ mod tests {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 value2: None,
             })
             .unwrap();

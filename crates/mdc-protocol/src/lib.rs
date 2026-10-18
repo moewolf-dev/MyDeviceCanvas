@@ -515,6 +515,9 @@ pub struct SceneNode {
     /// N515: `linear` (default) | `radial` fill for `gradient`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    /// N535: the radial centre as `"cx%,cy%"` of the rect (default `50,50`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<String>,
 }
 
 /// N463: a keyframed scene animation. Keyframes are `[time_ms, value]` and are
@@ -2229,6 +2232,7 @@ mod tests {
                     z: None,
                     wrap: None,
                     mode: None,
+                    focus: None,
                     value2: None,
                 }],
                 value: None,
@@ -2241,6 +2245,7 @@ mod tests {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 value2: None,
             }),
         }
@@ -2263,6 +2268,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         };
         // #RGB expands each nibble.
@@ -2293,6 +2299,7 @@ mod tests {
             z: None,
             wrap: None,
             mode: None,
+            focus: None,
             value2: None,
         };
         assert_eq!(node.color_rgb565(), 0xF800);
@@ -2312,6 +2319,7 @@ mod tests {
                 z: None,
                 wrap: None,
                 mode: None,
+                focus: None,
                 value2: None,
             }
             .color_rgb565(),
