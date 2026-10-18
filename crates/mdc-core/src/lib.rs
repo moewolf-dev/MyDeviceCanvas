@@ -420,6 +420,69 @@ pub struct Frame {
     pub height: u16,
     pub bytes: Vec<u8>,
 }
+/// N516: a dirty rectangle in surface pixels (x, y, width, height).
+pub type DirtyRect = (u16, u16, u16, u16);
+
+/// N516: snap dirty rectangles to a tile grid and merge them into the minimal
+/// set of tiles covering the same area (duplicates and overlaps collapse). This
+/// is the dirty-region counterpart of [`plan_tiles`], which covers a whole
+/// surface.
+pub fn plan_dirty_tiles(
+    surface: (u16, u16),
+    tile_size: u16,
+    rects: &[DirtyRect],
+) -> Vec<DirtyRect> {
+    let tile = tile_size.max(1);
+    let cols = surface.0.div_ceil(tile).max(1);
+    let rows = surface.1.div_ceil(tile).max(1);
+    let mut marked = std::collections::BTreeSet::new();
+    for &(x, y, w, h) in rects {
+        if w == 0 || h == 0 {
+            continue;
+        }
+        let x1 = x.saturating_add(w - 1);
+        let y1 = y.saturating_add(h - 1);
+        let tx0 = x / tile;
+        let ty0 = y / tile;
+        let tx1 = (x1 / tile).min(cols.saturating_sub(1));
+        let ty1 = (y1 / tile).min(rows.saturating_sub(1));
+        for ty in ty0..=ty1 {
+            for tx in tx0..=tx1 {
+                marked.insert((tx, ty));
+            }
+        }
+    }
+    marked
+        .into_iter()
+        .map(|(tx, ty)| {
+            let x = tx * tile;
+            let y = ty * tile;
+            (
+                x,
+                y,
+                tile.min(surface.0.saturating_sub(x)),
+                tile.min(surface.1.saturating_sub(y)),
+            )
+        })
+        .collect()
+}
+
+/// N516: copy one tile out of a tightly packed RGB565 frame.
+pub fn extract_tile(frame: &[u8], frame_size: (u16, u16), tile: DirtyRect) -> Vec<u8> {
+    let (x, y, w, h) = tile;
+    let stride = usize::from(frame_size.0) * 2;
+    let mut out = vec![0u8; usize::from(w) * usize::from(h) * 2];
+    for row in 0..usize::from(h) {
+        let src = (usize::from(y) + row) * stride + usize::from(x) * 2;
+        let dst = row * usize::from(w) * 2;
+        let len = usize::from(w) * 2;
+        if let (Some(from), Some(to)) = (frame.get(src..src + len), out.get_mut(dst..dst + len)) {
+            to.copy_from_slice(from);
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone)]
 pub struct Tile {
     pub surface_id: String,
@@ -1645,6 +1708,35 @@ impl<T: Transport> Session<T> {
             .insert(request_id, (tile.surface_id, tile.base_frame_id));
         Ok(request_id)
     }
+    /// N516: send only the tiles covering `rects` of a tightly packed RGB565
+    /// frame, and return the number of tiles sent. Duplicate/overlapping rects
+    /// collapse into one tile.
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_dirty_tiles(
+        &mut self,
+        surface_id: &str,
+        base_frame_id: u64,
+        frame: &[u8],
+        frame_size: (u16, u16),
+        tile_size: u16,
+        rects: &[DirtyRect],
+    ) -> Result<usize, CoreError> {
+        let tiles = plan_dirty_tiles(frame_size, tile_size, rects);
+        for tile in &tiles {
+            let (x, y, w, h) = *tile;
+            self.send_tile(Tile {
+                surface_id: surface_id.to_string(),
+                base_frame_id,
+                x,
+                y,
+                width: w,
+                height: h,
+                bytes: extract_tile(frame, frame_size, *tile),
+            })?;
+        }
+        Ok(tiles.len())
+    }
+
     /// Send an OTA control command; gated by device `ota` capability.
     pub fn send_ota(&mut self, command: OtaCommand) -> Result<u32, CoreError> {
         if self.state != ConnectionState::Ready {
@@ -3861,6 +3953,105 @@ mod tests {
             .unwrap();
         assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
         assert!(!session.awaiting_transport);
+    }
+
+    #[test]
+    fn dirty_tiles_merge_and_send_only_the_changed_area() {
+        // N516: overlapping dirty rects collapse to one tile.
+        assert_eq!(
+            plan_dirty_tiles((8, 8), 4, &[(0, 0, 2, 2), (2, 0, 2, 2)]),
+            vec![(0, 0, 4, 4)]
+        );
+        // A tile-sized rect maps to exactly one tile; a full-surface rect to all.
+        assert_eq!(
+            plan_dirty_tiles((8, 8), 4, &[(4, 4, 4, 4)]),
+            vec![(4, 4, 4, 4)]
+        );
+        assert_eq!(plan_dirty_tiles((8, 8), 4, &[(0, 0, 8, 8)]).len(), 4);
+        // Zero-area and out-of-range rects are dropped/clamped, and the edge
+        // tiles are trimmed to the surface.
+        assert!(plan_dirty_tiles((8, 8), 4, &[(0, 0, 0, 4)]).is_empty());
+        // Tiles come out in tile-grid order (column-major), edges trimmed.
+        assert_eq!(
+            plan_dirty_tiles((6, 6), 4, &[(0, 0, 6, 6)]),
+            vec![(0, 0, 4, 4), (0, 4, 4, 2), (4, 0, 2, 4), (4, 4, 2, 2)]
+        );
+
+        // The tile bytes are copied out of the frame at the right offset.
+        let mut frame = vec![0u8; 8 * 8 * 2];
+        for (i, byte) in frame.iter_mut().enumerate() {
+            *byte = (i % 251) as u8;
+        }
+        let tile = extract_tile(&frame, (8, 8), (4, 4, 4, 4));
+        assert_eq!(tile.len(), 4 * 4 * 2);
+        // Row 0 of the tile starts at (4, 4): byte index (4*8 + 4) * 2 = 72.
+        assert_eq!(&tile[..2], &frame[72..74]);
+
+        // End to end: only the dirty tiles are written to the device.
+        let (host_link, mut device_link) = MemoryLink::pair();
+        let mut session = Session::new(host_link);
+        session.connect().unwrap();
+        let hello_bytes = device_link.read().unwrap().unwrap();
+        let (hello, _) = Packet::decode(&hello_bytes, 4096).unwrap();
+        let caps = Capabilities {
+            device_id: "sim-dirty".into(),
+            firmware: "simulator".into(),
+            surfaces: vec![Surface {
+                id: "main".into(),
+                width: 8,
+                height: 8,
+                pixel_format: "RGB565".into(),
+                stride: 16,
+                rotation: 0,
+                preferred_tile_size: 4,
+                supports_partial_update: true,
+                supports_full_framebuffer: false,
+            }],
+            frame: true,
+            tile: true,
+            touch: false,
+            ota: false,
+            max_message: 4096,
+            max_chunk: 16384,
+            max_in_flight: 1,
+            max_fps: 30,
+            mirror: mdc_protocol::MirrorCapability::disabled(),
+            local_display_fps: 0,
+            mirror_fps: 0,
+            mirror_bandwidth: 0,
+            renderer: None,
+            config: mdc_protocol::ConfigCapability::default(),
+            scene: mdc_protocol::SceneCapability::default(),
+            boot_id: 0,
+            run_id: 0,
+        };
+        device_link
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: hello.request_id,
+                    payload: encode_control(&caps).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        let sent = session
+            .send_dirty_tiles(
+                "main",
+                1,
+                &frame,
+                (8, 8),
+                4,
+                &[(0, 0, 2, 2), (2, 0, 2, 2), (0, 0, 1, 1)],
+            )
+            .unwrap_or_else(|e| panic!("send_dirty_tiles failed: {e:?}"));
+        assert_eq!(sent, 1, "three overlapping rects collapse to one tile");
+        assert_eq!(session.stats().tiles_sent, 1);
+        assert_eq!(session.stats().tile_bytes_sent, 32);
     }
 
     #[test]
