@@ -973,7 +973,20 @@ fn fill_scene(
             // N318: wrap to the rect width; the rect height sets the glyph scale,
             // and lines are clipped by the framebuffer (not the rect height).
             let max_cols = (u32::from(w) / (6 * scale_x)).max(1) as usize;
-            let lines = wrap_text(text, max_cols);
+            // N495: `wrap` selects word/char/none line breaking.
+            let lines = match node.wrap.as_deref() {
+                Some("none") => text.split('\n').map(str::to_string).collect::<Vec<_>>(),
+                Some("char") => text
+                    .split('\n')
+                    .flat_map(|line| {
+                        line.as_bytes()
+                            .chunks(max_cols)
+                            .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>(),
+                _ => wrap_text(text, max_cols),
+            };
             let line_height = (8 * scale_y).max(1);
             let color = node.color_rgb565();
             for (line_index, line) in lines.iter().enumerate() {
@@ -3142,6 +3155,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             value2: None,
         };
         let mut root = leaf("root", "rect", None);
@@ -3478,6 +3492,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             value2: None,
         };
         // Background red covers all; a green child on top; a third clipped.
@@ -3497,6 +3512,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3543,6 +3559,7 @@ mod tests {
                     blend: None,
                     align: None,
                     z: None,
+                    wrap: None,
                     value2: None,
                 },
                 SceneNode {
@@ -3558,6 +3575,7 @@ mod tests {
                     blend: None,
                     align: None,
                     z: None,
+                    wrap: None,
                     value2: None,
                 },
             ],
@@ -3568,6 +3586,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3619,6 +3638,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             value2: None,
         };
         // rect 0×0 -> scale 1, so (1,1) stays clear on the fresh framebuffer.
@@ -3690,6 +3710,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3728,6 +3749,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -3742,6 +3764,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             children: vec![
                 rect("bg", "#FFFFFF", None),
                 rect("fg", "#FF0000", Some(128)),
@@ -3799,6 +3822,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -3865,6 +3889,7 @@ mod tests {
                 blend: None,
                 align: None,
                 z,
+                wrap: None,
                 children: Vec::new(),
             };
             device.scene = Some(SceneNode {
@@ -3880,6 +3905,7 @@ mod tests {
                 blend: None,
                 align: None,
                 z: None,
+                wrap: None,
                 children: vec![
                     rect("green", "#00FF00", green_z),
                     rect("red", "#FF0000", None),
@@ -3899,6 +3925,58 @@ mod tests {
         assert!(
             ((green >> 5) & 0x3f) > 8 && green >> 11 < 8,
             "green on top: {green:#06x}"
+        );
+    }
+
+    #[test]
+    fn text_wrap_mode_selects_line_breaking() {
+        // N495: `word`/`char` wrap to the rect width; `none` keeps one line.
+        use mdc_protocol::SceneNode;
+        let lit_rows = |wrap: Option<&str>| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 18,
+                height: 16,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "label".into(),
+                kind: "text".into(),
+                rect: Some([0, 0, 18, 7]),
+                value: Some("ab cd".into()),
+                value2: None,
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: wrap.map(str::to_string),
+                children: Vec::new(),
+            });
+            assert!(device.render_scene());
+            let mut rows = Vec::new();
+            for y in 0..16u16 {
+                let lit = (0..18u16).any(|x| device.pixel_rgb565(x, y).unwrap() != 0);
+                rows.push(lit);
+            }
+            rows
+        };
+        // The default (word) and char modes break the phrase onto two lines.
+        for mode in [None, Some("word"), Some("char")] {
+            let rows = lit_rows(mode);
+            assert!(rows[0], "first line drawn ({mode:?})");
+            assert!(
+                rows.iter().skip(8).any(|v| *v),
+                "wrapped onto a second line ({mode:?})"
+            );
+        }
+        // `none` draws a single line, so nothing lands on the second line.
+        let none = lit_rows(Some("none"));
+        assert!(none[0]);
+        assert!(
+            !none.iter().skip(8).any(|v| *v),
+            "no wrap keeps a single line"
         );
     }
 
@@ -3925,6 +4003,7 @@ mod tests {
                 blend: None,
                 align: align.map(str::to_string),
                 z: None,
+                wrap: None,
                 children: Vec::new(),
             });
             assert!(device.render_scene());
@@ -3967,6 +4046,7 @@ mod tests {
                 blend: blend.map(str::to_string),
                 align: None,
                 z: None,
+                wrap: None,
                 children: Vec::new(),
             };
             device.scene = Some(SceneNode {
@@ -3982,6 +4062,7 @@ mod tests {
                 blend: None,
                 align: None,
                 z: None,
+                wrap: None,
                 children: vec![
                     rect("base", "#00FF00", None),
                     rect("glow", "#FF0000", blend),
@@ -4049,6 +4130,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -4089,6 +4171,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             children: Vec::new(),
         });
         assert!(device.render_overlay());
@@ -4122,6 +4205,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             children: Vec::new(),
         });
         // t=0: fully transparent, so the black background remains.
@@ -4159,6 +4243,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             children: vec![
                 SceneNode {
                     name: "hidden".into(),
@@ -4173,6 +4258,7 @@ mod tests {
                     blend: None,
                     align: None,
                     z: None,
+                    wrap: None,
                     children: Vec::new(),
                 },
                 SceneNode {
@@ -4188,6 +4274,7 @@ mod tests {
                     blend: None,
                     align: None,
                     z: None,
+                    wrap: None,
                     children: Vec::new(),
                 },
             ],
@@ -4250,6 +4337,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -4265,6 +4353,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             children: vec![rect("back", [0, 0, 8, 8]), rect("front", [2, 2, 4, 4])],
         });
         // The overlapping topmost child wins.
@@ -4296,6 +4385,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -4311,6 +4401,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             // The child fills 8x8 relative to the clip origin, so it would cover
             // everything without the clip rect.
             children: vec![fill([0, 0, 8, 8])],
@@ -4352,6 +4443,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -4412,6 +4504,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             value2: None,
         };
         let scene = SceneNode {
@@ -4430,6 +4523,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -4471,6 +4565,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             value2: None,
         };
         // Group offset (4, 2) and 2× scale: [0,0,2,2] red -> [4,2,4,4].
@@ -4487,6 +4582,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -4569,6 +4665,7 @@ mod tests {
                 blend: None,
                 align: None,
                 z: None,
+                wrap: None,
                 value2: None,
             })
             .unwrap();
@@ -4727,6 +4824,7 @@ mod tests {
                 blend: None,
                 align: None,
                 z: None,
+                wrap: None,
                 value2: None,
             })
             .unwrap();
@@ -4883,6 +4981,7 @@ mod tests {
                 blend: None,
                 align: None,
                 z: None,
+                wrap: None,
                 value2: None,
             })
             .unwrap();
@@ -5294,6 +5393,7 @@ mod tests {
                 blend: None,
                 align: None,
                 z: None,
+                wrap: None,
                 value2: None,
             })
             .unwrap();
@@ -5325,6 +5425,7 @@ mod tests {
                 blend: None,
                 align: None,
                 z: None,
+                wrap: None,
                 value2: None,
             })
             .unwrap();

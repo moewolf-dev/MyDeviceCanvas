@@ -365,6 +365,7 @@ fn scene_over_the_depth_limit_is_refused() {
         blend: None,
         align: None,
         z: None,
+        wrap: None,
         value2: None,
     };
     for i in 0..5 {
@@ -381,6 +382,7 @@ fn scene_over_the_depth_limit_is_refused() {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             value2: None,
         };
     }
@@ -495,6 +497,7 @@ fn non_rect_scene_kinds_are_recorded_but_not_rasterized() {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             value2: None,
         })
         .unwrap();
@@ -538,6 +541,7 @@ fn out_of_bounds_rects_are_clipped_without_panicking() {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             value2: None,
         })
         .unwrap();
@@ -2929,6 +2933,7 @@ fn animated_scene_reaches_the_mirror() {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             children: Vec::new(),
         })
         .unwrap();
@@ -3719,6 +3724,7 @@ fn scene_circle_and_line_edge_cases_do_not_panic() {
         blend: None,
         align: None,
         z: None,
+        wrap: None,
         value2: None,
     };
     // Zero-size circle and a degenerate (single-point) line must not panic and
@@ -3740,6 +3746,7 @@ fn scene_circle_and_line_edge_cases_do_not_panic() {
         blend: None,
         align: None,
         z: None,
+        wrap: None,
         value2: None,
     };
     session.set_scene(scene).unwrap();
@@ -3848,6 +3855,7 @@ fn scene_group_geometry_and_named_colour_reach_the_device() {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             value2: None,
         }],
         value: None,
@@ -3858,6 +3866,7 @@ fn scene_group_geometry_and_named_colour_reach_the_device() {
         blend: None,
         align: None,
         z: None,
+        wrap: None,
         value2: None,
     };
     session.set_scene(scene).unwrap();

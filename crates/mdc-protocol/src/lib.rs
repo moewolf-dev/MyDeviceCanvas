@@ -509,6 +509,9 @@ pub struct SceneNode {
     /// document order).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub z: Option<i32>,
+    /// N495: `word` (default) | `char` | `none` wrapping for `text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrap: Option<String>,
 }
 
 /// N463: a keyframed scene animation. Keyframes are `[time_ms, value]` and are
@@ -2220,6 +2223,7 @@ mod tests {
                     blend: None,
                     align: None,
                     z: None,
+                    wrap: None,
                     value2: None,
                 }],
                 value: None,
@@ -2230,6 +2234,7 @@ mod tests {
                 blend: None,
                 align: None,
                 z: None,
+                wrap: None,
                 value2: None,
             }),
         }
@@ -2250,6 +2255,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             value2: None,
         };
         // #RGB expands each nibble.
@@ -2278,6 +2284,7 @@ mod tests {
             blend: None,
             align: None,
             z: None,
+            wrap: None,
             value2: None,
         };
         assert_eq!(node.color_rgb565(), 0xF800);
@@ -2295,6 +2302,7 @@ mod tests {
                 blend: None,
                 align: None,
                 z: None,
+                wrap: None,
                 value2: None,
             }
             .color_rgb565(),
