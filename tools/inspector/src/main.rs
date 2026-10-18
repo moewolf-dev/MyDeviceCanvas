@@ -135,10 +135,14 @@ fn fresh_metrics() -> Result<String, Box<dyn std::error::Error>> {
 
 /// N317: one JSONL sample per tick. Bounded memory: each line is emitted before
 /// the next sample is produced.
+#[allow(clippy::too_many_arguments)]
 fn watch<W: Write>(
     count: u32,
     interval_ms: u64,
     board: &str,
+    // N519: when non-zero, each sample also cycles a buffer of this size (KiB)
+    // and reports the running peak, so the timeline shows allocation peaks.
+    heap_kb: u64,
     mut out: W,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id(board));
@@ -150,7 +154,28 @@ fn watch<W: Write>(
         return Err("not ready".into());
     }
     let interval = interval_ms.max(1);
+    let heap_size = (heap_kb.clamp(0, 65_536) * 1024) as usize;
+    let baseline = resident_bytes().unwrap_or(0);
+    let mut peak = baseline;
     for sample in 0..count {
+        // N519: touch a buffer, sample, then release it (never accumulates).
+        let heap = if heap_size > 0 {
+            let mut buffer = vec![0u8; heap_size];
+            for byte in buffer.iter_mut().step_by(4096) {
+                *byte = 1;
+            }
+            let rss = resident_bytes().unwrap_or(0);
+            peak = peak.max(rss);
+            drop(buffer);
+            Some(serde_json::json!({
+                "buffer_bytes": heap_size,
+                "rss_bytes": rss,
+                "peak_bytes": peak,
+                "growth": peak as i64 - baseline as i64,
+            }))
+        } else {
+            None
+        };
         device.clock.advance(interval);
         // Emit a diagnostic on every tick; that is the channel `mdc inspect`
         // reports on, and it keeps this series independent of the frame path.
@@ -164,6 +189,8 @@ fn watch<W: Write>(
             "diagnostics": diagnostics,
             "diagnostics_total": device.metrics_snapshot().diagnostics_emitted,
             "rss_bytes": resident_bytes(),
+            // N519: the heap probe for this tick (null unless `--heap`).
+            "heap": heap,
             // N460: host-side session counters (parity with `mdc inspect --watch`).
             "session": {
                 "packets_sent": session.stats().packets_sent,
@@ -222,7 +249,14 @@ fn main() {
         let interval = flag_value("--interval")
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(0);
-        if let Err(error) = watch(count, interval, &board, std::io::stdout()) {
+        let heap_kb = if args.iter().any(|a| a == "--heap") {
+            flag_value("--size-kb")
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(1024)
+        } else {
+            0
+        };
+        if let Err(error) = watch(count, interval, &board, heap_kb, std::io::stdout()) {
             eprintln!("inspector error: {error}");
             std::process::exit(1);
         }
@@ -275,6 +309,28 @@ mod tests {
     }
 
     #[test]
+    fn heap_timeline_reports_a_peak_per_tick() {
+        // N519: `--jsonl N --heap` adds a heap object to every sample.
+        let mut out = Vec::new();
+        watch(3, 1, "linux-virt", 256, &mut out).unwrap();
+        let lines = parse_lines(&out);
+        assert_eq!(lines.len(), 3);
+        let mut last_peak = 0u64;
+        for line in &lines {
+            let heap = &line["heap"];
+            assert_eq!(heap["buffer_bytes"], 256 * 1024);
+            assert!(heap["rss_bytes"].as_u64().unwrap() > 0);
+            let peak = heap["peak_bytes"].as_u64().unwrap();
+            assert!(peak >= last_peak, "the peak never decreases");
+            last_peak = peak;
+        }
+        // Without `--heap` the field is null.
+        let mut out = Vec::new();
+        watch(1, 1, "default", 0, &mut out).unwrap();
+        assert!(parse_lines(&out)[0]["heap"].is_null());
+    }
+
+    #[test]
     fn heap_peak_clamps_the_probe_bounds() {
         let report = heap_peak(0, 0, 0);
         assert_eq!(report["samples"], 1);
@@ -294,7 +350,7 @@ mod tests {
     #[test]
     fn jsonl_series_is_one_bounded_sample_per_tick() {
         let mut out = Vec::new();
-        watch(4, 100, "linux-virt", &mut out).unwrap();
+        watch(4, 100, "linux-virt", 0, &mut out).unwrap();
         let lines = parse_lines(&out);
         assert_eq!(lines.len(), 4);
         // Samples are ordered and their tick advances by the interval.
@@ -309,7 +365,7 @@ mod tests {
     #[test]
     fn zero_count_produces_no_lines() {
         let mut out = Vec::new();
-        watch(0, 10, "default", &mut out).unwrap();
+        watch(0, 10, "default", 0, &mut out).unwrap();
         assert!(out.is_empty());
     }
 
@@ -325,7 +381,7 @@ mod tests {
     #[test]
     fn jsonl_samples_carry_a_bounded_rss_reading() {
         let mut out = Vec::new();
-        watch(2, 10, "default", &mut out).unwrap();
+        watch(2, 10, "default", 0, &mut out).unwrap();
         for line in parse_lines(&out) {
             assert!(line.get("rss_bytes").is_some(), "rss present");
             // N460: session counters ride along.
