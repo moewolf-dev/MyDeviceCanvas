@@ -3863,6 +3863,53 @@ fn scene_circle_and_line_edge_cases_do_not_panic() {
 }
 
 #[test]
+fn dirty_tiles_reconcile_with_the_device() {
+    // N536: every tile the host sends is counted by the device, so a partial
+    // update can be reconciled end to end.
+    use mdc_core::{ConnectionState, DirtyTracker, Session};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 8,
+        height: 8,
+        supports_partial_update: true,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    // A full frame first, so the surface has a base frame to patch.
+    session
+        .send_frame(mdc_core::Frame {
+            surface_id: "main".into(),
+            width: 8,
+            height: 8,
+            bytes: vec![0u8; 8 * 8 * 2],
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    let frame = vec![0u8; 8 * 8 * 2];
+    let mut tracker = DirtyTracker::new((8, 8), 4, 0.9);
+    // Two separate regions -> two tiles.
+    tracker.mark((0, 0, 1, 1));
+    tracker.mark((4, 4, 1, 1));
+    let base = device.current_frame_id();
+    let decision = session
+        .send_dirty_update("main", base, &frame, &mut tracker)
+        .unwrap();
+    assert_eq!(decision, mdc_core::UpdateDecision::Partial(2));
+    device.poll().unwrap();
+    session.poll().unwrap();
+    let report =
+        mdc_core::reconcile_tiles(&session.stats(), device.metrics_snapshot().tiles_received);
+    assert!(report.consistent, "{report:?}");
+    assert_eq!(report.sent, 2);
+    assert_eq!(report.missing(), 0);
+}
+
+#[test]
 fn vertex_budget_trim_installs_on_a_device() {
     // N524/N531: a trimmed package installs and reports the reduced draw budget.
     use mdc_core::{ConnectionState, Session};

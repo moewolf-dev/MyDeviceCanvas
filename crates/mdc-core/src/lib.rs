@@ -483,6 +483,37 @@ pub fn extract_tile(frame: &[u8], frame_size: (u16, u16), tile: DirtyRect) -> Ve
     out
 }
 
+/// N536: the host's partial-update counters reconciled against the device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TileReconciliation {
+    /// Tiles the host wrote to the wire.
+    pub sent: u64,
+    /// Tiles the device reports having applied.
+    pub received: u64,
+    /// Bytes the host covered with those tiles.
+    pub bytes_sent: u64,
+    /// True when the device acknowledged every tile the host sent.
+    pub consistent: bool,
+}
+
+impl TileReconciliation {
+    /// Tiles the device did not acknowledge (0 when consistent).
+    pub fn missing(&self) -> u64 {
+        self.sent.saturating_sub(self.received)
+    }
+}
+
+/// N536: compare the host's tile counters with the device's reported count, so a
+/// partial update can be checked end to end instead of only at the wire.
+pub fn reconcile_tiles(stats: &SessionStats, device_tiles_received: u64) -> TileReconciliation {
+    TileReconciliation {
+        sent: stats.tiles_sent,
+        received: device_tiles_received,
+        bytes_sent: stats.tile_bytes_sent,
+        consistent: stats.tiles_sent == device_tiles_received,
+    }
+}
+
 /// N526: the outcome of a dirty-region update.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateDecision {
@@ -4188,6 +4219,28 @@ mod tests {
         assert_eq!(sent, 1, "three overlapping rects collapse to one tile");
         assert_eq!(session.stats().tiles_sent, 1);
         assert_eq!(session.stats().tile_bytes_sent, 32);
+    }
+
+    #[test]
+    fn tile_counters_reconcile_with_the_device() {
+        // N536: the host's sent tiles are compared with the device's count.
+        let stats = SessionStats {
+            tiles_sent: 3,
+            tile_bytes_sent: 96,
+            ..SessionStats::default()
+        };
+        let report = reconcile_tiles(&stats, 3);
+        assert!(report.consistent);
+        assert_eq!(report.missing(), 0);
+        assert_eq!(report.bytes_sent, 96);
+        // A dropped tile is reported as missing.
+        let report = reconcile_tiles(&stats, 2);
+        assert!(!report.consistent);
+        assert_eq!(report.missing(), 1);
+        // A device that reports more than the host sent is inconsistent too.
+        let report = reconcile_tiles(&SessionStats::default(), 1);
+        assert!(!report.consistent);
+        assert_eq!(report.missing(), 0);
     }
 
     #[test]
