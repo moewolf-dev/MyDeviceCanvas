@@ -768,8 +768,9 @@ impl SceneNode {
     }
 }
 
-/// N136/N348: parse `#RRGGBB`, `#RGB`, bare hex, or a named colour (default white).
-fn parse_color(value: &str) -> u16 {
+/// N136/N348/N505: parse `#RRGGBB`, `#RGB`, bare hex, or a named colour
+/// (default white). Public so the renderers can parse gradient stops.
+pub fn parse_color(value: &str) -> u16 {
     if let Some(rgb) = parse_hex_color(value) {
         return rgb565_from(rgb.0, rgb.1, rgb.2);
     }

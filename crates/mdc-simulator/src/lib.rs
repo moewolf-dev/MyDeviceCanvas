@@ -653,6 +653,54 @@ fn lerp_rgb565(a: u16, b: u16, t: u8) -> u16 {
     (channel(11, 0x1f) << 11) | (channel(5, 0x3f) << 5) | channel(0, 0x1f)
 }
 
+/// N505: parse a gradient's colour stops. `value2` may be a comma-separated
+/// `offset%:#RRGGBB` list (e.g. `0:#FF0000,50:#00FF00,100:#0000FF`); anything
+/// else falls back to the two-stop `value` -> `value2` ramp.
+fn parse_gradient_stops(start: u16, end: u16, spec: Option<&str>) -> Vec<(u8, u16)> {
+    let fallback = vec![(0u8, start), (255u8, end)];
+    let Some(spec) = spec else {
+        return fallback;
+    };
+    if !spec.contains(',') {
+        return fallback;
+    }
+    let mut stops = Vec::new();
+    for item in spec.split(',') {
+        let Some((position, color)) = item.split_once(':') else {
+            return fallback;
+        };
+        let Ok(percent) = position.trim().parse::<u32>() else {
+            return fallback;
+        };
+        let at = ((percent.min(100) * 255) / 100) as u8;
+        stops.push((at, mdc_protocol::parse_color(color.trim())));
+    }
+    if stops.len() < 2 {
+        return fallback;
+    }
+    stops.sort_by_key(|(at, _)| *at);
+    stops
+}
+
+/// N505: the colour at `t` (0..=255) across a stop list.
+fn gradient_color(stops: &[(u8, u16)], t: u8) -> u16 {
+    if let Some((_, first)) = stops.first() {
+        if t <= stops[0].0 {
+            return *first;
+        }
+    }
+    for pair in stops.windows(2) {
+        let (a_at, a) = pair[0];
+        let (b_at, b) = pair[1];
+        if t <= b_at {
+            let span = u32::from(b_at.saturating_sub(a_at)).max(1);
+            let local = (u32::from(t.saturating_sub(a_at)) * 255 / span).min(255) as u8;
+            return lerp_rgb565(a, b, local);
+        }
+    }
+    stops.last().map(|(_, color)| *color).unwrap_or(0xFFFF)
+}
+
 /// N338: source-over write of an RGB565 value at `index` with source alpha.
 /// N480: add `value` (scaled by `alpha`) to the framebuffer, saturating per channel.
 fn add_pixel(pixels: &mut [u8], index: usize, value: u16, alpha: u8) {
@@ -1107,6 +1155,8 @@ fn fill_scene(
             let [x, y, w, h] = transform.apply(rect);
             let start = node.color_rgb565();
             let end = node.color2_rgb565();
+            // N505: a comma-separated `value2` becomes a multi-stop gradient.
+            let stops = parse_gradient_stops(start, end, node.value2.as_deref());
             // N475: a quarter turn makes the gradient run horizontally.
             let horizontal = matches!(rotate, 90 | 270);
             if horizontal {
@@ -1116,7 +1166,7 @@ fn fill_scene(
                         break;
                     }
                     let t = (u32::from(xx.saturating_sub(x)) * 255 / span).min(255) as u8;
-                    let color = lerp_rgb565(start, end, t);
+                    let color = gradient_color(&stops, t);
                     for yy in y..y.saturating_add(h) {
                         if u32::from(yy) >= height {
                             break;
@@ -1136,7 +1186,7 @@ fn fill_scene(
                         break;
                     }
                     let t = (u32::from(yy.saturating_sub(y)) * 255 / span).min(255) as u8;
-                    let color = lerp_rgb565(start, end, t);
+                    let color = gradient_color(&stops, t);
                     for xx in x..x.saturating_add(w) {
                         if u32::from(xx) >= width {
                             break;
@@ -4017,6 +4067,63 @@ mod tests {
             ((green >> 5) & 0x3f) > 8 && green >> 11 < 8,
             "green on top: {green:#06x}"
         );
+    }
+
+    #[test]
+    fn multi_stop_gradients_blend_through_each_stop() {
+        // N505: `value2` as `offset:#colour` stops.
+        use mdc_protocol::SceneNode;
+        let render = |value2: &str| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 1,
+                height: 11,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "ramp".into(),
+                kind: "gradient".into(),
+                rect: Some([0, 0, 1, 11]),
+                value: Some("#FF0000".into()),
+                value2: Some(value2.into()),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                children: Vec::new(),
+            });
+            assert!(device.render_scene());
+            (0..11u16)
+                .map(|y| device.pixel_rgb565(0, y).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let stops = render("0:#FF0000,50:#00FF00,100:#0000FF");
+        let channel = |value: u16, shift: u32, mask: u16| (value >> shift) & mask;
+        // Top is red, the middle is green, and the bottom is blue.
+        assert!(
+            channel(stops[0], 11, 0x1f) > 24,
+            "red top: {:#06x}",
+            stops[0]
+        );
+        assert!(channel(stops[0], 5, 0x3f) < 8, "no green at the top");
+        assert!(
+            channel(stops[5], 5, 0x3f) > 40,
+            "green middle: {:#06x}",
+            stops[5]
+        );
+        assert!(channel(stops[5], 11, 0x1f) < 12 && channel(stops[5], 0, 0x1f) < 12);
+        assert!(
+            channel(stops[10], 0, 0x1f) > 24,
+            "blue bottom: {:#06x}",
+            stops[10]
+        );
+        // A two-stop `value`/`value2` ramp is unchanged (red -> blue).
+        let ramp = render("#0000FF");
+        assert_eq!(ramp[0], mdc_protocol::parse_color("#FF0000"));
+        assert_eq!(ramp[10], mdc_protocol::parse_color("#0000FF"));
     }
 
     #[test]
