@@ -462,6 +462,9 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
                     "acks_received": session.stats().acks_received,
                     "frames_sent": session.stats().frames_sent,
                     "dropped_frames": session.stats().dropped_frames,
+                    "packages_sent": session.stats().packages_sent,
+                    "mirror_frames": session.stats().mirror_frames,
+                    "pacing_dropped": session.stats().pacing_dropped,
                 },
                 "config": inspect_json(&mgr, Some(&snapshot)),
             });

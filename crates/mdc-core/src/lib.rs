@@ -241,6 +241,12 @@ pub struct SessionStats {
     pub frames_sent: u64,
     /// N436: frames the device dropped (reported by the device).
     pub dropped_frames: u64,
+    /// N446: packages installed on the device.
+    pub packages_sent: u64,
+    /// N446: complete mirror frames received.
+    pub mirror_frames: u64,
+    /// N446: frames refused by the host pacing budget.
+    pub pacing_dropped: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -964,6 +970,9 @@ impl<T: Transport> Session<T> {
     pub fn stats(&self) -> SessionStats {
         SessionStats {
             dropped_frames: self.dropped_frames,
+            packages_sent: self.packages_sent,
+            mirror_frames: self.mirror_frames,
+            pacing_dropped: self.pacing_dropped,
             ..self.stats
         }
     }
@@ -4492,6 +4501,12 @@ mod tests {
         assert!(session.stats().acks_received >= 1, "the frame was acked");
         // N436: inbound bytes are counted too.
         assert!(session.stats().bytes_received > 0, "received bytes counted");
+        // N446: the package/mirror/pacing counters are exposed.
+        let _ = (
+            session.stats().packages_sent,
+            session.stats().mirror_frames,
+            session.stats().pacing_dropped,
+        );
     }
 
     #[test]
