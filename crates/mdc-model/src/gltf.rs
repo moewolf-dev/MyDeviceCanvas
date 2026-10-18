@@ -4,8 +4,8 @@
 //! only the header is read — so a decode bomb is rejected before any decode
 //! buffer is allocated.
 use crate::ir::{
-    Animation, ImportLimits, Layer, Light, Material, Mesh, Model, ModelError, Node, Skeleton,
-    Texture, UvTransform, MAX_GEOMETRY_INDICES, MAX_GEOMETRY_VERTICES,
+    Animation, Camera, ImportLimits, Layer, Light, Material, Mesh, Model, ModelError, Node,
+    Skeleton, Texture, UvTransform, MAX_GEOMETRY_INDICES, MAX_GEOMETRY_VERTICES,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -1010,8 +1010,48 @@ impl GltfImporter {
             meta,
             lights: read_lights(&doc, nodes_json),
             variants: read_variants(&doc),
+            cameras: read_cameras(&doc),
         })
     }
+}
+
+/// N449: glTF cameras (metadata only).
+fn read_cameras(doc: &Value) -> Vec<Camera> {
+    doc.get("cameras")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .enumerate()
+                .map(|(i, camera)| {
+                    let perspective = camera.get("perspective");
+                    let orthographic = camera.get("orthographic");
+                    let source = perspective.or(orthographic);
+                    Camera {
+                        name: json_name(camera, &format!("camera{i}")),
+                        kind: if perspective.is_some() {
+                            "perspective".into()
+                        } else {
+                            "orthographic".into()
+                        },
+                        yfov: perspective
+                            .and_then(|p| p.get("yfov"))
+                            .and_then(Value::as_f64)
+                            .map(|v| v as f32),
+                        znear: source
+                            .and_then(|s| s.get("znear"))
+                            .and_then(Value::as_f64)
+                            .map(|v| v as f32)
+                            .unwrap_or(0.0),
+                        zfar: source
+                            .and_then(|s| s.get("zfar"))
+                            .and_then(Value::as_f64)
+                            .map(|v| v as f32)
+                            .unwrap_or(0.0),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// N420: `KHR_materials_variants` variant names.
@@ -2639,6 +2679,30 @@ mod tests {
         assert_eq!(material.specular_factor(), 0.25);
         assert_eq!(material.specular_color, Some([255, 128, 0]));
         assert!((material.ior() - 1.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cameras_are_imported() {
+        // N449: glTF cameras are recorded as metadata.
+        let doc = json!({
+            "asset": {"version": "2.0"},
+            "cameras": [
+                {"name": "cam", "type": "perspective", "perspective": {"yfov": 0.8, "znear": 0.1, "zfar": 100.0}},
+                {"type": "orthographic", "orthographic": {"znear": 0.0, "zfar": 10.0}}
+            ],
+            "nodes": [{"name": "root", "mesh": 0}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "accessors": [{"count": 4, "type": "VEC3"}]
+        });
+        let model = GltfImporter
+            .import(&serde_json::to_vec(&doc).unwrap(), &ImportLimits::default())
+            .unwrap();
+        assert_eq!(model.cameras.len(), 2);
+        assert_eq!(model.cameras[0].name, "cam");
+        assert_eq!(model.cameras[0].kind, "perspective");
+        assert!((model.cameras[0].yfov.unwrap() - 0.8).abs() < 1e-6);
+        assert_eq!(model.cameras[1].kind, "orthographic");
+        assert_eq!(model.summary().cameras, 2);
     }
 
     #[test]

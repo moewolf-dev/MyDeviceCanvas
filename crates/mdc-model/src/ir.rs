@@ -178,6 +178,7 @@ pub struct ModelSummary {
     pub layers: usize,
     pub lights: usize,
     pub variants: usize,
+    pub cameras: usize,
     pub morph_targets: usize,
     pub has_normals: bool,
     pub has_colors: bool,
@@ -726,6 +727,24 @@ pub struct Model {
     /// N420: `KHR_materials_variants` variant names.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<String>,
+    /// N449: glTF cameras (metadata; the renderer fits geometry to the surface).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cameras: Vec<Camera>,
+}
+
+/// N449: a glTF camera (`perspective` or `orthographic`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Camera {
+    pub name: String,
+    /// `perspective` | `orthographic`.
+    pub kind: String,
+    /// Perspective vertical field of view in radians.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yfov: Option<f32>,
+    #[serde(default)]
+    pub znear: f32,
+    #[serde(default)]
+    pub zfar: f32,
 }
 
 /// N385: a `KHR_lights_punctual` light source. Only `direction` affects the
@@ -839,6 +858,7 @@ impl Model {
             layers: self.layers.len(),
             lights: self.lights.len(),
             variants: self.variants.len(),
+            cameras: self.cameras.len(),
             morph_targets: self.meshes.iter().map(|m| m.morph_targets.len()).sum(),
             ..ModelSummary::default()
         };
