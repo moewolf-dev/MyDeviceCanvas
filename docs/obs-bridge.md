@@ -80,6 +80,8 @@ connection cleanly on a close frame; `/health` reports `ws`, `ws_pings`, and
 silent for M frames (`/health` also reports `ws_timeouts`). N527 adds
 `--ws-fragment N`, which splits each WebSocket message into a first binary frame
 plus continuation frames of at most `N` bytes (the client reassembles them).
+N537 floors `N` at 64 bytes and keeps heartbeats out of the middle of a message
+(control frames are written only once the fragments have drained).
 
 ## Guarantees
 

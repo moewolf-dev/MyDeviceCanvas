@@ -242,7 +242,7 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | C gesture config (N498) | sim-verified (`set_gesture_config`) | n/a |
 | e-ink ghost fade (N499) | sim-verified (partial vs full) | physical: pending |
 | WebSocket mirror (N500) | sim-verified (`/ws`, RFC 6455 handshake) | n/a |
-| Reserved extensions (N503) | sim-verified (rejected with a clear error) | n/a |
+| Reserved extensions (N503) | sim-verified (draco/basisu rejected; meshopt decoded) | n/a |
 | Mip-level selection (N504) | sim-verified (`--mip-level`, helpers) | physical: pending |
 | Multi-stop gradients (N505) | sim-verified (stop list) | physical: pending |
 | Tile counters (N506) | sim-verified (core + C) | n/a |
@@ -266,6 +266,13 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Node mirror parity (N528) | sim-verified (bounded take + skips) | n/a |
 | Inspector alerts (N529) | sim-verified (threshold + exit 2) | n/a |
 | `record --render` (N530) | sim-verified (decode + replay) | physical: pending |
+| meshopt decode (N533/N534) | sim-verified (reference golden vectors) | physical: pending |
+| Radial focus (N535) | sim-verified (off-centre centre) | physical: pending |
+| Tile reconciliation (N536) | sim-verified (host vs device counts) | n/a |
+| WS fragment floor (N537) | sim-verified (floor + heartbeat order) | n/a |
+| C mirror mode (N538) | sim-verified (`full-frame`/`dirty-region`) | n/a |
+| JSONL verdict (N539) | sim-verified (one-line alert) | n/a |
+| Paced replay (N540) | sim-verified (`--fps` timing) | n/a |
 | Swift gestures (N483) | sim-verified (`isGesture`/`gestureKind` + smoke) | physical: pending |
 | Text align (N484) | sim-verified (left/center/right) | physical: pending |
 | Scene z-order (N485) | sim-verified (draw + hit order) | physical: pending |

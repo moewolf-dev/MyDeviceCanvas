@@ -55,7 +55,9 @@ cargo run -p mdc-inspector -- --jsonl 20 --heap --size-kb 512       # peak timel
 cargo run -p mdc -- --board linux-virt record --frames 30 --fps 10 --dir out
 cargo run -p mdc -- record --play --dir out                          # verify (N520)
 cargo run -p mdc -- record --play --render --dir out --board linux-virt  # replay (N530)
+cargo run -p mdc -- record --play --render --dir out --fps 10        # paced replay (N540)
 cargo run -p mdc-inspector -- --jsonl 20 --heap --max-peak-bytes 200000000  # alert (N529)
+# the alert ends with one JSONL verdict line and exits 2 (N539)
 cargo run -p mdc -- --board linux-virt inspect --watch --count 3 --rss
 cargo run -p mdc -- --board linux-virt diag --metric fps --value 29.5 --unit fps
 ```

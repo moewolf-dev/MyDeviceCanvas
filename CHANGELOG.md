@@ -2,6 +2,28 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.66] — meshopt decoding, radial gradient focus, tile reconciliation, WS fragment floor, C mirror mode, paced replay (N533–N542)
+
+### Added
+
+- `EXT_meshopt_compression` is **decoded**: a pure-Rust port of the meshopt
+  reference decoder (`mdc_model::meshopt`) covering vertex buffers (v0/v1) with
+  the octahedral/quaternion/exponential/color filters, index buffers (v0/v1) and
+  index sequences (v0/v1), verified against the reference decoder's golden
+  fixtures (N533/N534)
+- scene `gradient` accepts `focus: "cx%,cy%"` for a radial centre (N535)
+- `mdc_core::reconcile_tiles` compares the host's tile counters with the device's
+  `tiles_received` (N536)
+- `mdc-mirror` floors `--ws-fragment` at 64 bytes and keeps heartbeats out of a
+  fragmented message (N537)
+- C `mdc_start_mirror_mode` selects `full-frame`/`dirty-region` (parity with
+  Node/Swift) (N538)
+- `mdc-inspector` alert verdicts are emitted as one JSONL record (N539)
+- `mdc record --play --render --fps N` paces a replay (N540)
+- `DirtyTracker` coalesces past `MAX_PENDING_RECTS` so it cannot grow without
+  bound, plus compatibility/memory coverage (N541)
+
+
 ## [0.1.65] — WebP probing, drawn-vertex budget, arbitrary gradient angle, dirty tracker, WS fragmentation, Node mirror parity, inspector alerts, `record --render` (N523–N532)
 
 ### Added
