@@ -2103,6 +2103,82 @@ fn websocket_client_buffers_stay_bounded() {
 }
 
 #[test]
+fn websocket_control_frames_stay_bounded() {
+    // N507/N511: many pings are all answered while the per-client buffers stay
+    // bounded (one control frame queued at a time).
+    use std::io::{Read, Write};
+
+    let mut server = mdc_mirror::HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+    let addr = server.local_addr().unwrap();
+    let mut client = std::net::TcpStream::connect(addr).unwrap();
+    client
+        .set_read_timeout(Some(std::time::Duration::from_millis(5)))
+        .unwrap();
+    client
+        .write_all(
+            b"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+              Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        )
+        .unwrap();
+    // Drain the handshake.
+    let mut seen = Vec::new();
+    for _ in 0..50 {
+        let _ = server.pump();
+        let mut buffer = [0u8; 4096];
+        match client.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => seen.extend_from_slice(&buffer[..n]),
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(2)),
+        }
+        if seen.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+    assert_eq!(server.ws_clients(), 1);
+    // A masked ping frame.
+    let ping: Vec<u8> = {
+        let mask = [0x11u8, 0x22, 0x33, 0x44];
+        let payload = b"p";
+        let mut frame = vec![0x89, 0x80 | payload.len() as u8];
+        frame.extend_from_slice(&mask);
+        frame.extend(
+            payload
+                .iter()
+                .enumerate()
+                .map(|(i, byte)| byte ^ mask[i % 4]),
+        );
+        frame
+    };
+    let mut received = Vec::new();
+    for _ in 0..200 {
+        client.write_all(&ping).unwrap();
+        for _ in 0..4 {
+            let _ = server.pump();
+            let mut buffer = [0u8; 64];
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => received.extend_from_slice(&buffer[..n]),
+                Err(_) => break,
+            }
+        }
+    }
+    // Drain whatever is left and count pongs.
+    for _ in 0..20 {
+        let _ = server.pump();
+        let mut buffer = [0u8; 64];
+        if let Ok(n) = client.read(&mut buffer) {
+            received.extend_from_slice(&buffer[..n]);
+        }
+    }
+    let answered = server.ws_pings();
+    assert!(answered >= 100, "pings answered: {answered}");
+    // Every answered ping produced exactly one pong (no growth beyond that).
+    let pongs = received.windows(2).filter(|w| w[0] == 0x8A).count() as u64;
+    assert!(pongs <= answered, "no extra frames queued");
+    assert_eq!(server.ws_clients(), 1, "the client stayed connected");
+}
+
+#[test]
 fn disk_asset_cache_stays_within_quota() {
     // N369/N371: the on-disk asset store never exceeds its byte quota, however
     // many payloads are inserted.

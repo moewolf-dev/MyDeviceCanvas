@@ -3849,6 +3849,62 @@ fn scene_circle_and_line_edge_cases_do_not_panic() {
 }
 
 #[test]
+fn multi_stop_gradient_and_reserved_extension_diagnostics() {
+    // N503/N505: a reserved extension is reported, and a multi-stop gradient
+    // renders through each stop on the device.
+    use mdc_core::{ConnectionState, Session};
+    use mdc_protocol::SceneNode;
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    // N503: a meshopt asset is detected without importing.
+    let meshopt = br#"{"asset":{"version":"2.0"},
+        "extensionsRequired":["EXT_meshopt_compression"]}"#;
+    assert_eq!(
+        mdc_model::reserved_extensions_in_bytes(meshopt),
+        vec!["EXT_meshopt_compression".to_string()]
+    );
+    assert!(mdc_model::GltfImporter
+        .import(meshopt, &mdc_model::ImportLimits::default())
+        .is_err());
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 1,
+        height: 11,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .set_scene(SceneNode {
+            name: "ramp".into(),
+            kind: "gradient".into(),
+            rect: Some([0, 0, 1, 11]),
+            value: Some("#FF0000".into()),
+            value2: Some("0:#FF0000,50:#00FF00,100:#0000FF".into()),
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            children: Vec::new(),
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.render_scene());
+    let green = device.pixel_rgb565(0, 5).unwrap();
+    let red = device.pixel_rgb565(0, 0).unwrap();
+    let blue = device.pixel_rgb565(0, 10).unwrap();
+    assert!(((green >> 5) & 0x3f) > ((red >> 5) & 0x3f), "green middle");
+    assert!((blue & 0x1f) > (red & 0x1f), "blue bottom");
+}
+
+#[test]
 fn scene_align_z_wrap_and_dash_render_deterministically() {
     // N484/N485/N495/N497: the newer scene fields render together, stably.
     use mdc_core::{ConnectionState, Session};
