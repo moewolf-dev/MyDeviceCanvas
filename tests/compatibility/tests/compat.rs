@@ -291,6 +291,7 @@ fn baked_package(frames: u32, pixels: usize) -> mdc_model::MdcPackage {
         rows: 1,
         rgb565: vec![0u8; pixels],
         clips: Vec::new(),
+        mips: Vec::new(),
     };
     let package = mdc_model::DevicePackage {
         target: "esp32-plane".into(),
@@ -412,6 +413,8 @@ fn animation_requires_a_baked_atlas_and_a_known_clip() {
             fade_in_ms: 0,
             fade_out_ms: 0,
         }],
+
+        mips: Vec::new(),
     };
     let package = mdc_model::DevicePackage {
         target: "esp32-plane".into(),

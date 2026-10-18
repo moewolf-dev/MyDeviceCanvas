@@ -78,6 +78,19 @@ pub struct AtlasBlob {
     /// N69: playable clips (one per motion). Empty means "one implicit clip".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub clips: Vec<AtlasClip>,
+    /// N438: optional box-downsampled mip levels (level 1 first; level 0 is the
+    /// atlas itself).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mips: Vec<AtlasMip>,
+}
+
+/// N438: one box-downsampled atlas level.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AtlasMip {
+    pub width: u32,
+    pub height: u32,
+    /// RGB565 little-endian, `width * height * 2` bytes.
+    pub rgb565: Vec<u8>,
 }
 
 /// N69: a playable range of atlas frames.

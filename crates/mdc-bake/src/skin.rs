@@ -2429,6 +2429,7 @@ fn frames_to_clip_package(
         rows: atlas.rows,
         rgb565: atlas.rgb565,
         clips,
+        mips: Vec::new(),
     };
     let package = mdc_model::DevicePackage {
         target: "esp32-plane".into(),

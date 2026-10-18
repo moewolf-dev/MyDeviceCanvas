@@ -927,6 +927,36 @@ pub fn bake_mipmaps(
     out
 }
 
+/// N438: like [`bake_to_package`] but also stores a bounded mip chain in the
+/// atlas (level 0 is the atlas; `mip_levels` caps the total levels).
+#[allow(clippy::too_many_arguments)]
+pub fn bake_to_package_mipped(
+    sources: &[SpriteSource],
+    motions: &[mdc_model::MotionInfo],
+    sprite: (u32, u32),
+    max_texture: u32,
+    limits: &BakeLimits,
+    mip_levels: usize,
+) -> Result<mdc_model::MdcPackage, BakeError> {
+    let package = bake_to_package(sources, motions, sprite, max_texture, limits)?;
+    let mut inner = package.package.clone();
+    if let Some(atlas) = inner.atlas.as_mut() {
+        let width = atlas.sprite_width.saturating_mul(atlas.columns);
+        let height = atlas.sprite_height.saturating_mul(atlas.rows);
+        let levels = bake_mipmaps(width, height, &atlas.rgb565, mip_levels.max(1));
+        atlas.mips = levels
+            .into_iter()
+            .skip(1)
+            .map(|(width, height, rgb565)| mdc_model::AtlasMip {
+                width,
+                height,
+                rgb565,
+            })
+            .collect();
+    }
+    mdc_model::MdcPackage::seal(inner).map_err(|e| BakeError::Package(e.to_string()))
+}
+
 /// N60: bake a sprite set straight into a sealed runtime package the device can
 #[allow(clippy::too_many_arguments)]
 pub fn bake_to_package(
@@ -946,6 +976,7 @@ pub fn bake_to_package(
         rows: baked.atlas.rows,
         rgb565: baked.atlas.rgb565,
         clips: baked.atlas.clips,
+        mips: Vec::new(),
     };
     let package = mdc_model::DevicePackage {
         target: "esp32-plane".into(),
@@ -1066,6 +1097,39 @@ mod tests {
             decode_resize_rgb565(&png, (8, 8), &limits),
             Err(BakeError::Dimensions(64, 64, 16))
         ));
+    }
+
+    #[test]
+    fn mipped_package_carries_a_bounded_mip_chain() {
+        // N438: `bake_to_package_mipped` stores level 1..n in the atlas.
+        let source = SpriteSource {
+            name: "s".into(),
+            image: png_of(4, 4, [10, 20, 30]),
+        };
+        let package = bake_to_package_mipped(
+            &[source],
+            &[mdc_model::MotionInfo {
+                name: "bake".into(),
+                channels: 1,
+                duration_sec: 0.1,
+                fps: 30.0,
+                fade_in_sec: 0.0,
+                fade_out_sec: 0.0,
+                looping: true,
+                curves: Vec::new(),
+            }],
+            (4, 4),
+            64,
+            &BakeLimits::default(),
+            8,
+        )
+        .unwrap();
+        let atlas = package.package.atlas.as_ref().expect("atlas");
+        assert!(!atlas.mips.is_empty(), "mips stored");
+        assert!(atlas.mips.len() <= 7, "level 0 is the atlas");
+        let last = atlas.mips.last().unwrap();
+        assert_eq!((last.width, last.height), (1, 1));
+        assert_eq!(last.rgb565.len(), 2);
     }
 
     #[test]

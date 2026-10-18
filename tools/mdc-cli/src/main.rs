@@ -981,13 +981,25 @@ fn cmd_bake(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     )?;
     if let Some(path) = &package_path {
         // N62: write a runtime package instead of (or as well as) preview files.
-        let sealed = mdc_bake::bake_to_package(
-            &sources,
-            &motions,
-            (sprite, sprite),
-            max_texture,
-            &mdc_bake::BakeLimits::default(),
-        )?;
+        // N438: `--mipmaps` also stores a mip chain inside the package.
+        let sealed = if mipmaps {
+            mdc_bake::bake_to_package_mipped(
+                &sources,
+                &motions,
+                (sprite, sprite),
+                max_texture,
+                &mdc_bake::BakeLimits::default(),
+                8,
+            )?
+        } else {
+            mdc_bake::bake_to_package(
+                &sources,
+                &motions,
+                (sprite, sprite),
+                max_texture,
+                &mdc_bake::BakeLimits::default(),
+            )?
+        };
         let bytes = sealed.to_bytes().map_err(|e| format!("package: {e}"))?;
         std::fs::write(path, &bytes)?;
         println!(

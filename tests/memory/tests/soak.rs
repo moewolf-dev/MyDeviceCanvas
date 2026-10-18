@@ -1112,6 +1112,8 @@ fn atlas_animation_soak_is_bounded() {
             fade_in_ms: 0,
             fade_out_ms: 0,
         }],
+
+        mips: Vec::new(),
     };
     let package = mdc_model::DevicePackage {
         target: "esp32-plane".into(),

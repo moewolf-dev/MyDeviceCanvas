@@ -2946,6 +2946,7 @@ mod tests {
             rows: 1,
             rgb565: vec![0u8; 2 * 2 * 2 * 2],
             clips: Vec::new(),
+            mips: Vec::new(),
         };
         let package = mdc_model::DevicePackage {
             target: "esp32-plane".into(),
@@ -3000,6 +3001,8 @@ mod tests {
                 fade_in_ms: 0,
                 fade_out_ms: 0,
             }],
+
+            mips: Vec::new(),
         };
         let package = mdc_model::DevicePackage {
             target: "esp32-plane".into(),
@@ -3087,6 +3090,8 @@ mod tests {
                     fade_out_ms: 0,
                 },
             ],
+
+            mips: Vec::new(),
         };
         let package = mdc_model::DevicePackage {
             target: "esp32-plane".into(),
@@ -3175,6 +3180,8 @@ mod tests {
                 fade_in_ms: 0,
                 fade_out_ms: 0,
             }],
+
+            mips: Vec::new(),
         };
         let package = mdc_model::DevicePackage {
             target: "esp32-plane".into(),
@@ -3748,6 +3755,8 @@ mod tests {
                 fade_in_ms: 0,
                 fade_out_ms: 0,
             }],
+
+            mips: Vec::new(),
         };
         let package = mdc_model::DevicePackage {
             target: "esp32-plane".into(),
@@ -3918,6 +3927,7 @@ mod tests {
                 rows: 1,
                 rgb565: vec![0x00, 0xF8],
                 clips: Vec::new(),
+                mips: Vec::new(),
             }),
             texture: None,
             texture_blobs: Vec::new(),
@@ -3985,6 +3995,8 @@ mod tests {
                     fade_in_ms: 100,
                     fade_out_ms: 0,
                 }],
+
+                mips: Vec::new(),
             }),
             texture: None,
             texture_blobs: Vec::new(),
@@ -4045,6 +4057,8 @@ mod tests {
                     fade_in_ms: 0,
                     fade_out_ms: 400,
                 }],
+
+                mips: Vec::new(),
             }),
             texture: None,
             texture_blobs: Vec::new(),
