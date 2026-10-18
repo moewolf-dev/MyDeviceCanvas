@@ -499,6 +499,9 @@ pub struct SceneNode {
     /// N475: a quarter-turn rotation (0/90/180/270) for axis-aligned fills.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotate: Option<u16>,
+    /// N480: `source-over` (default) or `additive` blending for rect/gradient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend: Option<String>,
 }
 
 /// N463: a keyframed scene animation. Keyframes are `[time_ms, value]` and are
@@ -615,6 +618,11 @@ pub struct SceneLint {
 }
 
 impl SceneNode {
+    /// N480: whether the node adds to the framebuffer instead of covering it.
+    pub fn is_additive(&self) -> bool {
+        self.blend.as_deref() == Some("additive")
+    }
+
     /// N450: whether the node is visible (default true).
     pub fn is_visible(&self) -> bool {
         self.visible.unwrap_or(true)
@@ -2197,6 +2205,7 @@ mod tests {
                     visible: None,
                     anim: None,
                     rotate: None,
+                    blend: None,
                     value2: None,
                 }],
                 value: None,
@@ -2204,6 +2213,7 @@ mod tests {
                 visible: None,
                 anim: None,
                 rotate: None,
+                blend: None,
                 value2: None,
             }),
         }
@@ -2221,6 +2231,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             value2: None,
         };
         // #RGB expands each nibble.
@@ -2246,6 +2257,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             value2: None,
         };
         assert_eq!(node.color_rgb565(), 0xF800);
@@ -2260,6 +2272,7 @@ mod tests {
                 visible: None,
                 anim: None,
                 rotate: None,
+                blend: None,
                 value2: None,
             }
             .color_rgb565(),

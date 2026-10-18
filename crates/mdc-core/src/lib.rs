@@ -4728,6 +4728,7 @@ mod tests {
             opacity: None,
             visible: None,
             rotate: None,
+            blend: None,
             anim: Some(mdc_protocol::SceneAnim {
                 duration_ms: 100,
                 looping: true,

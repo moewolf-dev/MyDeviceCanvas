@@ -634,6 +634,25 @@ fn lerp_rgb565(a: u16, b: u16, t: u8) -> u16 {
 }
 
 /// N338: source-over write of an RGB565 value at `index` with source alpha.
+/// N480: add `value` (scaled by `alpha`) to the framebuffer, saturating per channel.
+fn add_pixel(pixels: &mut [u8], index: usize, value: u16, alpha: u8) {
+    if index + 1 >= pixels.len() || alpha == 0 {
+        return;
+    }
+    let dst = u16::from_le_bytes([pixels[index], pixels[index + 1]]);
+    let scale = |channel: u16, mask: u16| -> u16 {
+        ((u32::from(channel & mask) * u32::from(alpha)) / 255) as u16
+    };
+    let src_r = scale(value, 0xf800) >> 11;
+    let src_g = scale(value, 0x07e0) >> 5;
+    let src_b = scale(value, 0x001f);
+    let r = ((dst >> 11) & 0x1f).saturating_add(src_r);
+    let g = ((dst >> 5) & 0x3f).saturating_add(src_g);
+    let b = (dst & 0x1f).saturating_add(src_b);
+    let out = (r.min(0x1f) << 11) | (g.min(0x3f) << 5) | b.min(0x1f);
+    pixels[index..index + 2].copy_from_slice(&out.to_le_bytes());
+}
+
 fn put_pixel(pixels: &mut [u8], index: usize, value: u16, alpha: u8) {
     if index + 1 >= pixels.len() || alpha == 0 {
         return;
@@ -900,7 +919,12 @@ fn fill_scene(
                         break;
                     }
                     let index = ((u32::from(yy) * width + u32::from(xx)) * 2) as usize;
-                    put_pixel(pixels, index, color, alpha);
+                    // N480: additive blending for glow overlays.
+                    if node.is_additive() {
+                        add_pixel(pixels, index, color, alpha);
+                    } else {
+                        put_pixel(pixels, index, color, alpha);
+                    }
                 }
             }
             *drew = true;
@@ -1012,7 +1036,11 @@ fn fill_scene(
                             break;
                         }
                         let index = ((u32::from(yy) * width + u32::from(xx)) * 2) as usize;
-                        put_pixel(pixels, index, color, alpha);
+                        if node.is_additive() {
+                            add_pixel(pixels, index, color, alpha);
+                        } else {
+                            put_pixel(pixels, index, color, alpha);
+                        }
                     }
                 }
             } else {
@@ -1028,7 +1056,11 @@ fn fill_scene(
                             break;
                         }
                         let index = ((u32::from(yy) * width + u32::from(xx)) * 2) as usize;
-                        put_pixel(pixels, index, color, alpha);
+                        if node.is_additive() {
+                            add_pixel(pixels, index, color, alpha);
+                        } else {
+                            put_pixel(pixels, index, color, alpha);
+                        }
                     }
                 }
             }
@@ -3043,6 +3075,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             value2: None,
         };
         let mut root = leaf("root", "rect", None);
@@ -3376,6 +3409,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             value2: None,
         };
         // Background red covers all; a green child on top; a third clipped.
@@ -3392,6 +3426,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3435,6 +3470,7 @@ mod tests {
                     visible: None,
                     anim: None,
                     rotate: None,
+                    blend: None,
                     value2: None,
                 },
                 SceneNode {
@@ -3447,6 +3483,7 @@ mod tests {
                     visible: None,
                     anim: None,
                     rotate: None,
+                    blend: None,
                     value2: None,
                 },
             ],
@@ -3454,6 +3491,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3499,6 +3537,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             value2: None,
         };
         // rect 0×0 -> scale 1, so (1,1) stays clear on the fresh framebuffer.
@@ -3567,6 +3606,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -3602,6 +3642,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -3613,6 +3654,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             children: vec![
                 rect("bg", "#FFFFFF", None),
                 rect("fg", "#FF0000", Some(128)),
@@ -3667,6 +3709,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -3676,6 +3719,67 @@ mod tests {
         assert!(
             (mid >> 11) > 0 && (mid & 0x1f) > 0,
             "mid blended: {mid:#06x}"
+        );
+    }
+
+    #[test]
+    fn additive_blend_brightens_an_overlap() {
+        // N480: an additive overlay adds to the base instead of covering it.
+        use mdc_protocol::SceneNode;
+        let render = |blend: Option<&str>| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 4,
+                height: 4,
+                ..BoardProfile::default()
+            });
+            let rect = |name: &str, color: &str, blend: Option<&str>| SceneNode {
+                name: name.into(),
+                kind: "rect".into(),
+                rect: Some([0, 0, 4, 4]),
+                value: Some(color.into()),
+                value2: None,
+                opacity: Some(128),
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: blend.map(str::to_string),
+                children: Vec::new(),
+            };
+            device.scene = Some(SceneNode {
+                name: "root".into(),
+                kind: "group".into(),
+                rect: None,
+                value: None,
+                value2: None,
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                children: vec![
+                    rect("base", "#00FF00", None),
+                    rect("glow", "#FF0000", blend),
+                ],
+            });
+            assert!(device.render_scene());
+            device.pixel_rgb565(1, 1).unwrap()
+        };
+        let over = render(None);
+        let additive = render(Some("additive"));
+        // Source-over fades green toward red; additive keeps the green and adds red.
+        assert!(
+            ((additive >> 5) & 0x3f) > ((over >> 5) & 0x3f),
+            "green is preserved: over={over:#06x} additive={additive:#06x}"
+        );
+        // Additive keeps the base green and adds red, so it is strictly brighter.
+        let brightness = |value: u16| {
+            u32::from((value >> 11) & 0x1f)
+                + u32::from((value >> 5) & 0x3f)
+                + u32::from(value & 0x1f)
+        };
+        assert!(
+            brightness(additive) > brightness(over),
+            "additive is brighter: over={over:#06x} additive={additive:#06x}"
         );
     }
 
@@ -3716,6 +3820,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: Some(90),
+            blend: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -3753,6 +3858,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             children: Vec::new(),
         });
         assert!(device.render_overlay());
@@ -3783,6 +3889,7 @@ mod tests {
                 rect: Vec::new(),
             }),
             rotate: None,
+            blend: None,
             children: Vec::new(),
         });
         // t=0: fully transparent, so the black background remains.
@@ -3817,6 +3924,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             children: vec![
                 SceneNode {
                     name: "hidden".into(),
@@ -3828,6 +3936,7 @@ mod tests {
                     visible: Some(false),
                     anim: None,
                     rotate: None,
+                    blend: None,
                     children: Vec::new(),
                 },
                 SceneNode {
@@ -3840,6 +3949,7 @@ mod tests {
                     visible: None,
                     anim: None,
                     rotate: None,
+                    blend: None,
                     children: Vec::new(),
                 },
             ],
@@ -3899,6 +4009,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -3911,6 +4022,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             children: vec![rect("back", [0, 0, 8, 8]), rect("front", [2, 2, 4, 4])],
         });
         // The overlapping topmost child wins.
@@ -3939,6 +4051,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             children: Vec::new(),
         };
         device.scene = Some(SceneNode {
@@ -3951,6 +4064,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             // The child fills 8x8 relative to the clip origin, so it would cover
             // everything without the clip rect.
             children: vec![fill([0, 0, 8, 8])],
@@ -3989,6 +4103,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             children: Vec::new(),
         });
         assert!(device.render_scene());
@@ -4046,6 +4161,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             value2: None,
         };
         let scene = SceneNode {
@@ -4061,6 +4177,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -4099,6 +4216,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             value2: None,
         };
         // Group offset (4, 2) and 2× scale: [0,0,2,2] red -> [4,2,4,4].
@@ -4112,6 +4230,7 @@ mod tests {
             visible: None,
             anim: None,
             rotate: None,
+            blend: None,
             value2: None,
         };
         session.set_scene(scene).unwrap();
@@ -4191,6 +4310,7 @@ mod tests {
                 visible: None,
                 anim: None,
                 rotate: None,
+                blend: None,
                 value2: None,
             })
             .unwrap();
@@ -4346,6 +4466,7 @@ mod tests {
                 visible: None,
                 anim: None,
                 rotate: None,
+                blend: None,
                 value2: None,
             })
             .unwrap();
@@ -4499,6 +4620,7 @@ mod tests {
                 visible: None,
                 anim: None,
                 rotate: None,
+                blend: None,
                 value2: None,
             })
             .unwrap();
@@ -4906,6 +5028,7 @@ mod tests {
                 visible: None,
                 anim: None,
                 rotate: None,
+                blend: None,
                 value2: None,
             })
             .unwrap();
@@ -4934,6 +5057,7 @@ mod tests {
                 visible: None,
                 anim: None,
                 rotate: None,
+                blend: None,
                 value2: None,
             })
             .unwrap();
