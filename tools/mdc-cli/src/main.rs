@@ -1487,6 +1487,7 @@ fn cmd_render_package(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
     let mut clip: Option<String> = None;
     let mut time: f32 = 0.0;
     let mut mip: usize = 0;
+    let mut smooth = false;
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -1498,6 +1499,8 @@ fn cmd_render_package(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
             "--time" => time = iter.next().and_then(|v| v.parse().ok()).unwrap_or(time),
             // N439: render a stored mip level of the atlas instead of a frame.
             "--mip" => mip = iter.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+            // N454: per-pixel shading for the static mesh renderer.
+            "--smooth" => smooth = true,
             other => file = Some(other.to_string()),
         }
     }
@@ -1516,6 +1519,11 @@ fn cmd_render_package(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
                 (sprite, sprite),
                 mdc_bake::Filter::Nearest,
                 mdc_bake::ShadeMode::Flat,
+            )?,
+            None if smooth => mdc_bake::render_package_mesh_mode(
+                &package.package,
+                (sprite, sprite),
+                mdc_bake::ShadeMode::Smooth,
             )?,
             None => mdc_bake::render_package_mesh(&package.package, (sprite, sprite))?,
         };
@@ -3453,7 +3461,7 @@ config get <key>|config set <key> <value>|bake <image>... [--frames N] [--sprite
 bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animations] [--texture tex.png] [--out DIR] [--package OUT.mdcpkg]|\
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] [--srgb] --out f.ppm|\
 motion <motion3.json> [--param ID] [--samples N]|\
-render-package <file.mdcpkg> [--frame N] [--clip NAME] [--time T] [--mip N] --out f.ppm|\
+render-package <file.mdcpkg> [--frame N] [--clip NAME] [--time T] [--mip N] [--smooth] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|\
 model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb>|verify <file.mdcpkg>|diff <a.mdcpkg> <b.mdcpkg>"

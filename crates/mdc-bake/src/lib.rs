@@ -21,7 +21,7 @@ pub use skin::{
     bake_skinned_to_package, bake_textured_mesh, bake_textured_to_package, generate_tangents,
     mat4_from_trs, mat4_identity, mat4_mul, morph_weights_at, node_world_matrices,
     pack_material_atlas, pose_world_matrices, render_frame_at, render_geometry_at,
-    render_package_mesh, render_package_scene, render_package_scene_clip,
+    render_package_mesh, render_package_mesh_mode, render_package_scene, render_package_scene_clip,
     render_package_scene_clip_filtered, render_package_scene_clip_mode,
     render_package_scene_clip_named, render_scene_at, sample_channel, sample_channel_looped,
     skin_arrays, skin_arrays_multi, skin_normals, skin_normals_multi, skin_points, skin_preview,

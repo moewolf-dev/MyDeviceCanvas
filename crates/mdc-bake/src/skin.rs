@@ -1571,6 +1571,16 @@ pub fn render_package_mesh(
     package: &mdc_model::DevicePackage,
     size: (u32, u32),
 ) -> Result<BakedTexture, BakeError> {
+    render_package_mesh_mode(package, size, ShadeMode::Flat)
+}
+
+/// N454: like [`render_package_mesh`] but with an explicit shade mode (`Smooth`
+/// shades per pixel from the interpolated normals).
+pub fn render_package_mesh_mode(
+    package: &mdc_model::DevicePackage,
+    size: (u32, u32),
+    mode: ShadeMode,
+) -> Result<BakedTexture, BakeError> {
     if size.0 == 0 || size.1 == 0 || size.0 > 1024 || size.1 > 1024 {
         return Err(BakeError::Budget(size.0, size.1));
     }
@@ -1643,16 +1653,28 @@ pub fn render_package_mesh(
             .and_then(|mi| package.materials.get(mi))
             .is_some_and(|material| material.is_masked());
         let fill = tint.unwrap_or(0xF800);
-        let shade = triangle_shades(
-            &geometry.positions,
-            &geometry.normals,
-            &geometry.indices,
-            key_light(&package.lights),
-            mesh.material
-                .and_then(|mi| package.materials.get(mi))
-                .map(|m| (SHADE_AMBIENT + 0.35 * m.roughness()).min(0.9))
-                .unwrap_or(0.9),
-        );
+        let light = key_light(&package.lights);
+        let ambient = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .map(|m| (SHADE_AMBIENT + 0.35 * m.roughness()).min(0.9))
+            .unwrap_or(0.9);
+        // N454: smooth shading needs normals (tangents are generated if absent).
+        let per_pixel = mode != ShadeMode::Flat
+            && geometry.normals.len() >= geometry.positions.len()
+            && (geometry.tangents.len() >= geometry.positions.len()
+                || geometry.uv.len() >= geometry.positions.len());
+        let shade = if per_pixel {
+            vec![1.0; geometry.indices.len() / 3]
+        } else {
+            triangle_shades(
+                &geometry.positions,
+                &geometry.normals,
+                &geometry.indices,
+                light,
+                ambient,
+            )
+        };
         let blend = mesh
             .material
             .and_then(|mi| package.materials.get(mi))
@@ -1671,6 +1693,28 @@ pub fn render_package_mesh(
             .and_then(|index| textures.get(index))
             .and_then(|texture| texture.as_ref())
             .or(single.as_ref());
+        // N454: a flat normal map drives per-pixel shading in the smooth mode.
+        let flat_normal = crate::texture::flat_normal_map();
+        let generated_tangents;
+        let tangents: &[[f32; 4]] = if per_pixel {
+            if geometry.tangents.len() >= geometry.positions.len() {
+                &geometry.tangents
+            } else {
+                generated_tangents = generate_tangents(geometry);
+                &generated_tangents
+            }
+        } else {
+            &[]
+        };
+        let normal_bundle = per_pixel.then(|| {
+            crate::texture::NormalMap::smooth(
+                &geometry.normals,
+                tangents,
+                &flat_normal,
+                light,
+                ambient,
+            )
+        });
         crate::texture::draw_indexed(
             &mut pixels,
             &projected,
@@ -1694,7 +1738,7 @@ pub fn render_package_mesh(
                 .and_then(|mi| package.materials.get(mi))
                 .map(|m| m.uv_transform())
                 .unwrap_or_default(),
-            None,
+            normal_bundle,
             None,
             mdc_model::MAX_GEOMETRY_VERTICES,
         )?;
@@ -3174,6 +3218,67 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!(out[0][2].abs() > 0.9, "tangent rotated to z: {:?}", out[0]);
         assert_eq!(out[0][3], -1.0, "handedness preserved");
+    }
+
+    #[test]
+    fn mesh_render_mode_shades_per_pixel() {
+        // N454: the static mesh renderer accepts a smooth shade mode.
+        use mdc_model::{Material, Mesh, MeshGeometry, Model, Node};
+        let model = Model {
+            source: "t".into(),
+            nodes: vec![Node {
+                name: "root".into(),
+                mesh: Some(0),
+                ..Node::default()
+            }],
+            meshes: vec![Mesh {
+                name: "quad".into(),
+                vertices: 4,
+                indices: 6,
+                material: Some(0),
+                geometry: Some(MeshGeometry {
+                    positions: vec![
+                        [-0.5, -0.5, 0.0],
+                        [0.5, -0.5, 0.0],
+                        [0.5, 0.5, 0.0],
+                        [-0.5, 0.5, 0.0],
+                    ],
+                    indices: vec![0, 1, 2, 0, 2, 3],
+                    uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                    uv2: Vec::new(),
+                    normals: vec![
+                        [0.0, 0.0, 1.0],
+                        [1.0, 0.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0],
+                    ],
+                    colors: Vec::new(),
+                    tangents: Vec::new(),
+                    skin_joints: Vec::new(),
+                    skin_weights: Vec::new(),
+                    skin_joints2: Vec::new(),
+                    skin_weights2: Vec::new(),
+                    morph_targets: Vec::new(),
+                }),
+                ..Mesh::default()
+            }],
+            materials: vec![Material {
+                name: "m".into(),
+                color: Some([255, 255, 255]),
+                ..Material::default()
+            }],
+            ..Model::default()
+        };
+        let package =
+            mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d())
+                .unwrap();
+        let flat = render_package_mesh(&package.package, (16, 16)).unwrap();
+        let smooth =
+            render_package_mesh_mode(&package.package, (16, 16), ShadeMode::Smooth).unwrap();
+        assert_ne!(
+            flat.rgb565, smooth.rgb565,
+            "the smooth mode shades per pixel"
+        );
     }
 
     #[test]

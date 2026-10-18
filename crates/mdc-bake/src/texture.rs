@@ -477,6 +477,44 @@ pub(crate) struct NormalMap<'a> {
     pub anisotropy_rotation: f32,
 }
 
+impl<'a> NormalMap<'a> {
+    /// N454: a bundle for smooth (per-pixel) shading without a normal map: a flat
+    /// map at zero scale keeps the interpolated normal.
+    pub(crate) fn smooth(
+        normals: &'a [[f32; 3]],
+        tangents: &'a [[f32; 4]],
+        map: &'a TextureMap,
+        light: [f32; 3],
+        ambient: f32,
+    ) -> Self {
+        Self {
+            normals,
+            tangents,
+            map,
+            scale: 0.0,
+            light,
+            ambient,
+            specular: 0.0,
+            shininess: 1.0,
+            uv_transform: mdc_model::UvTransform::default(),
+            roughness_map: None,
+            roughness_factor: 1.0,
+            roughness_uv_transform: mdc_model::UvTransform::default(),
+            occlusion_map: None,
+            occlusion_strength: 1.0,
+            occlusion_uv_transform: mdc_model::UvTransform::default(),
+            clearcoat: 0.0,
+            clearcoat_shininess: 1.0,
+            sheen: 0.0,
+            sheen_roughness: 0.0,
+            iridescence: 0.0,
+            iridescence_ior: 1.3,
+            anisotropy: 0.0,
+            anisotropy_rotation: 0.0,
+        }
+    }
+}
+
 /// N393: an additive emissive texture layered on top of the shaded colour.
 pub(crate) struct EmissiveMap<'a> {
     pub map: &'a TextureMap,
