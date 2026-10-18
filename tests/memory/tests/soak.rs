@@ -1452,6 +1452,54 @@ fn http_stream_scale_requests_stay_bounded() {
 }
 
 #[test]
+fn texture_mip_packages_stay_bounded() {
+    // N491: mipped texture blobs survive sealing and reopening.
+    for _ in 0..50 {
+        let blob = mdc_model::TextureBlob {
+            width: 8,
+            height: 8,
+            rgb565: {
+                let mut rgb = Vec::new();
+                for i in 0..64u16 {
+                    rgb.extend_from_slice(&(i.wrapping_mul(1023)).to_le_bytes());
+                }
+                rgb
+            },
+            alpha: Vec::new(),
+            palette: Vec::new(),
+            indices: Vec::new(),
+            mips: Vec::new(),
+        };
+        let mipped = mdc_bake::mip_texture_blob(&blob, 8, false);
+        assert!(mipped.validate());
+        let mut package = mdc_model::DevicePackage {
+            target: "esp32-plane".into(),
+            mode: mdc_model::PackageMode::Mesh,
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            textures: Vec::new(),
+            materials: Vec::new(),
+            lights: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 0,
+            atlas: None,
+            texture: Some(mipped.clone()),
+            texture_blobs: vec![mipped],
+        };
+        package.texture_blobs.push(package.texture.clone().unwrap());
+        let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+        let reopened = mdc_model::MdcPackage::from_bytes(&sealed.to_bytes().unwrap()).unwrap();
+        let stored = &reopened.package.texture_blobs[0];
+        assert!(stored.validate());
+        assert!(stored.mips.len() <= 3, "8x8 -> 4x4, 2x2, 1x1");
+        assert!(reopened.verify().valid);
+    }
+}
+
+#[test]
 fn animated_scene_rendering_stays_bounded() {
     // N481: animation + rotation + additive blending over many ticks is bounded.
     use mdc_protocol::{SceneAnim, SceneNode};
