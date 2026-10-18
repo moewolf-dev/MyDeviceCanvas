@@ -483,6 +483,104 @@ pub fn extract_tile(frame: &[u8], frame_size: (u16, u16), tile: DirtyRect) -> Ve
     out
 }
 
+/// N526: the outcome of a dirty-region update.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateDecision {
+    /// A whole frame was sent (the accumulated area was not worth tiling).
+    Full,
+    /// Partial tiles were sent (`usize` = tile count; 0 = nothing was dirty).
+    Partial(usize),
+}
+
+/// N526: accumulate dirty rectangles across frames and decide when a full frame
+/// is cheaper than a partial update.
+#[derive(Debug, Clone)]
+pub struct DirtyTracker {
+    surface: (u16, u16),
+    tile_size: u16,
+    /// Tile coverage above this fraction switches to a full frame (0..=1).
+    full_threshold: f64,
+    pending: Vec<DirtyRect>,
+    updates: u64,
+}
+
+impl DirtyTracker {
+    pub fn new(surface: (u16, u16), tile_size: u16, full_threshold: f64) -> Self {
+        Self {
+            surface,
+            tile_size: tile_size.max(1),
+            full_threshold: full_threshold.clamp(0.0, 1.0),
+            pending: Vec::new(),
+            updates: 0,
+        }
+    }
+
+    /// Accumulate one dirty rectangle (or the whole surface when it is oversized).
+    pub fn mark(&mut self, rect: DirtyRect) {
+        if rect.2 > 0 && rect.3 > 0 {
+            self.pending.push(rect);
+        }
+    }
+
+    /// Mark the whole surface dirty.
+    pub fn mark_all(&mut self) {
+        self.mark((0, 0, self.surface.0, self.surface.1));
+    }
+
+    pub fn pending(&self) -> &[DirtyRect] {
+        &self.pending
+    }
+
+    /// The fraction of the surface's tiles the pending rectangles cover.
+    pub fn coverage(&self) -> f64 {
+        let total_tiles = u64::from(self.surface.0.div_ceil(self.tile_size).max(1))
+            * u64::from(self.surface.1.div_ceil(self.tile_size).max(1));
+        let covered = plan_dirty_tiles(self.surface, self.tile_size, &self.pending).len() as u64;
+        if total_tiles == 0 {
+            return 0.0;
+        }
+        covered as f64 / total_tiles as f64
+    }
+
+    /// Completed updates.
+    pub fn updates(&self) -> u64 {
+        self.updates
+    }
+
+    /// Decide what to send for the accumulated rectangles without clearing them.
+    pub fn decide(&self) -> UpdateDecision {
+        if self.pending.is_empty() {
+            return UpdateDecision::Partial(0);
+        }
+        let tiles = plan_dirty_tiles(self.surface, self.tile_size, &self.pending);
+        if self.coverage() > self.full_threshold {
+            UpdateDecision::Full
+        } else {
+            UpdateDecision::Partial(tiles.len())
+        }
+    }
+
+    /// Decide and clear the accumulated rectangles.
+    pub fn take(&mut self) -> UpdateDecision {
+        let decision = self.decide();
+        if decision != UpdateDecision::Partial(0) {
+            self.updates = self.updates.saturating_add(1);
+        }
+        self.pending.clear();
+        decision
+    }
+
+    /// The tiles for the pending rectangles (empty when a full frame is chosen).
+    pub fn tiles(&self) -> Vec<DirtyRect> {
+        match self.decide() {
+            UpdateDecision::Full | UpdateDecision::Partial(0) => Vec::new(),
+            UpdateDecision::Partial(_) => {
+                plan_dirty_tiles(self.surface, self.tile_size, &self.pending)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Tile {
     pub surface_id: String,
@@ -1735,6 +1833,44 @@ impl<T: Transport> Session<T> {
             })?;
         }
         Ok(tiles.len())
+    }
+
+    /// N526: send the accumulated dirty regions of `frame`, or a full frame when
+    /// the tracker decides the partial update is not worth it. The frame must be
+    /// tightly packed RGB565 at `tracker`'s surface size.
+    pub fn send_dirty_update(
+        &mut self,
+        surface_id: &str,
+        base_frame_id: u64,
+        frame: &[u8],
+        tracker: &mut DirtyTracker,
+    ) -> Result<UpdateDecision, CoreError> {
+        let decision = tracker.decide();
+        let tiles = tracker.tiles();
+        let (surface, tile_size) = (tracker.surface, tracker.tile_size);
+        tracker.take();
+        match decision {
+            UpdateDecision::Full => {
+                self.send_frame(Frame {
+                    surface_id: surface_id.to_string(),
+                    width: surface.0,
+                    height: surface.1,
+                    bytes: frame.to_vec(),
+                })?;
+                Ok(UpdateDecision::Full)
+            }
+            UpdateDecision::Partial(_) => {
+                let sent = self.send_dirty_tiles(
+                    surface_id,
+                    base_frame_id,
+                    frame,
+                    surface,
+                    tile_size,
+                    &tiles,
+                )?;
+                Ok(UpdateDecision::Partial(sent))
+            }
+        }
     }
 
     /// Send an OTA control command; gated by device `ota` capability.
@@ -4052,6 +4188,120 @@ mod tests {
         assert_eq!(sent, 1, "three overlapping rects collapse to one tile");
         assert_eq!(session.stats().tiles_sent, 1);
         assert_eq!(session.stats().tile_bytes_sent, 32);
+    }
+
+    #[test]
+    fn dirty_tracker_accumulates_and_escalates() {
+        // N526: dirty regions accumulate across frames and switch to a full frame
+        // once they cover too much of the surface.
+        let mut tracker = DirtyTracker::new((8, 8), 4, 0.5);
+        assert_eq!(tracker.decide(), UpdateDecision::Partial(0));
+        tracker.mark((0, 0, 1, 1));
+        assert_eq!(tracker.decide(), UpdateDecision::Partial(1));
+        assert!((tracker.coverage() - 0.25).abs() < 1e-9);
+        // A second (adjacent-in-grid) region adds another tile.
+        tracker.mark((4, 0, 1, 1));
+        assert_eq!(tracker.decide(), UpdateDecision::Partial(2));
+        // A third pushes coverage past the threshold -> a full frame.
+        tracker.mark((0, 4, 1, 1));
+        assert_eq!(tracker.decide(), UpdateDecision::Full);
+        assert!(tracker.tiles().is_empty(), "a full frame has no tiles");
+        assert_eq!(tracker.take(), UpdateDecision::Full);
+        assert!(tracker.pending().is_empty());
+        assert_eq!(tracker.updates(), 1);
+        // Marking everything is always a full frame.
+        tracker.mark_all();
+        assert_eq!(tracker.decide(), UpdateDecision::Full);
+        tracker.take();
+        // Overlapping rectangles collapse before the threshold is applied.
+        let mut tight = DirtyTracker::new((8, 8), 4, 0.9);
+        tight.mark((0, 0, 2, 2));
+        tight.mark((1, 1, 2, 2));
+        assert_eq!(tight.decide(), UpdateDecision::Partial(1));
+    }
+
+    #[test]
+    fn send_dirty_update_chooses_tiles_or_a_frame() {
+        // N526: the session sends the tracker's decision.
+        let (host_link, mut device_link) = MemoryLink::pair();
+        let mut session = Session::new(host_link);
+        session.connect().unwrap();
+        let hello_bytes = device_link.read().unwrap().unwrap();
+        let (hello, _) = Packet::decode(&hello_bytes, 4096).unwrap();
+        let caps = Capabilities {
+            device_id: "sim-plan".into(),
+            firmware: "simulator".into(),
+            surfaces: vec![Surface {
+                id: "main".into(),
+                width: 8,
+                height: 8,
+                pixel_format: "RGB565".into(),
+                stride: 16,
+                rotation: 0,
+                preferred_tile_size: 4,
+                supports_partial_update: true,
+                supports_full_framebuffer: false,
+            }],
+            frame: true,
+            tile: true,
+            touch: false,
+            ota: false,
+            max_message: 4096,
+            max_chunk: 16384,
+            max_in_flight: 4,
+            max_fps: 30,
+            mirror: mdc_protocol::MirrorCapability::disabled(),
+            local_display_fps: 0,
+            mirror_fps: 0,
+            mirror_bandwidth: 0,
+            renderer: None,
+            config: mdc_protocol::ConfigCapability::default(),
+            scene: mdc_protocol::SceneCapability::default(),
+            boot_id: 0,
+            run_id: 0,
+        };
+        device_link
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: hello.request_id,
+                    payload: encode_control(&caps).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        let frame = vec![0u8; 8 * 8 * 2];
+        let mut tracker = DirtyTracker::new((8, 8), 4, 0.5);
+        // A small change goes out as one tile.
+        tracker.mark((0, 0, 1, 1));
+        assert_eq!(
+            session
+                .send_dirty_update("main", 0, &frame, &mut tracker)
+                .unwrap(),
+            UpdateDecision::Partial(1)
+        );
+        assert_eq!(session.stats().tiles_sent, 1);
+        // Nothing dirty sends nothing.
+        assert_eq!(
+            session
+                .send_dirty_update("main", 0, &frame, &mut tracker)
+                .unwrap(),
+            UpdateDecision::Partial(0)
+        );
+        // A large change escalates to a full frame.
+        tracker.mark_all();
+        assert_eq!(
+            session
+                .send_dirty_update("main", 0, &frame, &mut tracker)
+                .unwrap(),
+            UpdateDecision::Full
+        );
+        assert_eq!(session.stats().frames_sent, 1);
+        assert_eq!(tracker.updates(), 2, "the empty update does not count");
     }
 
     #[test]
