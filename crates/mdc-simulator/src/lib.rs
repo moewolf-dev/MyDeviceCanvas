@@ -4431,6 +4431,8 @@ mod tests {
                 volume_attenuation_distance: None,
                 iridescence_factor: None,
                 iridescence_ior: None,
+                anisotropy_strength: None,
+                anisotropy_rotation: None,
             }],
             lights: Vec::new(),
             skeletons: Vec::new(),

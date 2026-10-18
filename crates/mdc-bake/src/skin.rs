@@ -1168,6 +1168,9 @@ struct SceneDrawable<'a> {
     /// N435: iridescence factor (0 = none) and its IOR.
     iridescence: f32,
     iridescence_ior: f32,
+    /// N444: anisotropy strength (0 = none) and rotation in radians.
+    anisotropy: f32,
+    anisotropy_rotation: f32,
 }
 
 /// N327: default key light (straight down -z, i.e. toward +z-facing surfaces) and
@@ -1337,6 +1340,8 @@ fn draw_scene_sorted(
                     sheen_roughness: d.sheen_roughness,
                     iridescence: d.iridescence,
                     iridescence_ior: d.iridescence_ior,
+                    anisotropy: d.anisotropy,
+                    anisotropy_rotation: d.anisotropy_rotation,
                 }),
                 _ => None,
             },
@@ -1489,6 +1494,8 @@ pub fn render_scene_at(
             sheen_roughness: 0.0,
             iridescence: 0.0,
             iridescence_ior: 1.3,
+            anisotropy: 0.0,
+            anisotropy_rotation: 0.0,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -2143,13 +2150,20 @@ pub fn render_package_scene_clip_mode(
             .and_then(|mi| package.materials.get(mi))
             .map(|material| material.iridescence())
             .unwrap_or((0.0, 1.3));
+        // N444: anisotropy.
+        let (anisotropy, anisotropy_rotation) = mesh
+            .material
+            .and_then(|mi| package.materials.get(mi))
+            .map(|material| material.anisotropy())
+            .unwrap_or((0.0, 0.0));
         let per_pixel = (usable_normal_map
             || smooth
             || roughness_map.is_some()
             || occlusion_map.is_some()
             || clearcoat > 0.0
             || sheen > 0.0
-            || iridescence > 0.0)
+            || iridescence > 0.0
+            || anisotropy > 0.0)
             && has_normals;
         // N387: material-derived Blinn-Phong parameters for the specular mode.
         let (specular, shininess) = if mode == ShadeMode::SmoothSpecular {
@@ -2305,6 +2319,8 @@ pub fn render_package_scene_clip_mode(
             sheen_roughness,
             iridescence,
             iridescence_ior,
+            anisotropy,
+            anisotropy_rotation,
         });
     }
     draw_scene_sorted(&mut pixels, size, drawables)?;
@@ -3161,6 +3177,64 @@ mod tests {
     }
 
     #[test]
+    fn anisotropy_stretches_the_highlight() {
+        // N444: an anisotropic material adds a brushed highlight.
+        let build = |anisotropy: f32| Model {
+            source: "t".into(),
+            nodes: vec![Node {
+                name: "n".into(),
+                mesh: Some(0),
+                ..Node::default()
+            }],
+            meshes: vec![mdc_model::Mesh {
+                name: "q".into(),
+                vertices: 4,
+                indices: 6,
+                material: Some(0),
+                geometry: Some(mdc_model::MeshGeometry {
+                    normals: vec![[0.0, 0.0, 1.0]; 4],
+                    tangents: vec![[1.0, 0.0, 0.0, 1.0]; 4],
+                    ..quad_geometry()
+                }),
+                ..mdc_model::Mesh::default()
+            }],
+            materials: vec![mdc_model::Material {
+                name: "metal".into(),
+                color: Some([64, 64, 64]),
+                anisotropy_strength: Some(anisotropy),
+                ..mdc_model::Material::default()
+            }],
+            // An off-axis key light so the half vector has a tangent component.
+            lights: vec![mdc_model::Light {
+                name: "key".into(),
+                kind: "directional".into(),
+                color: [255, 255, 255],
+                intensity: 1.0,
+                direction: [-1.0, 0.0, 0.0],
+            }],
+            ..Model::default()
+        };
+        let render = |anisotropy: f32| {
+            let package = mdc_model::compile_to_package(
+                &build(anisotropy),
+                &mdc_model::RendererCapability::full_3d(),
+            )
+            .unwrap();
+            render_package_scene(&package.package, 0.0, (16, 16)).unwrap()
+        };
+        let sum = |f: &BakedTexture| -> u64 {
+            f.rgb565
+                .chunks_exact(2)
+                .map(|b| u64::from(u16::from_le_bytes([b[0], b[1]])) >> 5)
+                .sum()
+        };
+        assert!(
+            sum(&render(1.0)) > sum(&render(0.0)),
+            "anisotropy brightens"
+        );
+    }
+
+    #[test]
     fn iridescence_tints_the_highlight() {
         // N435: an iridescent material adds a coloured highlight.
         let build = |iridescence: f32| Model {
@@ -3239,6 +3313,8 @@ mod tests {
                     volume_attenuation_distance: Some(distance),
                     iridescence_factor: None,
                     iridescence_ior: None,
+                    anisotropy_strength: None,
+                    anisotropy_rotation: None,
                     ..mdc_model::Material::default()
                 }],
                 ..Model::default()
@@ -3287,6 +3363,8 @@ mod tests {
                     volume_attenuation_distance: None,
                     iridescence_factor: None,
                     iridescence_ior: None,
+                    anisotropy_strength: None,
+                    anisotropy_rotation: None,
                     ..mdc_model::Material::default()
                 }],
                 ..Model::default()

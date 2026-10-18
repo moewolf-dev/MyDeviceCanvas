@@ -472,6 +472,9 @@ pub(crate) struct NormalMap<'a> {
     /// N435: iridescence factor (0 = none) and its IOR.
     pub iridescence: f32,
     pub iridescence_ior: f32,
+    /// N444: anisotropy strength (0 = none) and rotation in radians.
+    pub anisotropy: f32,
+    pub anisotropy_rotation: f32,
 }
 
 /// N393: an additive emissive texture layered on top of the shaded colour.
@@ -596,6 +599,21 @@ pub(crate) fn apply_normal_map(
     if nm.clearcoat > 0.0 {
         let half = v3_normalize([nm.light[0], nm.light[1], nm.light[2] + 1.0]);
         let spec = nm.clearcoat * v3_dot(n, half).max(0.0).powf(nm.clearcoat_shininess);
+        if spec > 0.0 {
+            value = rgb565_add(value, rgb565_scale(0xFFFF, spec.clamp(0.0, 1.0)));
+        }
+    }
+    // N444: an anisotropic (brushed) highlight stretched along the tangent.
+    if nm.anisotropy > 0.0 {
+        let half = v3_normalize([nm.light[0], nm.light[1], nm.light[2] + 1.0]);
+        let (sin, cos) = nm.anisotropy_rotation.sin_cos();
+        let brush = [
+            t[0] * cos + b[0] * sin,
+            t[1] * cos + b[1] * sin,
+            t[2] * cos + b[2] * sin,
+        ];
+        let along = v3_dot(brush, half).abs();
+        let spec = nm.anisotropy * along * v3_dot(world, half).max(0.0).powf(12.0);
         if spec > 0.0 {
             value = rgb565_add(value, rgb565_scale(0xFFFF, spec.clamp(0.0, 1.0)));
         }

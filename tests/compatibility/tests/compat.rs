@@ -896,6 +896,8 @@ fn packaged_masked_texture_cuts_out_on_render() {
             volume_attenuation_distance: None,
             iridescence_factor: None,
             iridescence_ior: None,
+            anisotropy_strength: None,
+            anisotropy_rotation: None,
         }],
         lights: Vec::new(),
         skeletons: Vec::new(),
@@ -999,6 +1001,8 @@ fn masked_material_cuts_out_transparent_texels() {
             volume_attenuation_distance: None,
             iridescence_factor: None,
             iridescence_ior: None,
+            anisotropy_strength: None,
+            anisotropy_rotation: None,
         }],
         ..Model::default()
     };
@@ -1675,6 +1679,8 @@ fn unlit_material_and_vertex_colours_render_on_the_device() {
                 volume_attenuation_distance: None,
                 iridescence_factor: None,
                 iridescence_ior: None,
+                anisotropy_strength: None,
+                anisotropy_rotation: None,
                 ..Material::default()
             }],
             ..Model::default()
@@ -1795,6 +1801,8 @@ fn occlusion_texture_darkens_the_shadowed_triangles() {
             volume_attenuation_distance: None,
             iridescence_factor: None,
             iridescence_ior: None,
+            anisotropy_strength: None,
+            anisotropy_rotation: None,
             ..Material::default()
         }],
         textures: vec![
@@ -1946,6 +1954,8 @@ fn normal_map_perturbs_per_pixel_shading() {
             volume_attenuation_distance: None,
             iridescence_factor: None,
             iridescence_ior: None,
+            anisotropy_strength: None,
+            anisotropy_rotation: None,
             ..Material::default()
         }],
         textures: vec![
@@ -3040,6 +3050,8 @@ fn clearcoat_adds_a_second_highlight() {
             volume_attenuation_distance: None,
             iridescence_factor: None,
             iridescence_ior: None,
+            anisotropy_strength: None,
+            anisotropy_rotation: None,
             ..Material::default()
         }],
         ..Model::default()
@@ -3190,6 +3202,8 @@ fn sheen_adds_a_rim_highlight() {
             volume_attenuation_distance: None,
             iridescence_factor: None,
             iridescence_ior: None,
+            anisotropy_strength: None,
+            anisotropy_rotation: None,
             ..Material::default()
         }],
         ..Model::default()

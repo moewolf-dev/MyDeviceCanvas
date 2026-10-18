@@ -412,6 +412,12 @@ pub struct Material {
     /// N435: `KHR_materials_iridescence` `iridescenceIor` (default 1.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub iridescence_ior: Option<f32>,
+    /// N444: `KHR_materials_anisotropy` strength (0..1; default 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anisotropy_strength: Option<f32>,
+    /// N444: `KHR_materials_anisotropy` rotation in radians (default 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anisotropy_rotation: Option<f32>,
 }
 
 /// N373: glTF `KHR_texture_transform`. `rotation` is in radians; the transform is
@@ -619,6 +625,14 @@ impl Material {
         (
             self.iridescence_factor.unwrap_or(0.0).clamp(0.0, 1.0),
             self.iridescence_ior.unwrap_or(1.3).clamp(1.0, 3.0),
+        )
+    }
+
+    /// N444: `KHR_materials_anisotropy` strength and rotation (radians).
+    pub fn anisotropy(&self) -> (f32, f32) {
+        (
+            self.anisotropy_strength.unwrap_or(0.0).clamp(0.0, 1.0),
+            self.anisotropy_rotation.unwrap_or(0.0),
         )
     }
 }

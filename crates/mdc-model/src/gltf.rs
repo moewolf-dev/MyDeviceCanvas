@@ -455,6 +455,16 @@ impl GltfImporter {
                 .and_then(|i| i.get("iridescenceIor"))
                 .and_then(Value::as_f64)
                 .map(|v| v.clamp(1.0, 3.0) as f32);
+            // N444: KHR_materials_anisotropy.
+            let anisotropy_ext = material_ext.and_then(|e| e.get("KHR_materials_anisotropy"));
+            let anisotropy_strength = anisotropy_ext
+                .and_then(|a| a.get("anisotropyStrength"))
+                .and_then(Value::as_f64)
+                .map(|v| v.clamp(0.0, 1.0) as f32);
+            let anisotropy_rotation = anisotropy_ext
+                .and_then(|a| a.get("anisotropyRotation"))
+                .and_then(Value::as_f64)
+                .map(|v| v as f32);
             // N379: normalTexture (tangent-space normal map).
             let normal_texture = material
                 .get("normalTexture")
@@ -536,6 +546,8 @@ impl GltfImporter {
                 volume_attenuation_distance,
                 iridescence_factor,
                 iridescence_ior,
+                anisotropy_strength,
+                anisotropy_rotation,
             });
         }
 
