@@ -1437,6 +1437,80 @@ fn http_stream_scale_requests_stay_bounded() {
 }
 
 #[test]
+fn animated_scene_rendering_stays_bounded() {
+    // N481: animation + rotation + additive blending over many ticks is bounded.
+    use mdc_protocol::{SceneAnim, SceneNode};
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 16,
+        height: 16,
+        ..BoardProfile::default()
+    });
+    let mut session = mdc_core::Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    let _ = session.poll();
+    let scene = SceneNode {
+        name: "root".into(),
+        kind: "group".into(),
+        rect: None,
+        value: None,
+        value2: None,
+        opacity: None,
+        visible: None,
+        anim: None,
+        rotate: None,
+        blend: None,
+        children: vec![
+            SceneNode {
+                name: "spin".into(),
+                kind: "rect".into(),
+                rect: Some([0, 0, 16, 4]),
+                value: Some("#FF0000".into()),
+                value2: None,
+                opacity: Some(255),
+                visible: None,
+                anim: Some(SceneAnim {
+                    duration_ms: 100,
+                    looping: true,
+                    opacity: vec![[0, 0], [50, 255], [100, 0]],
+                    rect: Vec::new(),
+                }),
+                rotate: Some(90),
+                blend: Some("additive".to_string()),
+                children: Vec::new(),
+            },
+            SceneNode {
+                name: "fade".into(),
+                kind: "gradient".into(),
+                rect: Some([0, 0, 16, 16]),
+                value: Some("#000000".into()),
+                value2: Some("#FFFFFF".into()),
+                opacity: Some(128),
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                children: Vec::new(),
+            },
+        ],
+    };
+    session.set_scene(scene).unwrap();
+    device.poll().unwrap();
+    let _ = session.poll();
+    let mut size = None;
+    for tick in 0..200u64 {
+        device.clock.tick = tick * 3;
+        assert!(device.render_scene());
+        assert!(device.hit_test(2, 2).is_some());
+        match size {
+            None => size = Some(device.pixels().len()),
+            Some(expected) => assert_eq!(device.pixels().len(), expected),
+        }
+    }
+    assert!(size.unwrap() > 0);
+}
+
+#[test]
 fn disk_chunked_upload_stays_bounded() {
     // N471: repeated spooled uploads leave only content files behind.
     let dir = std::env::temp_dir().join(format!("mdc-upload-soak-{}", std::process::id()));
