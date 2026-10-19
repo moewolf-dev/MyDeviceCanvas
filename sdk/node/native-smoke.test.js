@@ -71,6 +71,25 @@ test("native bounded mirror take drops an oversized frame", { skip: !native }, a
   mdc.dispose();
 });
 
+test("native mirror mode and tile reconciliation are exposed", { skip: !native }, async () => {
+  // N588: the real .node binding reports the negotiated mode and the tile
+  // reconciliation snapshot end to end.
+  const mdc = await MyDeviceCanvas.create();
+  await mdc.openBoard("linux-virt");
+  await mdc.startMirror("main", { mode: "dirty-region", maxFps: 15 });
+  assert.equal(await mdc.mirrorMode(), "dirty-region");
+  const report = await mdc.tileReconciliation();
+  assert.ok(report, "a reconciliation snapshot");
+  assert.equal(typeof report.sent, "number");
+  assert.equal(typeof report.received, "number");
+  assert.equal(typeof report.missing, "number");
+  assert.equal(report.sent, 0, "no partial updates were sent");
+  assert.equal(report.consistent, true);
+  await mdc.stopMirror("main");
+  assert.equal(await mdc.mirrorMode(), "");
+  mdc.dispose();
+});
+
 test("native installPackage rejects a malformed package", { skip: !native }, async () => {
   const mdc = await MyDeviceCanvas.create();
   await assert.rejects(mdc.installPackage(new Uint8Array([1, 2, 3])));
