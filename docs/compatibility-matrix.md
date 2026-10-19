@@ -321,6 +321,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Node mirror/tile smoke (N588) | sim-verified (real `.node`) | n/a |
 | JSONL directory archive (N589) | sim-verified (`--out DIR`) | n/a |
 | KTX2 verify (N590) | sim-verified (`ktx2_ok` + diff) | n/a |
+| meshopt vertex round-trip (N593) | sim-verified (`decode(encode(v))`) | n/a |
+| Cache mode report (N594) | sim-verified (`off`/`adaptive`/`fixed`) | n/a |
+| Image fit composition (N595) | sim-verified (fit + flip/align) | physical: pending |
+| Board config defaults (N596) | sim-verified (per-board) | n/a |
+| WS log redaction (N597) | sim-verified (token only) | n/a |
+| C mirror/tile smoke (N598) | sim-verified (aligned with Node) | n/a |
+| Archive manifest (N599) | sim-verified (`manifest.json`) | n/a |
+| Model KTX2 warning (N600) | sim-verified (`validate`) | n/a |
 
 ## G03 sim exit
 

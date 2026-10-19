@@ -396,9 +396,13 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
   [`meshopt-coverage.md`](meshopt-coverage.md).
 - N583: the index-sequence stage is round-tripped in tests
   (`decode(encode(values)) == values`) using a test-only inverse encoder.
+- N593: likewise the v1 vertex-buffer raw-delta stage round-trips; `mdc package
+  --report` labels the cache policy (`cache_mode`: `off`/`adaptive`/`fixed`; N594).
 - N590: `MdcPackage::verify()` sets `ktx2_ok` — a texture that carries a readable
   KTX2 header must declare the same width/height as the container, otherwise the
   package is invalid. `mdc diff` compares `ktx2_textures`/`ktx2_slices`.
+- N600: `Model::validate()` (the model layer) reports the same KTX2 size mismatch
+  as a problem, so `mdc validate`/`mdc diff` and the package gate agree.
 - N564: `optimize_geometry`/`optimize_package_geometry` run compaction *before*
   index reordering (smaller working set); `mdc package --optimize-geometry [CACHE]`
   enables both at once.

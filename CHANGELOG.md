@@ -2,6 +2,27 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.72] — meshopt vertex round-trip, cache-mode report, fit composition, board config defaults, WS log redaction, C smoke, archive manifest, model KTX2 warning (N593–N602)
+
+### Added
+
+- a v1 vertex-buffer round-trip test (`decode(encode(values)) == values`) with a
+  test-only raw-delta encoder (N593)
+- `mdc package --report` `cache_mode` (`off`/`adaptive`/`fixed`) + `cache_size`
+  (N594)
+- an `image` `fit` + `flip-h`/`rotate`/`align` composition test (N595)
+- per-board `BoardProfile.config_defaults`; `linux-virt` ships
+  `tile_missing_threshold = 2` (N596)
+- WebSocket log entries record only the extension token, never its parameters
+  (N597)
+- a C smoke mirroring the Node mirror/tile sequence (N598)
+- `mdc-inspector --out DIR` writes `manifest.json` beside the JSONL archive (N599)
+- `Model::validate` reports a KTX2 declared-size/header mismatch (N600)
+
+### Notes
+
+- Physical verification (D05/G03/H06) is still pending.
+
 ## [0.1.71] — meshopt round-trip, cache tiers, image fit align, config threshold, WS log summary, KTX2 verify (N583–N592)
 
 ### Added
