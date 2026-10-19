@@ -202,6 +202,33 @@ fn write_archive_manifest(dir: &str, keep: usize, max_bytes: u64) -> std::io::Re
     )
 }
 
+/// N619: check an archive's `manifest.json` against the files on disk — each
+/// listed file must exist and be non-empty. Returns a small report.
+fn verify_archive(dir: &str) -> std::io::Result<serde_json::Value> {
+    let manifest_path = std::path::Path::new(dir).join("manifest.json");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path)?)?;
+    let files = manifest["files"].as_array().cloned().unwrap_or_default();
+    let mut missing = Vec::new();
+    let mut empty = Vec::new();
+    for file in &files {
+        let Some(name) = file.as_str() else { continue };
+        let path = std::path::Path::new(dir).join(name);
+        match std::fs::metadata(&path) {
+            Ok(meta) if meta.len() > 0 => {}
+            Ok(_) => empty.push(name.to_string()),
+            Err(_) => missing.push(name.to_string()),
+        }
+    }
+    Ok(serde_json::json!({
+        "dir": dir,
+        "declared": files.len(),
+        "missing": missing,
+        "empty": empty,
+        "ok": missing.is_empty() && empty.is_empty(),
+    }))
+}
+
 /// N539: the one-line verdict a thresholded watch ends with.
 fn verdict_line(summary: &WatchSummary, alerts: &[String]) -> String {
     serde_json::json!({
@@ -347,6 +374,23 @@ fn main() {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(20);
         println!("{}", rss_delta(count, interval));
+        return;
+    }
+    // N619: validate an archive's manifest against the files on disk.
+    if args.iter().any(|a| a == "--check-archive") {
+        let dir = flag_value("--check-archive").unwrap_or_default();
+        match verify_archive(&dir) {
+            Ok(report) => {
+                println!("{report}");
+                if report["ok"] != serde_json::json!(true) {
+                    std::process::exit(1);
+                }
+            }
+            Err(error) => {
+                eprintln!("inspector error: {error}");
+                std::process::exit(1);
+            }
+        }
         return;
     }
     // N509: a bounded peak-memory probe over a cyclic allocation.
@@ -613,6 +657,15 @@ mod tests {
         // N609: the archive records its rotation count and a timestamp.
         assert_eq!(manifest["rotated"], 1);
         assert!(manifest["generatedAt"].as_u64().unwrap() > 0);
+        // N619: the manifest checks out against the files on disk.
+        let check = verify_archive(dir.to_str().unwrap()).unwrap();
+        assert_eq!(check["ok"], true, "{check}");
+        assert_eq!(check["declared"], 2);
+        // A deleted rotated copy is reported.
+        std::fs::remove_file(dir.join("mdc-history.jsonl.1")).unwrap();
+        let check = verify_archive(dir.to_str().unwrap()).unwrap();
+        assert_eq!(check["ok"], false);
+        assert_eq!(check["missing"].as_array().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -4060,6 +4060,13 @@ fn cmd_diff(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// N399: import a model and print a validation report; exit non-zero when invalid.
+/// N620: whether a validation report fails (a problem always, a warning under
+/// `--strict`). KTX2 issues land here: size mismatch is a problem, and the
+/// transcoding note is a warning caught by strict.
+fn validation_failed(report: &mdc_model::ValidationReport, strict: bool) -> bool {
+    !report.valid || (strict && !report.warnings.is_empty())
+}
+
 fn cmd_validate(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     // N466: `--strict` treats warnings as failures.
     let strict = args.iter().any(|a| a == "--strict");
@@ -4089,8 +4096,8 @@ fn cmd_validate(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "summary": report.summary,
         }))?
     );
-    // N466: in strict mode a warning is also a failure.
-    if !report.valid || (strict && !report.warnings.is_empty()) {
+    // N466/N620: in strict mode a warning (e.g. a KTX2 transcoding note) fails too.
+    if validation_failed(&report, strict) {
         std::process::exit(1);
     }
     Ok(())
@@ -4121,17 +4128,13 @@ fn cmd_verify(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// N604: the vertex-cache size used for the locality report.
-const CACHE_REPORT_SIZE: usize = 32;
+/// N604/N614: the vertex-cache size used for the locality report (shared with
+/// the package manifest).
+const CACHE_REPORT_SIZE: usize = mdc_model::CACHE_REPORT_SIZE as usize;
 
-/// N604: the cache misses of every mesh with geometry at `cache_size`.
+/// N604/N614: the cache misses of every mesh with geometry at `cache_size`.
 fn package_cache_misses(package: &mdc_model::DevicePackage, cache_size: usize) -> u64 {
-    package
-        .meshes
-        .iter()
-        .filter_map(|mesh| mesh.geometry.as_ref())
-        .map(|geometry| mdc_bake::index_cache_misses(geometry, cache_size))
-        .sum()
+    mdc_model::package_cache_misses(package, cache_size)
 }
 
 /// N417: lint a scene JSON file (a `SceneNode` or a `SceneCommand` with `scene`).
@@ -4599,6 +4602,30 @@ mod tests {
             mdc_bake::ShadeMode::Flat,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn strict_validation_flags_ktx2_notes() {
+        // N620: the KTX2 transcoding note is a warning that strict treats as a
+        // failure; a size mismatch is a problem regardless.
+        let warn = mdc_model::ValidationReport {
+            valid: true,
+            problems: Vec::new(),
+            warnings: vec![
+                "texture 0 is a KTX2/Basis container (transcoding is not supported)".into(),
+            ],
+            summary: mdc_model::ModelSummary::default(),
+        };
+        assert!(validation_failed(&warn, true));
+        assert!(!validation_failed(&warn, false));
+        let problem = mdc_model::ValidationReport {
+            valid: false,
+            problems: vec!["texture 0 KTX2 declares 8x8 but the header says 16x8".into()],
+            warnings: Vec::new(),
+            summary: mdc_model::ModelSummary::default(),
+        };
+        assert!(validation_failed(&problem, false));
+        assert!(validation_failed(&problem, true));
     }
 
     #[test]

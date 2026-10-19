@@ -411,6 +411,17 @@ public final class MdcSession {
         return String(cString: out)
     }
 
+    /// N618: the partial-update tile reconciliation (parity with the C ABI's
+    /// `mdc_session_tile_reconciliation` and the Node SDK).
+    public func tileReconciliation() -> (sent: UInt64, received: UInt64, missing: UInt64) {
+        guard let raw else { return (0, 0, 0) }
+        var sent: UInt64 = 0
+        var received: UInt64 = 0
+        var missing: UInt64 = 0
+        _ = mdc_session_tile_reconciliation(raw, &sent, &received, &missing)
+        return (sent, received, missing)
+    }
+
     /// N549: frames dropped because the caller's mirror buffer was too small
     /// (parity with the C ABI's `mdc_mirror_skips`).
     public func mirrorSkips() -> UInt64 {
