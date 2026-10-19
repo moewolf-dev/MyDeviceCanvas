@@ -184,6 +184,35 @@ pub unsafe extern "C" fn mdc_session_tile_stats(
     0
 }
 
+/// N576: write the host's partial-update reconciliation (null out-params are
+/// ignored). `missing` is `sent - received`, derived in one place.
+///
+/// # Safety
+///
+/// `session` must be a valid pointer returned by a `mdc_session_*` constructor.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_tile_reconciliation(
+    session: *const MdcSession,
+    sent: *mut u64,
+    received: *mut u64,
+    missing: *mut u64,
+) -> c_int {
+    let Some(session) = session.as_ref() else {
+        return -1;
+    };
+    let report = session.session.tile_reconciliation();
+    if !sent.is_null() {
+        *sent = report.sent;
+    }
+    if !received.is_null() {
+        *received = report.received;
+    }
+    if !missing.is_null() {
+        *missing = report.missing();
+    }
+    0
+}
+
 /// N498: tune gesture recognition (tap window, long-press window, drag distance).
 /// Returns 0 on success, negative on error.
 ///
@@ -2136,6 +2165,31 @@ mod tests {
             );
             assert_eq!(
                 mdc_session_tile_stats(std::ptr::null(), &mut tiles, &mut bytes),
+                -1
+            );
+            mdc_session_destroy(session);
+        }
+    }
+
+    #[test]
+    fn tile_reconciliation_is_reported_via_c_abi() {
+        // N576: the reconciliation is exposed to C (null out-params ignored).
+        unsafe {
+            let session = mdc_session_create();
+            assert!(!session.is_null());
+            let (mut sent, mut received, mut missing) = (9u64, 9u64, 9u64);
+            assert_eq!(
+                mdc_session_tile_reconciliation(session, &mut sent, &mut received, &mut missing),
+                0
+            );
+            assert_eq!((sent, received, missing), (0, 0, 0));
+            assert_eq!(
+                mdc_session_tile_reconciliation(
+                    std::ptr::null(),
+                    &mut sent,
+                    &mut received,
+                    &mut missing
+                ),
                 -1
             );
             mdc_session_destroy(session);

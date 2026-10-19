@@ -142,6 +142,11 @@ int mdc_session_simulate_input(MdcSession* session, const char* phase, uint16_t 
 int mdc_session_tile_stats(const MdcSession* session, uint64_t* tiles_sent,
                            uint64_t* tile_bytes_sent);
 
+/** N576: write the tile reconciliation against the device (sent/received/
+ *  missing; null out-params are ignored). Returns 0 or -1. */
+int mdc_session_tile_reconciliation(const MdcSession* session, uint64_t* sent,
+                                    uint64_t* received, uint64_t* missing);
+
 /** N498: tune gesture recognition thresholds (0 or negative on error). */
 int mdc_session_set_gesture_config(MdcSession* session, uint64_t tap_max_ms, uint64_t long_press_ms,
                                    uint16_t drag_threshold);
