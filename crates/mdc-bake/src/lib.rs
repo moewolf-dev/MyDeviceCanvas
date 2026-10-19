@@ -1152,6 +1152,33 @@ pub struct GeometryOptimization {
     pub cache_misses: u64,
 }
 
+/// N574: a vertex-cache size scaled to the mesh, so a small mesh does not pay
+/// for a large cache and a large one keeps more reuse. Bounded to `[16, 64]`,
+/// which brackets the common GPU/MCU vertex-cache sizes.
+pub fn adaptive_cache_size(geometry: &mdc_model::MeshGeometry) -> usize {
+    let triangles = geometry.indices.len() / 3;
+    if triangles < 128 {
+        16
+    } else if triangles < 2048 {
+        32
+    } else {
+        64
+    }
+}
+
+/// N574: optimize with a mesh-scaled cache (`cache_size == 0` selects it).
+pub fn optimize_geometry_auto(
+    geometry: &mut mdc_model::MeshGeometry,
+    cache_size: usize,
+) -> GeometryOptimization {
+    let cache = if cache_size == 0 {
+        adaptive_cache_size(geometry)
+    } else {
+        cache_size
+    };
+    optimize_geometry(geometry, cache)
+}
+
 /// N564: run compaction *before* index reordering (fewer vertices to reorder and
 /// a smaller working set for the cache). Returns what changed.
 pub fn optimize_geometry(
