@@ -514,6 +514,8 @@ fn cmd_package(
     let mut compact_geometry = false;
     // N555: reorder triangles for vertex-cache locality (0 = 32-entry cache).
     let mut optimize_index: usize = 0;
+    // N574: combined compaction + reordering (`--optimize-geometry`).
+    let mut optimize_geometry = false;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -549,10 +551,12 @@ fn cmd_package(
             "--optimize-index" => {
                 optimize_index = iter.next().and_then(|v| v.parse().ok()).unwrap_or(32)
             }
-            // N564: compaction + index reordering in one pass.
+            // N564/N574: compaction + index reordering in one pass; a bare flag
+            // uses a mesh-scaled cache (an explicit value overrides it).
             "--optimize-geometry" => {
                 compact_geometry = true;
-                optimize_index = iter.next().and_then(|v| v.parse().ok()).unwrap_or(32);
+                optimize_geometry = true;
+                optimize_index = iter.next().and_then(|v| v.parse().ok()).unwrap_or(0);
             }
             other => out = Some(other.to_string()),
         }
@@ -600,14 +604,20 @@ fn cmd_package(
             }
         }
     }
-    // N555: optionally reorder triangles for vertex-cache locality.
+    // N555/N574: optionally reorder triangles for vertex-cache locality. A
+    // zero value selects a mesh-scaled cache (N574).
     let mut index_cache_misses: u64 = 0;
     let mut reordered_meshes: usize = 0;
-    if optimize_index > 0 {
+    if optimize_geometry || optimize_index > 0 {
         for mesh in &mut model.meshes {
             if let Some(geometry) = mesh.geometry.as_mut() {
-                let before = mdc_bake::index_cache_misses(geometry, optimize_index);
-                let after = mdc_bake::optimize_index_order(geometry, optimize_index);
+                let cache = if optimize_index == 0 {
+                    mdc_bake::adaptive_cache_size(geometry)
+                } else {
+                    optimize_index
+                };
+                let before = mdc_bake::index_cache_misses(geometry, cache);
+                let after = mdc_bake::optimize_index_order(geometry, cache);
                 index_cache_misses += after;
                 if after < before {
                     reordered_meshes += 1;
@@ -2143,6 +2153,8 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
         "ws_reserved": http_server.as_ref().map(|s| s.ws_reserved()),
         // N567: handshake extension offers (always declined).
         "ws_offered": http_server.as_ref().map(|s| s.ws_offered()),
+        // N577: bounded log of WebSocket declines/failures.
+        "ws_log": http_server.as_ref().map(|s| s.ws_log().to_vec()),
         // N510: the recorded sequence manifest, when requested.
         "manifest": manifest,
         "frames_written": written.len(),
