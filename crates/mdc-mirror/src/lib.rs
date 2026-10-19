@@ -1063,7 +1063,15 @@ pub struct HttpMirrorServer {
     /// N567: close (1002) on a reserved-bit frame instead of ignoring it.
     ws_reject_reserved: bool,
     /// N577: bounded log of why a WebSocket connection was declined/failed.
-    ws_log: Vec<String>,
+    ws_log: Vec<WebSocketNote>,
+}
+
+/// N607: a structured WebSocket log entry (`kind` + `detail`), so a consumer can
+/// filter on the reason without parsing a string.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSocketNote {
+    pub kind: String,
+    pub detail: String,
 }
 
 /// N577: the most recent WebSocket notes kept.
@@ -1246,16 +1254,20 @@ impl HttpMirrorServer {
         self
     }
 
-    /// N577: the bounded log of WebSocket declines/failures (oldest first).
-    pub fn ws_log(&self) -> &[String] {
+    /// N577/N607: the bounded log of WebSocket declines/failures (oldest first),
+    /// each an entry with a `kind` and a redacted `detail`.
+    pub fn ws_log(&self) -> &[WebSocketNote] {
         &self.ws_log
     }
 
-    fn note_ws(&mut self, entry: impl Into<String>) {
+    fn note_ws(&mut self, kind: impl Into<String>, detail: impl Into<String>) {
         if self.ws_log.len() >= WS_LOG_MAX {
             self.ws_log.remove(0);
         }
-        self.ws_log.push(entry.into());
+        self.ws_log.push(WebSocketNote {
+            kind: kind.into(),
+            detail: detail.into(),
+        });
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -1375,9 +1387,10 @@ impl HttpMirrorServer {
             let last = self
                 .ws_log
                 .last()
-                .map(|entry| {
-                    let truncated: String = entry.chars().take(48).collect();
-                    let ellipsis = if entry.chars().count() > 48 {
+                .map(|note| {
+                    let rendered = format!("{}: {}", note.kind, note.detail);
+                    let truncated: String = rendered.chars().take(48).collect();
+                    let ellipsis = if rendered.chars().count() > 48 {
                         "…"
                     } else {
                         ""
@@ -1407,7 +1420,7 @@ impl HttpMirrorServer {
         };
         // N567: extension offers counted in this pass. N577: reasons logged.
         let mut offered = 0u64;
-        let mut notes: Vec<String> = Vec::new();
+        let mut notes: Vec<WebSocketNote> = Vec::new();
         for client in &mut self.clients {
             if client.streaming || client.response.is_some() {
                 continue;
@@ -1444,10 +1457,10 @@ impl HttpMirrorServer {
                                         offered += 1;
                                         // N597: log only the extension token, never
                                         // its parameters (which may carry peer data).
-                                        notes.push(format!(
-                                            "declined extension: {}",
-                                            extension_name(ext)
-                                        ));
+                                        notes.push(WebSocketNote {
+                                            kind: "extension".into(),
+                                            detail: extension_name(ext),
+                                        });
                                     }
                                     client.websocket = true;
                                     client.streaming = true;
@@ -1525,14 +1538,18 @@ impl HttpMirrorServer {
         self.ws_offered = self.ws_offered.saturating_add(offered);
         self.ws_timeouts = self.ws_timeouts.saturating_add(timeouts);
         for note in notes {
-            self.note_ws(note);
+            if self.ws_log.len() >= WS_LOG_MAX {
+                self.ws_log.remove(0);
+            }
+            self.ws_log.push(note);
         }
         if reserved > 0 {
-            self.note_ws(if self.ws_reject_reserved {
-                "reserved bit set: closed 1002"
+            let detail = if self.ws_reject_reserved {
+                "closed 1002"
             } else {
-                "reserved bit set: ignored"
-            });
+                "ignored"
+            };
+            self.note_ws("reserved", detail);
         }
         self.clients.retain_mut(|client| {
             if client.dead {
@@ -3560,15 +3577,15 @@ mod tests {
         assert!(server.ws_closes() >= 1, "a close was sent");
         assert_eq!(close[0], 0x88, "close opcode");
         assert_eq!(u16::from_be_bytes([close[2], close[3]]), 1002);
-        // N577: the decline reason is logged (extension + reserved frame).
+        // N577/N607: the decline reason is logged, structured by kind.
         assert!(server
             .ws_log()
             .iter()
-            .any(|entry| entry.contains("declined extension")));
+            .any(|note| note.kind == "extension" && note.detail == "permessage-deflate"));
         assert!(server
             .ws_log()
             .iter()
-            .any(|entry| entry.contains("closed 1002")));
+            .any(|note| note.kind == "reserved" && note.detail == "closed 1002"));
 
         // N587: `/health` carries an escaped summary of the latest note.
         let mut health = std::net::TcpStream::connect(addr).unwrap();
@@ -3624,10 +3641,18 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        let log = server.ws_log().join("\n");
-        assert!(log.contains("permessage-deflate"), "{log}");
-        assert!(!log.contains("10.0.0.7"), "the peer address is not logged");
-        assert!(!log.contains("4242"), "extension parameters are not logged");
+        // N607: the entry is structured and its detail is the bare token.
+        let note = &server.ws_log()[0];
+        assert_eq!(note.kind, "extension");
+        assert_eq!(note.detail, "permessage-deflate");
+        assert!(
+            !note.detail.contains("10.0.0.7"),
+            "the peer address is not logged"
+        );
+        assert!(
+            !note.detail.contains("4242"),
+            "extension parameters are not logged"
+        );
     }
 
     #[test]
