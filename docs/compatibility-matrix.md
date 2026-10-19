@@ -354,6 +354,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | C/Swift reconciliation fields (N638) | sim-verified (bytesSent/consistent) | n/a |
 | Archive byte report (N639) | sim-verified (per-file bytes) | n/a |
 | Validate key order (N640) | sim-verified (stable contract) | n/a |
+| meshopt two-bit groups (N643) | sim-verified (2-bit sentinel round trip) | n/a |
+| Cache hit statistics (N644) | sim-verified (hits + misses = lookups) | n/a |
+| Image fit padding (N645) | sim-verified (device render) | physical: pending |
+| Defaults-only inspect (N646) | sim-verified (session-less table) | n/a |
+| Per-kind WS summary (N647) | sim-verified (counts match the log) | n/a |
+| Reconciliation invariants (N648) | sim-verified (Node smoke) | n/a |
+| Archive exit contract (N649) | sim-verified (0/1) | n/a |
+| Validate summary order (N650) | sim-verified (stable contract) | n/a |
 | Diff locality lines (N624) | sim-verified (manifest cache) | n/a |
 | Fit align+rotate (N625) | sim-verified (+ double-rotation fix) | physical: pending |
 | `config --defaults` (N626) | sim-verified | n/a |

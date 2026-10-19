@@ -64,6 +64,9 @@ A device that accepts a scene rasterizes it locally:
 - N585/N635: an `image` with `fit` letterboxes inside its rect; `align` selects
   the placement, as a single token (`left`/`center`/`right`/`top`/`middle`/
   `bottom`) or comma-separated axes (`"right,bottom"`).
+- N645: `pad=N` (in the same `mode` list) insets the fitted image by `N` pixels on
+  every side; it is clamped so the inner box stays non-empty and is ignored
+  without `fit`.
 - N505: `gradient` accepts a comma-separated stop list in `value2`
   (`0:#FF0000,50:#00FF00,100:#0000FF`), interpolating between stops; a value
   without a comma keeps the two-stop `value`/`value2` ramp.

@@ -81,7 +81,10 @@ silent for M frames (`/health` also reports `ws_timeouts`). N527 adds
 `--ws-fragment N`, which splits each WebSocket message into a first binary frame
 plus continuation frames of at most `N` bytes (the client reassembles them).
 N537 floors `N` at 64 bytes and keeps heartbeats out of the middle of a message
-(control frames are written only once the fragments have drained). N548 also
+(control frames are written only once the fragments have drained). N637 clamps a
+note's `detail` to `WS_NOTE_DETAIL_MAX` (256 bytes) and N647 exposes
+`ws_log_counts()` (the retained notes per kind) — `mdc mirror` prints it as
+`ws_log` in its JSON summary. N548 also
 reassembles **client → server** messages: a text/binary message split across
 fragmentation and continuation frames is completed (control frames may interleave),
 bounded at 64 KiB per message, and counted in `/health`'s `ws_messages` field and

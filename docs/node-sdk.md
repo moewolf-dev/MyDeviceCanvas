@@ -73,6 +73,13 @@ A malformed package rejects with the device error; `packageReady()` stays false.
 dropped and counted instead of being copied out. `takeMirrorFrame()`/`mirrorStats()`
 work over any transport, not just the in-process simulator.
 
+## Tile reconciliation (N648)
+
+`tileReconciliation()` returns `{ sent, received, missing, bytesSent, consistent }`
+for partial (tile) updates. The smoke test pins the invariants
+`missing === sent - received` and `consistent === (sent === received)`, matching
+the C ABI's `mdc_session_tile_reconciliation_ex` and the Swift wrapper.
+
 ## Gestures (N473/N474)
 
 `pollEvents()` also yields `kind: "gesture"` events with

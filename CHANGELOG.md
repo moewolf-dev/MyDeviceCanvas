@@ -2,6 +2,27 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.77] — meshopt two-bit groups, cache hit rate, image fit padding, defaults-only inspect, per-kind WS summary, reconciliation invariants, archive exit contract, validate summary order (N643–N652)
+
+### Added
+
+- the meshopt v1 test encoder covers 2-bit sentinel groups under control mode 1,
+  with literals and escapes (N643)
+- `VertexCache` hit/miss counters + `hit_rate()`, `MeshGeometry::cache_hit_rate`
+  and `mdc_bake::index_cache_stats`; `mdc package --report` prints
+  `cache_hit_rate` (N644)
+- `image` `fit` accepts `pad=N`, insetting the letterbox on every side (N645)
+- `mdc inspect --defaults-only` prints the shared board-defaults table without a
+  session (N646)
+- `HttpMirrorServer::ws_log_counts()` summarizes the bounded note log by kind,
+  and `mdc mirror` prints it as `ws_log` (N647)
+- a Node smoke test pins the tile-reconciliation invariants
+  (`missing == sent - received`, `consistent == (sent == received)`) (N648)
+- `mdc-inspector --check-archive` exit codes are a tested contract (N649)
+- `mdc validate --json` pins the `summary` sub-key order as well (N650)
+- compatibility/memory coverage for `fit` padding and note-count rotation (N651)
+
+
 ## [0.1.76] — meshopt nibble deltas, shared vertex cache, image vertical align, shared defaults table, bounded WS notes, C/Swift reconciliation fields, archive byte report, validate order contract (N633–N642)
 
 ### Added
