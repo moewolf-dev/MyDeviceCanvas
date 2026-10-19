@@ -1077,6 +1077,9 @@ pub struct WebSocketNote {
 /// N577: the most recent WebSocket notes kept.
 const WS_LOG_MAX: usize = 16;
 
+/// N617: the shape version of a [`WebSocketNote`]; a consumer can pin to it.
+pub const WS_NOTE_VERSION: u8 = 1;
+
 struct HttpClient {
     stream: TcpStream,
     request: Vec<u8>,
@@ -1258,6 +1261,11 @@ impl HttpMirrorServer {
     /// each an entry with a `kind` and a redacted `detail`.
     pub fn ws_log(&self) -> &[WebSocketNote] {
         &self.ws_log
+    }
+
+    /// N617: the WebSocket notes of one `kind` (`"extension"` | `"reserved"`).
+    pub fn ws_log_of_kind<'a>(&'a self, kind: &'a str) -> impl Iterator<Item = &'a WebSocketNote> {
+        self.ws_log.iter().filter(move |note| note.kind == kind)
     }
 
     fn note_ws(&mut self, kind: impl Into<String>, detail: impl Into<String>) {
@@ -3645,6 +3653,10 @@ mod tests {
         let note = &server.ws_log()[0];
         assert_eq!(note.kind, "extension");
         assert_eq!(note.detail, "permessage-deflate");
+        // N617: the log is filterable by kind and carries a shape version.
+        assert_eq!(WS_NOTE_VERSION, 1);
+        assert_eq!(server.ws_log_of_kind("extension").count(), 1);
+        assert_eq!(server.ws_log_of_kind("reserved").count(), 0);
         assert!(
             !note.detail.contains("10.0.0.7"),
             "the peer address is not logged"
