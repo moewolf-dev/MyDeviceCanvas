@@ -1634,6 +1634,94 @@ mod tests {
         }
     }
 
+    /// N623: a v1 encoder with an explicit control mode per byte lane. Mode 3
+    /// carries arbitrary raw deltas; modes 0/1/2 carry zero deltas (the caller
+    /// must keep those lanes constant at the tail seed), so all v1 branches run.
+    fn encode_vertex_buffer_modes(values: &[Vec<u8>], stride: usize, modes: &[u8]) -> Vec<u8> {
+        assert_eq!(modes.len(), stride);
+        let count = values.len();
+        let max_block = ((0x2000 / stride) & !0x0f).min(0x100);
+        let mut out = vec![0xa1u8];
+        let mut temp = vec![0u8; stride];
+        let mut offset = 0usize;
+        while offset < count {
+            let block = (count - offset).min(max_block);
+            let group_count = (block + 0x0f) >> 4;
+            let header_bytes = ((group_count + 3) & !3) >> 2;
+            let mut control = vec![0u8; stride / 4];
+            for (byte, &mode) in modes.iter().enumerate() {
+                control[byte >> 2] |= (mode & 3) << ((byte & 3) << 1);
+            }
+            out.extend_from_slice(&control);
+            for (byte, &mode) in modes.iter().enumerate() {
+                match mode {
+                    3 => {
+                        for element in 0..block {
+                            let value = values[offset + element][byte];
+                            let delta =
+                                (((value as i32 - temp[byte] as i32) + 128).rem_euclid(256)) - 128;
+                            out.push(((delta << 1) ^ (delta >> 7)) as u8);
+                            temp[byte] = value;
+                        }
+                    }
+                    2 => {
+                        // skipped: every element must already equal the running
+                        // value (the tail seed, 0).
+                        assert!(values[offset..offset + block].iter().all(|v| v[byte] == 0));
+                    }
+                    0 => {
+                        // control mode 0 → header_modes[1]; group mode 0 = no
+                        // deltas, so only the header bytes are written.
+                        out.extend(std::iter::repeat_n(0u8, header_bytes));
+                        assert!(values[offset..offset + block].iter().all(|v| v[byte] == 0));
+                    }
+                    1 => {
+                        // control mode 1 → header_modes[2]; group mode 0 is the
+                        // 1-bit delta mode, so each group also writes its 2 packed
+                        // bytes (all zero bits → zero deltas).
+                        out.extend(std::iter::repeat_n(0u8, header_bytes));
+                        out.extend(std::iter::repeat_n(0u8, group_count * 2));
+                        assert!(values[offset..offset + block].iter().all(|v| v[byte] == 0));
+                    }
+                    other => panic!("unsupported control mode {other}"),
+                }
+            }
+            offset += block;
+        }
+        out.extend(std::iter::repeat_n(0u8, stride + stride / 4));
+        out
+    }
+
+    #[test]
+    fn vertex_buffer_v1_control_modes_round_trip() {
+        // N623: modes 1/2/3 all decode back to the source values.
+        let stride = 8usize;
+        let modes = [3u8, 3, 2, 3, 1, 3, 3, 0];
+        let count = 12usize;
+        let values: Vec<Vec<u8>> = (0..count)
+            .map(|element| {
+                (0..stride)
+                    .map(|byte| {
+                        if matches!(modes[byte], 0..=2) {
+                            0
+                        } else {
+                            ((element * 9 + byte * 5 + 4) % 256) as u8
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let encoded = encode_vertex_buffer_modes(&values, stride, &modes);
+        let decoded = unwrap_decode(decode_vertex_buffer(
+            count,
+            stride,
+            &encoded,
+            MeshoptFilter::None,
+        ));
+        let flat: Vec<u8> = values.iter().flatten().copied().collect();
+        assert_eq!(decoded, flat);
+    }
+
     #[test]
     fn vertex_round_trip_composes_with_filters() {
         // N603: decoding an encoded buffer with a filter equals applying that
