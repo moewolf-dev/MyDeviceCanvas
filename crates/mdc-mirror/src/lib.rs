@@ -1371,10 +1371,24 @@ impl HttpMirrorServer {
         let last = self.last.as_ref();
         // N361: a bounded health snapshot for a monitoring consumer.
         let health = {
+            // N587: a short, escaped summary of the most recent WS note.
+            let last = self
+                .ws_log
+                .last()
+                .map(|entry| {
+                    let truncated: String = entry.chars().take(48).collect();
+                    let ellipsis = if entry.chars().count() > 48 {
+                        "…"
+                    } else {
+                        ""
+                    };
+                    format!("{}{}", json_escape(&truncated), ellipsis)
+                })
+                .unwrap_or_default();
             let body = format!(
                 "{{\"frames\":{},\"clients\":{},\"streaming\":{},\"clipped\":{},\"ws\":{},\
                   \"ws_pings\":{},\"ws_closes\":{},\"ws_timeouts\":{},\"ws_messages\":{},\
-                  \"ws_reserved\":{},\"ws_offered\":{},\"ws_log\":{}}}",
+                  \"ws_reserved\":{},\"ws_offered\":{},\"ws_log\":{},\"ws_log_last\":\"{}\"}}",
                 self.frames,
                 self.clients.len(),
                 self.streaming_clients(),
@@ -1386,7 +1400,8 @@ impl HttpMirrorServer {
                 self.ws_messages,
                 self.ws_reserved,
                 self.ws_offered,
-                self.ws_log.len()
+                self.ws_log.len(),
+                last
             );
             simple_response(200, "application/json", body.as_bytes())
         };
@@ -1850,6 +1865,23 @@ fn ws_parse_client_frame(bytes: &mut Vec<u8>) -> Option<(bool, bool, u8, Vec<u8>
     }
     bytes.drain(..header + payload_len);
     Some((fin, rsv1, opcode, payload))
+}
+
+/// N587: escape a string for inclusion in the hand-built `/health` JSON.
+fn json_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn find_header_end(request: &[u8]) -> Option<usize> {
@@ -3520,6 +3552,31 @@ mod tests {
             .ws_log()
             .iter()
             .any(|entry| entry.contains("closed 1002")));
+
+        // N587: `/health` carries an escaped summary of the latest note.
+        let mut health = std::net::TcpStream::connect(addr).unwrap();
+        health
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        health
+            .write_all(b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+        let mut body = Vec::new();
+        for _ in 0..100 {
+            let _ = server.pump();
+            let mut buffer = [0u8; 4096];
+            match health.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => body.extend_from_slice(&buffer[..n]),
+                Err(_) => std::thread::sleep(Duration::from_millis(2)),
+            }
+            if body.windows(4).any(|w| w == b"\r\n\r\n") && body.len() > 200 {
+                break;
+            }
+        }
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("\"ws_log_last\""), "{text}");
+        assert!(text.contains("1002"), "{text}");
     }
 
     #[test]
