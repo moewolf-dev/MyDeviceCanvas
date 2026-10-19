@@ -398,6 +398,11 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
   (`decode(encode(values)) == values`) using a test-only inverse encoder.
 - N593: likewise the v1 vertex-buffer raw-delta stage round-trips; `mdc package
   --report` labels the cache policy (`cache_mode`: `off`/`adaptive`/`fixed`; N594).
+- N613: the v0 raw-delta stage round-trips too; a partial trailing group no longer
+  over-writes the delta buffer.
+- N614: `MdcPackage::seal` records `manifest.cache_misses`/`cache_size` (the
+  vertex-cache locality at a 32-entry cache); `verify` recomputes it as
+  `cache_misses_ok`, and `mdc verify`/`mdc diff` report `cache_misses`.
 - N590: `MdcPackage::verify()` sets `ktx2_ok` — a texture that carries a readable
   KTX2 header must declare the same width/height as the container, otherwise the
   package is invalid. `mdc diff` compares `ktx2_textures`/`ktx2_slices`.

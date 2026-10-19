@@ -97,7 +97,8 @@ with a `1002` close instead of ignoring the frame. N577 keeps a bounded
 reports `ws_log` (the entries). N597/N607: each entry is a structured
 `{ kind, detail }` (`extension`/`reserved`), and an extension `detail` is its
 token only (`permessage-deflate`), never its parameters, so a peer address or
-window size never enters the log.
+window size never enters the log. N617: `WS_NOTE_VERSION` pins the entry shape
+and `ws_log_of_kind(kind)` filters the log.
 
 ## Guarantees
 

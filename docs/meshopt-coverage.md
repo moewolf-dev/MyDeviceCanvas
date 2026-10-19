@@ -43,6 +43,10 @@ checked against expected output, not a self-consistent pair:
   `decode(encode(values)) == values` for strides 4/8/12 (multiple blocks).
 - `vertex_round_trip_composes_with_filters` (N603): decoding an encoded buffer
   with a filter equals applying that filter to the raw values, for every filter.
+- `vertex_buffer_v0_round_trips` (N613): the v0 raw-delta path round-trips,
+  including a partial trailing 16-element group. This also pinned a **bounds
+  fix**: a partial group's 16-entry write is now bounded to the delta buffer
+  instead of over-running it.
 - `malformed_leb128_and_half_packets_are_errors` (N573): directed LEB128 overflow,
   a never-terminating LEB128 run, a value truncated mid-field, a short aux table,
   and a stream shorter than its vertex tail.

@@ -2,6 +2,27 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.74] — meshopt v0 round-trip + partial-block fix, manifest locality, fit matrix, advertised config defaults, filterable WS log, Swift tile parity, archive check, strict KTX2 (N613–N622)
+
+### Added
+
+- a v0 vertex-buffer round-trip test, and a **bounds fix**: a partial trailing
+  16-element group no longer over-writes the delta buffer (N613)
+- `PackageManifest.cache_misses`/`cache_size` (seal records the locality metric;
+  `verify` recomputes it as `cache_misses_ok`) (N614)
+- a `fit` × flip/rotate identity matrix test (N615)
+- `ConfigCapability.defaults`: a board advertises its factory defaults, and
+  `Session::advertised_config_default` / `tile_missing_threshold` read them
+  without a `get_config` round trip (N616)
+- `WS_NOTE_VERSION` + `ws_log_of_kind` for the structured WS log (N617)
+- Swift `tileReconciliation()` (parity with C/Node) (N618)
+- `mdc-inspector --check-archive DIR` validates an archive manifest vs disk (N619)
+- `--strict` validation treats a KTX2 transcoding note as a failure (N620)
+
+### Notes
+
+- Physical verification (D05/G03/H06) is still pending.
+
 ## [0.1.73] — meshopt filter round-trip, verify locality, fit quarter-turn, config defaults inspector, structured WS log, Node merged smoke, archive history, model-info KTX2 flag (N603–N612)
 
 ### Added

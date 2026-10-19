@@ -39,7 +39,10 @@ see an unchanged capabilities map. `CONFIG` (0x33) carries a CBOR
   a full frame (`Session::enforce_tile_reconciliation_from_config`). N596: each
   board carries its own `BoardProfile.config_defaults`, so the default is a board
   fact (the simulator's `linux-virt` ships `2`; the baseline ships `0`). `mdc
-  inspect` reports the board's `config_defaults` (N606).
+  inspect` reports the board's `config_defaults` (N606). N616: the board also
+  advertises those defaults in `Capabilities.config.defaults`, so
+  `Session::advertised_config_default` (and `tile_missing_threshold`) can read a
+  factory default without a `get_config` round trip.
 - **Redaction**: a password/token value is never echoed in a reply — the device
   answers `***` on `get`, and the CLI/Node surface shows the redacted value. The
   stored value never enters a log.

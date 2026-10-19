@@ -337,6 +337,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Node merged smoke (N608) | sim-verified (full field set) | n/a |
 | Archive history (N609) | sim-verified (`rotated`/`generatedAt`) | n/a |
 | model-info KTX2 flag (N610) | sim-verified (`ktx2SizeOk`) | n/a |
+| meshopt v0 round-trip (N613) | sim-verified (+ partial-block fix) | n/a |
+| Manifest locality (N614) | sim-verified (`cache_misses` + verify) | n/a |
+| Fit transform matrix (N615) | sim-verified (identities) | physical: pending |
+| Advertised config defaults (N616) | sim-verified (`Capabilities.config.defaults`) | n/a |
+| Filterable WS log (N617) | sim-verified (`WS_NOTE_VERSION`) | n/a |
+| Swift tile parity (N618) | sim-verified (`tileReconciliation`) | physical: pending |
+| Archive check (N619) | sim-verified (`--check-archive`) | n/a |
+| Strict KTX2 validation (N620) | sim-verified (`--strict`) | n/a |
 
 ## G03 sim exit
 
