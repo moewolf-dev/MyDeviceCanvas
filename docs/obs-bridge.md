@@ -92,8 +92,9 @@ extension offers (`ws_offered`, never echoed) and, with
 `--ws-reject-reserved` / `with_ws_reject_reserved(true)`, fails the connection
 with a `1002` close instead of ignoring the frame. N577 keeps a bounded
 `ws_log()` of these decisions (`declined extension: …`,
-`reserved bit set: closed 1002`); `/health` reports `ws_log` (a count) and
-`mdc mirror` reports `ws_log` (the entries).
+`reserved bit set: closed 1002`); `/health` reports `ws_log` (a count),
+`ws_log_last` (an escaped, 48-char summary of the latest note) and `mdc mirror`
+reports `ws_log` (the entries).
 
 ## Guarantees
 

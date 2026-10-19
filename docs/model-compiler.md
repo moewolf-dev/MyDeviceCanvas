@@ -394,9 +394,23 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
   `reordered_meshes`.
 - N563: the decoder's branch inventory and fuzz passes are documented in
   [`meshopt-coverage.md`](meshopt-coverage.md).
+- N583: the index-sequence stage is round-tripped in tests
+  (`decode(encode(values)) == values`) using a test-only inverse encoder.
+- N590: `MdcPackage::verify()` sets `ktx2_ok` — a texture that carries a readable
+  KTX2 header must declare the same width/height as the container, otherwise the
+  package is invalid. `mdc diff` compares `ktx2_textures`/`ktx2_slices`.
 - N564: `optimize_geometry`/`optimize_package_geometry` run compaction *before*
   index reordering (smaller working set); `mdc package --optimize-geometry [CACHE]`
   enables both at once.
+- N574: `adaptive_cache_size` picks a vertex-cache size from the triangle count and
+  `optimize_geometry_auto(0)` uses it. Because a larger cache holds a superset of
+  recent vertices, more capacity never fetches *more* (N584 asserts this):
+
+  | Triangles | Cache | Rationale |
+  |---|---|---|
+  | < 128 | 16 | a small mesh fits quickly; a big cache is wasted |
+  | < 2048 | 32 | the common GPU/MCU vertex-cache size |
+  | ≥ 2048 | 64 | keep more reuse on a large mesh |
 - N570: a KTX2 texture's container metadata (mip levels, slices, 2D/array/cubemap/
   volume) is reachable from the IR via `Texture::ktx2_header()`; `ModelSummary`
   sums `ktx2_slices` and `mdc package --report` reports `ktx2_textures`/`ktx2_slices`.

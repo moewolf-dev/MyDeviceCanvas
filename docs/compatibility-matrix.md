@@ -313,6 +313,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Swift mirror parity (N578) | sim-verified (surface take + skips) | physical: pending |
 | JSONL dir rotation (N579) | sim-verified (`--keep`) | n/a |
 | KTX2 degradation doc (N580) | documented | n/a |
+| meshopt round-trip (N583) | sim-verified (`decode(encode(v))`) | n/a |
+| Cache tiers (N584) | sim-verified (monotonic) | physical: pending |
+| Image fit align (N585) | sim-verified (left/centre/right) | physical: pending |
+| Tile threshold config (N586) | sim-verified (negotiated) | n/a |
+| WS log summary (N587) | sim-verified (`ws_log_last`) | n/a |
+| Node mirror/tile smoke (N588) | sim-verified (real `.node`) | n/a |
+| JSONL directory archive (N589) | sim-verified (`--out DIR`) | n/a |
+| KTX2 verify (N590) | sim-verified (`ktx2_ok` + diff) | n/a |
 
 ## G03 sim exit
 

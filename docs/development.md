@@ -61,6 +61,7 @@ cargo run -p mdc-inspector -- --jsonl 20 --heap --max-peak-bytes 200000000  # al
 cargo run -p mdc-inspector -- --jsonl 60 --board linux-virt --out run.jsonl # archive (N560)
 cargo run -p mdc-inspector -- --jsonl 60 --out run.jsonl --append --max-bytes 1048576  # append + rotate (N569)
 cargo run -p mdc-inspector -- --jsonl 60 --out run.jsonl --max-bytes 1048576 --keep 3  # keep .1...3 (N579)
+mkdir -p archive && cargo run -p mdc-inspector -- --jsonl 60 --out archive --append --max-bytes 1048576  # DIR/mdc-history.jsonl (N589)
 cargo run -p mdc -- --board linux-virt inspect --watch --count 3 --rss
 cargo run -p mdc -- --board linux-virt diag --metric fps --value 29.5 --unit fps
 ```

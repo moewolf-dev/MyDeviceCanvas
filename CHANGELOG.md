@@ -2,6 +2,26 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.71] — meshopt round-trip, cache tiers, image fit align, config threshold, WS log summary, KTX2 verify (N583–N592)
+
+### Added
+
+- an index-sequence round-trip test (`decode(encode(v)) == v`) for the meshopt
+  decoder (N583)
+- a documented vertex-cache tier table and a monotonicity test (N584)
+- scene `image` `fit` respects `align` (left/center/right) (N585)
+- `tile_missing_threshold` device config + `Session::tile_missing_threshold` /
+  `enforce_tile_reconciliation_from_config` (N586)
+- `/health` `ws_log_last` (escaped, truncated summary) (N587)
+- Node native smoke covers `mirrorMode()` + `tileReconciliation()` (N588)
+- `mdc-inspector --out DIR` archives into `DIR/mdc-history.jsonl` (N589)
+- `PackageVerification.ktx2_ok` (declared size vs KTX2 header) and
+  `mdc diff` `ktx2_textures`/`ktx2_slices` (N590)
+
+### Notes
+
+- Physical verification (D05/G03/H06) is still pending.
+
 ## [0.1.70] — meshopt LEB128 corpus, adaptive cache, image fit, tile reconciliation to C/Node, WS log, JSONL dir rotation (N573–N582)
 
 ### Added

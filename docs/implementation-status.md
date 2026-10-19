@@ -88,6 +88,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 74 | N553–N562: meshopt fuzz corpus, KTX2 container dims, cache-friendly index order, scene image scaling, tile threshold barrier, WS compression-bit handling, Node mirror mode, JSONL file output | sim-verified |
 | 75 | N563–N572: meshopt branch coverage + guard corpus, combined geometry optimization, image flip/rotate, tile-threshold convergence, WS extension rejection (1002), C/Swift mirror mode, JSONL append + rotation, KTX2 metadata in IR | sim-verified |
 | 76 | N573–N582: meshopt LEB128/half-packet corpus, adaptive vertex cache, image `fit`, tile reconciliation to C/Node, WS decline log, Swift mirror parity recheck, JSONL directory rotation, KTX2 degradation docs | sim-verified |
+| 77 | N583–N592: meshopt index-sequence round-trip, cache tier table, image `fit` align, config-negotiated tile threshold, `/health` WS log summary, Node native mirror/tile smoke, JSONL directory archive, KTX2 verify/diff consistency | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 

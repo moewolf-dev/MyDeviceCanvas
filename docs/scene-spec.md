@@ -97,7 +97,9 @@ A device that accepts a scene rasterizes it locally:
   filtering; nearest is the default), `flip-h`, `flip-v` and `fit`. N565: the
   node's `rotate` (0/90/180/270) turns the sampled image about the rect centre.
   N575: `fit` preserves the source aspect ratio (letterboxed in the rect) instead
-  of stretching each axis independently. A short or malformed string draws nothing.
+  of stretching each axis independently. N585: with `fit`, `align`
+  (`left`/`center`/`right`, default `center`) positions the letterbox
+  horizontally. A short or malformed string draws nothing.
 - `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour.
   A missing atlas or index draws nothing.
 - `circle` fills the ellipse inscribed in `rect` with the `value` colour; a  zero width or height draws nothing.

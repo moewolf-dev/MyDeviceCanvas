@@ -33,7 +33,10 @@ see an unchanged capabilities map. `CONFIG` (0x33) carries a CBOR
   `Unsupported`; nothing is sent.
 - **Bounded**: values over `MAX_CONFIG_VALUE_BYTES` are refused before any
   packet; the device validates per key (brightness 0–255, rotation 0/90/180/270,
-  Wi-Fi length) and rejects invalid values.
+  Wi-Fi length, `tile_missing_threshold` integer) and rejects invalid values.
+- **Negotiated behaviour**: `tile_missing_threshold` (N586) is a config key the
+  host reads to decide how many unacknowledged tiles it tolerates before forcing
+  a full frame (`Session::enforce_tile_reconciliation_from_config`).
 - **Redaction**: a password/token value is never echoed in a reply — the device
   answers `***` on `get`, and the CLI/Node surface shows the redacted value. The
   stored value never enters a log.
