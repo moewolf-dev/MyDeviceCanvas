@@ -346,6 +346,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Archive check (N619) | sim-verified (`--check-archive`) | n/a |
 | Strict KTX2 validation (N620) | sim-verified (`--strict`) | n/a |
 | meshopt v1 control modes (N623) | sim-verified (modes 0/1/2/3) | n/a |
+| meshopt nibble deltas (N633) | sim-verified (4-bit sentinel round trip) | n/a |
+| Shared vertex cache (N634) | sim-verified (metric + reorder agree) | n/a |
+| Image vertical align (N635) | sim-verified (device render) | physical: pending |
+| Shared defaults table (N636) | sim-verified (one key) | n/a |
+| Bounded WS notes (N637) | sim-verified (detail clamp) | n/a |
+| C/Swift reconciliation fields (N638) | sim-verified (bytesSent/consistent) | n/a |
+| Archive byte report (N639) | sim-verified (per-file bytes) | n/a |
+| Validate key order (N640) | sim-verified (stable contract) | n/a |
 | Diff locality lines (N624) | sim-verified (manifest cache) | n/a |
 | Fit align+rotate (N625) | sim-verified (+ double-rotation fix) | physical: pending |
 | `config --defaults` (N626) | sim-verified | n/a |

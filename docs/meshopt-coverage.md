@@ -5,6 +5,17 @@ decoder. Because a wrong decode is worse than a rejected one, the tests pin ever
 validation branch and every decoder path. This page is the branch inventory the
 tests are written against; it is host-only logic and carries no hardware claim.
 
+## Round trips beyond the golden vectors
+
+The reference fixtures do not exercise every encoder choice, so the module also
+carries a small in-test encoder used for round trips:
+
+- N623: v1 control modes 0/1/2/3 round trip back to the source values.
+- N633: a control-mode-1 lane encoded with **4-bit sentinel deltas** (nibble
+  literals plus `0xf` escapes) round trips, covering the `mode_bits == 4` path
+  under a non-zero control mode.
+- N613/N623: v0/v1 vertex round trips and index-buffer/sequence round trips.
+
 ## Success paths (golden reference vectors)
 
 The module tests run the reference decoder's fixtures, so the branches below are

@@ -61,6 +61,9 @@ A device that accepts a scene rasterizes it locally:
   left-to-right, 180/270 reverse, any other angle is a diagonal).
 - N535: a radial `gradient` accepts `focus: "cx%,cy%"` (default `50,50`) to move
   its centre within the rect.
+- N585/N635: an `image` with `fit` letterboxes inside its rect; `align` selects
+  the placement, as a single token (`left`/`center`/`right`/`top`/`middle`/
+  `bottom`) or comma-separated axes (`"right,bottom"`).
 - N505: `gradient` accepts a comma-separated stop list in `value2`
   (`0:#FF0000,50:#00FF00,100:#0000FF`), interpolating between stops; a value
   without a comma keeps the two-stop `value`/`value2` ramp.

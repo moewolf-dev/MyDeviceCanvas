@@ -2,6 +2,29 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.76] — meshopt nibble deltas, shared vertex cache, image vertical align, shared defaults table, bounded WS notes, C/Swift reconciliation fields, archive byte report, validate order contract (N633–N642)
+
+### Added
+
+- the meshopt v1 test encoder now covers 4-bit sentinel deltas under control mode 1
+  (round trip) (N633)
+- `mdc_model::VertexCache`: one FIFO drives both the locality metric and
+  `optimize_index_order` (N634)
+- `image` `align` accepts `top`/`middle`/`bottom` (alone or comma-separated with a
+  horizontal value), so a `fit` letterbox can be aligned vertically (N635)
+- `mdc config --defaults` publishes the board defaults under the same
+  `board_config_defaults` key `mdc inspect` uses (N636)
+- `mdc_mirror::WS_NOTE_DETAIL_MAX` clamps a `WebSocketNote.detail` (and
+  `note_ws` is public for embedding hosts) (N637)
+- C `mdc_session_tile_reconciliation_ex` and Swift
+  `tileReconciliation()` expose `bytesSent`/`consistent` like Node (N638)
+- `mdc-inspector --check-archive` reports per-file bytes, the total, and the
+  largest file (N639)
+- `mdc validate` builds its JSON in one place, with a test pinning the key order
+  (N640)
+- compatibility/memory coverage for image vertical alignment and the note log (N641)
+
+
 ## [0.1.75] — meshopt v1 control modes, diff locality lines, fit align+rotate, config --defaults, archive byte cap, validate KTX2 summary (N623–N632)
 
 ### Added

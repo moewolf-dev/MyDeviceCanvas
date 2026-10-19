@@ -56,6 +56,8 @@ cargo run -p mdc -- --board linux-virt record --frames 30 --fps 10 --dir out
 cargo run -p mdc -- record --play --dir out                          # verify (N520)
 cargo run -p mdc -- record --play --render --dir out --board linux-virt  # replay (N530)
 cargo run -p mdc -- record --play --render --dir out --fps 10        # paced replay (N540)
+cargo run -p mdc -- --board linux-virt config --defaults             # board defaults (N626/N636)
+cargo run -p mdc-inspector -- --check-archive DIR --max-bytes 1000000 # per-file bytes (N639)
 cargo run -p mdc-inspector -- --jsonl 20 --heap --max-peak-bytes 200000000  # alert (N529)
 # the alert ends with one JSONL verdict line and exits 2 (N539)
 cargo run -p mdc-inspector -- --jsonl 60 --board linux-virt --out run.jsonl # archive (N560)
