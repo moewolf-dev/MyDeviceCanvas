@@ -31,7 +31,7 @@ pub use gltf::{
 pub use ir::{
     Animation, AnimationTrack, Camera, ImportLimits, Layer, Light, Material, Mesh, MeshGeometry,
     Model, ModelError, ModelSummary, Node, Skeleton, Sprite, Texture, UvTransform,
-    ValidationReport, MAX_GEOMETRY_INDICES, MAX_GEOMETRY_VERTICES,
+    ValidationReport, VertexCache, MAX_GEOMETRY_INDICES, MAX_GEOMETRY_VERTICES,
 };
 pub use ktx2::{is_ktx2, Ktx2Header, KTX2_HEADER_BYTES, KTX2_IDENTIFIER};
 pub use live2d::{

@@ -1073,17 +1073,17 @@ pub fn optimize_index_order(geometry: &mut mdc_model::MeshGeometry, cache_size: 
     if triangles.len() < 2 {
         return index_cache_misses(geometry, cache_size);
     }
-    let size = cache_size.max(1);
+    // N634: the same FIFO the locality metric uses.
     let mut remaining: Vec<[u32; 3]> = triangles.clone();
     let mut ordered: Vec<[u32; 3]> = Vec::with_capacity(remaining.len());
-    let mut cache: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
+    let mut cache = mdc_model::VertexCache::new(cache_size);
     while !remaining.is_empty() {
         // Find, within a bounded window, the triangle with the most cache hits.
         let window = remaining.len().min(INDEX_ORDER_WINDOW);
         let mut best_index = 0usize;
         let mut best_hits = usize::MAX;
         for (index, triangle) in remaining[..window].iter().enumerate() {
-            let hits = triangle.iter().filter(|v| cache.contains(v)).count();
+            let hits = triangle.iter().filter(|v| cache.contains(**v)).count();
             // Prefer the fewest *new* vertices; ties keep the earliest triangle.
             let new_vertices = 3 - hits;
             if new_vertices < best_hits {
@@ -1096,12 +1096,7 @@ pub fn optimize_index_order(geometry: &mut mdc_model::MeshGeometry, cache_size: 
         }
         let triangle = remaining.remove(best_index);
         for vertex in triangle {
-            if !cache.contains(&vertex) {
-                if cache.len() == size {
-                    cache.pop_front();
-                }
-                cache.push_back(vertex);
-            }
+            cache.touch(vertex);
         }
         ordered.push(triangle);
     }

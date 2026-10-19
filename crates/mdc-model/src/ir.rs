@@ -75,24 +75,68 @@ pub struct MeshGeometry {
     pub morph_targets: Vec<Vec<[f32; 3]>>,
 }
 
+/// N634: a FIFO vertex cache. Both the locality metric and the index reorderer
+/// drive this one type, so scoring and reordering cannot drift apart.
+#[derive(Debug, Clone)]
+pub struct VertexCache {
+    entries: std::collections::VecDeque<u32>,
+    size: usize,
+}
+
+impl Default for VertexCache {
+    fn default() -> Self {
+        Self::new(1)
+    }
+}
+
+impl VertexCache {
+    /// A cache holding at most `size` (at least one) vertices.
+    pub fn new(size: usize) -> Self {
+        Self {
+            entries: std::collections::VecDeque::new(),
+            size: size.max(1),
+        }
+    }
+
+    /// Whether `vertex` is already cached (no state change).
+    pub fn contains(&self, vertex: u32) -> bool {
+        self.entries.contains(&vertex)
+    }
+
+    /// Touch `vertex`, inserting it when absent. Returns true on a cache miss.
+    pub fn touch(&mut self, vertex: u32) -> bool {
+        if self.contains(vertex) {
+            return false;
+        }
+        if self.entries.len() == self.size {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(vertex);
+        true
+    }
+
+    /// Vertices currently held.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 impl MeshGeometry {
     /// N614: simulate a FIFO vertex cache of `cache_size` entries over the index
     /// order and count misses. Lives on the IR so a package manifest can carry the
     /// locality metric without depending on the bake crate.
     pub fn cache_misses(&self, cache_size: usize) -> u64 {
-        let size = cache_size.max(1);
         let mut misses = 0u64;
-        let mut cache: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
+        let mut cache = VertexCache::new(cache_size);
         for triangle in self.indices.chunks_exact(3) {
             for &vertex in triangle {
-                if cache.contains(&vertex) {
-                    continue;
+                if cache.touch(vertex) {
+                    misses += 1;
                 }
-                misses += 1;
-                if cache.len() == size {
-                    cache.pop_front();
-                }
-                cache.push_back(vertex);
             }
         }
         misses
@@ -1037,5 +1081,43 @@ impl Model {
     pub fn material_texture_wrap(&self, material: usize) -> Option<&str> {
         let index = self.materials.get(material)?.texture?;
         self.textures.get(index)?.wrap.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vertex_cache_reports_misses_and_evicts_fifo() {
+        // N634: the shared FIFO used by the locality metric and the reorderer.
+        let mut cache = VertexCache::new(2);
+        assert!(cache.touch(1), "first touch misses");
+        assert!(!cache.touch(1), "second touch hits");
+        assert!(cache.touch(2));
+        assert_eq!(cache.len(), 2);
+        // 1 is evicted by 3.
+        assert!(cache.touch(3));
+        assert!(!cache.contains(1));
+        assert!(cache.contains(3));
+        assert!(!cache.touch(3));
+        // A size of 0 is raised to 1.
+        let mut tiny = VertexCache::new(0);
+        assert!(tiny.touch(7));
+        assert!(tiny.touch(8));
+        assert_eq!(tiny.len(), 1);
+        assert!(VertexCache::default().is_empty());
+    }
+
+    #[test]
+    fn cache_misses_counts_a_fifo_walk() {
+        // A triangle fan reuses vertices, so a 4-entry cache sees few misses.
+        let geometry = MeshGeometry {
+            positions: (0..5).map(|i| [i as f32, 0.0, 0.0]).collect(),
+            indices: vec![0, 1, 2, 0, 2, 3, 0, 3, 4],
+            ..Default::default()
+        };
+        assert_eq!(geometry.cache_misses(4), 5);
+        assert_eq!(geometry.cache_misses(0), 9, "a 1-entry cache misses more");
     }
 }
