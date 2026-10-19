@@ -121,14 +121,29 @@ fn write_verdict<W: Write>(
     writeln!(out, "{}", verdict_line(summary, alerts))
 }
 
-/// N560: the JSONL sink — a file when `--out PATH` is given, else stdout.
-fn jsonl_sink(path: Option<&str>) -> std::io::Result<Box<dyn Write>> {
-    match path {
-        Some(path) => Ok(Box::new(std::io::BufWriter::new(std::fs::File::create(
-            path,
-        )?))),
-        None => Ok(Box::new(std::io::BufWriter::new(std::io::stdout().lock()))),
+/// N560/N569: the JSONL sink — a file when `--out PATH` is given, else stdout.
+/// `append` keeps prior content; a non-zero `max_bytes` rotates an existing file
+/// over that size to `PATH.1` before writing.
+fn jsonl_sink(path: Option<&str>, append: bool, max_bytes: u64) -> std::io::Result<Box<dyn Write>> {
+    let Some(path) = path else {
+        return Ok(Box::new(std::io::BufWriter::new(std::io::stdout().lock())));
+    };
+    if max_bytes > 0 {
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.len() >= max_bytes {
+                let _ = std::fs::rename(path, format!("{path}.1"));
+            }
+        }
     }
+    let file = if append {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?
+    } else {
+        std::fs::File::create(path)?
+    };
+    Ok(Box::new(std::io::BufWriter::new(file)))
 }
 
 /// N539: the one-line verdict a thresholded watch ends with.
@@ -307,7 +322,11 @@ fn main() {
         // is always the last line of the `--jsonl` sequence and never interleaves.
         // N560: `--out PATH` archives the series (and verdict) to a file.
         let out_path = flag_value("--out");
-        let mut out = match jsonl_sink(out_path.as_deref()) {
+        let append = args.iter().any(|a| a == "--append");
+        let max_bytes = flag_value("--max-bytes")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+        let mut out = match jsonl_sink(out_path.as_deref(), append, max_bytes) {
             Ok(out) => out,
             Err(error) => {
                 eprintln!("inspector error: {error}");
@@ -483,7 +502,7 @@ mod tests {
         // N560: `--out` writes the samples and verdict to a file.
         let path = std::env::temp_dir().join(format!("mdc-jsonl-{}.jsonl", std::process::id()));
         {
-            let mut out = jsonl_sink(Some(path.to_str().unwrap())).unwrap();
+            let mut out = jsonl_sink(Some(path.to_str().unwrap()), false, 0).unwrap();
             let summary = watch(2, 1, "default", 0, &mut out).unwrap();
             write_verdict(&mut out, &summary, &[]).unwrap();
             out.flush().unwrap();
@@ -496,6 +515,34 @@ mod tests {
             "verdict"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn jsonl_sink_appends_and_rotates() {
+        // N569: `--append` keeps prior content; `--max-bytes` rotates to `PATH.1`.
+        let dir = std::env::temp_dir().join(format!("mdc-jsonl-rot-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("run.jsonl");
+        let run = |append: bool, max_bytes: u64| {
+            let mut out = jsonl_sink(Some(path.to_str().unwrap()), append, max_bytes).unwrap();
+            let summary = watch(1, 1, "default", 0, &mut out).unwrap();
+            write_verdict(&mut out, &summary, &[]).unwrap();
+            out.flush().unwrap();
+        };
+        run(false, 0);
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
+        run(true, 0);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap().lines().count(),
+            4,
+            "appended"
+        );
+        let size = std::fs::metadata(&path).unwrap().len();
+        // A max-bytes at/below the current size rotates the old file away.
+        run(false, size);
+        assert!(std::path::Path::new(&format!("{}.1", path.to_str().unwrap())).exists());
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

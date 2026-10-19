@@ -549,6 +549,11 @@ fn cmd_package(
             "--optimize-index" => {
                 optimize_index = iter.next().and_then(|v| v.parse().ok()).unwrap_or(32)
             }
+            // N564: compaction + index reordering in one pass.
+            "--optimize-geometry" => {
+                compact_geometry = true;
+                optimize_index = iter.next().and_then(|v| v.parse().ok()).unwrap_or(32);
+            }
             other => out = Some(other.to_string()),
         }
     }
@@ -757,6 +762,9 @@ fn cmd_package(
                 "indexed_textures": indexed,
                 "palette_entries": palette_entries,
                 "texture_blob_bytes": blob_bytes,
+                // N570: KTX2 metadata retained from the model bytes.
+                "ktx2_textures": package.package.textures.iter().filter(|t| t.is_ktx2()).count(),
+                "ktx2_slices": package.package.textures.iter().filter_map(|t| t.ktx2_header()).map(|h| h.slices() as u64).sum::<u64>(),
                 "atlas_mips": mips,
                 // N504: the texture mip chains and their levels.
                 "texture_mips": blobs.iter().map(|b| b.mips.len()).sum::<usize>(),
@@ -1845,6 +1853,8 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
     let mut ws_timeout: u64 = 0;
     // N527: WebSocket fragment payload size (0 = one frame per message).
     let mut ws_fragment: usize = 0;
+    // N567: close (1002) a peer that sets the reserved compression bit.
+    let mut ws_reject_reserved = false;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -1880,6 +1890,8 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
             "--ws-timeout" => ws_timeout = iter.next().and_then(|v| v.parse().ok()).unwrap_or(0),
             // N527: split WebSocket messages into fragments.
             "--ws-fragment" => ws_fragment = iter.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+            // N567: reject a reserved-bit (compression) frame with close 1002.
+            "--ws-reject-reserved" => ws_reject_reserved = true,
             _ => {}
         }
     }
@@ -1944,7 +1956,8 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
         Some(address) => Some(
             mdc_mirror::HttpMirrorServer::bind(address)?
                 .with_ws_heartbeat(ws_heartbeat, ws_timeout)
-                .with_ws_fragment(ws_fragment),
+                .with_ws_fragment(ws_fragment)
+                .with_ws_reject_reserved(ws_reject_reserved),
         ),
         None => None,
     };
@@ -2128,6 +2141,8 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
         "ws_messages": http_server.as_ref().map(|s| s.ws_messages()),
         // N558: client frames whose reserved (compression) bit was set.
         "ws_reserved": http_server.as_ref().map(|s| s.ws_reserved()),
+        // N567: handshake extension offers (always declined).
+        "ws_offered": http_server.as_ref().map(|s| s.ws_offered()),
         // N510: the recorded sequence manifest, when requested.
         "manifest": manifest,
         "frames_written": written.len(),
