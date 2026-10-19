@@ -2348,6 +2348,24 @@ fn websocket_note_log_stays_bounded() {
 }
 
 #[test]
+fn websocket_note_counts_stay_consistent_under_rotation() {
+    // N647/N651: the per-kind summary always matches the retained log, even as
+    // entries are evicted.
+    let mut server = mdc_mirror::HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+    for i in 0..1_000 {
+        let kind = if i % 3 == 0 { "reserved" } else { "fragment" };
+        server.note_ws(kind, format!("note {i}"));
+        let counts = server.ws_log_counts();
+        assert_eq!(
+            counts.values().sum::<usize>(),
+            server.ws_log().len(),
+            "summary matches the log at {i}"
+        );
+    }
+    assert!(server.ws_log().len() <= 16);
+}
+
+#[test]
 fn disk_asset_cache_stays_within_quota() {
     // N369/N371: the on-disk asset store never exceeds its byte quota, however
     // many payloads are inserted.

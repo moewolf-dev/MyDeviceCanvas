@@ -4155,6 +4155,60 @@ fn radial_gradient_renders_on_the_device() {
 }
 
 #[test]
+fn image_fit_padding_renders_on_the_device() {
+    // N645/N651: `pad` insets a fitted image on the device.
+    use mdc_core::{ConnectionState, Session};
+    use mdc_protocol::SceneNode;
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 4,
+        height: 4,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .set_scene(SceneNode {
+            name: "pic".into(),
+            kind: "image".into(),
+            rect: Some([0, 0, 4, 4]),
+            value: Some("f800".into()),
+            value2: Some("1,1".into()),
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: Some("fit,pad=1".into()),
+            focus: None,
+            children: Vec::new(),
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.render_scene());
+    let mut lit = Vec::new();
+    for y in 0..4u16 {
+        for x in 0..4u16 {
+            if device.pixel_rgb565(x, y).unwrap() != 0 {
+                lit.push((x, y));
+            }
+        }
+    }
+    // A 1x1 source in a padded 2x2 inner box fills exactly those four pixels.
+    assert_eq!(lit.len(), 4, "{lit:?}");
+    assert!(lit
+        .iter()
+        .all(|(x, y)| (1..=2).contains(x) && (1..=2).contains(y)));
+}
+
+#[test]
 fn image_fit_valign_renders_on_the_device() {
     // N635/N641: an `image` with `fit` and a vertical `align` letterboxes on the
     // device through the scene path.
