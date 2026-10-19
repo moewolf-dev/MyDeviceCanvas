@@ -1290,6 +1290,34 @@ pub unsafe extern "C" fn mdc_mirror_skips(session: *const MdcSession, skips: *mu
     0
 }
 
+/// N568: write the negotiated mirror mode (`full-frame`/`dirty-region`, empty
+/// before confirmation) into `out` as a NUL-terminated string. Returns the byte
+/// length (excluding NUL), -1 for a bad session, -2 for bad args or -4 if the
+/// buffer is too small. Parity with the Node/Swift SDKs.
+///
+/// # Safety
+/// `session` must be a valid pointer; `out` must have `out_len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_mirror_mode(
+    session: *const MdcSession,
+    out: *mut c_char,
+    out_len: usize,
+) -> c_int {
+    let Some(session) = session.as_ref() else {
+        return -1;
+    };
+    if out.is_null() || out_len == 0 {
+        return -2;
+    }
+    let bytes = session.session.mirror_mode().as_bytes();
+    if bytes.len() + 1 > out_len {
+        return -4;
+    }
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), out as *mut u8, bytes.len());
+    *out.add(bytes.len()) = 0;
+    bytes.len() as c_int
+}
+
 /// # Safety
 /// `session` must be alive; the out pointers may be NULL.
 #[no_mangle]
@@ -1997,6 +2025,38 @@ mod tests {
                 mdc_start_mirror_mode(std::ptr::null_mut(), std::ptr::null(), std::ptr::null(), 1),
                 -1
             );
+            mdc_session_destroy(session);
+        }
+    }
+
+    #[test]
+    fn mirror_mode_is_reported_via_c_abi() {
+        // N568: `mdc_mirror_mode` writes the negotiated mode (parity with Swift).
+        unsafe {
+            let board = std::ffi::CString::new("linux-virt").unwrap();
+            let session = mdc_session_create_board(board.as_ptr());
+            assert!(!session.is_null());
+            let mut out = [0i8; 32];
+            // Empty before the device confirms a start.
+            assert_eq!(mdc_mirror_mode(session, out.as_mut_ptr(), out.len()), 0);
+            let mode = std::ffi::CString::new("dirty-region").unwrap();
+            assert_eq!(
+                mdc_start_mirror_mode(session, std::ptr::null(), mode.as_ptr(), 15),
+                0
+            );
+            let n = mdc_mirror_mode(session, out.as_mut_ptr(), out.len());
+            assert_eq!(n, "dirty-region".len() as i32);
+            assert_eq!(
+                std::ffi::CStr::from_ptr(out.as_ptr()).to_str().unwrap(),
+                "dirty-region"
+            );
+            // A one-byte buffer cannot hold the mode.
+            assert_eq!(mdc_mirror_mode(session, out.as_mut_ptr(), 1), -4);
+            assert_eq!(
+                mdc_mirror_mode(std::ptr::null(), out.as_mut_ptr(), out.len()),
+                -1
+            );
+            assert_eq!(mdc_mirror_mode(session, std::ptr::null_mut(), 0), -2);
             mdc_session_destroy(session);
         }
     }

@@ -176,6 +176,11 @@ int64_t mdc_take_mirror_frame(MdcSession* session, uint16_t* width, uint16_t* he
 /** Form B: mirror counters. Writes received/dropped; returns 0 or -1. */
 int mdc_mirror_stats(const MdcSession* session, uint64_t* received, uint64_t* dropped);
 
+/** N568: write the negotiated mirror mode (`full-frame`/`dirty-region`; empty
+ *  before confirmation) as a NUL-terminated string. Returns the length, or a
+ *  negative error (-1 session, -2 bad args, -4 too small). */
+int mdc_mirror_mode(const MdcSession* session, char* out, size_t out_len);
+
 /** N518: like mdc_take_mirror_frame, and also writes the surface id. */
 int64_t mdc_take_mirror_frame_with_surface(MdcSession* session, char* surface_id,
                                            size_t surface_id_len, uint16_t* width,

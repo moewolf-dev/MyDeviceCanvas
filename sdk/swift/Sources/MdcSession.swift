@@ -399,6 +399,18 @@ public final class MdcSession {
         return (received, dropped)
     }
 
+    /// N568: the negotiated mirror mode (`full-frame` | `dirty-region`; empty
+    /// before the device confirms). Parity with the C ABI and Node SDK.
+    public func mirrorMode() -> String {
+        guard let raw else { return "" }
+        var out = [CChar](repeating: 0, count: 32)
+        let n = out.withUnsafeMutableBufferPointer { buffer in
+            mdc_mirror_mode(raw, buffer.baseAddress, buffer.count)
+        }
+        guard n >= 0 else { return "" }
+        return String(cString: out)
+    }
+
     /// N549: frames dropped because the caller's mirror buffer was too small
     /// (parity with the C ABI's `mdc_mirror_skips`).
     public func mirrorSkips() -> UInt64 {

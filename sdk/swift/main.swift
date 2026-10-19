@@ -107,6 +107,11 @@ struct MdcSwiftHello {
         }
         // N549: the buffered-frame skip counter is readable (parity with C/Node).
         _ = gpu.mirrorSkips()
+        // N568: the negotiated mode is reported (parity with C/Node).
+        if gpu.mirrorMode() != "dirty-region" {
+            fputs("mirror mode not reported\n", stderr)
+            exit(1)
+        }
         // N508: the bounded (latest-wins) mirror stream also yields a frame.
         let bounded = try! MdcSession(boardId: "linux-virt")
         let boundedTask = Task {

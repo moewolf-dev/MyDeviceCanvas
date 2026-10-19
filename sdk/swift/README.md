@@ -98,3 +98,12 @@ License: Apache-2.0
 queue). `mirrorFramesBounded(maxFps:)` instead runs a paced producer task with a
 `.bufferingNewest(1)` buffer: a slow consumer drops older frames rather than
 queueing them, and `mirrorStats().dropped` reports how many were skipped.
+
+## Mirror mode (N549/N568)
+
+`startMirror(surfaceId:mode:maxFps:)` selects `.fullFrame` or `.dirtyRegion`
+(`mdc_start_mirror_mode`); `mirrorFrames`/`mirrorFramesBounded` take the same
+`mode`. `mirrorMode()` reports the negotiated mode (parity with the C ABI's
+`mdc_mirror_mode` and the Node SDK), and `mirrorSkips()` /
+`takeMirrorFrameWithSurface()` expose the buffered-frame skip counter and the
+per-frame surface id.
