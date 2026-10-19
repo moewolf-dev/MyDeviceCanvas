@@ -5405,3 +5405,69 @@ fn image_fit_alignment_on_the_device() {
     assert_eq!(render("center"), vec![0, 0xF800, 0, 0]);
     assert_eq!(render("right"), vec![0, 0, 0, 0xF800]);
 }
+
+#[test]
+fn image_fit_composes_with_transforms_on_the_device() {
+    // N595/N601: `fit` combined with `flip-h` keeps the letterbox and swaps halves.
+    let render = |mode: &str| {
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 4,
+            height: 1,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .set_scene(mdc_protocol::SceneNode {
+                name: "pic".into(),
+                kind: "image".into(),
+                rect: Some([0, 0, 4, 1]),
+                children: Vec::new(),
+                value: Some("f800001f".into()),
+                value2: Some("2,1".into()),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: Some(mode.into()),
+                focus: None,
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        (0..4)
+            .map(|x| device.pixel_rgb565(x, 0).unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(render("fit"), vec![0, 0xF800, 0x001F, 0]);
+    assert_eq!(render("fit,flip-h"), vec![0, 0x001F, 0xF800, 0]);
+}
+
+#[test]
+fn board_tile_threshold_default_is_negotiated() {
+    // N596/N601: a board ships its own default for the threshold config key.
+    let read = |board: &str| {
+        let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id(board));
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .get_config(mdc_core::TILES_MISSING_THRESHOLD_CONFIG)
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .config(mdc_core::TILES_MISSING_THRESHOLD_CONFIG)
+            .map(str::to_string)
+    };
+    assert_eq!(read("default").as_deref(), Some("0"));
+    assert_eq!(read("linux-virt").as_deref(), Some("2"));
+}
