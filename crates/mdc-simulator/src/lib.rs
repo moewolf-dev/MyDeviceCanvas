@@ -2277,6 +2277,8 @@ impl FakeDevice {
             // N41: supported configuration keys from the board profile.
             config: mdc_protocol::ConfigCapability {
                 keys: self.profile.config_keys.clone(),
+                // N616: advertise the board's factory defaults on the wire.
+                defaults: self.profile.config_defaults.clone(),
             },
             scene: mdc_protocol::SceneCapability::enabled(64, 4),
             boot_id: self.boot_id,
@@ -4158,6 +4160,53 @@ mod tests {
         let wide = render(Some(90));
         assert_eq!(wide[0][0], 0, "row 0 is outside the wide box");
         assert_ne!(wide[1][0], 0, "row 1 is inside");
+    }
+
+    #[test]
+    fn image_fit_transform_matrix_identities() {
+        // N615: fit composes with the flip/rotate matrix; a 180° turn equals both
+        // flips, and the quarter turns differ for an asymmetric source.
+        use mdc_protocol::SceneNode;
+        let render = |mode: &str, rotate: Option<u16>| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 4,
+                height: 4,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "pic".into(),
+                kind: "image".into(),
+                rect: Some([0, 0, 4, 4]),
+                // 2x2 source: red, green, blue, white (top-left..bottom-right).
+                value: Some("f80007e0001fffff".into()),
+                value2: Some("2,2".into()),
+                children: Vec::new(),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: Some(mode.into()),
+                focus: None,
+            });
+            assert!(device.render_scene());
+            (0..4)
+                .flat_map(|y| (0..4).map(move |x| (x, y)))
+                .map(|(x, y)| device.pixel_rgb565(x, y).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let base = render("fit", None);
+        // 180° == horizontal flip + vertical flip.
+        assert_eq!(render("fit", Some(180)), render("fit,flip-h,flip-v", None));
+        // The two quarter turns differ, and neither is the identity.
+        let cw = render("fit", Some(90));
+        let ccw = render("fit", Some(270));
+        assert_ne!(cw, ccw);
+        assert_ne!(cw, base);
+        assert_ne!(ccw, base);
     }
 
     #[test]

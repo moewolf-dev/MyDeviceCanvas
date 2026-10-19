@@ -873,12 +873,21 @@ pub struct SceneCommand {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct ConfigCapability {
     pub keys: Vec<String>,
+    /// N616: per-key factory defaults the host may read without a `get_config`
+    /// round trip. Additive; an older peer omits it.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub defaults: std::collections::BTreeMap<String, String>,
 }
 impl ConfigCapability {
     pub fn new(keys: &[&str]) -> Self {
         Self {
             keys: keys.iter().map(|k| (*k).to_string()).collect(),
+            defaults: std::collections::BTreeMap::new(),
         }
+    }
+    /// N616: the advertised factory default for `key`, if any.
+    pub fn default_for(&self, key: &str) -> Option<&str> {
+        self.defaults.get(key).map(String::as_str)
     }
     pub fn supports(&self, key: &str) -> bool {
         self.keys.iter().any(|k| k == key)

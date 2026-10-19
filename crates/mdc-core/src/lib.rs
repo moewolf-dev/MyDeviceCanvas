@@ -1422,11 +1422,24 @@ impl<T: Transport> Session<T> {
         report
     }
 
-    /// N586: the device-negotiated `tile_missing_threshold`, when it has been read
-    /// via `get_config`. `None` means the device did not advertise one.
+    /// N616: the factory default a device advertised for `key` in its
+    /// `Capabilities.config.defaults`, if any.
+    pub fn advertised_config_default(&self, key: &str) -> Option<&str> {
+        self.device
+            .as_ref()
+            .and_then(|device| device.capabilities.config.default_for(key))
+    }
+
+    /// N586/N616: the `tile_missing_threshold`. A value read via `get_config`
+    /// wins; otherwise the device's advertised factory default is used. `None`
+    /// means neither is known.
     pub fn tile_missing_threshold(&self) -> Option<u64> {
         self.config(TILES_MISSING_THRESHOLD_CONFIG)
             .and_then(|value| value.trim().parse().ok())
+            .or_else(|| {
+                self.advertised_config_default(TILES_MISSING_THRESHOLD_CONFIG)
+                    .and_then(|value| value.trim().parse().ok())
+            })
     }
 
     /// N586: enforce the reconciled threshold from the device configuration. With
