@@ -5256,15 +5256,15 @@ fn mirror_websocket_rejects_reserved_bit_with_close_1002() {
     }
     assert_eq!(close[0], 0x88);
     assert_eq!(u16::from_be_bytes([close[2], close[3]]), 1002);
-    // N577/N581: the decline/failure reasons are logged.
+    // N577/N581/N607: the decline/failure reasons are logged, structured.
     assert!(server
         .ws_log()
         .iter()
-        .any(|entry| entry.contains("declined extension")));
+        .any(|note| note.kind == "extension" && note.detail == "permessage-deflate"));
     assert!(server
         .ws_log()
         .iter()
-        .any(|entry| entry.contains("closed 1002")));
+        .any(|note| note.kind == "reserved" && note.detail == "closed 1002"));
 }
 
 #[test]
@@ -5470,4 +5470,55 @@ fn board_tile_threshold_default_is_negotiated() {
     };
     assert_eq!(read("default").as_deref(), Some("0"));
     assert_eq!(read("linux-virt").as_deref(), Some("2"));
+}
+
+#[test]
+fn image_fit_quarter_turn_on_the_device() {
+    // N605/N611: a 90° turn swaps the fitted box dimensions.
+    let render = |rotate: u16| {
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 4,
+            height: 4,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .set_scene(mdc_protocol::SceneNode {
+                name: "pic".into(),
+                kind: "image".into(),
+                rect: Some([0, 0, 4, 4]),
+                children: Vec::new(),
+                value: Some("f800001f".into()),
+                value2: Some("1,2".into()),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: Some(rotate),
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: Some("fit".into()),
+                focus: None,
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        (
+            device.pixel_rgb565(0, 0).unwrap(),
+            device.pixel_rgb565(1, 0).unwrap(),
+            device.pixel_rgb565(0, 1).unwrap(),
+        )
+    };
+    let (o0, c10, _r01) = render(0);
+    assert_eq!(o0, 0, "top-left outside the tall box");
+    assert_ne!(c10, 0, "inside the tall box");
+    let (o0, c10, r01) = render(90);
+    assert_eq!(o0, 0, "top-left outside the wide box");
+    assert_eq!(c10, 0, "top row outside the wide box");
+    assert_ne!(r01, 0, "second row inside the wide box");
 }
