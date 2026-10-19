@@ -185,6 +185,9 @@ pub struct ModelSummary {
     pub has_tangents: bool,
     pub has_second_uv: bool,
     pub has_second_skin: bool,
+    /// N544: textures stored as a KTX2/Basis container (metadata only; the host
+    /// does not transcode them).
+    pub ktx2_textures: usize,
 }
 
 /// Node local transform. glTF applies `T * R * S` to the node's children and
@@ -303,6 +306,15 @@ pub struct Texture {
     /// N334: glTF sampler wrap ("repeat" | "clamp") for this texture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrap: Option<String>,
+}
+
+impl Texture {
+    /// N544: whether this texture is a KTX2/Basis container (recognised from the
+    /// declared media type or the embedded magic bytes).
+    pub fn is_ktx2(&self) -> bool {
+        self.format.eq_ignore_ascii_case("image/ktx2")
+            || self.data.as_deref().is_some_and(crate::ktx2::is_ktx2)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -868,6 +880,7 @@ impl Model {
             variants: self.variants.len(),
             cameras: self.cameras.len(),
             morph_targets: self.meshes.iter().map(|m| m.morph_targets.len()).sum(),
+            ktx2_textures: self.textures.iter().filter(|t| t.is_ktx2()).count(),
             ..ModelSummary::default()
         };
         for g in geometry {
@@ -929,6 +942,13 @@ impl Model {
         for (i, texture) in self.textures.iter().enumerate() {
             if texture.data.is_none() && texture.bytes == 0 {
                 warnings.push(format!("texture {i} has no embedded bytes"));
+            }
+            // N544: KTX2/Basis is reported (size/format are known) but not
+            // transcoded, so a package built from this model has no texture.
+            if texture.is_ktx2() {
+                warnings.push(format!(
+                    "texture {i} is a KTX2/Basis container (transcoding is not supported)"
+                ));
             }
         }
         for (i, skeleton) in self.skeletons.iter().enumerate() {

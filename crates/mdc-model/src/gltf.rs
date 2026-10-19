@@ -32,9 +32,17 @@ pub const RESERVED_EXTENSIONS: [&str; 3] = [
     "KHR_texture_basisu",
 ];
 
-/// N503/N533: the reserved extensions that are still rejected. `EXT_meshopt_compression`
-/// moved out of this set when the decoder landed.
-pub const UNSUPPORTED_EXTENSIONS: [&str; 2] = ["KHR_draco_mesh_compression", "KHR_texture_basisu"];
+/// N503/N533/N544: the reserved extensions that are rejected outright.
+/// `EXT_meshopt_compression` moved out when the decoder landed; `KHR_texture_basisu`
+/// moved out when the KTX2 header reader landed (its metadata now imports, but
+/// transcoding is still refused). Only Draco remains undecodable.
+pub const UNSUPPORTED_EXTENSIONS: [&str; 1] = ["KHR_draco_mesh_compression"];
+
+/// N544: an extension whose *payload* cannot be decoded, so a model that needs it
+/// cannot be rendered. Unlike [`UNSUPPORTED_EXTENSIONS`], a document that only
+/// *uses* basisu metadata still imports (size/format are reported); a document
+/// that *requires* it fails, because the asset is unusable without transcoding.
+pub const TRANSCODE_REQUIRED_EXTENSIONS: [&str; 1] = ["KHR_texture_basisu"];
 
 /// N503: the reserved extensions a glTF document references, in first-seen order.
 /// Checks `extensionsRequired`/`extensionsUsed` and the per-object extensions on
@@ -102,6 +110,13 @@ fn check_reserved_extensions(doc: &Value) -> Result<(), ModelError> {
         if UNSUPPORTED_EXTENSIONS.contains(&name) {
             return Err(ModelError::Unsupported(format!(
                 "required extension {name} is not supported"
+            )));
+        }
+        // N544: a required Basis texture cannot be transcoded, so the model is
+        // unusable; a merely used one imports as metadata (see the image checks).
+        if TRANSCODE_REQUIRED_EXTENSIONS.contains(&name) {
+            return Err(ModelError::Unsupported(format!(
+                "required extension {name} needs a Basis transcoder (not supported)"
             )));
         }
     }
@@ -2595,6 +2610,10 @@ pub fn sniff_image_format(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
         return Some("image/webp");
     }
+    // N544: a KTX2 container (Basis Universal) is recognised but not transcoded.
+    if crate::ktx2::is_ktx2(bytes) {
+        return Some("image/ktx2");
+    }
     None
 }
 
@@ -2649,6 +2668,10 @@ fn probe_image_size(bytes: &[u8]) -> Option<(u32, u32)> {
     }
     if bytes.starts_with(b"RIFF") {
         return probe_webp_size(bytes);
+    }
+    // N544: read the real pixel size out of a KTX2 header without transcoding.
+    if let Some(header) = crate::ktx2::Ktx2Header::parse(bytes) {
+        return Some((header.pixel_width, header.pixel_height));
     }
     None
 }
@@ -4014,6 +4037,56 @@ mod tests {
     }
 
     #[test]
+    fn ktx2_dimensions_come_from_the_header() {
+        // N544: a Basis texture reports its real size/format from the KTX2
+        // header, even though the payload is never transcoded.
+        let mut ktx2 = crate::ktx2::KTX2_IDENTIFIER.to_vec();
+        let mut field = |value: u32| ktx2.extend_from_slice(&value.to_le_bytes());
+        field(0); // vkFormat: undefined (Basis)
+        field(0); // typeSize
+        field(1024); // pixelWidth
+        field(512); // pixelHeight
+        field(0); // pixelDepth
+        field(0); // layerCount
+        field(1); // faceCount
+        field(1); // levelCount
+        field(1); // supercompressionScheme: BasisLZ
+        field(0); // dfdByteOffset
+        field(0); // dfdByteLength
+        field(0); // kvdByteOffset
+        field(0); // kvdByteLength
+        ktx2.extend_from_slice(&0u64.to_le_bytes()); // sgdByteOffset
+        ktx2.extend_from_slice(&0u64.to_le_bytes()); // sgdByteLength
+        assert_eq!(ktx2.len(), crate::ktx2::KTX2_HEADER_BYTES);
+        let document = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "extensionsUsed": ["KHR_texture_basisu"],
+            "buffers": [{"byteLength": ktx2.len()}],
+            "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": ktx2.len()}],
+            "images": [{"bufferView": 0, "width": 1, "height": 1}],
+            "textures": [{"source": 0}],
+            "materials": [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}],
+        });
+        let bytes = glb(serde_json::to_vec(&document).unwrap().as_slice(), &ktx2);
+        let model = GltfImporter
+            .import(&bytes, &ImportLimits::default())
+            .unwrap();
+        assert_eq!(model.textures[0].format, "image/ktx2");
+        assert_eq!(
+            (model.textures[0].width, model.textures[0].height),
+            (1024, 512)
+        );
+        assert!(model.textures[0].is_ktx2());
+        assert_eq!(model.summary().ktx2_textures, 1);
+        // The report flags it as metadata-only rather than silently dropping it.
+        let report = model.validate();
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("KTX2")));
+    }
+
+    #[test]
     fn gpu_instancing_expands_into_instance_children() {
         // N513: EXT_mesh_gpu_instancing expands one node into per-instance
         // children, keeping the node's own transform on the group.
@@ -4120,12 +4193,27 @@ mod tests {
             .import(&bytes, &ImportLimits::default())
             .unwrap_err();
         assert!(error.to_string().contains("draco"), "{error}");
-        // A KTX2 image is rejected too.
+        // N544: a KTX2 image is recognised (its header is readable) but the
+        // extension is still reported; only a *required* Basis asset is fatal.
         let ktx2 = serde_json::json!({
             "asset": {"version": "2.0"},
+            "extensionsUsed": ["KHR_texture_basisu"],
             "images": [{"mimeType": "image/ktx2", "extensions": {"KHR_texture_basisu": {"source": 0}}}],
         });
         let bytes = serde_json::to_vec(&ktx2).unwrap();
+        assert_eq!(
+            reserved_extensions_in_bytes(&bytes),
+            vec!["KHR_texture_basisu".to_string()]
+        );
+        assert!(GltfImporter
+            .import(&bytes, &ImportLimits::default())
+            .is_ok());
+        let required = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "extensionsRequired": ["KHR_texture_basisu"],
+            "images": [{"mimeType": "image/ktx2"}],
+        });
+        let bytes = serde_json::to_vec(&required).unwrap();
         let error = GltfImporter
             .import(&bytes, &ImportLimits::default())
             .unwrap_err();

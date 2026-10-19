@@ -12,6 +12,7 @@ mod atlas;
 mod backend;
 mod gltf;
 mod ir;
+mod ktx2;
 mod live2d;
 mod optimizer;
 mod package;
@@ -25,12 +26,14 @@ pub use backend::{
 mod meshopt;
 pub use gltf::{
     reserved_extensions, reserved_extensions_in_bytes, GltfImporter, RESERVED_EXTENSIONS,
+    UNSUPPORTED_EXTENSIONS,
 };
 pub use ir::{
     Animation, AnimationTrack, Camera, ImportLimits, Layer, Light, Material, Mesh, MeshGeometry,
     Model, ModelError, ModelSummary, Node, Skeleton, Sprite, Texture, UvTransform,
     ValidationReport, MAX_GEOMETRY_INDICES, MAX_GEOMETRY_VERTICES,
 };
+pub use ktx2::{is_ktx2, Ktx2Header, KTX2_HEADER_BYTES, KTX2_IDENTIFIER};
 pub use live2d::{
     sample_segments, ImportedBundle, Live2DBundle, Live2DImporter, MotionCurve, MotionInfo,
     MAX_MOTION_SEGMENTS,

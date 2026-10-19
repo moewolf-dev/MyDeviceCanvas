@@ -18,6 +18,31 @@
 
 use crate::ir::ModelError;
 
+/// N543: the most decoded bytes a single meshopt stream may expand to. Unlike
+/// index streams (whose length is bounded by the compressed length), a vertex
+/// stream can declare an arbitrarily large `count`, so this cap keeps a crafted
+/// header from requesting an unbounded allocation before any bounds check runs.
+pub const MAX_VERTEX_DECODE_BYTES: usize = 16 * 1024 * 1024;
+
+/// N543: the most bytes an index stream may expand to. Index counts are already
+/// bounded by the compressed length, but the cap keeps a crafted count from
+/// allocating far more than a device package can ever use.
+pub const MAX_INDEX_DECODE_BYTES: usize = 16 * 1024 * 1024;
+
+fn checked_output_bytes(
+    count: usize,
+    byte_stride: usize,
+    budget: usize,
+) -> Result<usize, ModelError> {
+    let bytes = count
+        .checked_mul(byte_stride)
+        .ok_or_else(|| malformed("stream size overflows"))?;
+    if bytes > budget {
+        return Err(malformed("stream expands beyond the decode budget"));
+    }
+    Ok(bytes)
+}
+
 /// N533: the meshopt post-decode filter for a vertex buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MeshoptFilter {
@@ -160,8 +185,13 @@ pub fn decode_vertex_buffer(
 
     let header_modes: [[u32; 4]; 3] = [[0, 2, 4, 8], [0, 1, 2, 4], [1, 2, 4, 8]];
 
+    // N543: reject a declared size that overflows `usize` or exceeds the decode
+    // budget *before* allocating, so a malformed header cannot trigger an
+    // overflow panic or an unbounded allocation.
+    let decoded_bytes = checked_output_bytes(element_count, byte_stride, MAX_VERTEX_DECODE_BYTES)?;
+
     let mut src_offs = 1usize;
-    let mut target = vec![0u8; element_count * byte_stride];
+    let mut target = vec![0u8; decoded_bytes];
 
     let mut dst_elem_base = 0usize;
     while dst_elem_base < element_count {
@@ -470,8 +500,11 @@ fn apply_vertex_filter(
                         u32::from(read(3)),
                     )
                 };
-                let alpha_bit = 31 - alpha.leading_zeros();
-                let as_ = (1u32 << (alpha_bit + 1)) - 1;
+                // N543: `alpha` may be 0 in a fuzzed stream; a plain `31 - clz`
+                // underflows there. Saturate so `as_` stays >= 1 and the scale
+                // division below is well defined.
+                let alpha_bit = 31u32.saturating_sub(alpha.leading_zeros());
+                let as_ = (1u32 << (alpha_bit + 1).min(31)) - 1;
                 let r = y as i32 + co - cg;
                 let g = y as i32 + cg;
                 let b = y as i32 - co - cg;
@@ -567,7 +600,7 @@ pub fn decode_index_buffer(
     let mut edge_fifo = Fifo::<32>::new();
     let mut vertex_fifo = Fifo::<16>::new();
 
-    let mut out = vec![0u8; count * byte_stride];
+    let mut out = vec![0u8; checked_output_bytes(count, byte_stride, MAX_INDEX_DECODE_BYTES)?];
     let mut dst_offs = 0usize;
 
     for i in 0..tri_count {
@@ -741,7 +774,7 @@ pub fn decode_index_sequence(
 
     let mut data_offs = 1usize;
     let mut last = [0u32; 2];
-    let mut out = vec![0u8; count * byte_stride];
+    let mut out = vec![0u8; checked_output_bytes(count, byte_stride, MAX_INDEX_DECODE_BYTES)?];
 
     for i in 0..count {
         let value = leb128(source, &mut data_offs)?;
@@ -1159,6 +1192,88 @@ mod tests {
         assert!(decode_index_sequence(2, 4, &[0xd2]).is_err());
         // Filters validate their stride.
         assert!(decode_vertex_buffer(1, 4, &[0xa0; 64], MeshoptFilter::Quaternion).is_err());
+    }
+
+    #[test]
+    fn color_filter_with_zero_alpha_does_not_panic() {
+        // N543: a zero alpha byte used to underflow `31 - leading_zeros` in the
+        // COLOR filter. Decoding (and the filter code path) must not panic.
+        let mut target = vec![0u8; 4];
+        apply_vertex_filter(&mut target, 1, 4, MeshoptFilter::Color).unwrap();
+        // The 16-bit variant covers the other branch.
+        let mut target16 = vec![0u8; 8];
+        apply_vertex_filter(&mut target16, 1, 8, MeshoptFilter::Color).unwrap();
+        // And an all-0xff alpha is a different extreme.
+        let mut max_alpha = vec![0xffu8; 8];
+        apply_vertex_filter(&mut max_alpha, 1, 8, MeshoptFilter::Color).unwrap();
+    }
+
+    #[test]
+    fn oversized_declared_streams_are_rejected_before_allocating() {
+        // N543: a crafted `count` must not request an unbounded allocation.
+        let error = decode_vertex_buffer(
+            usize::MAX / 2,
+            4,
+            &[0xa0, 0x00, 0x00, 0x00, 0x00],
+            MeshoptFilter::None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("meshopt"), "{error}");
+        assert!(decode_index_buffer(usize::MAX / 2, 4, &[0xe1; 64]).is_err());
+    }
+
+    #[test]
+    fn truncated_and_random_streams_never_panic() {
+        // N543: a bounded fuzz pass over every decoder entry point. Truncations of
+        // the golden vectors and pseudo-random streams must return an error rather
+        // than unwind.
+        let seeds: [&[u8]; 3] = [
+            &[
+                0xa0, 0xe1, 0x80, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+            ],
+            &[
+                0xe1, 0x3f, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
+            ],
+            &[0xd1, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07],
+        ];
+        for seed in seeds {
+            for len in 0..=seed.len() {
+                let prefix = &seed[..len];
+                for filter in [
+                    MeshoptFilter::None,
+                    MeshoptFilter::Octahedral,
+                    MeshoptFilter::Quaternion,
+                    MeshoptFilter::Exponential,
+                    MeshoptFilter::Color,
+                ] {
+                    let result = std::panic::catch_unwind(|| {
+                        let _ = decode_vertex_buffer(8, 8, prefix, filter);
+                        let _ = decode_index_buffer(6, 4, prefix);
+                        let _ = decode_index_sequence(6, 4, prefix);
+                    });
+                    assert!(result.is_ok(), "prefix {prefix:?} panicked with {filter:?}");
+                }
+            }
+        }
+        // A simple LCG produces deterministic non-repeating streams.
+        let mut state: u32 = 0x1234_5678;
+        let mut next = || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        };
+        for _ in 0..2000 {
+            let len = usize::from(next() % 96);
+            let bytes: Vec<u8> = (0..len).map(|_| next()).collect();
+            let result = std::panic::catch_unwind(|| {
+                let _ = decode_vertex_buffer(4, 4, &bytes, MeshoptFilter::Color);
+                let _ = decode_vertex_buffer(4, 8, &bytes, MeshoptFilter::Octahedral);
+                let _ = decode_vertex_buffer(4, 8, &bytes, MeshoptFilter::Quaternion);
+                let _ = decode_vertex_buffer(4, 4, &bytes, MeshoptFilter::Exponential);
+                let _ = decode_index_buffer(9, 4, &bytes);
+                let _ = decode_index_sequence(9, 2, &bytes);
+            });
+            assert!(result.is_ok(), "random stream {bytes:?} panicked");
+        }
     }
 
     #[test]
