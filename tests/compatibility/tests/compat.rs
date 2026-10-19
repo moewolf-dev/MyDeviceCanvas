@@ -4155,6 +4155,60 @@ fn radial_gradient_renders_on_the_device() {
 }
 
 #[test]
+fn image_fit_per_side_padding_renders_on_the_device() {
+    // N655/N661: a per-side pad insets the fitted image on the device.
+    use mdc_core::{ConnectionState, Session};
+    use mdc_protocol::SceneNode;
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 5,
+        height: 5,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .set_scene(SceneNode {
+            name: "pic".into(),
+            kind: "image".into(),
+            rect: Some([0, 0, 5, 5]),
+            value: Some("f800".into()),
+            value2: Some("1,1".into()),
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: Some("fit,pad-l=2".into()),
+            focus: None,
+            children: Vec::new(),
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.render_scene());
+    let mut lit = Vec::new();
+    for y in 0..5u16 {
+        for x in 0..5u16 {
+            if device.pixel_rgb565(x, y).unwrap() != 0 {
+                lit.push((x, y));
+            }
+        }
+    }
+    // Left pad 2 leaves a 3x5 box; the 3x3 square source is centred vertically.
+    assert_eq!(lit.len(), 9, "{lit:?}");
+    assert!(lit
+        .iter()
+        .all(|(x, y)| (2..=4).contains(x) && (1..=3).contains(y)));
+}
+
+#[test]
 fn image_fit_padding_renders_on_the_device() {
     // N645/N651: `pad` insets a fitted image on the device.
     use mdc_core::{ConnectionState, Session};

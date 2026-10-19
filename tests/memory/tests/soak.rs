@@ -2366,6 +2366,20 @@ fn websocket_note_counts_stay_consistent_under_rotation() {
 }
 
 #[test]
+fn websocket_note_kinds_stay_bounded() {
+    // N657/N661: the per-kind summary is derived from the bounded log, so even a
+    // flood of distinct kinds cannot grow it past the log cap.
+    let mut server = mdc_mirror::HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+    for i in 0..1_000 {
+        server.note_ws(format!("kind-{i}"), "x");
+    }
+    let counts = server.ws_log_counts();
+    assert!(counts.len() <= 16, "kinds: {}", counts.len());
+    assert_eq!(counts.values().sum::<usize>(), server.ws_log().len());
+    assert!(counts.values().all(|count| *count >= 1));
+}
+
+#[test]
 fn disk_asset_cache_stays_within_quota() {
     // N369/N371: the on-disk asset store never exceeds its byte quota, however
     // many payloads are inserted.
