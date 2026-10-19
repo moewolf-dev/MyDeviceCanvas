@@ -202,21 +202,24 @@ fn write_archive_manifest(dir: &str, keep: usize, max_bytes: u64) -> std::io::Re
     )
 }
 
-/// N619: check an archive's `manifest.json` against the files on disk — each
-/// listed file must exist and be non-empty. Returns a small report.
-fn verify_archive(dir: &str) -> std::io::Result<serde_json::Value> {
+/// N619/N629: check an archive's `manifest.json` against the files on disk —
+/// each listed file must exist, be non-empty and be at most `max_bytes` (0 =
+/// no cap). Returns a small report.
+fn verify_archive(dir: &str, max_bytes: u64) -> std::io::Result<serde_json::Value> {
     let manifest_path = std::path::Path::new(dir).join("manifest.json");
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&manifest_path)?)?;
     let files = manifest["files"].as_array().cloned().unwrap_or_default();
     let mut missing = Vec::new();
     let mut empty = Vec::new();
+    let mut oversized = Vec::new();
     for file in &files {
         let Some(name) = file.as_str() else { continue };
         let path = std::path::Path::new(dir).join(name);
         match std::fs::metadata(&path) {
-            Ok(meta) if meta.len() > 0 => {}
-            Ok(_) => empty.push(name.to_string()),
+            Ok(meta) if meta.len() == 0 => empty.push(name.to_string()),
+            Ok(meta) if max_bytes > 0 && meta.len() > max_bytes => oversized.push(name.to_string()),
+            Ok(_) => {}
             Err(_) => missing.push(name.to_string()),
         }
     }
@@ -225,7 +228,9 @@ fn verify_archive(dir: &str) -> std::io::Result<serde_json::Value> {
         "declared": files.len(),
         "missing": missing,
         "empty": empty,
-        "ok": missing.is_empty() && empty.is_empty(),
+        "oversized": oversized,
+        "maxBytes": max_bytes,
+        "ok": missing.is_empty() && empty.is_empty() && oversized.is_empty(),
     }))
 }
 
@@ -379,7 +384,10 @@ fn main() {
     // N619: validate an archive's manifest against the files on disk.
     if args.iter().any(|a| a == "--check-archive") {
         let dir = flag_value("--check-archive").unwrap_or_default();
-        match verify_archive(&dir) {
+        let max_bytes = flag_value("--max-bytes")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+        match verify_archive(&dir, max_bytes) {
             Ok(report) => {
                 println!("{report}");
                 if report["ok"] != serde_json::json!(true) {
@@ -658,12 +666,16 @@ mod tests {
         assert_eq!(manifest["rotated"], 1);
         assert!(manifest["generatedAt"].as_u64().unwrap() > 0);
         // N619: the manifest checks out against the files on disk.
-        let check = verify_archive(dir.to_str().unwrap()).unwrap();
+        let check = verify_archive(dir.to_str().unwrap(), 0).unwrap();
         assert_eq!(check["ok"], true, "{check}");
         assert_eq!(check["declared"], 2);
+        // N629: a per-file byte cap flags oversized files.
+        let check = verify_archive(dir.to_str().unwrap(), 1).unwrap();
+        assert_eq!(check["ok"], false);
+        assert!(!check["oversized"].as_array().unwrap().is_empty());
         // A deleted rotated copy is reported.
         std::fs::remove_file(dir.join("mdc-history.jsonl.1")).unwrap();
-        let check = verify_archive(dir.to_str().unwrap()).unwrap();
+        let check = verify_archive(dir.to_str().unwrap(), 0).unwrap();
         assert_eq!(check["ok"], false);
         assert_eq!(check["missing"].as_array().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&dir);

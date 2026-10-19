@@ -1835,6 +1835,18 @@ fn cmd_config(
     key: &str,
     value: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // N626: `mdc config --defaults` reports the board's advertised factory
+    // defaults and exits, without opening a device session.
+    if action == "--defaults" || key == "--defaults" {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "board": opts.board,
+                "defaults": board_config_defaults(&opts.board),
+            }))?
+        );
+        return Ok(());
+    }
     let (mut session, mut device, _manager) = open_sim(&opts.board)?;
     match action {
         "get" => {
@@ -4026,6 +4038,17 @@ fn cmd_diff(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         pa.manifest.checksum.into(),
         pb.manifest.checksum.into(),
     );
+    // N624: the manifest locality metric as its own diff line.
+    compare(
+        "manifest_cache_misses",
+        pa.manifest.cache_misses.into(),
+        pb.manifest.cache_misses.into(),
+    );
+    compare(
+        "cache_size",
+        pa.manifest.cache_size.into(),
+        pb.manifest.cache_size.into(),
+    );
     let counts = |p: &mdc_model::DevicePackage| {
         serde_json::json!({
             "nodes": p.nodes.len(),
@@ -4093,6 +4116,9 @@ fn cmd_validate(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "strict": strict,
             "problems": report.problems,
             "warnings": report.warnings,
+            // N630: a KTX2 summary right in the validation report.
+            "ktx2_textures": report.summary.ktx2_textures,
+            "ktx2_slices": report.summary.ktx2_slices,
             "summary": report.summary,
         }))?
     );
@@ -4650,6 +4676,18 @@ mod tests {
         std::fs::write(&path, package.to_bytes().unwrap()).unwrap();
         cmd_verify(&[path.to_string_lossy().into_owned()]).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_defaults_action_runs_without_a_session() {
+        // N626: `mdc config --defaults` reports the board defaults directly.
+        let opts = GlobalOpts {
+            sim: true,
+            board: "linux-virt".into(),
+            address: None,
+            port: None,
+        };
+        cmd_config(&opts, "--defaults", "", None).unwrap();
     }
 
     #[test]
