@@ -285,8 +285,31 @@ fn sample_source(source: &[u16], src_w: u32, src_h: u32, fx: f32, fy: f32, linea
     mix(top, bottom, ty)
 }
 
-/// N556: blit a hex RGB565 image, optionally scaling a `src_w × src_h` source
-/// grid into the `w × h` destination with nearest or bilinear sampling.
+/// N556/N565: the transform flags an `image` node's `mode` selects.
+#[derive(Debug, Clone, Copy, Default)]
+struct ImageMode {
+    linear: bool,
+    flip_h: bool,
+    flip_v: bool,
+}
+
+/// N565: parse comma-separated `mode` tokens for an `image` node.
+fn parse_image_mode(mode: Option<&str>) -> ImageMode {
+    let mut parsed = ImageMode::default();
+    for token in mode.unwrap_or("").split(',').map(str::trim) {
+        match token {
+            "linear" => parsed.linear = true,
+            "flip-h" => parsed.flip_h = true,
+            "flip-v" => parsed.flip_v = true,
+            _ => {}
+        }
+    }
+    parsed
+}
+
+/// N556/N565: blit a hex RGB565 image, optionally scaling a `src_w × src_h`
+/// source grid into the `w × h` destination with nearest or bilinear sampling,
+/// a horizontal/vertical flip, and a quarter-turn rotation.
 #[allow(clippy::too_many_arguments)]
 fn blit_hex_rgb565(
     pixels: &mut [u8],
@@ -300,7 +323,8 @@ fn blit_hex_rgb565(
     alpha: u8,
     src_w: u16,
     src_h: u16,
-    linear: bool,
+    mode: ImageMode,
+    rotate: u16,
 ) -> bool {
     if w == 0 || h == 0 || src_w == 0 || src_h == 0 {
         return false;
@@ -314,14 +338,45 @@ fn blit_hex_rgb565(
         if py >= height {
             break;
         }
-        let fy = (row as f32 + 0.5) / f32::from(h);
         for col in 0..u32::from(w) {
             let px = u32::from(x) + col;
             if px >= width {
                 break;
             }
-            let fx = (col as f32 + 0.5) / f32::from(w);
-            let value = sample_source(&source, u32::from(src_w), u32::from(src_h), fx, fy, linear);
+            let mut fx = (col as f32 + 0.5) / f32::from(w);
+            let mut fy = (row as f32 + 0.5) / f32::from(h);
+            // N565: flip first, then rotate (both about the rect centre).
+            if mode.flip_h {
+                fx = 1.0 - fx;
+            }
+            if mode.flip_v {
+                fy = 1.0 - fy;
+            }
+            match rotate {
+                90 => {
+                    let t = fx;
+                    fx = fy;
+                    fy = 1.0 - t;
+                }
+                180 => {
+                    fx = 1.0 - fx;
+                    fy = 1.0 - fy;
+                }
+                270 => {
+                    let t = fx;
+                    fx = 1.0 - fy;
+                    fy = t;
+                }
+                _ => {}
+            }
+            let value = sample_source(
+                &source,
+                u32::from(src_w),
+                u32::from(src_h),
+                fx,
+                fy,
+                mode.linear,
+            );
             let at = ((py * width + px) * 2) as usize;
             put_pixel(pixels, at, value, alpha);
             drew = true;
@@ -1168,11 +1223,24 @@ fn fill_scene(
         if let (Some(rect), Some(hex)) = (rect, node.value.as_deref()) {
             let [x, y, w, h] = transform.apply(rect);
             // N556: `value2` gives the source grid ("sw,sh", default the rect
-            // size); `mode: "linear"` scales it with bilinear filtering.
+            // size); `mode` lists `linear`/`flip-h`/`flip-v`. N565: `rotate`
+            // turns the sampled image.
             let (src_w, src_h) = parse_source_dims(node.value2.as_deref()).unwrap_or((w, h));
-            let linear = node.mode.as_deref() == Some("linear");
+            let mode = parse_image_mode(node.mode.as_deref());
             if blit_hex_rgb565(
-                pixels, width, height, x, y, w, h, hex, alpha, src_w, src_h, linear,
+                pixels,
+                width,
+                height,
+                x,
+                y,
+                w,
+                h,
+                hex,
+                alpha,
+                src_w,
+                src_h,
+                mode,
+                node.rotate.unwrap_or(0),
             ) {
                 *drew = true;
             }
@@ -3852,6 +3920,53 @@ mod tests {
         assert_ne!(linear[1], 0x001F, "bilinear blends");
         assert_eq!(linear[0], 0xF800, "the first column is still red");
         assert_eq!(linear[3], 0x001F, "the last column is still blue");
+    }
+
+    #[test]
+    fn image_node_supports_flip_and_rotate() {
+        // N565: `mode` flip tokens and `rotate` transform the sampled image.
+        use mdc_protocol::SceneNode;
+        let render = |mode: Option<&str>, rotate: Option<u16>| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 4,
+                height: 1,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "pic".into(),
+                kind: "image".into(),
+                rect: Some([0, 0, 4, 1]),
+                value: Some("f800001f".into()),
+                value2: Some("2,1".into()),
+                children: Vec::new(),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: mode.map(str::to_string),
+                focus: None,
+            });
+            assert!(device.render_scene());
+            (0..4)
+                .map(|x| device.pixel_rgb565(x, 0).unwrap())
+                .collect::<Vec<_>>()
+        };
+        // Baseline: red then blue.
+        assert_eq!(render(None, None), vec![0xF800, 0xF800, 0x001F, 0x001F]);
+        // Horizontal flip swaps the halves.
+        assert_eq!(
+            render(Some("flip-h"), None),
+            vec![0x001F, 0x001F, 0xF800, 0xF800]
+        );
+        // A 180° rotation on a 1-row image matches the horizontal flip.
+        assert_eq!(
+            render(None, Some(180)),
+            vec![0x001F, 0x001F, 0xF800, 0xF800]
+        );
     }
 
     #[test]

@@ -1058,6 +1058,10 @@ pub struct HttpMirrorServer {
     ws_messages: u64,
     /// N558: frames whose reserved (compression) bit was set (not negotiated).
     ws_reserved: u64,
+    /// N567: peers that offered a WebSocket extension in the handshake.
+    ws_offered: u64,
+    /// N567: close (1002) on a reserved-bit frame instead of ignoring it.
+    ws_reject_reserved: bool,
 }
 
 struct HttpClient {
@@ -1168,6 +1172,8 @@ impl HttpMirrorServer {
             ws_fragment: 0,
             ws_messages: 0,
             ws_reserved: 0,
+            ws_offered: 0,
+            ws_reject_reserved: false,
         })
     }
 
@@ -1213,9 +1219,25 @@ impl HttpMirrorServer {
     }
 
     /// N558: client frames with the reserved (compression) bit set. The server
-    /// never negotiates `permessage-deflate`, so these are counted and ignored.
+    /// never negotiates `permessage-deflate`, so these are counted and ignored
+    /// (or, with [`with_ws_reject_reserved`](Self::with_ws_reject_reserved), the
+    /// peer is closed with code 1002).
     pub fn ws_reserved(&self) -> u64 {
         self.ws_reserved
+    }
+
+    /// N567: peers that offered a WebSocket extension (e.g. `permessage-deflate`)
+    /// in the handshake. The extension is never echoed, so it is not negotiated.
+    pub fn ws_offered(&self) -> u64 {
+        self.ws_offered
+    }
+
+    /// N567: when set, a frame that sets the reserved (compression) bit fails the
+    /// connection with a `1002` close (RFC 6455 protocol error) instead of being
+    /// silently ignored. Off by default (N558 compatibility).
+    pub fn with_ws_reject_reserved(mut self, reject: bool) -> Self {
+        self.ws_reject_reserved = reject;
+        self
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -1334,7 +1356,7 @@ impl HttpMirrorServer {
             let body = format!(
                 "{{\"frames\":{},\"clients\":{},\"streaming\":{},\"clipped\":{},\"ws\":{},\
                   \"ws_pings\":{},\"ws_closes\":{},\"ws_timeouts\":{},\"ws_messages\":{},\
-                  \"ws_reserved\":{}}}",
+                  \"ws_reserved\":{},\"ws_offered\":{}}}",
                 self.frames,
                 self.clients.len(),
                 self.streaming_clients(),
@@ -1344,10 +1366,13 @@ impl HttpMirrorServer {
                 self.ws_closes,
                 self.ws_timeouts,
                 self.ws_messages,
-                self.ws_reserved
+                self.ws_reserved,
+                self.ws_offered
             );
             simple_response(200, "application/json", body.as_bytes())
         };
+        // N567: extension offers counted in this pass.
+        let mut offered = 0u64;
         for client in &mut self.clients {
             if client.streaming || client.response.is_some() {
                 continue;
@@ -1375,6 +1400,12 @@ impl HttpMirrorServer {
                                 .is_some_and(|value| value.eq_ignore_ascii_case("websocket"));
                             match (key, upgraded) {
                                 (Some(key), true) => {
+                                    // N567: count (but never echo) extension
+                                    // offers such as `permessage-deflate`, so the
+                                    // handshake explicitly declines compression.
+                                    if header_value(headers, "sec-websocket-extensions").is_some() {
+                                        offered += 1;
+                                    }
                                     client.websocket = true;
                                     client.streaming = true;
                                     // N507: keep any bytes sent after the upgrade
@@ -1426,7 +1457,7 @@ impl HttpMirrorServer {
             }
             if client.websocket {
                 let (seen_pings, seen_closes, seen_messages, seen_reserved) =
-                    pump_websocket(client, self.frames);
+                    pump_websocket(client, self.frames, self.ws_reject_reserved);
                 pings += seen_pings;
                 closes += seen_closes;
                 messages += seen_messages;
@@ -1448,6 +1479,7 @@ impl HttpMirrorServer {
         self.ws_closes = self.ws_closes.saturating_add(closes);
         self.ws_messages = self.ws_messages.saturating_add(messages);
         self.ws_reserved = self.ws_reserved.saturating_add(reserved);
+        self.ws_offered = self.ws_offered.saturating_add(offered);
         self.ws_timeouts = self.ws_timeouts.saturating_add(timeouts);
         self.clients.retain_mut(|client| {
             if client.dead {
@@ -1627,7 +1659,11 @@ fn flush_stream(client: &mut HttpClient) {
 /// refresh the heartbeat (`frames` is the server's current published-frame
 /// counter). N548: data frames (including fragmentation/continuation) are
 /// reassembled into complete messages.
-fn pump_websocket(client: &mut HttpClient, frames: u64) -> (u64, u64, u64, u64) {
+fn pump_websocket(
+    client: &mut HttpClient,
+    frames: u64,
+    reject_reserved: bool,
+) -> (u64, u64, u64, u64) {
     let mut buffer = [0u8; 512];
     match client.stream.read(&mut buffer) {
         Ok(0) => {
@@ -1656,10 +1692,18 @@ fn pump_websocket(client: &mut HttpClient, frames: u64) -> (u64, u64, u64, u64) 
         };
         // N558: `permessage-deflate` is never negotiated, so a frame that sets the
         // reserved bit is counted and dropped rather than mis-read as plain data.
+        // N567: with `reject_reserved`, it instead fails the connection (1002).
         if rsv1 {
             reserved += 1;
             client.ws_message.clear();
             client.ws_fragmenting = false;
+            if reject_reserved {
+                client
+                    .ws_control
+                    .extend_from_slice(&ws_frame_opcode(0x8, &1002u16.to_be_bytes()));
+                client.ws_closing = true;
+                closes += 1;
+            }
             continue;
         }
         match opcode {
@@ -3362,6 +3406,78 @@ mod tests {
             "a compressed frame is not a message"
         );
         assert_eq!(server.ws_clients(), 1, "the peer stays connected");
+    }
+
+    #[test]
+    fn websocket_declines_extensions_and_can_reject_reserved_bit() {
+        // N567: an extension offer is counted but never echoed; with
+        // `with_ws_reject_reserved` a reserved-bit frame closes with 1002.
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0")
+            .unwrap()
+            .with_ws_reject_reserved(true);
+        let addr = server.local_addr().unwrap();
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
+        client
+            .write_all(
+                b"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+                  Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+                  Sec-WebSocket-Extensions: permessage-deflate\r\n\r\n",
+            )
+            .unwrap();
+        let mut handshake = Vec::new();
+        for _ in 0..100 {
+            let _ = server.pump();
+            let mut buffer = [0u8; 4096];
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => {
+                    handshake.extend_from_slice(&buffer[..n]);
+                    if handshake.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(2)),
+            }
+        }
+        let text = String::from_utf8_lossy(&handshake);
+        assert!(text.starts_with("HTTP/1.1 101"), "upgraded: {text}");
+        assert!(
+            !text.to_ascii_lowercase().contains("permessage-deflate"),
+            "the extension is not echoed"
+        );
+        assert_eq!(server.ws_offered(), 1, "the offer was counted");
+        // A reserved-bit frame now fails the connection with 1002.
+        let mask = [0x11u8, 0x22, 0x33, 0x44];
+        let payload = b"x";
+        let mut frame = vec![0x80 | 0x40 | 0x02, 0x80 | payload.len() as u8];
+        frame.extend_from_slice(&mask);
+        frame.extend(
+            payload
+                .iter()
+                .enumerate()
+                .map(|(i, byte)| byte ^ mask[i % 4]),
+        );
+        client.write_all(&frame).unwrap();
+        let mut close = Vec::new();
+        for _ in 0..100 {
+            let _ = server.pump();
+            let mut buffer = [0u8; 64];
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => close.extend_from_slice(&buffer[..n]),
+                Err(_) => std::thread::sleep(Duration::from_millis(2)),
+            }
+            if close.len() >= 4 {
+                break;
+            }
+        }
+        assert_eq!(server.ws_reserved(), 1);
+        assert!(server.ws_closes() >= 1, "a close was sent");
+        assert_eq!(close[0], 0x88, "close opcode");
+        assert_eq!(u16::from_be_bytes([close[2], close[3]]), 1002);
     }
 
     #[test]
