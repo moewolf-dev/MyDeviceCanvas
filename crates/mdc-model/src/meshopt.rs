@@ -955,6 +955,42 @@ mod tests {
     }
 
     #[test]
+    fn vertex_buffer_v1_two_bit_group_round_trip() {
+        // N643: a control-mode-1 lane uses 2-bit sentinel groups (literals 0..2,
+        // 3 escapes to a raw byte).
+        let stride = 4usize;
+        let modes = [3u8, 1, 3, 1];
+        let count = 20usize;
+        let values: Vec<Vec<u8>> = (0..count)
+            .map(|element| {
+                (0..stride)
+                    .map(|byte| {
+                        if modes[byte] == 1 {
+                            // Small steps stay literal, occasional jumps escape.
+                            match element % 5 {
+                                0 => (element * 30) as u8,
+                                1 => 1,
+                                2 => 2,
+                                _ => (element * 3) as u8,
+                            }
+                        } else {
+                            ((element * 11 + byte * 7) % 256) as u8
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let encoded = encode_vertex_buffer_modes_bits(&values, stride, &modes, 2);
+        let decoded = unwrap_decode(decode_vertex_buffer(
+            count,
+            stride,
+            &encoded,
+            MeshoptFilter::None,
+        ));
+        assert_eq!(decoded, values.into_iter().flatten().collect::<Vec<u8>>());
+    }
+
+    #[test]
     fn decode_index_buffer_v0_16_matches_the_reference_vector() {
         // N534: the version-0 stream (0xe0) from the reference test suite.
         let encoded = hex(&[
@@ -1638,6 +1674,18 @@ mod tests {
     /// carries arbitrary raw deltas; modes 0/1/2 carry zero deltas (the caller
     /// must keep those lanes constant at the tail seed), so all v1 branches run.
     fn encode_vertex_buffer_modes(values: &[Vec<u8>], stride: usize, modes: &[u8]) -> Vec<u8> {
+        encode_vertex_buffer_modes_bits(values, stride, modes, 4)
+    }
+
+    /// N643: like [`encode_vertex_buffer_modes`], with the sentinel width used for
+    /// control-mode-1 lanes (1, 2 or 4 bits per delta).
+    fn encode_vertex_buffer_modes_bits(
+        values: &[Vec<u8>],
+        stride: usize,
+        modes: &[u8],
+        group_bits: u8,
+    ) -> Vec<u8> {
+        assert!(matches!(group_bits, 1 | 2 | 4));
         assert_eq!(modes.len(), stride);
         let count = values.len();
         let max_block = ((0x2000 / stride) & !0x0f).min(0x100);
@@ -1676,18 +1724,28 @@ mod tests {
                         assert!(values[offset..offset + block].iter().all(|v| v[byte] == 0));
                     }
                     1 => {
-                        // control mode 1 → header_modes[2]. Each group is encoded
-                        // with the 4-bit sentinel mode (group mode 2 → mode_bits
-                        // 4): a nibble per element, or 0xf plus a raw byte when the
-                        // zigzag delta does not fit. This covers the decoder's
-                        // `mode_bits == 4` path under a non-zero control mode.
+                        // control mode 1 → header_modes[2]. Each group uses the
+                        // sentinel mode for `group_bits` (1 → group mode 0, 2 → 1,
+                        // 4 → 2): a literal per element, or the all-ones sentinel
+                        // plus a raw byte when the zigzag delta does not fit.
+                        let group_mode = match group_bits {
+                            1 => 0u8,
+                            2 => 1u8,
+                            _ => 2u8,
+                        };
                         let mut header = vec![0u8; header_bytes];
                         for group in 0..group_count {
-                            header[group >> 2] |= 2u8 << ((group & 3) << 1);
+                            header[group >> 2] |= group_mode << ((group & 3) << 1);
                         }
                         out.extend_from_slice(&header);
+                        let sentinel = (1u8 << group_bits) - 1;
+                        let packed_bytes = match group_bits {
+                            1 => 2,
+                            2 => 4,
+                            _ => 8,
+                        };
                         for group in 0..group_count {
-                            let mut packed = [0u8; 8];
+                            let mut packed = vec![0u8; packed_bytes];
                             let mut escapes: Vec<u8> = Vec::new();
                             for m in 0..16usize {
                                 let element = group * 16 + m;
@@ -1703,17 +1761,20 @@ mod tests {
                                 let zigzag =
                                     ((delta as u8 as u32) << 1) ^ ((delta as i32 >> 7) as u32);
                                 let zigzag = zigzag as u8;
-                                let nibble = if zigzag <= 14 {
+                                let literal = if zigzag < sentinel {
                                     zigzag
                                 } else {
                                     escapes.push(zigzag);
-                                    0x0f
+                                    sentinel
                                 };
-                                if m % 2 == 0 {
-                                    packed[m / 2] |= nibble << 4;
-                                } else {
-                                    packed[m / 2] |= nibble;
-                                }
+                                // 1-bit groups are packed LSB-first; 2/4-bit groups
+                                // are MSB-first (matching the decoder).
+                                let (slot, shift) = match group_bits {
+                                    1 => (m >> 3, (m & 7) as u8),
+                                    2 => (m >> 2, 6 - (((m & 3) << 1) as u8)),
+                                    _ => (m >> 1, 4 - (((m & 1) << 2) as u8)),
+                                };
+                                packed[slot] |= literal << shift;
                             }
                             out.extend_from_slice(&packed);
                             out.extend_from_slice(&escapes);
