@@ -345,6 +345,13 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Swift tile parity (N618) | sim-verified (`tileReconciliation`) | physical: pending |
 | Archive check (N619) | sim-verified (`--check-archive`) | n/a |
 | Strict KTX2 validation (N620) | sim-verified (`--strict`) | n/a |
+| meshopt v1 control modes (N623) | sim-verified (modes 0/1/2/3) | n/a |
+| Diff locality lines (N624) | sim-verified (manifest cache) | n/a |
+| Fit align+rotate (N625) | sim-verified (+ double-rotation fix) | physical: pending |
+| `config --defaults` (N626) | sim-verified | n/a |
+| Filterable WS log (N617) | sim-verified (`WS_NOTE_VERSION`) | n/a |
+| Archive byte cap (N629) | sim-verified (`--max-bytes`) | n/a |
+| Validate KTX2 summary (N630) | sim-verified | n/a |
 
 ## G03 sim exit
 

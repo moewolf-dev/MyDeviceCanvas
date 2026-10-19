@@ -92,6 +92,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 78 | N593–N602: meshopt vertex-buffer round-trip, cache-mode report, image `fit` composition, per-board config defaults, WS log redaction, C mirror/tile smoke, archive manifest, model-level KTX2 size warning | sim-verified |
 | 79 | N603–N612: meshopt filter round-trip, verify/diff locality, image `fit` quarter-turn, inspector board config defaults, structured WS log, Node merged smoke, archive rotation history, `model-info` KTX2 size flag | sim-verified |
 | 80 | N613–N622: meshopt v0 round-trip + partial-block bounds fix, manifest locality metric, fit transform matrix, advertised config defaults, filterable WS log, Swift tile parity, archive check, strict KTX2 validation | sim-verified |
+| 81 | N623–N632: meshopt v1 control-mode round-trip, diff locality lines, `image` fit align+rotate (double-rotation fix), `config --defaults`, archive byte cap, `validate` KTX2 summary | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 

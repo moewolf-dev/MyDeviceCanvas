@@ -47,6 +47,10 @@ checked against expected output, not a self-consistent pair:
   including a partial trailing 16-element group. This also pinned a **bounds
   fix**: a partial group's 16-entry write is now bounded to the delta buffer
   instead of over-running it.
+- `vertex_buffer_v1_control_modes_round_trip` (N623): the v1 control modes 0/1/2/3
+  (per-lane header / 1-bit / skip / raw) all round-trip. Note control mode 1 indexes
+  `header_modes[2]` (its group mode 0 is the 1-bit mode), so the encoder writes the
+  packed group bytes for that lane.
 - `malformed_leb128_and_half_packets_are_errors` (N573): directed LEB128 overflow,
   a never-terminating LEB128 run, a value truncated mid-field, a short aux table,
   and a stream shorter than its vertex tail.

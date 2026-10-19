@@ -2,6 +2,26 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.75] — meshopt v1 control modes, diff locality lines, fit align+rotate, config --defaults, archive byte cap, validate KTX2 summary (N623–N632)
+
+### Added
+
+- a v1 vertex-buffer round-trip covering control modes 0/1/2/3 (N623)
+- `mdc diff` prints `manifest_cache_misses`/`cache_size` as diff lines (N624)
+- an `image` `fit` + `align` + `rotate90` test; **fix:** the image branch uses the
+  authored rect for the fit box (the N475 axis swap no longer double-rotates it)
+  (N625)
+- `mdc config --defaults` reports a board's factory defaults (N626)
+- the WS note shape is versioned and filterable (`WS_NOTE_VERSION`,
+  `ws_log_of_kind`) (N617/N627)
+- `mdc-inspector --check-archive --max-bytes N` flags oversized archive files
+  (N629)
+- `mdc validate` reports `ktx2_textures`/`ktx2_slices` (N630)
+
+### Notes
+
+- Physical verification (D05/G03/H06) is still pending.
+
 ## [0.1.74] — meshopt v0 round-trip + partial-block fix, manifest locality, fit matrix, advertised config defaults, filterable WS log, Swift tile parity, archive check, strict KTX2 (N613–N622)
 
 ### Added
