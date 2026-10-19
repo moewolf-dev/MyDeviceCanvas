@@ -1559,6 +1559,39 @@ mod tests {
     }
 
     #[test]
+    fn vertex_round_trip_composes_with_filters() {
+        // N603: decoding an encoded buffer with a filter equals applying that
+        // filter to the raw values — the delta stage round-trips and the filter
+        // is the only transform on top.
+        let count = 12usize;
+        let stride = 8usize;
+        let values: Vec<Vec<u8>> = (0..count)
+            .map(|element| {
+                (0..stride)
+                    .map(|byte| ((element * 9 + byte * 5 + 3) % 256) as u8)
+                    .collect()
+            })
+            .collect();
+        let encoded = encode_vertex_buffer(&values, stride);
+        let raw: Vec<u8> = values.iter().flatten().copied().collect();
+        for filter in [
+            MeshoptFilter::None,
+            MeshoptFilter::Octahedral,
+            MeshoptFilter::Quaternion,
+            MeshoptFilter::Exponential,
+            MeshoptFilter::Color,
+        ] {
+            let decoded = unwrap_decode(decode_vertex_buffer(count, stride, &encoded, filter));
+            let mut expected = raw.clone();
+            apply_vertex_filter(&mut expected, count, stride, filter).unwrap();
+            assert_eq!(
+                decoded, expected,
+                "filter {filter:?} disagrees with the raw path"
+            );
+        }
+    }
+
+    #[test]
     fn filter_and_mode_names_parse() {
         assert_eq!(
             MeshoptFilter::from_name("OCTAHEDRAL"),
