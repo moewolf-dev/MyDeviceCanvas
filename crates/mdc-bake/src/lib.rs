@@ -1141,6 +1141,54 @@ pub fn optimize_package_index_order(
     changed
 }
 
+/// N564: what a combined geometry optimization did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GeometryOptimization {
+    /// Vertices removed by compaction (0 when nothing merged).
+    pub compacted: usize,
+    /// Meshes whose index order improved cache locality.
+    pub reordered: usize,
+    /// Cache misses across the optimized meshes.
+    pub cache_misses: u64,
+}
+
+/// N564: run compaction *before* index reordering (fewer vertices to reorder and
+/// a smaller working set for the cache). Returns what changed.
+pub fn optimize_geometry(
+    geometry: &mut mdc_model::MeshGeometry,
+    cache_size: usize,
+) -> GeometryOptimization {
+    let compacted = compact_geometry(geometry);
+    let before = index_cache_misses(geometry, cache_size);
+    let after = optimize_index_order(geometry, cache_size);
+    GeometryOptimization {
+        compacted,
+        reordered: usize::from(after < before),
+        cache_misses: after,
+    }
+}
+
+/// N564: the combined pass for every mesh in a package.
+pub fn optimize_package_geometry(
+    package: &mut mdc_model::DevicePackage,
+    cache_size: usize,
+) -> GeometryOptimization {
+    let mut total = GeometryOptimization::default();
+    for mesh in &mut package.meshes {
+        if let Some(geometry) = mesh.geometry.as_mut() {
+            let result = optimize_geometry(geometry, cache_size);
+            total.compacted += result.compacted;
+            total.reordered += result.reordered;
+            total.cache_misses += result.cache_misses;
+            if result.compacted > 0 || result.reordered > 0 {
+                mesh.vertices = geometry.positions.len() as u32;
+                mesh.indices = geometry.indices.len() as u32;
+            }
+        }
+    }
+    total
+}
+
 /// N504: the coarsest mip level that still covers the target size in both axes.
 /// Returns 0 when the target is at least as large as the source.
 pub fn select_mip_level(width: u32, height: u32, target_w: u32, target_h: u32) -> usize {
@@ -1678,6 +1726,39 @@ mod tests {
         // A geometry without triangles is left alone.
         let mut empty = strip(vec![]);
         assert_eq!(optimize_index_order(&mut empty, 4), 0);
+    }
+
+    #[test]
+    fn combined_optimization_compacts_then_reorders() {
+        // N564: compaction first, then index reordering; the combined pass is at
+        // least as good as either alone.
+        let quad = || mdc_model::MeshGeometry {
+            // A duplicated quad (6 positions, scrambled index order) plus an
+            // unused vertex.
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [9.0, 9.0, 9.0],
+            ],
+            indices: vec![4, 5, 6, 0, 1, 2, 6, 7, 3, 2, 1, 3],
+            ..Default::default()
+        };
+        let mut combined = quad();
+        let result = optimize_geometry(&mut combined, 4);
+        assert_eq!(result.compacted, 5, "four duplicates + one unreferenced");
+        assert!(combined.positions.len() < 9);
+        assert_eq!(result.cache_misses, index_cache_misses(&combined, 4));
+
+        // Compaction alone must not increase misses versus the combined pass.
+        let mut compact_only = quad();
+        compact_geometry(&mut compact_only);
+        assert!(result.cache_misses <= index_cache_misses(&compact_only, 4));
     }
 
     #[test]
