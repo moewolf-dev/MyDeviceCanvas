@@ -5522,3 +5522,30 @@ fn image_fit_quarter_turn_on_the_device() {
     assert_eq!(c10, 0, "top row outside the wide box");
     assert_ne!(r01, 0, "second row inside the wide box");
 }
+
+#[test]
+fn board_advertises_its_config_default() {
+    // N616/N621: the board's factory default rides in Capabilities.config.defaults,
+    // so the host can read it without a get_config round trip.
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert_eq!(
+        session.advertised_config_default(mdc_core::TILES_MISSING_THRESHOLD_CONFIG),
+        Some("2")
+    );
+    // Without `get_config`, the advertised default is still usable.
+    assert_eq!(session.tile_missing_threshold(), Some(2));
+    // The baseline board advertises no override.
+    let (host, mut device) = FakeDevice::pair(BoardProfile::default());
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert_eq!(
+        session.advertised_config_default(mdc_core::TILES_MISSING_THRESHOLD_CONFIG),
+        None
+    );
+}
