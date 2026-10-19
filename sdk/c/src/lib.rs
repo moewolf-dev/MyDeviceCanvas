@@ -2091,6 +2091,36 @@ mod tests {
     }
 
     #[test]
+    fn mirror_and_tiles_align_with_the_node_smoke() {
+        // N598: the same sequence the Node native smoke runs, via the C ABI.
+        unsafe {
+            let board = std::ffi::CString::new("linux-virt").unwrap();
+            let session = mdc_session_create_board(board.as_ptr());
+            assert!(!session.is_null());
+            let mode = std::ffi::CString::new("dirty-region").unwrap();
+            assert_eq!(
+                mdc_start_mirror_mode(session, std::ptr::null(), mode.as_ptr(), 15),
+                0
+            );
+            let mut out = [0i8; 32];
+            assert_eq!(mdc_mirror_mode(session, out.as_mut_ptr(), out.len()), 12);
+            assert_eq!(
+                std::ffi::CStr::from_ptr(out.as_ptr()).to_str().unwrap(),
+                "dirty-region"
+            );
+            let (mut sent, mut received, mut missing) = (9u64, 9u64, 9u64);
+            assert_eq!(
+                mdc_session_tile_reconciliation(session, &mut sent, &mut received, &mut missing),
+                0
+            );
+            assert_eq!((sent, received, missing), (0, 0, 0));
+            assert_eq!(mdc_stop_mirror(session, std::ptr::null()), 0);
+            assert_eq!(mdc_mirror_mode(session, out.as_mut_ptr(), out.len()), 0);
+            mdc_session_destroy(session);
+        }
+    }
+
+    #[test]
     fn mirror_take_with_surface_and_budget_skips() {
         unsafe {
             let board = std::ffi::CString::new("linux-virt").unwrap();
