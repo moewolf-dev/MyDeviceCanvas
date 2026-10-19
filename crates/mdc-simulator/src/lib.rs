@@ -293,6 +293,8 @@ struct ImageMode {
     flip_v: bool,
     /// N575: preserve aspect ratio (contain) instead of stretching to the rect.
     fit: bool,
+    /// N645: inset the fit box by this many pixels on every side.
+    pad: u16,
 }
 
 /// N565/N575: parse comma-separated `mode` tokens for an `image` node.
@@ -304,7 +306,12 @@ fn parse_image_mode(mode: Option<&str>) -> ImageMode {
             "flip-h" => parsed.flip_h = true,
             "flip-v" => parsed.flip_v = true,
             "fit" => parsed.fit = true,
-            _ => {}
+            // N645: `pad=N` insets the letterbox inside the rect.
+            other => {
+                if let Some(value) = other.strip_prefix("pad=") {
+                    parsed.pad = value.trim().parse::<u16>().unwrap_or(0);
+                }
+            }
         }
     }
     parsed
@@ -346,23 +353,34 @@ fn blit_hex_rgb565(
         } else {
             (src_w, src_h)
         };
-        let scale = (f32::from(w) / f32::from(eff_w)).min(f32::from(h) / f32::from(eff_h));
-        let draw_w = ((f32::from(eff_w) * scale).round() as u16).clamp(1, w);
-        let draw_h = ((f32::from(eff_h) * scale).round() as u16).clamp(1, h);
+        // N645: `pad` shrinks the fit box on every side (clamped so it stays
+        // non-empty).
+        let pad = mode
+            .pad
+            .min(w.saturating_sub(1) / 2)
+            .min(h.saturating_sub(1) / 2);
+        let inner_w = w.saturating_sub(pad.saturating_mul(2)).max(1);
+        let inner_h = h.saturating_sub(pad.saturating_mul(2)).max(1);
+        let scale =
+            (f32::from(inner_w) / f32::from(eff_w)).min(f32::from(inner_h) / f32::from(eff_h));
+        let draw_w = ((f32::from(eff_w) * scale).round() as u16).clamp(1, inner_w);
+        let draw_h = ((f32::from(eff_h) * scale).round() as u16).clamp(1, inner_h);
         // N585: horizontal alignment of the letterbox (default centred).
         // N635: `align` may also carry `top`/`bottom`/`middle` for the vertical
         // axis, either alone or comma-separated (`"right,bottom"`).
         let (halign, valign) = parse_align(align);
-        let off_x = match halign {
-            Align::Start => 0,
-            Align::End => w - draw_w,
-            Align::Center => (w - draw_w) / 2,
-        };
-        let off_y = match valign {
-            Align::Start => 0,
-            Align::End => h - draw_h,
-            Align::Center => (h - draw_h) / 2,
-        };
+        let off_x = pad
+            + match halign {
+                Align::Start => 0,
+                Align::End => inner_w - draw_w,
+                Align::Center => (inner_w - draw_w) / 2,
+            };
+        let off_y = pad
+            + match valign {
+                Align::Start => 0,
+                Align::End => inner_h - draw_h,
+                Align::Center => (inner_h - draw_h) / 2,
+            };
         (draw_w, draw_h, off_x, off_y)
     } else {
         (w, h, 0, 0)
@@ -4150,6 +4168,60 @@ mod tests {
         assert_eq!(render(Some("center,bottom")), vec![0, 0, 0, 0xF800]);
         // An unknown token keeps the centred default.
         assert_eq!(render(Some("nope")), vec![0, 0xF800, 0, 0]);
+    }
+
+    #[test]
+    fn image_fit_padding_insets_the_letterbox() {
+        // N645: `pad=N` insets the fit box on every side.
+        use mdc_protocol::SceneNode;
+        let render = |mode: &str| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 4,
+                height: 4,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "pic".into(),
+                kind: "image".into(),
+                rect: Some([0, 0, 4, 4]),
+                value: Some("f800".into()),
+                value2: Some("1,1".into()),
+                children: Vec::new(),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: Some(mode.into()),
+                focus: None,
+            });
+            assert!(device.render_scene());
+            let mut lit = Vec::new();
+            for y in 0..4u16 {
+                for x in 0..4u16 {
+                    if device.pixel_rgb565(x, y).unwrap() != 0 {
+                        lit.push((x, y));
+                    }
+                }
+            }
+            lit
+        };
+        // No padding: the 1x1 source fills the 4x4 rect (stretch) or, with fit,
+        // becomes a 4x4 block.
+        assert_eq!(render("fit").len(), 16);
+        // pad=1 leaves a 2x2 inner box, which the square source fills.
+        let padded = render("fit,pad=1");
+        assert_eq!(padded.len(), 4, "2x2 inner box: {padded:?}");
+        assert!(padded
+            .iter()
+            .all(|(x, y)| (1..=2).contains(x) && (1..=2).contains(y)));
+        // pad=3 is clamped to 1 (the rect is 4x4).
+        assert_eq!(render("fit,pad=3").len(), 4);
+        // Padding does not apply to a stretch (no fit).
+        assert_eq!(render("pad=1").len(), 16);
     }
 
     #[test]
