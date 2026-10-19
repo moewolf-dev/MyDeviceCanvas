@@ -1885,6 +1885,12 @@ impl FakeDevice {
         };
         self.write_control(MessageType::Metric, 0, &report)
     }
+    /// N547: report the applied-tile counter on the diagnostics channel so the
+    /// host can reconcile it against its own `tiles_sent`.
+    pub fn emit_tiles_received(&mut self) -> Result<(), SimError> {
+        let count = self.metrics.tiles_received as f64;
+        self.emit_metric(mdc_core::TILES_RECEIVED_METRIC, count, Some("tiles"))
+    }
     /// N316: emit a boot notification (firmware + run identity).
     pub fn emit_boot_info(&mut self) -> Result<(), SimError> {
         self.metrics.diagnostics_emitted = self.metrics.diagnostics_emitted.saturating_add(1);
@@ -4197,6 +4203,52 @@ mod tests {
     }
 
     #[test]
+    fn focus_animation_moves_the_radial_centre_over_time() {
+        // N546: a focus keyframe track animates the radial centre on the clock.
+        use mdc_protocol::{SceneAnim, SceneNode};
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 9,
+            height: 9,
+            ..BoardProfile::default()
+        });
+        device.scene = Some(SceneNode {
+            name: "spot".into(),
+            kind: "gradient".into(),
+            rect: Some([0, 0, 9, 9]),
+            value: Some("#FFFFFF".into()),
+            value2: Some("#000000".into()),
+            opacity: None,
+            visible: None,
+            anim: Some(SceneAnim {
+                duration_ms: 100,
+                looping: false,
+                opacity: Vec::new(),
+                rect: Vec::new(),
+                // Bright focus starts top-left, ends bottom-right.
+                focus: vec![[0, 0, 0], [100, 100, 100]],
+            }),
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: Some("radial".into()),
+            focus: Some("0,0".into()),
+            children: Vec::new(),
+        });
+        let top_left_bright = |device: &FakeDevice| {
+            let at = |x: u16, y: u16| device.pixel_rgb565(x, y).unwrap();
+            at(0, 0) > at(8, 8)
+        };
+        device.clock.tick = 0;
+        assert!(device.render_scene());
+        assert!(top_left_bright(&device), "t=0 focuses the top-left");
+        device.clock.tick = 100;
+        assert!(device.render_scene());
+        assert!(!top_left_bright(&device), "t=100 focuses the bottom-right");
+    }
+
+    #[test]
     fn gradient_angle_controls_the_direction() {
         // N525: `rotate` sets the ramp direction; 180/270 reverse it and other
         // angles give a diagonal.
@@ -4696,6 +4748,7 @@ mod tests {
                 looping: false,
                 opacity: vec![[0, 0], [100, 255]],
                 rect: Vec::new(),
+                focus: Vec::new(),
             }),
             rotate: None,
             blend: None,

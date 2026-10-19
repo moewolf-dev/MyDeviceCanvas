@@ -411,7 +411,15 @@ pub struct SessionStats {
     pub tiles_sent: u64,
     /// N506: bytes covered by the tiles sent.
     pub tile_bytes_sent: u64,
+    /// N547: tiles the device reports having applied (from its `tiles_received`
+    /// metric). 0 until the device reports a count.
+    pub device_tiles_received: u64,
+    /// N547: tiles the host sent that the device has not acknowledged.
+    pub tiles_missing: u64,
 }
+
+/// N547: the metric name a device uses to report applied partial-update tiles.
+pub const TILES_RECEIVED_METRIC: &str = "tiles_received";
 
 #[derive(Debug, Clone)]
 pub struct Frame {
@@ -1195,6 +1203,8 @@ pub struct Session<T: Transport> {
     pacing_dropped: u64,
     /// N398: host-side session counters.
     stats: SessionStats,
+    /// N547: the last `tiles_received` count reported by the device.
+    device_tiles_received: u64,
     /// N419: the highest OTA phase sent (0 none, 1 begin, 2 chunk, 3 confirm).
     ota_phase: u8,
     /// N473: derives gestures from incoming input events.
@@ -1256,6 +1266,7 @@ impl<T: Transport> Session<T> {
             pacing: None,
             pacing_dropped: 0,
             stats: SessionStats::default(),
+            device_tiles_received: 0,
             ota_phase: 0,
             gestures: GestureTracker::default(),
         }
@@ -1371,13 +1382,23 @@ impl<T: Transport> Session<T> {
     }
     /// N398/N436: the host-side session counters.
     pub fn stats(&self) -> SessionStats {
-        SessionStats {
+        let mut stats = SessionStats {
             dropped_frames: self.dropped_frames,
             packages_sent: self.packages_sent,
             mirror_frames: self.mirror_frames,
             pacing_dropped: self.pacing_dropped,
+            // N547: the device's reported applied-tile count rides along, and the
+            // outstanding gap is derived in one place.
+            device_tiles_received: self.device_tiles_received,
             ..self.stats
-        }
+        };
+        stats.tiles_missing = stats.tiles_sent.saturating_sub(stats.device_tiles_received);
+        stats
+    }
+
+    /// N547: reconcile the host's sent tiles against the device's reported count.
+    pub fn tile_reconciliation(&self) -> TileReconciliation {
+        reconcile_tiles(&self.stats(), self.device_tiles_received)
     }
 
     pub fn poll(&mut self) -> Result<ConnectionState, CoreError> {
@@ -2630,6 +2651,10 @@ impl<T: Transport> Session<T> {
                 let metric: MetricReport = mdc_protocol::decode_control(&packet.payload)
                     .map_err(|e| CoreError::Protocol(e.to_string()))?;
                 self.note_run_identity(metric.boot_id, metric.run_id);
+                // N547: fold the device's applied-tile counter into the snapshot.
+                if metric.name == TILES_RECEIVED_METRIC {
+                    self.device_tiles_received = metric.value.max(0.0) as u64;
+                }
                 self.push_diagnostic(DiagnosticRecord::Metric(metric));
                 Ok(())
             }
@@ -4480,6 +4505,64 @@ mod tests {
     }
 
     #[test]
+    fn device_tiles_received_folds_into_the_stats_snapshot() {
+        // N547: the device's reported applied-tile count is part of one snapshot,
+        // and the outstanding gap is derived there.
+        let (host_link, mut device_link) = MemoryLink::pair();
+        let mut session = Session::new(host_link);
+        session.connect().unwrap();
+        let hello_bytes = device_link.read().unwrap().unwrap();
+        let (hello, _) = Packet::decode(&hello_bytes, 4096).unwrap();
+        write_caps(&mut device_link, hello.request_id, &caps());
+        session.poll().unwrap();
+
+        session
+            .send_tile(Tile {
+                surface_id: "main".into(),
+                base_frame_id: 1,
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                bytes: vec![0x11, 0x22],
+            })
+            .unwrap();
+        assert_eq!(session.stats().tiles_sent, 1);
+        assert_eq!(session.stats().device_tiles_received, 0, "nothing reported");
+        assert_eq!(session.stats().tiles_missing, 1);
+
+        // The device reports it applied the tile.
+        let metric = MetricReport {
+            name: TILES_RECEIVED_METRIC.into(),
+            value: 1.0,
+            unit: Some("tiles".into()),
+            boot_id: 0,
+            run_id: 0,
+            event_seq: 1,
+        };
+        device_link
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Metric,
+                    flags: 0,
+                    request_id: 0,
+                    payload: encode_control(&metric).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        assert_eq!(session.stats().device_tiles_received, 1);
+        assert_eq!(session.stats().tiles_missing, 0);
+        let report = session.tile_reconciliation();
+        assert_eq!((report.sent, report.received), (1, 1));
+        assert_eq!(report.missing(), 0);
+        assert!(report.consistent);
+    }
+
+    #[test]
     fn connect_disconnect_loop_is_cheap() {
         for _ in 0..1000 {
             let (host_link, mut device_link) = MemoryLink::pair();
@@ -5333,6 +5416,7 @@ mod tests {
                 looping: true,
                 opacity: (0..keys).map(|k| [k as u16, 128]).collect(),
                 rect: Vec::new(),
+                focus: Vec::new(),
             }),
             children: Vec::new(),
         };

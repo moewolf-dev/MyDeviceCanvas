@@ -536,6 +536,10 @@ pub struct SceneAnim {
     /// Rect keyframes: `[time_ms, x, y, w, h]`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rect: Vec<[u16; 5]>,
+    /// N546: radial `focus` keyframes: `[time_ms, cx%, cy%]` (percent of the
+    /// rect, matching the `focus` field's `"cx%,cy%"` form).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub focus: Vec<[u16; 3]>,
 }
 
 impl SceneAnim {
@@ -571,6 +575,25 @@ impl SceneAnim {
                 .map(|value| value.min(u16::MAX as u32) as u16)
         };
         Some([channel(1)?, channel(2)?, channel(3)?, channel(4)?])
+    }
+
+    /// N546: the sampled radial focus `[cx%, cy%]` at `time_ms`, or `None` when
+    /// there are no focus keyframes.
+    pub fn focus_at(&self, time_ms: u64) -> Option<[u16; 2]> {
+        if self.focus.is_empty() {
+            return None;
+        }
+        let t = self.local_time(time_ms);
+        let channel = |k: usize| -> Option<u16> {
+            let keys: Vec<[u16; 2]> = self
+                .focus
+                .iter()
+                .map(|frame| [frame[0], frame[k]])
+                .collect();
+            sample_keys(&keys, t, |k, value| (u32::from(k), u32::from(value)))
+                .map(|value| value.min(100) as u16)
+        };
+        Some([channel(1)?, channel(2)?])
     }
 }
 
@@ -610,6 +633,10 @@ pub fn apply_scene_animation(node: &mut SceneNode, time_ms: u64) {
         }
         if let Some(rect) = anim.rect_at(time_ms) {
             node.rect = Some(rect);
+        }
+        // N546: a focus track drives the radial gradient centre.
+        if let Some([cx, cy]) = anim.focus_at(time_ms) {
+            node.focus = Some(format!("{cx},{cy}"));
         }
     }
     for child in &mut node.children {
@@ -725,12 +752,12 @@ impl SceneNode {
         }
     }
 
-    /// N477: animation keyframes across the tree (opacity + rect).
+    /// N477/N546: animation keyframes across the tree (opacity + rect + focus).
     pub fn anim_keys(&self) -> u32 {
         let own = self
             .anim
             .as_ref()
-            .map(|anim| (anim.opacity.len() + anim.rect.len()) as u32)
+            .map(|anim| (anim.opacity.len() + anim.rect.len() + anim.focus.len()) as u32)
             .unwrap_or(0);
         self.children
             .iter()
@@ -2545,6 +2572,64 @@ mod tests {
         assert_eq!(surface.preferred_tile_size, 0);
         assert!(!surface.supports_partial_update);
         assert!(!surface.supports_full_framebuffer);
+    }
+
+    /// Build a minimal node with only a kind and name.
+    fn plain_node(name: &str, kind: &str) -> SceneNode {
+        SceneNode {
+            name: name.into(),
+            kind: kind.into(),
+            rect: None,
+            children: Vec::new(),
+            value: None,
+            value2: None,
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: None,
+            focus: None,
+        }
+    }
+
+    #[test]
+    fn focus_keyframes_sample_and_drive_the_focus_field() {
+        // N546: focus keyframes interpolate (clamped to 0..=100) and are applied
+        // onto the node together with opacity/rect.
+        let anim = SceneAnim {
+            duration_ms: 100,
+            looping: false,
+            opacity: Vec::new(),
+            rect: Vec::new(),
+            focus: vec![[0, 0, 100], [100, 100, 0]],
+        };
+        assert_eq!(anim.focus_at(0), Some([0, 100]));
+        assert_eq!(anim.focus_at(50), Some([50, 50]));
+        assert_eq!(anim.focus_at(500), Some([100, 0]));
+        assert_eq!(anim.focus_at(0).unwrap()[0], 0);
+
+        let mut node = plain_node("g", "gradient");
+        node.anim = Some(anim);
+        apply_scene_animation(&mut node, 25);
+        assert_eq!(node.focus.as_deref(), Some("25,75"));
+        assert_eq!(node.anim_keys(), 2, "focus keys count toward the budget");
+
+        // A node with no focus track keeps its authored focus value.
+        let mut untouched = plain_node("g", "gradient");
+        untouched.focus = Some("10,20".into());
+        untouched.anim = Some(SceneAnim {
+            duration_ms: 10,
+            looping: true,
+            opacity: vec![[0, 128]],
+            rect: Vec::new(),
+            focus: Vec::new(),
+        });
+        apply_scene_animation(&mut untouched, 5);
+        assert_eq!(untouched.focus.as_deref(), Some("10,20"));
     }
 
     fn config_command_vector() -> Capabilities {
