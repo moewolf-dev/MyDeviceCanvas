@@ -210,32 +210,55 @@ fn verify_archive(dir: &str, max_bytes: u64) -> std::io::Result<serde_json::Valu
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&manifest_path)?)?;
     let files = manifest["files"].as_array().cloned().unwrap_or_default();
+    // N659: classify each file as the live log or a rotated copy.
+    let live = manifest["live"].as_str().unwrap_or("");
+    let kind_of = |name: &str| -> &'static str {
+        if !live.is_empty() && name == live {
+            "live"
+        } else if !live.is_empty()
+            && name
+                .strip_prefix(live)
+                .and_then(|rest| rest.strip_prefix('.'))
+                .is_some_and(|suffix| {
+                    !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit())
+                })
+        {
+            "rotated"
+        } else {
+            "other"
+        }
+    };
     let mut missing = Vec::new();
     let mut empty = Vec::new();
     let mut oversized = Vec::new();
     // N639: per-file byte counts, so a consumer sees where the archive's weight is.
     let mut sizes: Vec<serde_json::Value> = Vec::new();
     let mut total_bytes: u64 = 0;
+    let mut kinds = serde_json::json!({ "live": 0usize, "rotated": 0usize, "other": 0usize });
     for file in &files {
         let Some(name) = file.as_str() else { continue };
+        let kind = kind_of(name);
+        if let Some(count) = kinds.get_mut(kind).and_then(|value| value.as_u64()) {
+            kinds[kind] = serde_json::json!(count + 1);
+        }
         let path = std::path::Path::new(dir).join(name);
         match std::fs::metadata(&path) {
             Ok(meta) if meta.len() == 0 => {
                 empty.push(name.to_string());
-                sizes.push(serde_json::json!({ "file": name, "bytes": 0 }));
+                sizes.push(serde_json::json!({ "file": name, "kind": kind, "bytes": 0 }));
             }
             Ok(meta) if max_bytes > 0 && meta.len() > max_bytes => {
                 oversized.push(name.to_string());
                 total_bytes = total_bytes.saturating_add(meta.len());
-                sizes.push(serde_json::json!({ "file": name, "bytes": meta.len() }));
+                sizes.push(serde_json::json!({ "file": name, "kind": kind, "bytes": meta.len() }));
             }
             Ok(meta) => {
                 total_bytes = total_bytes.saturating_add(meta.len());
-                sizes.push(serde_json::json!({ "file": name, "bytes": meta.len() }));
+                sizes.push(serde_json::json!({ "file": name, "kind": kind, "bytes": meta.len() }));
             }
             Err(_) => {
                 missing.push(name.to_string());
-                sizes.push(serde_json::json!({ "file": name, "bytes": null }));
+                sizes.push(serde_json::json!({ "file": name, "kind": kind, "bytes": null }));
             }
         }
     }
@@ -256,6 +279,8 @@ fn verify_archive(dir: &str, max_bytes: u64) -> std::io::Result<serde_json::Valu
         "oversized": oversized,
         "maxBytes": max_bytes,
         "files": sizes,
+        // N659: how many live/rotated files the manifest names.
+        "kinds": kinds,
         "totalBytes": total_bytes,
         "largest": largest,
         "ok": missing.is_empty() && empty.is_empty() && oversized.is_empty(),
@@ -602,6 +627,34 @@ mod tests {
         let summary = watch(1, 1, "default", 0, &mut out).unwrap();
         assert_eq!(summary.samples, 1);
         assert!(summary.peak_bytes > 0);
+    }
+
+    #[test]
+    fn archive_file_kinds_classify_live_and_rotated() {
+        // N659: the classifier used by `--check-archive`.
+        let kind = |live: &str, name: &str| -> &'static str {
+            if !live.is_empty() && name == live {
+                "live"
+            } else if !live.is_empty()
+                && name
+                    .strip_prefix(live)
+                    .and_then(|rest| rest.strip_prefix('.'))
+                    .is_some_and(|suffix| {
+                        !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit())
+                    })
+            {
+                "rotated"
+            } else {
+                "other"
+            }
+        };
+        assert_eq!(kind("h.jsonl", "h.jsonl"), "live");
+        assert_eq!(kind("h.jsonl", "h.jsonl.1"), "rotated");
+        assert_eq!(kind("h.jsonl", "h.jsonl.12"), "rotated");
+        assert_eq!(kind("h.jsonl", "h.jsonl.bak"), "other");
+        assert_eq!(kind("h.jsonl", "h.jsonl."), "other");
+        assert_eq!(kind("h.jsonl", "other.jsonl"), "other");
+        assert_eq!(kind("", "h.jsonl"), "other", "no live name");
     }
 
     #[test]
