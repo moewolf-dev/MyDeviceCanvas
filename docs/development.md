@@ -60,6 +60,8 @@ cargo run -p mdc -- --board linux-virt config --defaults             # board def
 cargo run -p mdc-inspector -- --check-archive DIR --max-bytes 1000000 # per-file bytes (N639)
 # `--check-archive` exits 0 only when the report is ok (N649)
 cargo run -p mdc -- --board linux-virt inspect --defaults-only        # defaults, no session (N646)
+cargo run -p mdc -- --board linux-virt inspect --defaults-only --key tile_missing_threshold
+# `mdc package --report` prints cache_hit_rate and cache_hit_rate_before (N654)
 cargo run -p mdc-inspector -- --jsonl 20 --heap --max-peak-bytes 200000000  # alert (N529)
 # the alert ends with one JSONL verdict line and exits 2 (N539)
 cargo run -p mdc-inspector -- --jsonl 60 --board linux-virt --out run.jsonl # archive (N560)

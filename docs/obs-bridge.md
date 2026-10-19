@@ -83,8 +83,9 @@ plus continuation frames of at most `N` bytes (the client reassembles them).
 N537 floors `N` at 64 bytes and keeps heartbeats out of the middle of a message
 (control frames are written only once the fragments have drained). N637 clamps a
 note's `detail` to `WS_NOTE_DETAIL_MAX` (256 bytes) and N647 exposes
-`ws_log_counts()` (the retained notes per kind) — `mdc mirror` prints it as
-`ws_log` in its JSON summary. N548 also
+`ws_log_counts()` (the retained notes per kind). N657 exposes that map as
+`ws_log_kinds` in `/health` (with `ws_log` staying the entry count); the
+`mdc mirror` JSON summary uses the same split. N548 also
 reassembles **client → server** messages: a text/binary message split across
 fragmentation and continuation frames is completed (control frames may interleave),
 bounded at 64 KiB per message, and counted in `/health`'s `ws_messages` field and

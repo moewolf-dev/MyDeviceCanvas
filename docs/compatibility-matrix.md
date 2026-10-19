@@ -362,6 +362,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Reconciliation invariants (N648) | sim-verified (Node smoke) | n/a |
 | Archive exit contract (N649) | sim-verified (0/1) | n/a |
 | Validate summary order (N650) | sim-verified (stable contract) | n/a |
+| meshopt width matrix (N653) | sim-verified (mode 0/1 × 1/2/4 bit) | n/a |
+| Reorder hit rate (N654) | sim-verified (before/after) | n/a |
+| Per-side image padding (N655) | sim-verified (device render) | physical: pending |
+| Defaults key (N656) | sim-verified (one entry) | n/a |
+| Note kinds in health (N657) | sim-verified (`ws_log_kinds`) | n/a |
+| Swift reconciliation invariants (N658) | sim-verified (startup smoke) | n/a |
+| Archive file kinds (N659) | sim-verified (live/rotated/other) | n/a |
+| Validate top-level snapshot (N660) | sim-verified (key order) | n/a |
 | Diff locality lines (N624) | sim-verified (manifest cache) | n/a |
 | Fit align+rotate (N625) | sim-verified (+ double-rotation fix) | physical: pending |
 | `config --defaults` (N626) | sim-verified | n/a |

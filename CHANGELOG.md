@@ -2,6 +2,25 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.78] — meshopt width matrix, reorder hit rate, per-side image padding, defaults key, note kinds in health, Swift invariants, archive kinds, validate snapshot (N653–N662)
+
+### Added
+
+- the meshopt test encoder covers the full (control mode 0/1 × sentinel width
+  1/2/4) matrix with real deltas (N653)
+- `mdc_bake::optimize_index_order_report` reports misses and hit rates before and
+  after a reorder; `mdc package --report` prints `cache_hit_rate_before` (N654)
+- `image` `fit` accepts per-side `pad-l`/`pad-t`/`pad-r`/`pad-b` (N655)
+- `mdc inspect --defaults-only --key K` selects one board default (N656)
+- `/health` reports `ws_log_kinds` (the retained notes per kind), and the
+  `mdc mirror` summary splits `ws_log` (count) from `ws_log_kinds` (N657)
+- the Swift smoke pins the tile-reconciliation invariants (N658)
+- `mdc-inspector --check-archive` classifies each file as `live`/`rotated`/`other`
+  and counts them in `kinds` (N659)
+- `mdc validate --json` pins the top-level key order as a snapshot (N660)
+- compatibility/memory coverage for per-side padding and note-kind bounds (N661)
+
+
 ## [0.1.77] — meshopt two-bit groups, cache hit rate, image fit padding, defaults-only inspect, per-kind WS summary, reconciliation invariants, archive exit contract, validate summary order (N643–N652)
 
 ### Added

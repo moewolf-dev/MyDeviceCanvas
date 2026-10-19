@@ -67,6 +67,9 @@ A device that accepts a scene rasterizes it locally:
 - N645: `pad=N` (in the same `mode` list) insets the fitted image by `N` pixels on
   every side; it is clamped so the inner box stays non-empty and is ignored
   without `fit`.
+- N655: `pad-l=N`/`pad-t=N`/`pad-r=N`/`pad-b=N` override one side (unset sides
+  keep `pad`). The image is aligned inside the remaining box, so right/bottom
+  padding shrinks it without moving the content.
 - N505: `gradient` accepts a comma-separated stop list in `value2`
   (`0:#FF0000,50:#00FF00,100:#0000FF`), interpolating between stops; a value
   without a comma keeps the two-stop `value`/`value2` ramp.

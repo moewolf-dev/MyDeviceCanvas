@@ -17,6 +17,8 @@ carries a small in-test encoder used for round trips:
 - N643: a control-mode-1 lane encoded with **2-bit sentinel deltas** (literals
   0..2 plus `3` escapes) round trips, covering `mode_bits == 2` (packed MSB-first,
   unlike the LSB-first 1-bit group).
+- N653: the whole **(control mode 0/1 × width 1/2/4)** matrix round trips with
+  real deltas, so every `header_modes[1]`/`header_modes[2]` entry is exercised.
 - N613/N623: v0/v1 vertex round trips and index-buffer/sequence round trips.
 
 ## Success paths (golden reference vectors)
