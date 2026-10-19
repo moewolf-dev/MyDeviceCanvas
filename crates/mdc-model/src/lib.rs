@@ -44,8 +44,8 @@ pub use meshopt::{
 };
 pub use optimizer::{plan as plan_optimization, OptimizerPlan, TexturePlan};
 pub use package::{
-    compile_to_package, fnv1a, MdcPackage, PackageAssembler, PackageManifest, PackageVerification,
-    MAX_PACKAGE_BYTES, PACKAGE_VERSION,
+    compile_to_package, fnv1a, package_cache_misses, MdcPackage, PackageAssembler, PackageManifest,
+    PackageVerification, CACHE_REPORT_SIZE, MAX_PACKAGE_BYTES, PACKAGE_VERSION,
 };
 
 #[cfg(test)]

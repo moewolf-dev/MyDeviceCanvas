@@ -76,6 +76,28 @@ pub struct MeshGeometry {
 }
 
 impl MeshGeometry {
+    /// N614: simulate a FIFO vertex cache of `cache_size` entries over the index
+    /// order and count misses. Lives on the IR so a package manifest can carry the
+    /// locality metric without depending on the bake crate.
+    pub fn cache_misses(&self, cache_size: usize) -> u64 {
+        let size = cache_size.max(1);
+        let mut misses = 0u64;
+        let mut cache: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
+        for triangle in self.indices.chunks_exact(3) {
+            for &vertex in triangle {
+                if cache.contains(&vertex) {
+                    continue;
+                }
+                misses += 1;
+                if cache.len() == size {
+                    cache.pop_front();
+                }
+                cache.push_back(vertex);
+            }
+        }
+        misses
+    }
+
     /// N273: append another primitive's geometry, rebasing its indices by this
     /// geometry's vertex count. UV/skin arrays are merged only when both sides
     /// carry them; a morph merge only happens when the target counts match.

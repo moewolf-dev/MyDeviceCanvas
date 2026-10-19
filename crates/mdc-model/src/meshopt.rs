@@ -249,7 +249,11 @@ pub fn decode_vertex_buffer(
                                 delta = at(source, src_offs)?;
                                 src_offs += 1;
                             }
-                            deltas[delta_offs + m] = delta;
+                            // N613: a partial trailing group has fewer than 16
+                            // elements, so the write is bounded to the buffer.
+                            if let Some(slot) = deltas.get_mut(delta_offs + m) {
+                                *slot = delta;
+                            }
                         }
                     }
                     2 => {
@@ -262,7 +266,9 @@ pub fn decode_vertex_buffer(
                                 delta = at(source, src_offs)?;
                                 src_offs += 1;
                             }
-                            deltas[delta_offs + m] = delta;
+                            if let Some(slot) = deltas.get_mut(delta_offs + m) {
+                                *slot = delta;
+                            }
                         }
                     }
                     4 => {
@@ -275,12 +281,15 @@ pub fn decode_vertex_buffer(
                                 delta = at(source, src_offs)?;
                                 src_offs += 1;
                             }
-                            deltas[delta_offs + m] = delta;
+                            if let Some(slot) = deltas.get_mut(delta_offs + m) {
+                                *slot = delta;
+                            }
                         }
                     }
                     _ => {
                         let block = slice(source, src_offs, 0x10)?;
-                        deltas[delta_offs..delta_offs + 0x10].copy_from_slice(block);
+                        let valid = deltas.len().saturating_sub(delta_offs).min(0x10);
+                        deltas[delta_offs..delta_offs + valid].copy_from_slice(&block[..valid]);
                         src_offs += 0x10;
                     }
                 }
@@ -1555,6 +1564,73 @@ mod tests {
             ));
             let flat: Vec<u8> = values.iter().flatten().copied().collect();
             assert_eq!(decoded, flat, "stride {stride}, count {count}");
+        }
+    }
+
+    /// N613: a test-only v0 vertex-buffer encoder. Every group uses mode 3 (raw
+    /// 16-byte deltas), the only v0 mode that can carry arbitrary byte deltas.
+    fn encode_vertex_buffer_v0(values: &[Vec<u8>], stride: usize) -> Vec<u8> {
+        assert!(
+            stride.is_multiple_of(4) && stride > 0 && stride <= 256,
+            "stride"
+        );
+        let count = values.len();
+        let max_block = ((0x2000 / stride) & !0x0f).min(0x100);
+        let mut out = vec![0xa0u8];
+        let mut temp = vec![0u8; stride];
+        let mut offset = 0usize;
+        while offset < count {
+            let block = (count - offset).min(max_block);
+            let group_count = (block + 0x0f) >> 4;
+            let header_bytes = ((group_count + 3) & !3) >> 2;
+            for byte in 0..stride {
+                let mut header = vec![0u8; header_bytes];
+                for group in 0..group_count {
+                    header[group >> 2] |= 0b11 << ((group & 3) << 1);
+                }
+                out.extend_from_slice(&header);
+                for group in 0..group_count {
+                    for m in 0..0x10 {
+                        let element = group * 0x10 + m;
+                        let value = if element < block {
+                            values[offset + element][byte]
+                        } else {
+                            temp[byte]
+                        };
+                        let delta =
+                            (((value as i32 - temp[byte] as i32) + 128).rem_euclid(256)) - 128;
+                        out.push(((delta << 1) ^ (delta >> 7)) as u8);
+                        temp[byte] = value;
+                    }
+                }
+            }
+            offset += block;
+        }
+        // v0 tail: `stride` seed bytes.
+        out.extend(std::iter::repeat_n(0u8, stride));
+        out
+    }
+
+    #[test]
+    fn vertex_buffer_v0_round_trips() {
+        // N613: the v0 raw-delta path round-trips, including a partial last block.
+        for (stride, count) in [(4usize, 3usize), (12, 300), (8, 17)] {
+            let values: Vec<Vec<u8>> = (0..count)
+                .map(|element| {
+                    (0..stride)
+                        .map(|byte| ((element * 11 + byte * 3 + 7) % 256) as u8)
+                        .collect()
+                })
+                .collect();
+            let encoded = encode_vertex_buffer_v0(&values, stride);
+            let decoded = unwrap_decode(decode_vertex_buffer(
+                count,
+                stride,
+                &encoded,
+                MeshoptFilter::None,
+            ));
+            let flat: Vec<u8> = values.iter().flatten().copied().collect();
+            assert_eq!(decoded, flat, "v0 stride {stride}, count {count}");
         }
     }
 

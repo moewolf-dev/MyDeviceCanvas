@@ -27,10 +27,19 @@ pub struct PackageVerification {
     pub version_ok: bool,
     /// N590: KTX2 textures' declared size matches their container header.
     pub ktx2_ok: bool,
+    /// N614: the manifest's locality metric equals a fresh recomputation.
+    pub cache_misses_ok: bool,
     pub checksum: u64,
     pub body_bytes: u64,
     pub manifest_checksum: u64,
+    /// N614: vertex-cache misses recomputed at `cache_size`.
+    pub cache_size: u16,
+    pub cache_misses: u64,
+    pub manifest_cache_misses: u64,
 }
+
+/// N614: the vertex-cache size used for the manifest locality metric.
+pub const CACHE_REPORT_SIZE: u16 = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageManifest {
@@ -41,12 +50,28 @@ pub struct PackageManifest {
     pub body_bytes: u64,
     /// FNV-1a 64-bit checksum of the serialized body.
     pub checksum: u64,
+    /// N614: vertex-cache misses of the stored geometry at `cache_size`.
+    #[serde(default)]
+    pub cache_misses: u64,
+    /// N614: the cache size the locality metric was computed at (0 = absent).
+    #[serde(default)]
+    pub cache_size: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MdcPackage {
     pub manifest: PackageManifest,
     pub package: DevicePackage,
+}
+
+/// N614: the total vertex-cache misses of a package's geometry at `cache_size`.
+pub fn package_cache_misses(package: &DevicePackage, cache_size: usize) -> u64 {
+    package
+        .meshes
+        .iter()
+        .filter_map(|mesh| mesh.geometry.as_ref())
+        .map(|geometry| geometry.cache_misses(cache_size))
+        .sum()
 }
 
 impl MdcPackage {
@@ -67,6 +92,8 @@ impl MdcPackage {
                 estimated_bytes: package.estimated_bytes,
                 body_bytes: body.len() as u64,
                 checksum: fnv1a(&body),
+                cache_misses: package_cache_misses(&package, CACHE_REPORT_SIZE as usize),
+                cache_size: CACHE_REPORT_SIZE,
             },
             package,
         })
@@ -94,6 +121,15 @@ impl MdcPackage {
                 }
                 _ => true,
             });
+        // N614: recompute the locality metric; a manifest without one (older
+        // package, `cache_size == 0`) is not a mismatch.
+        let cache_size = self.manifest.cache_size;
+        let cache_misses = if cache_size == 0 {
+            0
+        } else {
+            package_cache_misses(&self.package, cache_size as usize)
+        };
+        let cache_misses_ok = cache_size == 0 || cache_misses == self.manifest.cache_misses;
         PackageVerification {
             valid: checksum_ok && body_bytes_ok && target_ok && version_ok && ktx2_ok,
             checksum_ok,
@@ -101,9 +137,13 @@ impl MdcPackage {
             target_ok,
             version_ok,
             ktx2_ok,
+            cache_misses_ok,
             checksum,
             body_bytes,
             manifest_checksum: self.manifest.checksum,
+            cache_size,
+            cache_misses,
+            manifest_cache_misses: self.manifest.cache_misses,
         }
     }
 
@@ -415,6 +455,44 @@ mod tests {
         let report = MdcPackage::seal(matched).unwrap().verify();
         assert!(report.ktx2_ok);
         assert!(report.valid);
+    }
+
+    #[test]
+    fn manifest_carries_the_locality_metric() {
+        // N614: seal records the cache misses and verify recomputes them.
+        use crate::{Mesh, MeshGeometry, Node};
+        let model = Model {
+            source: "t".into(),
+            nodes: vec![Node {
+                name: "root".into(),
+                mesh: Some(0),
+                ..Node::default()
+            }],
+            meshes: vec![Mesh {
+                name: "quad".into(),
+                vertices: 4,
+                indices: 6,
+                geometry: Some(MeshGeometry {
+                    positions: vec![
+                        [0.0, 0.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        [1.0, 1.0, 0.0],
+                        [0.0, 1.0, 0.0],
+                    ],
+                    indices: vec![0, 1, 2, 0, 2, 3],
+                    ..Default::default()
+                }),
+                ..Mesh::default()
+            }],
+            ..Model::default()
+        };
+        let package = compile_to_package(&model, &RendererCapability::full_3d()).unwrap();
+        assert_eq!(package.manifest.cache_size, CACHE_REPORT_SIZE);
+        assert!(package.manifest.cache_misses > 0);
+        let report = package.verify();
+        assert!(report.cache_misses_ok);
+        assert_eq!(report.cache_misses, package.manifest.cache_misses);
+        assert_eq!(report.cache_size, CACHE_REPORT_SIZE);
     }
 
     #[test]
