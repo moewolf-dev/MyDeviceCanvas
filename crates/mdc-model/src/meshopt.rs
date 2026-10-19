@@ -1676,12 +1676,48 @@ mod tests {
                         assert!(values[offset..offset + block].iter().all(|v| v[byte] == 0));
                     }
                     1 => {
-                        // control mode 1 → header_modes[2]; group mode 0 is the
-                        // 1-bit delta mode, so each group also writes its 2 packed
-                        // bytes (all zero bits → zero deltas).
-                        out.extend(std::iter::repeat_n(0u8, header_bytes));
-                        out.extend(std::iter::repeat_n(0u8, group_count * 2));
-                        assert!(values[offset..offset + block].iter().all(|v| v[byte] == 0));
+                        // control mode 1 → header_modes[2]. Each group is encoded
+                        // with the 4-bit sentinel mode (group mode 2 → mode_bits
+                        // 4): a nibble per element, or 0xf plus a raw byte when the
+                        // zigzag delta does not fit. This covers the decoder's
+                        // `mode_bits == 4` path under a non-zero control mode.
+                        let mut header = vec![0u8; header_bytes];
+                        for group in 0..group_count {
+                            header[group >> 2] |= 2u8 << ((group & 3) << 1);
+                        }
+                        out.extend_from_slice(&header);
+                        for group in 0..group_count {
+                            let mut packed = [0u8; 8];
+                            let mut escapes: Vec<u8> = Vec::new();
+                            for m in 0..16usize {
+                                let element = group * 16 + m;
+                                let delta = if element < block {
+                                    let value = values[offset + element][byte];
+                                    let diff = value as i32 - temp[byte] as i32;
+                                    temp[byte] = value;
+                                    (((diff + 128).rem_euclid(256)) - 128) as i8
+                                } else {
+                                    // Padding elements are never applied.
+                                    0i8
+                                };
+                                let zigzag =
+                                    ((delta as u8 as u32) << 1) ^ ((delta as i32 >> 7) as u32);
+                                let zigzag = zigzag as u8;
+                                let nibble = if zigzag <= 14 {
+                                    zigzag
+                                } else {
+                                    escapes.push(zigzag);
+                                    0x0f
+                                };
+                                if m % 2 == 0 {
+                                    packed[m / 2] |= nibble << 4;
+                                } else {
+                                    packed[m / 2] |= nibble;
+                                }
+                            }
+                            out.extend_from_slice(&packed);
+                            out.extend_from_slice(&escapes);
+                        }
                     }
                     other => panic!("unsupported control mode {other}"),
                 }
@@ -1694,7 +1730,8 @@ mod tests {
 
     #[test]
     fn vertex_buffer_v1_control_modes_round_trip() {
-        // N623: modes 1/2/3 all decode back to the source values.
+        // N623/N633: modes 1/2/3 all decode back to the source values, including
+        // a control-mode-1 lane encoded with 4-bit sentinel deltas.
         let stride = 8usize;
         let modes = [3u8, 3, 2, 3, 1, 3, 3, 0];
         let count = 12usize;
@@ -1702,10 +1739,19 @@ mod tests {
             .map(|element| {
                 (0..stride)
                     .map(|byte| {
-                        if matches!(modes[byte], 0..=2) {
-                            0
-                        } else {
-                            ((element * 9 + byte * 5 + 4) % 256) as u8
+                        match modes[byte] {
+                            // Mode 1 is now a real delta lane: small steps stay in
+                            // a nibble, large ones escape to a raw byte.
+                            1 => {
+                                if element % 3 == 0 {
+                                    ((element * 40 + 30) % 256) as u8
+                                } else {
+                                    (element * 2) as u8
+                                }
+                            }
+                            2 => 0,
+                            0 => 0,
+                            _ => ((element * 9 + byte * 5 + 4) % 256) as u8,
                         }
                     })
                     .collect()
