@@ -424,12 +424,15 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
     // N57: bounded live stream (`--watch --count N --interval MS`).
     let mut watch = false;
     let mut rss = false;
+    // N646: print only the board's managed-config defaults.
+    let mut defaults_only = false;
     let mut count: u32 = 3;
     let mut interval_ms: u64 = 200;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "--watch" => watch = true,
+            "--defaults-only" => defaults_only = true,
             // N370: add the host process memory reading to each snapshot.
             "--rss" => rss = true,
             "--count" => count = iter.next().and_then(|v| v.parse().ok()).unwrap_or(count),
@@ -441,6 +444,14 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
             }
             _ => {}
         }
+    }
+    // N646: a session-less snapshot of the board defaults.
+    if defaults_only {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&defaults_json(&opts.board))?
+        );
+        return Ok(());
     }
     if watch {
         let (mut session, mut device, manager) = open_sim(&opts.board)?;
@@ -490,6 +501,15 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
         }
         println!("{value}");
         Ok(())
+    })
+}
+
+/// N646: the shared defaults table body (same key as `mdc inspect` and
+/// `mdc config --defaults`).
+fn defaults_json(board: &str) -> serde_json::Value {
+    serde_json::json!({
+        "board": board,
+        "board_config_defaults": board_config_defaults(board),
     })
 }
 
@@ -4216,7 +4236,7 @@ bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animatio
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] [--srgb] --out f.ppm|\
 motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] [--clip NAME] [--time T] [--mip N] [--smooth] --out f.ppm|\
-scene <file.json>|scene clear|scene-render <file.json> [--time MS] --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss]|\
+scene <file.json>|scene clear|scene-render <file.json> [--time MS] --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss] [--defaults-only]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|asset verify <dir>|\
 model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg>|diff <a.mdcpkg> <b.mdcpkg>"
     );
@@ -4746,6 +4766,29 @@ mod tests {
             port: None,
         };
         cmd_config(&opts, "--defaults", "", None).unwrap();
+    }
+
+    #[test]
+    fn inspect_defaults_only_skips_the_session() {
+        // N646: `inspect --defaults-only` returns the same table shape as
+        // `config --defaults`, without opening a device.
+        let opts = GlobalOpts {
+            sim: true,
+            board: "linux-virt".into(),
+            address: None,
+            port: None,
+        };
+        cmd_inspect(&opts, &["--defaults-only".into()]).unwrap();
+        let body = defaults_json("linux-virt");
+        assert_eq!(body["board"], "linux-virt");
+        assert!(body["board_config_defaults"].is_object());
+        assert_eq!(
+            body["board_config_defaults"],
+            board_config_defaults("linux-virt")
+        );
+        // An unknown board still yields a (empty) table rather than failing.
+        let empty = defaults_json("no-such-board");
+        assert!(empty["board_config_defaults"].is_object());
     }
 
     #[test]
