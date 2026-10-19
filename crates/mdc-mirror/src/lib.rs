@@ -1285,7 +1285,9 @@ impl HttpMirrorServer {
         self.ws_log.iter().filter(move |note| note.kind == kind)
     }
 
-    fn note_ws(&mut self, kind: impl Into<String>, detail: impl Into<String>) {
+    /// N637: record a note in the bounded WebSocket log (the detail is clamped to
+    /// [`WS_NOTE_DETAIL_MAX`]). Public so an embedding host can log its own notes.
+    pub fn note_ws(&mut self, kind: impl Into<String>, detail: impl Into<String>) {
         if self.ws_log.len() >= WS_LOG_MAX {
             self.ws_log.remove(0);
         }

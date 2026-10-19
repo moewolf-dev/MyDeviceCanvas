@@ -4155,6 +4155,52 @@ fn radial_gradient_renders_on_the_device() {
 }
 
 #[test]
+fn image_fit_valign_renders_on_the_device() {
+    // N635/N641: an `image` with `fit` and a vertical `align` letterboxes on the
+    // device through the scene path.
+    use mdc_core::{ConnectionState, Session};
+    use mdc_protocol::SceneNode;
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 1,
+        height: 4,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .set_scene(SceneNode {
+            name: "pic".into(),
+            kind: "image".into(),
+            rect: Some([0, 0, 1, 4]),
+            value: Some("f800".into()),
+            value2: Some("1,1".into()),
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: None,
+            blend: None,
+            align: Some("top".into()),
+            z: None,
+            wrap: None,
+            mode: Some("fit".into()),
+            focus: None,
+            children: Vec::new(),
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.render_scene());
+    // The single-row letterbox lands at the top with `align: "top"`.
+    assert_eq!(device.pixel_rgb565(0, 0).unwrap(), 0xF800);
+    assert_eq!(device.pixel_rgb565(0, 1).unwrap(), 0);
+    assert_eq!(device.pixel_rgb565(0, 3).unwrap(), 0);
+}
+
+#[test]
 fn multi_stop_gradient_and_reserved_extension_diagnostics() {
     // N503/N505: a reserved extension is reported, and a multi-stop gradient
     // renders through each stop on the device.

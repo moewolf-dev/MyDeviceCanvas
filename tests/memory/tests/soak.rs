@@ -2334,6 +2334,20 @@ fn dirty_tracker_pending_stays_bounded() {
 }
 
 #[test]
+fn websocket_note_log_stays_bounded() {
+    // N637/N641: a peer that floods long reasons cannot grow the note log.
+    let mut server = mdc_mirror::HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+    for i in 0..1_000 {
+        server.note_ws("reserved", format!("{i}:{}", "z".repeat(4096)));
+    }
+    assert!(server.ws_log().len() <= 16, "the log is capped");
+    assert!(server
+        .ws_log()
+        .iter()
+        .all(|note| note.detail.len() <= mdc_mirror::WS_NOTE_DETAIL_MAX));
+}
+
+#[test]
 fn disk_asset_cache_stays_within_quota() {
     // N369/N371: the on-disk asset store never exceeds its byte quota, however
     // many payloads are inserted.
