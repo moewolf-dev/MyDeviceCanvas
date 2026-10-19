@@ -1448,6 +1448,15 @@ fn default_config() -> BTreeMap<String, String> {
     map
 }
 
+/// N596: the baseline managed settings overlaid with the board's own defaults.
+fn board_config(profile: &BoardProfile) -> BTreeMap<String, String> {
+    let mut config = default_config();
+    for (key, value) in &profile.config_defaults {
+        config.insert(key.clone(), value.clone());
+    }
+    config
+}
+
 /// N41: secret values are never echoed back in a reply.
 fn is_secret_key(key: &str) -> bool {
     key.contains("password") || key.contains("token")
@@ -1566,6 +1575,10 @@ pub struct BoardProfile {
     pub renderer_max_vertices: u32,
     /// N41: configuration keys this board accepts.
     pub config_keys: Vec<String>,
+    /// N596: per-board default configuration values, overlaid on the baseline
+    /// managed settings (so a board can ship a different default without the host
+    /// hard-coding a board id).
+    pub config_defaults: BTreeMap<String, String>,
     /// N308: device-advertised preferred tile edge (0 = no preference; the host
     /// then uses its own default). Reported from the device, not assumed.
     pub preferred_tile_size: u16,
@@ -1611,6 +1624,8 @@ impl Default for BoardProfile {
                 // N586: tolerated unacknowledged tiles before a full frame.
                 "tile_missing_threshold".into(),
             ],
+            // N596: no board-specific overrides by default.
+            config_defaults: BTreeMap::new(),
             // N308: an MCU-class panel prefers 32-pixel tiles and takes both
             // partial and full updates (it advertises tile support).
             preferred_tile_size: 32,
@@ -1642,6 +1657,11 @@ impl BoardProfile {
                 renderer_max_vertices: 200_000,
                 // N308: a bigger panel can take bigger tiles.
                 preferred_tile_size: 64,
+                // N596: a GPU board tolerates a couple of missing tiles before it
+                // resynchronises.
+                config_defaults: [("tile_missing_threshold".to_string(), "2".to_string())]
+                    .into_iter()
+                    .collect(),
                 ..Self::default()
             },
             "pi4-hdmi" => Self {
@@ -1807,6 +1827,7 @@ impl FakeDevice {
             Vec::new()
         };
         let device_id = profile.device_id.clone();
+        let config = board_config(&profile);
         Self {
             link,
             profile,
@@ -1838,7 +1859,7 @@ impl FakeDevice {
             mirror_prev: Vec::new(),
             package_assembler: None,
             package_ready: false,
-            config: default_config(),
+            config,
             scene_nodes: 0,
             scene_present: false,
             scene: None,
@@ -4039,6 +4060,52 @@ mod tests {
     }
 
     #[test]
+    fn image_fit_composes_with_transforms() {
+        // N595: `fit` composes with `flip-h`/`rotate` and `align`.
+        use mdc_protocol::SceneNode;
+        let render = |mode: &str, rotate: Option<u16>, align: Option<&str>| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 4,
+                height: 1,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "pic".into(),
+                kind: "image".into(),
+                rect: Some([0, 0, 4, 1]),
+                value: Some("f800001f".into()),
+                value2: Some("2,1".into()),
+                children: Vec::new(),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate,
+                blend: None,
+                align: align.map(str::to_string),
+                z: None,
+                wrap: None,
+                mode: Some(mode.into()),
+                focus: None,
+            });
+            assert!(device.render_scene());
+            (0..4)
+                .map(|x| device.pixel_rgb565(x, 0).unwrap())
+                .collect::<Vec<_>>()
+        };
+        // A 2x1 source fits 1:1 and is letterboxed centred.
+        assert_eq!(render("fit", None, None), vec![0, 0xF800, 0x001F, 0]);
+        // Flipping swaps the drawn halves in place.
+        assert_eq!(render("fit,flip-h", None, None), vec![0, 0x001F, 0xF800, 0]);
+        // A 180° rotation on a 1-row image matches the flip.
+        assert_eq!(render("fit", Some(180), None), vec![0, 0x001F, 0xF800, 0]);
+        // Left alignment moves the region before flipping.
+        assert_eq!(
+            render("fit,flip-h", None, Some("left")),
+            vec![0x001F, 0xF800, 0, 0]
+        );
+    }
+
+    #[test]
     fn glyphs_cover_digits_letters_and_punctuation() {
         for ch in ".,:!?-+/()=*#".bytes() {
             assert!(glyph_columns(ch).is_some(), "missing {}", ch as char);
@@ -4248,6 +4315,28 @@ mod tests {
             mdc_bake::Filter::Linear,
             "an unknown filter leaves the sampler unchanged"
         );
+    }
+
+    #[test]
+    fn board_config_defaults_apply() {
+        // N596: a board ships its own default for a managed key.
+        let query = |board: &str| {
+            let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id(board));
+            let mut session = Session::new(host);
+            session.connect().unwrap();
+            device.poll().unwrap();
+            session.poll().unwrap();
+            session
+                .get_config(mdc_core::TILES_MISSING_THRESHOLD_CONFIG)
+                .unwrap();
+            device.poll().unwrap();
+            session.poll().unwrap();
+            session
+                .config(mdc_core::TILES_MISSING_THRESHOLD_CONFIG)
+                .map(str::to_string)
+        };
+        assert_eq!(query("default").as_deref(), Some("0"));
+        assert_eq!(query("linux-virt").as_deref(), Some("2"));
     }
 
     #[test]
