@@ -350,12 +350,20 @@ fn blit_hex_rgb565(
         let draw_w = ((f32::from(eff_w) * scale).round() as u16).clamp(1, w);
         let draw_h = ((f32::from(eff_h) * scale).round() as u16).clamp(1, h);
         // N585: horizontal alignment of the letterbox (default centred).
-        let off_x = match align {
-            "left" => 0,
-            "right" => w - draw_w,
-            _ => (w - draw_w) / 2,
+        // N635: `align` may also carry `top`/`bottom`/`middle` for the vertical
+        // axis, either alone or comma-separated (`"right,bottom"`).
+        let (halign, valign) = parse_align(align);
+        let off_x = match halign {
+            Align::Start => 0,
+            Align::End => w - draw_w,
+            Align::Center => (w - draw_w) / 2,
         };
-        (draw_w, draw_h, off_x, (h - draw_h) / 2)
+        let off_y = match valign {
+            Align::Start => 0,
+            Align::End => h - draw_h,
+            Align::Center => (h - draw_h) / 2,
+        };
+        (draw_w, draw_h, off_x, off_y)
     } else {
         (w, h, 0, 0)
     };
@@ -796,6 +804,34 @@ fn lerp_rgb565(a: u16, b: u16, t: u8) -> u16 {
         ((av * k + bv * tt) / 255) as u16
     };
     (channel(11, 0x1f) << 11) | (channel(5, 0x3f) << 5) | channel(0, 0x1f)
+}
+
+/// N635: one axis of an `align` value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Align {
+    Start,
+    Center,
+    End,
+}
+
+/// N635: parse an `align` value into a horizontal and a vertical axis. Tokens may
+/// be comma-separated (`"right,bottom"`); unknown tokens keep the default
+/// (centred). The legacy single values `left`/`center`/`right` still work.
+fn parse_align(align: &str) -> (Align, Align) {
+    let mut horizontal = Align::Center;
+    let mut vertical = Align::Center;
+    for token in align.split(',').map(str::trim) {
+        match token {
+            "left" | "start" => horizontal = Align::Start,
+            "right" | "end" => horizontal = Align::End,
+            "center" => horizontal = Align::Center,
+            "top" => vertical = Align::Start,
+            "bottom" => vertical = Align::End,
+            "middle" => vertical = Align::Center,
+            _ => {}
+        }
+    }
+    (horizontal, vertical)
 }
 
 /// N535: the radial centre as fractions of the rect (`"50,50"` = centred).
@@ -4068,6 +4104,52 @@ mod tests {
         // N585: `align` places the letterbox left/right.
         assert_eq!(render("fit", Some("left")), vec![0xF800, 0, 0, 0]);
         assert_eq!(render("fit", Some("right")), vec![0, 0, 0, 0xF800]);
+    }
+
+    #[test]
+    fn image_fit_vertical_alignment() {
+        // N635: `align` also carries the vertical axis (`top`/`middle`/`bottom`),
+        // alone or comma-separated with a horizontal value.
+        use mdc_protocol::SceneNode;
+        let render = |align: Option<&str>| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 1,
+                height: 4,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "pic".into(),
+                kind: "image".into(),
+                rect: Some([0, 0, 1, 4]),
+                value: Some("f800".into()),
+                value2: Some("1,1".into()),
+                children: Vec::new(),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: align.map(str::to_string),
+                z: None,
+                wrap: None,
+                mode: Some("fit".into()),
+                focus: None,
+            });
+            assert!(device.render_scene());
+            (0..4)
+                .map(|y| device.pixel_rgb565(0, y).unwrap())
+                .collect::<Vec<_>>()
+        };
+        // A 1x1 source in a 1x4 rect letterboxes to a single row.
+        assert_eq!(render(None), vec![0, 0xF800, 0, 0], "default centred");
+        assert_eq!(render(Some("top")), vec![0xF800, 0, 0, 0]);
+        assert_eq!(render(Some("bottom")), vec![0, 0, 0, 0xF800]);
+        assert_eq!(render(Some("middle")), vec![0, 0xF800, 0, 0]);
+        // Comma-separated axes: horizontal value + vertical value.
+        assert_eq!(render(Some("left,top")), vec![0xF800, 0, 0, 0]);
+        assert_eq!(render(Some("center,bottom")), vec![0, 0, 0, 0xF800]);
+        // An unknown token keeps the centred default.
+        assert_eq!(render(Some("nope")), vec![0, 0xF800, 0, 0]);
     }
 
     #[test]
