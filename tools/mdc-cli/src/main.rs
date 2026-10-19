@@ -4111,24 +4111,32 @@ fn cmd_validate(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         mdc_model::GltfImporter.import(&bytes, &limits)?
     };
     let report = model.validate();
+    // N640: one builder owns the field set (and therefore the key order).
     println!(
         "{}",
-        serde_json::to_string_pretty(&serde_json::json!({
-            "valid": report.valid,
-            "strict": strict,
-            "problems": report.problems,
-            "warnings": report.warnings,
-            // N630: a KTX2 summary right in the validation report.
-            "ktx2_textures": report.summary.ktx2_textures,
-            "ktx2_slices": report.summary.ktx2_slices,
-            "summary": report.summary,
-        }))?
+        serde_json::to_string_pretty(&validation_json(&report, strict))?
     );
     // N466/N620: in strict mode a warning (e.g. a KTX2 transcoding note) fails too.
     if validation_failed(&report, strict) {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// N640: the `mdc validate` JSON body. `serde_json` keeps object keys sorted, so
+/// this field set serializes in a stable order — a contract `validate --json`
+/// consumers can rely on.
+fn validation_json(report: &mdc_model::ValidationReport, strict: bool) -> serde_json::Value {
+    serde_json::json!({
+        "valid": report.valid,
+        "strict": strict,
+        "problems": report.problems,
+        "warnings": report.warnings,
+        // N630: a KTX2 summary right in the validation report.
+        "ktx2_textures": report.summary.ktx2_textures,
+        "ktx2_slices": report.summary.ktx2_slices,
+        "summary": report.summary,
+    })
 }
 
 /// N408: verify a sealed package's manifest against its body; exit non-zero when
@@ -4468,6 +4476,42 @@ mod tests {
         .unwrap();
         assert!(good.lint().valid);
         assert_eq!(good.lint().nodes, 1);
+    }
+
+    #[test]
+    fn validate_json_field_order_is_stable() {
+        // N640: the report's key order is a contract (serde_json sorts keys).
+        let gltf = br#"{"asset":{"version":"2.0"},
+            "nodes":[{"name":"root","mesh":0}],
+            "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+            "accessors":[{"count":4,"type":"VEC3"}]}"#;
+        let model = mdc_model::GltfImporter
+            .import(gltf, &mdc_model::ImportLimits::default())
+            .unwrap();
+        let report = model.validate();
+        let json = validation_json(&report, false);
+        let text = serde_json::to_string(&json).unwrap();
+        // The keys appear in sorted order, so a consumer can diff the output.
+        let expected = [
+            "\"ktx2_slices\"",
+            "\"ktx2_textures\"",
+            "\"problems\"",
+            "\"strict\"",
+            "\"summary\"",
+            "\"valid\"",
+            "\"warnings\"",
+        ];
+        let mut cursor = 0usize;
+        for key in expected {
+            let found = text[cursor..]
+                .find(key)
+                .unwrap_or_else(|| panic!("{key} missing after {cursor}"));
+            cursor += found + key.len();
+        }
+        // The nested summary carries its own stable keys too.
+        assert!(text.contains("\"ktx2_textures\":"));
+        assert!(json["summary"].is_object());
+        assert_eq!(json["strict"], false);
     }
 
     #[test]
