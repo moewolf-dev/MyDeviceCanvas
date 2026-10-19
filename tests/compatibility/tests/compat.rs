@@ -2936,6 +2936,7 @@ fn animated_scene_reaches_the_mirror() {
                 looping: false,
                 opacity: vec![[0, 0], [100, 255]],
                 rect: Vec::new(),
+                focus: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -4567,4 +4568,304 @@ fn surface_pixel_format_and_display_profile_are_exposed() {
     let (_, _, w, h) = tiles[0];
     assert_eq!((w, h), (64, 64));
     assert_eq!(tiles.len(), 800usize.div_ceil(64) * 480usize.div_ceil(64));
+}
+
+/// N551: assemble a GLB from a JSON chunk and a BIN chunk (4-byte aligned).
+fn make_glb(json: &str, bin: &[u8]) -> Vec<u8> {
+    let mut json_chunk = json.as_bytes().to_vec();
+    while !json_chunk.len().is_multiple_of(4) {
+        json_chunk.push(0x20);
+    }
+    let mut bin_chunk = bin.to_vec();
+    while !bin_chunk.len().is_multiple_of(4) {
+        bin_chunk.push(0x00);
+    }
+    let total = 12 + 8 + json_chunk.len() + 8 + bin_chunk.len();
+    let mut glb = Vec::new();
+    glb.extend_from_slice(b"glTF");
+    glb.extend_from_slice(&2u32.to_le_bytes());
+    glb.extend_from_slice(&(total as u32).to_le_bytes());
+    glb.extend_from_slice(&(json_chunk.len() as u32).to_le_bytes());
+    glb.extend_from_slice(&0x4E4F_534Au32.to_le_bytes());
+    glb.extend_from_slice(&json_chunk);
+    glb.extend_from_slice(&(bin_chunk.len() as u32).to_le_bytes());
+    glb.extend_from_slice(&0x004E_4942u32.to_le_bytes());
+    glb.extend_from_slice(&bin_chunk);
+    glb
+}
+
+#[test]
+fn meshopt_truncations_are_errors_not_panics() {
+    // N543/N551: every prefix of a golden meshopt stream is a clean error.
+    let stream: Vec<u8> = vec![
+        0xa0, 0x01, 0x3f, 0x00, 0x00, 0x00, 0x58, 0x57, 0x58, 0x01, 0x26, 0x00, 0x00, 0x00, 0x01,
+        0x0c, 0x00, 0x00, 0x00, 0x58, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+    for len in 0..stream.len() {
+        assert!(mdc_model::decode_vertex_buffer(
+            4,
+            12,
+            &stream[..len],
+            mdc_model::MeshoptFilter::None
+        )
+        .is_err());
+    }
+    // An absurd declared count is refused before allocating.
+    assert!(mdc_model::decode_vertex_buffer(
+        usize::MAX / 8,
+        8,
+        &stream,
+        mdc_model::MeshoptFilter::None
+    )
+    .is_err());
+}
+
+#[test]
+fn ktx2_texture_reports_metadata_without_transcoding() {
+    // N544/N551: a Basis/KTX2 texture imports with its real size, is flagged by
+    // validation, and yields no decoded blob (transcoding is refused).
+    let mut ktx2 = mdc_model::KTX2_IDENTIFIER.to_vec();
+    let mut field = |value: u32| ktx2.extend_from_slice(&value.to_le_bytes());
+    field(0); // vkFormat: undefined
+    field(0);
+    field(256);
+    field(128);
+    field(0);
+    field(0);
+    field(1);
+    field(1);
+    field(1); // BasisLZ
+    for _ in 0..4 {
+        field(0);
+    }
+    ktx2.extend_from_slice(&0u64.to_le_bytes());
+    ktx2.extend_from_slice(&0u64.to_le_bytes());
+    assert_eq!(ktx2.len(), mdc_model::KTX2_HEADER_BYTES);
+
+    let json = format!(
+        r#"{{"asset":{{"version":"2.0"}},
+        "extensionsUsed":["KHR_texture_basisu"],
+        "buffers":[{{"byteLength":{len}}}],
+        "bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":{len}}}],
+        "images":[{{"bufferView":0,"width":1,"height":1}}],
+        "textures":[{{"source":0}}],
+        "materials":[{{"pbrMetallicRoughness":{{"baseColorTexture":{{"index":0}}}}}}]}}"#,
+        len = ktx2.len()
+    );
+    let glb = make_glb(&json, &ktx2);
+    let model = mdc_model::GltfImporter
+        .import(&glb, &mdc_model::ImportLimits::default())
+        .unwrap();
+    assert_eq!(model.textures[0].format, "image/ktx2");
+    assert_eq!(
+        (model.textures[0].width, model.textures[0].height),
+        (256, 128)
+    );
+    assert_eq!(model.summary().ktx2_textures, 1);
+    assert!(model.validate().warnings.iter().any(|w| w.contains("KTX2")));
+    // The bake refuses to transcode: every texture blob is empty.
+    let blobs = mdc_bake::attach_model_textures(&model, &mdc_bake::BakeLimits::default());
+    assert!(blobs.iter().all(|blob| !blob.validate()));
+}
+
+#[test]
+fn focus_animation_changes_the_device_frame() {
+    // N546/N551: a focus keyframe track moves the radial centre on the device.
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 9,
+        height: 9,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    let node = mdc_protocol::SceneNode {
+        name: "spot".into(),
+        kind: "gradient".into(),
+        rect: Some([0, 0, 9, 9]),
+        children: Vec::new(),
+        value: Some("#FFFFFF".into()),
+        value2: Some("#000000".into()),
+        opacity: None,
+        visible: None,
+        anim: Some(mdc_protocol::SceneAnim {
+            duration_ms: 100,
+            looping: false,
+            opacity: Vec::new(),
+            rect: Vec::new(),
+            focus: vec![[0, 0, 0], [100, 100, 100]],
+        }),
+        rotate: None,
+        blend: None,
+        align: None,
+        z: None,
+        wrap: None,
+        mode: Some("radial".into()),
+        focus: Some("0,0".into()),
+    };
+    session.set_scene(node).unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    device.clock.tick = 0;
+    assert!(device.render_scene());
+    let start = device.pixel_rgb565(0, 0).unwrap();
+    device.clock.tick = 100;
+    assert!(device.render_scene());
+    let end = device.pixel_rgb565(0, 0).unwrap();
+    assert_ne!(start, end, "the focus track moved the bright centre");
+}
+
+#[test]
+fn mirror_websocket_reassembles_client_fragments() {
+    // N548/N551: a fragmented client -> server WebSocket message is reassembled
+    // and counted, without disturbing control frames.
+    use std::io::{Read, Write};
+    fn client_frame(fin: bool, opcode: u8, payload: &[u8]) -> Vec<u8> {
+        let mask = [0x01u8, 0x02, 0x03, 0x04];
+        let mut out = vec![
+            if fin { 0x80 } else { 0x00 } | opcode,
+            0x80 | payload.len() as u8,
+        ];
+        out.extend_from_slice(&mask);
+        out.extend(
+            payload
+                .iter()
+                .enumerate()
+                .map(|(i, byte)| byte ^ mask[i % 4]),
+        );
+        out
+    }
+    let mut server = mdc_mirror::HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+    let addr = server.local_addr().unwrap();
+    let mut client = std::net::TcpStream::connect(addr).unwrap();
+    client
+        .set_read_timeout(Some(std::time::Duration::from_millis(20)))
+        .unwrap();
+    client
+        .write_all(
+            b"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+              Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        )
+        .unwrap();
+    let mut seen = Vec::new();
+    for _ in 0..100 {
+        let _ = server.pump();
+        let mut buffer = [0u8; 4096];
+        match client.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => seen.extend_from_slice(&buffer[..n]),
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(2)),
+        }
+        if seen.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+    client.write_all(&client_frame(false, 0x1, b"po")).unwrap();
+    client.write_all(&client_frame(true, 0x0, b"ng")).unwrap();
+    for _ in 0..100 {
+        let _ = server.pump();
+        if server.ws_messages() == 1 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(server.ws_messages(), 1);
+}
+
+#[test]
+fn device_tiles_snapshot_reconciles_end_to_end() {
+    // N547/N551: the device reports applied tiles over diagnostics, and the host
+    // snapshot folds them into one reconciliation.
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 8,
+        height: 8,
+        supports_partial_update: true,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    session
+        .send_frame(Frame {
+            surface_id: "main".into(),
+            width: 8,
+            height: 8,
+            bytes: vec![0u8; 8 * 8 * 2],
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    let frame = vec![0u8; 8 * 8 * 2];
+    let mut tracker = mdc_core::DirtyTracker::new((8, 8), 4, 0.9);
+    tracker.mark((0, 0, 1, 1));
+    let base = device.current_frame_id();
+    session
+        .send_dirty_update("main", base, &frame, &mut tracker)
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    // The device reports what it applied; the host snapshot reconciles it.
+    device.emit_tiles_received().unwrap();
+    session.poll().unwrap();
+    assert_eq!(
+        session.stats().device_tiles_received,
+        device.metrics_snapshot().tiles_received
+    );
+    let report = session.tile_reconciliation();
+    assert!(report.consistent, "{report:?}");
+    assert_eq!(session.stats().tiles_missing, 0);
+}
+
+#[test]
+fn compacted_geometry_installs_and_keeps_the_triangles() {
+    // N545/N551: lossless geometry compaction preserves the triangle set and the
+    // package still installs on a device.
+    let mut geometry = mdc_model::MeshGeometry {
+        positions: vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+        ],
+        indices: vec![0, 1, 2, 3, 4, 5],
+        ..Default::default()
+    };
+    let before = geometry.positions.len();
+    assert_eq!(mdc_bake::compact_geometry(&mut geometry), 3);
+    assert_eq!(geometry.positions.len(), 3);
+    assert_eq!(geometry.indices, vec![0, 1, 2, 0, 1, 2]);
+    assert!(geometry.positions.len() < before);
+
+    let model = mdc_model::Model {
+        source: "test".into(),
+        meshes: vec![mdc_model::Mesh {
+            vertices: 3,
+            indices: 6,
+            geometry: Some(geometry),
+            ..Default::default()
+        }],
+        nodes: vec![mdc_model::Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let package =
+        mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d()).unwrap();
+    let (host, mut device) = FakeDevice::pair(BoardProfile::from_board_id("linux-virt"));
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .install_package(&package.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.package_ready());
 }

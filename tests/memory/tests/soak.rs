@@ -1563,6 +1563,7 @@ fn animated_scene_rendering_stays_bounded() {
                     looping: true,
                     opacity: vec![[0, 0], [50, 255], [100, 0]],
                     rect: Vec::new(),
+                    focus: Vec::new(),
                 }),
                 rotate: Some(90),
                 blend: Some("additive".to_string()),
@@ -2357,4 +2358,154 @@ fn disk_asset_cache_stays_within_quota() {
     small.prune().unwrap();
     assert!(small.total_bytes().unwrap() <= max_total / 4);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn geometry_compaction_soak_is_bounded() {
+    // N545/N551: repeated compaction is idempotent and never grows the package.
+    // A quad recorded as two triangles with the diagonal vertices duplicated, plus
+    // an unreferenced vertex.
+    let mut geometry = mdc_model::MeshGeometry {
+        positions: vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [9.0, 9.0, 9.0],
+        ],
+        indices: vec![0, 1, 2, 3, 4, 5],
+        ..Default::default()
+    };
+    // 2 duplicated referenced vertices and 1 unreferenced vertex are removed.
+    assert_eq!(mdc_bake::compact_geometry(&mut geometry), 3);
+    let positions = geometry.positions.len();
+    assert_eq!(positions, 4);
+    for _ in 0..500 {
+        // Already compact: nothing more is removed and the size is constant.
+        assert_eq!(mdc_bake::compact_geometry(&mut geometry), 0);
+        assert_eq!(geometry.positions.len(), positions);
+    }
+}
+
+#[test]
+fn focus_animation_render_soak_is_bounded() {
+    // N546/N551: sampling a focus track over many clock points keeps the frame
+    // buffer a fixed size.
+    use mdc_protocol::{SceneAnim, SceneNode};
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 32,
+        height: 32,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    session
+        .set_scene(SceneNode {
+            name: "spot".into(),
+            kind: "gradient".into(),
+            rect: Some([0, 0, 32, 32]),
+            children: Vec::new(),
+            value: Some("#FFFFFF".into()),
+            value2: Some("#000000".into()),
+            opacity: None,
+            visible: None,
+            anim: Some(SceneAnim {
+                duration_ms: 200,
+                looping: true,
+                opacity: Vec::new(),
+                rect: Vec::new(),
+                focus: vec![[0, 0, 0], [100, 100, 100]],
+            }),
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: Some("radial".into()),
+            focus: None,
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    let mut last = 0usize;
+    for tick in (0..5000).step_by(20) {
+        device.clock.tick = tick as u64;
+        assert!(device.render_scene());
+        let bytes = device.pixels().len();
+        if last != 0 {
+            assert_eq!(bytes, last, "frame size constant at tick {tick}");
+        }
+        last = bytes;
+    }
+}
+
+#[test]
+fn websocket_client_fragments_stay_bounded() {
+    // N548/N551: many fragmented client messages are reassembled and counted
+    // without unbounded buffering; the peer stays connected.
+    use std::io::{Read, Write};
+    fn client_frame(fin: bool, opcode: u8, payload: &[u8]) -> Vec<u8> {
+        let mask = [0x0Au8, 0x0B, 0x0C, 0x0D];
+        let mut out = vec![
+            if fin { 0x80 } else { 0x00 } | opcode,
+            0x80 | payload.len() as u8,
+        ];
+        out.extend_from_slice(&mask);
+        out.extend(
+            payload
+                .iter()
+                .enumerate()
+                .map(|(i, byte)| byte ^ mask[i % 4]),
+        );
+        out
+    }
+    let mut server = mdc_mirror::HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+    let addr = server.local_addr().unwrap();
+    let mut client = std::net::TcpStream::connect(addr).unwrap();
+    client
+        .set_read_timeout(Some(std::time::Duration::from_millis(20)))
+        .unwrap();
+    client
+        .write_all(
+            b"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+              Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+        )
+        .unwrap();
+    let mut seen = Vec::new();
+    for _ in 0..100 {
+        let _ = server.pump();
+        let mut buffer = [0u8; 4096];
+        match client.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => seen.extend_from_slice(&buffer[..n]),
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(2)),
+        }
+        if seen.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+    for i in 0..200u16 {
+        let payload = i.to_le_bytes();
+        client
+            .write_all(&client_frame(false, 0x2, &payload[..1]))
+            .unwrap();
+        client
+            .write_all(&client_frame(true, 0x0, &payload[1..]))
+            .unwrap();
+        let _ = server.pump();
+    }
+    // Drain whatever remained and let the server finish reassembling.
+    for _ in 0..100 {
+        let _ = server.pump();
+        if server.ws_messages() == 200 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(server.ws_messages(), 200);
+    assert_eq!(server.ws_clients(), 1, "the peer stayed connected");
 }
