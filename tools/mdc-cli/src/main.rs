@@ -4546,6 +4546,41 @@ mod tests {
         assert!(text.contains("\"ktx2_textures\":"));
         assert!(json["summary"].is_object());
         assert_eq!(json["strict"], false);
+        // N650: the summary's sub-keys are stable and sorted, so a consumer can
+        // diff two reports field by field.
+        let keys: Vec<&str> = json["summary"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let expected = [
+            "animations",
+            "cameras",
+            "has_colors",
+            "has_normals",
+            "has_second_skin",
+            "has_second_uv",
+            "has_tangents",
+            "indices",
+            "ktx2_slices",
+            "ktx2_textures",
+            "layers",
+            "lights",
+            "materials",
+            "meshes",
+            "morph_targets",
+            "nodes",
+            "nodes_with_mesh",
+            "primitives",
+            "skeletons",
+            "source",
+            "sprites",
+            "textures",
+            "variants",
+            "vertices",
+        ];
+        assert_eq!(keys, expected);
     }
 
     #[test]
