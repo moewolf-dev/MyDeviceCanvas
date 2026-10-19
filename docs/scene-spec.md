@@ -91,8 +91,10 @@ A device that accepts a scene rasterizes it locally:
 - N484/N485/N495: `align`, `z`, and `wrap` are documented above.
 - N493: a recognised gesture carries the hit-tested scene node when the device
   reported one on the input event.
-- `image` blits tightly packed RGB565 when `value` is `w*h` hex words (4 digits
-  each, little-endian on the framebuffer). A short or malformed string draws nothing.
+- `image` blits tightly packed RGB565 when `value` is `sw*sh` hex words (4 digits
+  each, little-endian on the framebuffer). `value2: "sw,sh"` sets the source grid
+  (default: the rect size) and `mode: "linear"` scales it with bilinear filtering
+  (`nearest` is the default). A short or malformed string draws nothing.
 - `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour.
   A missing atlas or index draws nothing.
 - `circle` fills the ellipse inscribed in `rect` with the `value` colour; a  zero width or height draws nothing.

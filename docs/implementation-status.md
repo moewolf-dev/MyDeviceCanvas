@@ -85,6 +85,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 71 | N523–N532: WebP probing, drawn-vertex budget, gradient angle, dirty tracker, WS fragmentation, Node mirror parity, inspector alerts, `record --render` | sim-verified |
 | 72 | N533–N542: meshopt decoding (vertex v0/v1, index v0/v1, sequences, filters), radial focus, tile reconciliation, WS fragment floor, C mirror mode, JSONL verdicts, paced replay | sim-verified |
 | 73 | N543–N552: meshopt fuzz/bounds hardening, KTX2 header reader, lossless geometry compaction, gradient focus animation, tile stats snapshot, WS client fragment reassembly, Swift mirror mode parity, JSONL verdict tail | sim-verified |
+| 74 | N553–N562: meshopt fuzz corpus, KTX2 container dims, cache-friendly index order, scene image scaling, tile threshold barrier, WS compression-bit handling, Node mirror mode, JSONL file output | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 

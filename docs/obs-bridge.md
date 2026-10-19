@@ -85,7 +85,9 @@ N537 floors `N` at 64 bytes and keeps heartbeats out of the middle of a message
 reassembles **client → server** messages: a text/binary message split across
 fragmentation and continuation frames is completed (control frames may interleave),
 bounded at 64 KiB per message, and counted in `/health`'s `ws_messages` field and
-`mdc mirror`'s `ws_messages`.
+`mdc mirror`'s `ws_messages`. N558 handles the reserved (compression) bit:
+`permessage-deflate` is never negotiated, so a frame that sets it is counted
+(`ws_reserved`) and ignored instead of being mis-read as plain data.
 
 ## Guarantees
 

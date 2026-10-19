@@ -171,6 +171,11 @@ N547 adds a host-side accounting path: a device reports an applied-tile count as
 `tiles_missing` (with `Session::tile_reconciliation()` for the sent/received
 pair). The count travels on diagnostics, so a saturated image link cannot lose it.
 
+N557 builds on that: `TileReconciliation::needs_full_frame(max_missing)` and
+`Session::enforce_tile_reconciliation(max_missing)` let a host raise the
+full-frame barrier when the device has fallen behind by more than a threshold, so
+a partial-update stream self-heals instead of drifting.
+
 ### 4.3 Mirror read source — what `MIRRORFRAME` actually captures (N309)
 
 Open question from report 2: does the device mirror the **LVGL/drawer buffer** it

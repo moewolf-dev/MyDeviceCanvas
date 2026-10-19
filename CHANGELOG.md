@@ -2,6 +2,34 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.68] — meshopt fuzz corpus, KTX2 container dims, cache-friendly index order, image scaling, tile threshold, WS compression bit, Node mirror mode, JSONL file (N553–N562)
+
+### Added
+
+- KTX2 container dimensions (`Ktx2Header::mip_levels`/`is_cubemap`/`is_array`/
+  `is_volume`/`slices`); `mdc model-info` reports `mipLevels`/`slices`/
+  `container` (N554)
+- `mdc_bake::index_cache_misses`/`optimize_index_order`/
+  `optimize_package_index_order`: reorder triangles for vertex-cache locality
+  (the triangle set is unchanged); `mdc package --optimize-index [CACHE]` reports
+  `index_cache_misses`/`reordered_meshes` (N555)
+- scene `image` scaling: `value2: "sw,sh"` gives the source grid and
+  `mode: "linear"` scales it with bilinear filtering (default nearest) (N556)
+- `TileReconciliation::needs_full_frame` + `Session::enforce_tile_reconciliation`:
+  a device that falls behind by more than a threshold raises the full-frame
+  barrier (N557)
+- `mdc-mirror` counts client frames with the reserved (compression) bit set
+  (`ws_reserved()`); `permessage-deflate` is never negotiated (N558)
+- Node `MyDeviceCanvas.normalizeMirrorMode`, `mirrorMode()` (native
+  `mirrorMode`), validated `startMirror` mode (N559)
+- `mdc-inspector --jsonl --out PATH` archives the series and its trailing verdict
+  to a file (N560)
+
+### Notes
+
+- The meshopt decoder gains a curated fuzz corpus with single-byte mutation and
+  truncation passes (N553). Physical verification (D05/G03/H06) is still pending.
+
 ## [0.1.67] — meshopt fuzz hardening, KTX2 header, geometry compaction, focus animation, tile snapshot, WS client fragments (N543–N552)
 
 ### Added

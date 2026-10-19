@@ -383,6 +383,15 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
   merges bit-identical vertices (across positions, UVs, normals, colours,
   tangents, skin and morphs) and drops unreferenced ones, rewriting the index
   buffer. `mdc package --compact-geometry` reports `compacted_vertices`.
+- N553: the meshopt decoder has a curated fuzz corpus (`FUZZ_CORPUS`) exercised
+  with every single-byte mutation (0x00/0xFF/MSB flip) and truncation, so a
+  malformed stream is always an error.
+- N554: beyond width/height, the KTX2 header reports its mip count, slice count
+  (`layerCount * faceCount`) and container kind (2D/array/cubemap/volume).
+- N555: `optimize_index_order` reorders triangles to reduce vertex-cache misses
+  (a bounded look-ahead greedy over a FIFO cache); the triangle set is unchanged.
+  `mdc package --optimize-index [CACHE]` reports `index_cache_misses` and
+  `reordered_meshes`.
 - N504: a texture with a mip chain (`--texture-mips`) can bake from a coarser
   level (`--mip-level N`); at render time the device picks the coarsest level
   that still covers the target size (`select_mip_level`).

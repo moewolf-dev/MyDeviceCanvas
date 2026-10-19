@@ -289,6 +289,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | WS client fragments (N548) | sim-verified (continuation reassembly) | n/a |
 | Swift mirror mode (N549) | sim-verified (mode + skips parity) | physical: pending |
 | JSONL verdict tail (N550) | sim-verified (last line) | n/a |
+| meshopt fuzz corpus (N553) | sim-verified (mutation + truncation) | n/a |
+| KTX2 container dims (N554) | sim-verified (layer/face/depth/mips) | n/a |
+| Index-order optimization (N555) | sim-verified (fewer cache misses) | physical: pending |
+| Image scaling (N556) | sim-verified (nearest + bilinear) | physical: pending |
+| Tile threshold (N557) | sim-verified (full-frame barrier) | n/a |
+| WS compression bit (N558) | sim-verified (counted, ignored) | n/a |
+| Node mirror mode (N559) | sim-verified (`normalizeMirrorMode` + `mirrorMode`) | n/a |
+| JSONL file (N560) | sim-verified (`--out`) | n/a |
 
 ## G03 sim exit
 

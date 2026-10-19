@@ -29,8 +29,10 @@ is idempotent and cancels listeners; every method rejects after dispose.
 | `currentFrameId()` | |
 | `pollEvents()` | drained `NativeEvent[]` (`connected` / `disconnected` / `input` / `mirror` / `error`) |
 | `on(event, fn)` / `off` | subscription; cancelled by `dispose()` |
-| `startMirror(surfaceId, opts)` / `stopMirror` | Form B; needs the device `mirror` capability |
-| `takeMirrorFrame()` / `onMirrorFrame(fn)` / `mirrorStats()` | pixel + stats access |
+| `startMirror(surfaceId, opts)` / `stopMirror` | Form B; needs the device `mirror` capability; N559 validates `opts.mode` |
+| `mirrorMode()` | N559: the negotiated mode (`full-frame` \| `dirty-region`) |
+| `MyDeviceCanvas.normalizeMirrorMode(mode)` | N559: static; rejects an unknown mode |
+| `takeMirrorFrame()` / `onMirrorFrame(fn)` / `mirrorStats()` / `mirrorSkips()` | pixel + stats access |
 | `getConfig(key)` / `setConfig(key, value)` | capability-gated |
 | `setScene(node)` / `clearScene()` | CBOR scene |
 | `setAnimation(clip)` / `stopAnimation()` | baked-atlas clip |
