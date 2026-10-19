@@ -1247,8 +1247,10 @@ fn fill_scene(
             *drew = true;
         }
     } else if node.kind == "image" {
-        if let (Some(rect), Some(hex)) = (rect, node.value.as_deref()) {
-            let [x, y, w, h] = transform.apply(rect);
+        // N625: the image applies `rotate` in its sampler, so use the authored
+        // rect (the N475 axis swap would otherwise double-rotate the box).
+        if let (Some(authored), Some(hex)) = (node.rect, node.value.as_deref()) {
+            let [x, y, w, h] = transform.apply(authored);
             // N556: `value2` gives the source grid ("sw,sh", default the rect
             // size); `mode` lists `linear`/`flip-h`/`flip-v`. N565: `rotate`
             // turns the sampled image.
@@ -4207,6 +4209,57 @@ mod tests {
         assert_ne!(cw, ccw);
         assert_ne!(cw, base);
         assert_ne!(ccw, base);
+    }
+
+    #[test]
+    fn image_fit_align_with_rotate90() {
+        // N625: `align` positions the rotated letterbox (a 2x3 source in 8x4,
+        // turned 90°, becomes a 6x4 box with 2 columns of slack).
+        use mdc_protocol::SceneNode;
+        let render = |align: &str| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 8,
+                height: 4,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "pic".into(),
+                kind: "image".into(),
+                rect: Some([0, 0, 8, 4]),
+                value: Some("f80007e0001ffffff81f07ff".into()),
+                value2: Some("2,3".into()),
+                children: Vec::new(),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: Some(90),
+                blend: None,
+                align: Some(align.into()),
+                z: None,
+                wrap: None,
+                mode: Some("fit".into()),
+                focus: None,
+            });
+            assert!(device.render_scene());
+            // The leftmost non-empty column over the whole frame.
+            let grid: Vec<Vec<u16>> = (0..4)
+                .map(|y| (0..8).map(|x| device.pixel_rgb565(x, y).unwrap()).collect())
+                .collect();
+            let mut leftmost = None;
+            for (x, _) in (0..8).enumerate() {
+                if grid.iter().any(|row| row[x] != 0) {
+                    leftmost = Some(x);
+                    break;
+                }
+            }
+            (grid, leftmost)
+        };
+        let (_, left) = render("left");
+        let (_, center) = render("center");
+        let (_, right) = render("right");
+        assert_eq!(left, Some(0), "left starts at column 0");
+        assert_eq!(center, Some(1), "centre starts at column 1");
+        assert_eq!(right, Some(2), "right starts at column 2");
     }
 
     #[test]
