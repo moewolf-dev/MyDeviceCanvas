@@ -143,7 +143,10 @@ int mdc_session_tile_stats(const MdcSession* session, uint64_t* tiles_sent,
                            uint64_t* tile_bytes_sent);
 
 /** N576: write the tile reconciliation against the device (sent/received/
- *  missing; null out-params are ignored). Returns 0 or -1. */
+ *  missing; null out-params are ignored). Returns 0 or -1.
+ *  N628: field names match the Swift `tileReconciliation()` tuple and the Node
+ *  SDK's `{ sent, received, missing }` (Node also exposes `bytesSent` and
+ *  `consistent`, which the C ABI derives from `missing`). */
 int mdc_session_tile_reconciliation(const MdcSession* session, uint64_t* sent,
                                     uint64_t* received, uint64_t* missing);
 
