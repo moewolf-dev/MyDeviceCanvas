@@ -1077,8 +1077,25 @@ pub struct WebSocketNote {
 /// N577: the most recent WebSocket notes kept.
 const WS_LOG_MAX: usize = 16;
 
+/// N637: the longest `detail` a [`WebSocketNote`] keeps (bytes). Longer details
+/// are truncated on a UTF-8 boundary, so the log stays bounded even when a peer
+/// sends a very long reason string.
+pub const WS_NOTE_DETAIL_MAX: usize = 256;
+
 /// N617: the shape version of a [`WebSocketNote`]; a consumer can pin to it.
 pub const WS_NOTE_VERSION: u8 = 1;
+
+/// N637: clamp a note's detail to [`WS_NOTE_DETAIL_MAX`] bytes on a char boundary.
+fn truncate_detail(detail: &str) -> String {
+    if detail.len() <= WS_NOTE_DETAIL_MAX {
+        return detail.to_string();
+    }
+    let mut end = WS_NOTE_DETAIL_MAX;
+    while end > 0 && !detail.is_char_boundary(end) {
+        end -= 1;
+    }
+    detail[..end].to_string()
+}
 
 struct HttpClient {
     stream: TcpStream,
@@ -1274,7 +1291,7 @@ impl HttpMirrorServer {
         }
         self.ws_log.push(WebSocketNote {
             kind: kind.into(),
-            detail: detail.into(),
+            detail: truncate_detail(&detail.into()),
         });
     }
 
@@ -1545,7 +1562,9 @@ impl HttpMirrorServer {
         self.ws_reserved = self.ws_reserved.saturating_add(reserved);
         self.ws_offered = self.ws_offered.saturating_add(offered);
         self.ws_timeouts = self.ws_timeouts.saturating_add(timeouts);
-        for note in notes {
+        for mut note in notes {
+            // N637: a peer-supplied reason is clamped before it is stored.
+            note.detail = truncate_detail(&note.detail);
             if self.ws_log.len() >= WS_LOG_MAX {
                 self.ws_log.remove(0);
             }
@@ -3108,6 +3127,33 @@ mod tests {
             pixels: &pixels[..64],
         });
         assert_eq!(server.frames_published(), 1);
+    }
+
+    #[test]
+    fn websocket_note_details_are_bounded() {
+        // N637: a very long detail is truncated to the exported cap.
+        assert_eq!(WS_NOTE_DETAIL_MAX, 256);
+        let long = "x".repeat(1000);
+        let clamped = truncate_detail(&long);
+        assert_eq!(clamped.len(), WS_NOTE_DETAIL_MAX);
+        // A multi-byte string is cut on a char boundary, not mid-codepoint.
+        let multibyte = "€".repeat(200); // 3 bytes each
+        let clamped = truncate_detail(&multibyte);
+        assert!(clamped.len() <= WS_NOTE_DETAIL_MAX);
+        assert!(clamped.is_char_boundary(clamped.len()));
+        assert!(multibyte.starts_with(&clamped));
+        // Short details pass through untouched.
+        assert_eq!(truncate_detail("closed 1002"), "closed 1002");
+        // The log itself stays bounded.
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        for i in 0..40 {
+            server.note_ws("reserved", format!("{i}:{}", "y".repeat(500)));
+        }
+        assert!(server.ws_log().len() <= 16);
+        assert!(server
+            .ws_log()
+            .iter()
+            .all(|note| note.detail.len() <= WS_NOTE_DETAIL_MAX));
     }
 
     #[test]
