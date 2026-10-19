@@ -5549,3 +5549,46 @@ fn board_advertises_its_config_default() {
         None
     );
 }
+
+#[test]
+fn image_fit_align_with_rotate90_on_the_device() {
+    // N625/N631: `align` positions the rotated letterbox.
+    let render = |align: &str| {
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 8,
+            height: 4,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .set_scene(mdc_protocol::SceneNode {
+                name: "pic".into(),
+                kind: "image".into(),
+                rect: Some([0, 0, 8, 4]),
+                children: Vec::new(),
+                value: Some("f80007e0001ffffff81f07ff".into()),
+                value2: Some("2,3".into()),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: Some(90),
+                blend: None,
+                align: Some(align.into()),
+                z: None,
+                wrap: None,
+                mode: Some("fit".into()),
+                focus: None,
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        (0..8).find(|&x| (0..4).any(|y| device.pixel_rgb565(x, y).unwrap() != 0))
+    };
+    assert_eq!(render("left"), Some(0));
+    assert_eq!(render("center"), Some(1));
+    assert_eq!(render("right"), Some(2));
+}
