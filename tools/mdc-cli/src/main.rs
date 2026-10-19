@@ -466,7 +466,9 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
                     "mirror_frames": session.stats().mirror_frames,
                     "pacing_dropped": session.stats().pacing_dropped,
                 },
-                "config": inspect_json(&mgr, Some(&snapshot)),
+                 "config": inspect_json(&mgr, Some(&snapshot)),
+                // N606: the board's own managed-config defaults.
+                "board_config_defaults": board_config_defaults(&opts.board),
             });
             if rss {
                 value["host_rss_bytes"] = serde_json::json!(host_rss_bytes());
@@ -480,15 +482,21 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
     }
     with_sim_or_empty(opts, |mgr, metrics| {
         let json = inspect_json(mgr, metrics);
+        let mut value: serde_json::Value = serde_json::from_str(&json)?;
+        // N606: expose the board's managed-config defaults.
+        value["board_config_defaults"] = board_config_defaults(&opts.board);
         if rss {
-            let mut value: serde_json::Value = serde_json::from_str(&json)?;
             value["host_rss_bytes"] = serde_json::json!(host_rss_bytes());
-            println!("{value}");
-        } else {
-            println!("{json}");
         }
+        println!("{value}");
         Ok(())
     })
+}
+
+/// N606: the board's own `config_defaults` as a JSON object (empty when none).
+fn board_config_defaults(board: &str) -> serde_json::Value {
+    serde_json::to_value(mdc_simulator::BoardProfile::from_board_id(board).config_defaults)
+        .unwrap_or_else(|_| serde_json::json!({}))
 }
 
 /// N32: compile a source model into a runtime package for a board's renderer.
@@ -3935,6 +3943,14 @@ fn cmd_model_info(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                             "supercompression".into(),
                             serde_json::json!(header.scheme_name()),
                         );
+                        // N610: flag a declared-size/header mismatch explicitly.
+                        map.insert(
+                            "ktx2SizeOk".into(),
+                            serde_json::json!(
+                                header.pixel_width == texture.width
+                                    && header.pixel_height == texture.height
+                            ),
+                        );
                         // N554: container dimensions beyond width/height.
                         map.insert("mipLevels".into(), serde_json::json!(header.mip_levels()));
                         map.insert("slices".into(), serde_json::json!(header.slices()));
@@ -3956,6 +3972,15 @@ fn cmd_model_info(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             })
             .collect();
         map.insert("textures".into(), serde_json::json!(textures));
+        // N610: surface the model's validation problems (e.g. a KTX2 mismatch).
+        let report = model.validate();
+        map.insert(
+            "validation".into(),
+            serde_json::json!({
+                "valid": report.valid,
+                "problems": report.problems,
+            }),
+        );
     }
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
@@ -4016,6 +4041,8 @@ fn cmd_diff(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             // N590: KTX2 metadata consistency between two packages.
             "ktx2_textures": p.textures.iter().filter(|t| t.is_ktx2()).count(),
             "ktx2_slices": p.textures.iter().filter_map(|t| t.ktx2_header()).map(|h| h.slices() as u64).sum::<u64>(),
+            // N604: vertex-cache locality of the stored geometry.
+            "cache_misses": package_cache_misses(p, CACHE_REPORT_SIZE),
         })
     };
     compare("structure", counts(&pa.package), counts(&pb.package));
@@ -4078,11 +4105,33 @@ fn cmd_verify(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
     let package = mdc_model::MdcPackage::from_bytes(&std::fs::read(&path)?)?;
     let verification = package.verify();
-    println!("{}", serde_json::to_string_pretty(&verification)?);
+    // N604: report the vertex-cache locality of the stored geometry too.
+    let mut report = serde_json::to_value(&verification)?;
+    if let Some(map) = report.as_object_mut() {
+        map.insert("cache_size".into(), serde_json::json!(CACHE_REPORT_SIZE));
+        map.insert(
+            "cache_misses".into(),
+            serde_json::json!(package_cache_misses(&package.package, CACHE_REPORT_SIZE)),
+        );
+    }
+    println!("{}", serde_json::to_string_pretty(&report)?);
     if !verification.valid {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// N604: the vertex-cache size used for the locality report.
+const CACHE_REPORT_SIZE: usize = 32;
+
+/// N604: the cache misses of every mesh with geometry at `cache_size`.
+fn package_cache_misses(package: &mdc_model::DevicePackage, cache_size: usize) -> u64 {
+    package
+        .meshes
+        .iter()
+        .filter_map(|mesh| mesh.geometry.as_ref())
+        .map(|geometry| mdc_bake::index_cache_misses(geometry, cache_size))
+        .sum()
 }
 
 /// N417: lint a scene JSON file (a `SceneNode` or a `SceneCommand` with `scene`).
@@ -4550,6 +4599,82 @@ mod tests {
             mdc_bake::ShadeMode::Flat,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn verify_runs_and_reports_locality() {
+        // N604/N611: `mdc verify` succeeds on a valid package (and reports the
+        // cache locality alongside the container verification).
+        let dir = std::env::temp_dir().join(format!("mdc-verify-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("v.mdcpkg");
+        let model = mdc_model::GltfImporter
+            .import(
+                br#"{"asset":{"version":"2.0"},
+                    "nodes":[{"name":"root","mesh":0}],
+                    "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+                    "accessors":[{"count":4,"type":"VEC3"}]}"#,
+                &mdc_model::ImportLimits::default(),
+            )
+            .unwrap();
+        let package =
+            mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d())
+                .unwrap();
+        std::fs::write(&path, package.to_bytes().unwrap()).unwrap();
+        cmd_verify(&[path.to_string_lossy().into_owned()]).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn board_config_defaults_are_exposed() {
+        // N606: the board's per-key defaults are reported by `mdc inspect`.
+        let linux = board_config_defaults("linux-virt");
+        assert_eq!(linux["tile_missing_threshold"], "2");
+        let baseline = board_config_defaults("default");
+        assert!(baseline.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn package_cache_misses_sum_over_geometry() {
+        // N604: the locality report sums per-mesh cache misses.
+        use mdc_model::{Mesh, MeshGeometry, Model, Node};
+        let model = Model {
+            source: "t".into(),
+            nodes: vec![Node {
+                name: "root".into(),
+                mesh: Some(0),
+                ..Node::default()
+            }],
+            meshes: vec![Mesh {
+                name: "quad".into(),
+                vertices: 4,
+                indices: 6,
+                geometry: Some(MeshGeometry {
+                    positions: vec![
+                        [0.0, 0.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        [1.0, 1.0, 0.0],
+                        [0.0, 1.0, 0.0],
+                    ],
+                    indices: vec![0, 1, 2, 0, 2, 3],
+                    ..Default::default()
+                }),
+                ..Mesh::default()
+            }],
+            ..Model::default()
+        };
+        let package =
+            mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d())
+                .unwrap();
+        let expected = mdc_bake::index_cache_misses(
+            package.package.meshes[0].geometry.as_ref().unwrap(),
+            CACHE_REPORT_SIZE,
+        );
+        assert_eq!(
+            package_cache_misses(&package.package, CACHE_REPORT_SIZE),
+            expected
+        );
+        assert!(expected > 0);
     }
 
     #[test]

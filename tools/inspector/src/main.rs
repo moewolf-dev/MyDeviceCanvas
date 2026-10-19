@@ -179,11 +179,22 @@ fn write_archive_manifest(dir: &str, keep: usize, max_bytes: u64) -> std::io::Re
         .filter(|name| name == prefix || name.starts_with(&format!("{prefix}.")))
         .collect();
     files.sort();
+    // N609: how many rotated copies exist and when the manifest was written.
+    let rotated = files
+        .iter()
+        .filter(|name| name.starts_with(&format!("{prefix}.")))
+        .count();
+    let generated_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let manifest = serde_json::json!({
         "live": prefix,
         "files": files,
+        "rotated": rotated,
         "keep": keep,
         "maxBytes": max_bytes,
+        "generatedAt": generated_at,
     });
     std::fs::write(
         std::path::Path::new(dir).join("manifest.json"),
@@ -599,6 +610,9 @@ mod tests {
         let files = manifest["files"].as_array().unwrap();
         assert!(files.iter().any(|f| f == "mdc-history.jsonl"));
         assert!(files.iter().any(|f| f == "mdc-history.jsonl.1"));
+        // N609: the archive records its rotation count and a timestamp.
+        assert_eq!(manifest["rotated"], 1);
+        assert!(manifest["generatedAt"].as_u64().unwrap() > 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
