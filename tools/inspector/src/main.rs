@@ -262,6 +262,16 @@ fn verify_archive(dir: &str, max_bytes: u64) -> std::io::Result<serde_json::Valu
     }))
 }
 
+/// N649: the exit status for an archive check (0 pass, 1 fail). Kept as a
+/// function so the contract is testable without exiting the test process.
+fn archive_exit_code(report: &serde_json::Value) -> i32 {
+    if report["ok"] == serde_json::json!(true) {
+        0
+    } else {
+        1
+    }
+}
+
 /// N539: the one-line verdict a thresholded watch ends with.
 fn verdict_line(summary: &WatchSummary, alerts: &[String]) -> String {
     serde_json::json!({
@@ -418,16 +428,14 @@ fn main() {
         match verify_archive(&dir, max_bytes) {
             Ok(report) => {
                 println!("{report}");
-                if report["ok"] != serde_json::json!(true) {
-                    std::process::exit(1);
-                }
+                // N649: the exit code follows this contract.
+                std::process::exit(archive_exit_code(&report));
             }
             Err(error) => {
                 eprintln!("inspector error: {error}");
                 std::process::exit(1);
             }
         }
-        return;
     }
     // N509: a bounded peak-memory probe over a cyclic allocation.
     if args.iter().any(|a| a == "--heap") {
@@ -597,6 +605,22 @@ mod tests {
     }
 
     #[test]
+    fn archive_check_exit_code_follows_the_report() {
+        // N649: 0 only when the archive passes every check.
+        let ok = serde_json::json!({ "ok": true, "oversized": [], "missing": [] });
+        assert_eq!(archive_exit_code(&ok), 0);
+        for failing in [
+            serde_json::json!({ "ok": false, "oversized": ["a"] }),
+            serde_json::json!({ "ok": false, "missing": ["b"] }),
+            serde_json::json!({ "ok": false, "empty": ["c"] }),
+        ] {
+            assert_eq!(archive_exit_code(&failing), 1, "{failing}");
+        }
+        // A report without `ok` is treated as a failure, never a silent pass.
+        assert_eq!(archive_exit_code(&serde_json::json!({})), 1);
+    }
+
+    #[test]
     fn verdict_line_is_one_jsonl_record() {
         // N539: the verdict is a single line with the alert list.
         let summary = WatchSummary {
@@ -696,6 +720,7 @@ mod tests {
         // N619: the manifest checks out against the files on disk.
         let check = verify_archive(dir.to_str().unwrap(), 0).unwrap();
         assert_eq!(check["ok"], true, "{check}");
+        assert_eq!(archive_exit_code(&check), 0);
         assert_eq!(check["declared"], 2);
         // N639: every file reports its byte count, with a total and the largest.
         let sizes = check["files"].as_array().unwrap();
@@ -715,11 +740,13 @@ mod tests {
         // N629: a per-file byte cap flags oversized files.
         let check = verify_archive(dir.to_str().unwrap(), 1).unwrap();
         assert_eq!(check["ok"], false);
+        assert_eq!(archive_exit_code(&check), 1);
         assert!(!check["oversized"].as_array().unwrap().is_empty());
         // A deleted rotated copy is reported.
         std::fs::remove_file(dir.join("mdc-history.jsonl.1")).unwrap();
         let check = verify_archive(dir.to_str().unwrap(), 0).unwrap();
         assert_eq!(check["ok"], false);
+        assert_eq!(archive_exit_code(&check), 1);
         assert_eq!(check["missing"].as_array().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
