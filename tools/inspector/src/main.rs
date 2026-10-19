@@ -169,6 +169,28 @@ fn rotate_file(path: &str, keep: usize) {
     let _ = std::fs::rename(path, format!("{path}.1"));
 }
 
+/// N599: record the archive contents (live file plus rotated copies) so a long
+/// watch leaves a manifest next to its JSONL.
+fn write_archive_manifest(dir: &str, keep: usize, max_bytes: u64) -> std::io::Result<()> {
+    let prefix = "mdc-history.jsonl";
+    let mut files: Vec<String> = std::fs::read_dir(dir)?
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name == prefix || name.starts_with(&format!("{prefix}.")))
+        .collect();
+    files.sort();
+    let manifest = serde_json::json!({
+        "live": prefix,
+        "files": files,
+        "keep": keep,
+        "maxBytes": max_bytes,
+    });
+    std::fs::write(
+        std::path::Path::new(dir).join("manifest.json"),
+        serde_json::to_string_pretty(&manifest)?,
+    )
+}
+
 /// N539: the one-line verdict a thresholded watch ends with.
 fn verdict_line(summary: &WatchSummary, alerts: &[String]) -> String {
     serde_json::json!({
@@ -388,6 +410,10 @@ fn main() {
         }
         let _ = out.flush();
         if let Some(path) = &out_path {
+            // N589/N599: an archive directory also gets a manifest.
+            if std::path::Path::new(path).is_dir() {
+                let _ = write_archive_manifest(path, keep, max_bytes);
+            }
             println!("jsonl written to {path}");
         }
         if !alerts.is_empty() {
@@ -564,6 +590,15 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&live).unwrap().lines().count(), 4);
         run(false, 1, 1);
         assert!(dir.join("mdc-history.jsonl.1").exists());
+        // N599: the manifest lists the live file and its rotated copies.
+        write_archive_manifest(dir.to_str().unwrap(), 1, 1).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["live"], "mdc-history.jsonl");
+        let files = manifest["files"].as_array().unwrap();
+        assert!(files.iter().any(|f| f == "mdc-history.jsonl"));
+        assert!(files.iter().any(|f| f == "mdc-history.jsonl.1"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

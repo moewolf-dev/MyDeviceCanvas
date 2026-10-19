@@ -492,6 +492,17 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
 }
 
 /// N32: compile a source model into a runtime package for a board's renderer.
+/// N594: label the vertex-cache policy for the compile report.
+fn cache_mode(optimize_geometry: bool, optimize_index: usize) -> &'static str {
+    if optimize_index > 0 {
+        "fixed"
+    } else if optimize_geometry {
+        "adaptive"
+    } else {
+        "off"
+    }
+}
+
 fn cmd_package(
     opts: &GlobalOpts,
     model_path: &str,
@@ -789,6 +800,9 @@ fn cmd_package(
                 // N555: cache misses after reordering and meshes that improved.
                 "index_cache_misses": index_cache_misses,
                 "reordered_meshes": reordered_meshes,
+                // N594: which vertex-cache policy ran (off | adaptive | fixed).
+                "cache_mode": cache_mode(optimize_geometry, optimize_index),
+                "cache_size": optimize_index,
                 "output": out,
             }))?
         );
@@ -4536,6 +4550,15 @@ mod tests {
             mdc_bake::ShadeMode::Flat,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn cache_mode_labels_the_policy() {
+        // N594: off (no flag) | adaptive (bare flag) | fixed (explicit size).
+        assert_eq!(cache_mode(false, 0), "off");
+        assert_eq!(cache_mode(true, 0), "adaptive");
+        assert_eq!(cache_mode(true, 64), "fixed");
+        assert_eq!(cache_mode(false, 32), "fixed");
     }
 
     #[test]
