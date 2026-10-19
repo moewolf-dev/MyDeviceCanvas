@@ -94,9 +94,10 @@ with a `1002` close instead of ignoring the frame. N577 keeps a bounded
 `ws_log()` of these decisions (`declined extension: …`,
 `reserved bit set: closed 1002`); `/health` reports `ws_log` (a count),
 `ws_log_last` (an escaped, 48-char summary of the latest note) and `mdc mirror`
-reports `ws_log` (the entries). N597: an extension offer is logged as its token
-only (`declined extension: permessage-deflate`), never its parameters, so a peer
-address or window size never enters the log.
+reports `ws_log` (the entries). N597/N607: each entry is a structured
+`{ kind, detail }` (`extension`/`reserved`), and an extension `detail` is its
+token only (`permessage-deflate`), never its parameters, so a peer address or
+window size never enters the log.
 
 ## Guarantees
 

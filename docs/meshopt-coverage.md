@@ -41,6 +41,8 @@ checked against expected output, not a self-consistent pair:
 - `color_filter_with_zero_alpha_does_not_panic`: the specific underflow (N543).
 - `vertex_buffer_round_trips` (N593): a test-only v1 raw-delta encoder proves
   `decode(encode(values)) == values` for strides 4/8/12 (multiple blocks).
+- `vertex_round_trip_composes_with_filters` (N603): decoding an encoded buffer
+  with a filter equals applying that filter to the raw values, for every filter.
 - `malformed_leb128_and_half_packets_are_errors` (N573): directed LEB128 overflow,
   a never-terminating LEB128 run, a value truncated mid-field, a short aux table,
   and a stream shorter than its vertex tail.

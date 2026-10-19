@@ -38,7 +38,8 @@ see an unchanged capabilities map. `CONFIG` (0x33) carries a CBOR
   host reads to decide how many unacknowledged tiles it tolerates before forcing
   a full frame (`Session::enforce_tile_reconciliation_from_config`). N596: each
   board carries its own `BoardProfile.config_defaults`, so the default is a board
-  fact (the simulator's `linux-virt` ships `2`; the baseline ships `0`).
+  fact (the simulator's `linux-virt` ships `2`; the baseline ships `0`). `mdc
+  inspect` reports the board's `config_defaults` (N606).
 - **Redaction**: a password/token value is never echoed in a reply — the device
   answers `***` on `get`, and the CLI/Node surface shows the redacted value. The
   stored value never enters a log.

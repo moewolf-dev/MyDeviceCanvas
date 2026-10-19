@@ -64,6 +64,8 @@ cargo run -p mdc-inspector -- --jsonl 60 --out run.jsonl --max-bytes 1048576 --k
 mkdir -p archive && cargo run -p mdc-inspector -- --jsonl 60 --out archive --append --max-bytes 1048576  # DIR/mdc-history.jsonl (N589)
 # N599: DIR also gets a manifest.json listing the live file and its rotations
 cargo run -p mdc -- package model.gltf --optimize-geometry --report   # cache_mode (N594)
+cargo run -p mdc -- verify out.mdcpkg                                 # + cache_misses (N604)
+cargo run -p mdc -- --board linux-virt inspect                        # board_config_defaults (N606)
 cargo run -p mdc -- --board linux-virt inspect --watch --count 3 --rss
 cargo run -p mdc -- --board linux-virt diag --metric fps --value 29.5 --unit fps
 ```

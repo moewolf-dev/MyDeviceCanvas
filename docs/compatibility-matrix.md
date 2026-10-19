@@ -329,6 +329,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | C mirror/tile smoke (N598) | sim-verified (aligned with Node) | n/a |
 | Archive manifest (N599) | sim-verified (`manifest.json`) | n/a |
 | Model KTX2 warning (N600) | sim-verified (`validate`) | n/a |
+| Filter round-trip (N603) | sim-verified (decode == filter(raw)) | n/a |
+| Verify locality (N604) | sim-verified (`cache_misses`) | n/a |
+| Fit quarter-turn (N605) | sim-verified (box swapped) | physical: pending |
+| Board defaults inspector (N606) | sim-verified (`board_config_defaults`) | n/a |
+| Structured WS log (N607) | sim-verified (`kind`/`detail`) | n/a |
+| Node merged smoke (N608) | sim-verified (full field set) | n/a |
+| Archive history (N609) | sim-verified (`rotated`/`generatedAt`) | n/a |
+| model-info KTX2 flag (N610) | sim-verified (`ktx2SizeOk`) | n/a |
 
 ## G03 sim exit
 

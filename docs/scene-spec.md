@@ -99,7 +99,8 @@ A device that accepts a scene rasterizes it locally:
   N575: `fit` preserves the source aspect ratio (letterboxed in the rect) instead
   of stretching each axis independently. N585: with `fit`, `align`
   (`left`/`center`/`right`, default `center`) positions the letterbox
-  horizontally. A short or malformed string draws nothing.
+  horizontally. N605: a 90°/270° `rotate` swaps the fitted box's width/height so
+  the rotated image keeps its aspect. A short or malformed string draws nothing.
 - `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour.
   A missing atlas or index draws nothing.
 - `circle` fills the ellipse inscribed in `rect` with the `value` colour; a  zero width or height draws nothing.
