@@ -3999,6 +3999,9 @@ fn cmd_diff(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "sprites": p.sprites.len(),
             "lights": p.lights.len(),
             "estimated_bytes": p.estimated_bytes,
+            // N590: KTX2 metadata consistency between two packages.
+            "ktx2_textures": p.textures.iter().filter(|t| t.is_ktx2()).count(),
+            "ktx2_slices": p.textures.iter().filter_map(|t| t.ktx2_header()).map(|h| h.slices() as u64).sum::<u64>(),
         })
     };
     compare("structure", counts(&pa.package), counts(&pb.package));

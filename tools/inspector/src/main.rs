@@ -133,10 +133,16 @@ fn jsonl_sink(
     let Some(path) = path else {
         return Ok(Box::new(std::io::BufWriter::new(std::io::stdout().lock())));
     };
+    // N589: `--out DIR` writes the archive under a fixed name inside the directory.
+    let mut path = std::path::PathBuf::from(path);
+    if path.is_dir() {
+        path.push("mdc-history.jsonl");
+    }
+    let path = path.to_string_lossy().to_string();
     if max_bytes > 0 {
-        if let Ok(meta) = std::fs::metadata(path) {
+        if let Ok(meta) = std::fs::metadata(&path) {
             if meta.len() >= max_bytes {
-                rotate_file(path, keep);
+                rotate_file(&path, keep);
             }
         }
     }
@@ -144,9 +150,9 @@ fn jsonl_sink(
         std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(path)?
+            .open(&path)?
     } else {
-        std::fs::File::create(path)?
+        std::fs::File::create(&path)?
     };
     Ok(Box::new(std::io::BufWriter::new(file)))
 }
@@ -535,6 +541,30 @@ mod tests {
             "verdict"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn jsonl_sink_archives_into_a_directory() {
+        // N589: an existing directory becomes `DIR/mdc-history.jsonl`; with
+        // `--append` and a byte cap the rotated copies live beside it.
+        let dir = std::env::temp_dir().join(format!("mdc-jsonl-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |append: bool, max_bytes: u64, keep: usize| {
+            let mut out = jsonl_sink(Some(dir.to_str().unwrap()), append, max_bytes, keep).unwrap();
+            let summary = watch(1, 1, "default", 0, &mut out).unwrap();
+            write_verdict(&mut out, &summary, &[]).unwrap();
+            out.flush().unwrap();
+        };
+        run(false, 0, 1);
+        let live = dir.join("mdc-history.jsonl");
+        assert!(live.exists(), "the archive file is inside the directory");
+        assert_eq!(std::fs::read_to_string(&live).unwrap().lines().count(), 2);
+        run(true, 0, 1);
+        assert_eq!(std::fs::read_to_string(&live).unwrap().lines().count(), 4);
+        run(false, 1, 1);
+        assert!(dir.join("mdc-history.jsonl.1").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
