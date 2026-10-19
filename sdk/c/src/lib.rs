@@ -187,6 +187,44 @@ pub unsafe extern "C" fn mdc_session_tile_stats(
 /// N576: write the host's partial-update reconciliation (null out-params are
 /// ignored). `missing` is `sent - received`, derived in one place.
 ///
+/// N638: like [`mdc_session_tile_reconciliation`], and also writes the covered
+/// byte count and the `consistent` flag, so the C/Swift SDKs expose the same
+/// fields as Node's `bytesSent`/`consistent`.
+///
+/// # Safety
+///
+/// `session` must be a valid pointer returned by a `mdc_session_*` constructor.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_tile_reconciliation_ex(
+    session: *const MdcSession,
+    sent: *mut u64,
+    received: *mut u64,
+    missing: *mut u64,
+    bytes_sent: *mut u64,
+    consistent: *mut c_int,
+) -> c_int {
+    let Some(session) = session.as_ref() else {
+        return -1;
+    };
+    let report = session.session.tile_reconciliation();
+    if !sent.is_null() {
+        *sent = report.sent;
+    }
+    if !received.is_null() {
+        *received = report.received;
+    }
+    if !missing.is_null() {
+        *missing = report.missing();
+    }
+    if !bytes_sent.is_null() {
+        *bytes_sent = report.bytes_sent;
+    }
+    if !consistent.is_null() {
+        *consistent = c_int::from(report.consistent);
+    }
+    0
+}
+
 /// # Safety
 ///
 /// `session` must be a valid pointer returned by a `mdc_session_*` constructor.
@@ -2195,6 +2233,55 @@ mod tests {
             );
             assert_eq!(
                 mdc_session_tile_stats(std::ptr::null(), &mut tiles, &mut bytes),
+                -1
+            );
+            mdc_session_destroy(session);
+        }
+    }
+
+    #[test]
+    fn tile_reconciliation_ex_matches_node_fields() {
+        // N638: bytes_sent/consistent are exposed for Swift parity.
+        unsafe {
+            let session = mdc_session_create();
+            assert!(!session.is_null());
+            let (mut sent, mut received, mut missing) = (9u64, 9u64, 9u64);
+            let (mut bytes, mut consistent) = (9u64, 9i32);
+            assert_eq!(
+                mdc_session_tile_reconciliation_ex(
+                    session,
+                    &mut sent,
+                    &mut received,
+                    &mut missing,
+                    &mut bytes,
+                    &mut consistent,
+                ),
+                0
+            );
+            assert_eq!(
+                (sent, received, missing, bytes, consistent),
+                (0, 0, 0, 0, 1)
+            );
+            assert_eq!(
+                mdc_session_tile_reconciliation_ex(
+                    session,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                ),
+                0
+            );
+            assert_eq!(
+                mdc_session_tile_reconciliation_ex(
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                ),
                 -1
             );
             mdc_session_destroy(session);

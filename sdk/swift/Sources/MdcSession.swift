@@ -411,15 +411,20 @@ public final class MdcSession {
         return String(cString: out)
     }
 
-    /// N618: the partial-update tile reconciliation (parity with the C ABI's
-    /// `mdc_session_tile_reconciliation` and the Node SDK).
-    public func tileReconciliation() -> (sent: UInt64, received: UInt64, missing: UInt64) {
-        guard let raw else { return (0, 0, 0) }
+    /// N618/N638: the partial-update tile reconciliation. Also reports the covered
+    /// byte count and the consistency flag, matching Node's `bytesSent`/`consistent`.
+    public func tileReconciliation() -> (
+        sent: UInt64, received: UInt64, missing: UInt64, bytesSent: UInt64, consistent: Bool
+    ) {
+        guard let raw else { return (0, 0, 0, 0, true) }
         var sent: UInt64 = 0
         var received: UInt64 = 0
         var missing: UInt64 = 0
-        _ = mdc_session_tile_reconciliation(raw, &sent, &received, &missing)
-        return (sent, received, missing)
+        var bytesSent: UInt64 = 0
+        var consistent: Int32 = 0
+        _ = mdc_session_tile_reconciliation_ex(
+            raw, &sent, &received, &missing, &bytesSent, &consistent)
+        return (sent, received, missing, bytesSent, consistent != 0)
     }
 
     /// N549: frames dropped because the caller's mirror buffer was too small

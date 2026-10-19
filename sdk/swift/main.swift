@@ -117,10 +117,15 @@ struct MdcSwiftHello {
             fputs("takeMirrorFrameWithSurface reported \(tagged.surfaceId)\n", stderr)
             exit(1)
         }
-        // N618: the tile reconciliation matches the C/Node smoke sequence.
+        // N618/N638: the tile reconciliation matches the C/Node smoke sequence,
+        // including the `bytesSent`/`consistent` fields Node also reports.
         let tiles = gpu.tileReconciliation()
         if tiles.sent != 0 || tiles.received != 0 || tiles.missing != 0 {
             fputs("tile reconciliation not empty for a fresh mirror\n", stderr)
+            exit(1)
+        }
+        if tiles.bytesSent != 0 || !tiles.consistent {
+            fputs("tile reconciliation fields are wrong for a fresh mirror\n", stderr)
             exit(1)
         }
         // N568: the negotiated mode is reported (parity with C/Node).
