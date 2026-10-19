@@ -87,6 +87,32 @@ impl Ktx2Header {
         }
     }
 
+    /// N554: the mip chain length (`levelCount` is 0 when the file omits it,
+    /// which the spec treats as 1).
+    pub fn mip_levels(&self) -> u32 {
+        self.level_count.max(1)
+    }
+
+    /// N554: a cube map (`faceCount == 6`).
+    pub fn is_cubemap(&self) -> bool {
+        self.face_count == 6
+    }
+
+    /// N554: a texture array (`layerCount > 0` and not a cube map).
+    pub fn is_array(&self) -> bool {
+        self.layer_count > 0
+    }
+
+    /// N554: a 3D texture (`pixelDepth > 0`).
+    pub fn is_volume(&self) -> bool {
+        self.pixel_depth > 0
+    }
+
+    /// N554: the number of image slices (`layerCount * faceCount`, at least 1).
+    pub fn slices(&self) -> u32 {
+        self.layer_count.max(1) * self.face_count.max(1)
+    }
+
     /// N544: a short description of the `vkFormat`, falling back to the numeric
     /// value for formats this reader does not name.
     pub fn format_name(&self) -> String {
@@ -149,6 +175,32 @@ mod tests {
         assert!(parsed.is_basis());
         assert_eq!(parsed.scheme_name(), "BasisLZ");
         assert_eq!(parsed.format_name(), "undefined");
+    }
+
+    #[test]
+    fn layer_face_depth_and_mip_counts_are_reported() {
+        // N554: the extra container dimensions are read from the header.
+        let mut bytes = header(43, 8, 8, KTX2_SCHEME_NONE);
+        // Rewrite layerCount (offset 32), faceCount (36), levelCount (40) and
+        // pixelDepth (28) without rebuilding the whole header.
+        let put = |bytes: &mut [u8], offset: usize, value: u32| {
+            bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        };
+        put(&mut bytes, 28, 4); // pixelDepth
+        put(&mut bytes, 32, 3); // layerCount
+        put(&mut bytes, 36, 6); // faceCount
+        put(&mut bytes, 40, 5); // levelCount
+        let parsed = Ktx2Header::parse(&bytes).unwrap();
+        assert_eq!(parsed.mip_levels(), 5);
+        assert!(parsed.is_volume());
+        assert!(parsed.is_cubemap());
+        assert!(parsed.is_array());
+        assert_eq!(parsed.slices(), 18);
+        // A plain 2D texture reports one level and one slice.
+        let plain = Ktx2Header::parse(&header(23, 4, 4, KTX2_SCHEME_NONE)).unwrap();
+        assert_eq!(plain.mip_levels(), 1);
+        assert_eq!(plain.slices(), 1);
+        assert!(!plain.is_cubemap() && !plain.is_array() && !plain.is_volume());
     }
 
     #[test]

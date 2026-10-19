@@ -1276,6 +1276,74 @@ mod tests {
         }
     }
 
+    /// N553: a curated corpus of streams that exercise each header/mode/filter and
+    /// the boundary cases that have tripped the decoder (zero alpha, all-ones
+    /// headers, oversized LEB128). Kept short so every mutation below is cheap.
+    const FUZZ_CORPUS: [&[u8]; 6] = [
+        // Vertex v1, stride 4, COLOR filter candidate (alpha lives in the tail).
+        &[
+            0xa1, 0x00, 0x40, 0x40, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x00, 0x00, 0x00,
+        ],
+        // Vertex v0, stride 12, two groups.
+        &[
+            0xa0, 0xe1, 0x80, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+        ],
+        // Index buffer v1 with an aux table.
+        &[
+            0xe1, 0x3f, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+            0x0c, 0x0d, 0x0e, 0x0f,
+        ],
+        // Index sequence.
+        &[0xd1, 0x80, 0x80, 0x80, 0x80, 0x7f, 0xff, 0xff, 0xff, 0x00],
+        // All-ones header.
+        &[0xff; 24],
+        // Oversized LEB128 run.
+        &[
+            0xe1, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        ],
+    ];
+
+    #[test]
+    fn fuzz_corpus_with_byte_mutations_never_panics() {
+        // N553: every single-byte mutation of the corpus (0x00/0xFF/MSB flip) and
+        // every truncation must decode to a Result, never panic.
+        let decode_all = |bytes: &[u8]| {
+            std::panic::catch_unwind(|| {
+                for filter in [
+                    MeshoptFilter::None,
+                    MeshoptFilter::Octahedral,
+                    MeshoptFilter::Quaternion,
+                    MeshoptFilter::Exponential,
+                    MeshoptFilter::Color,
+                ] {
+                    let _ = decode_vertex_buffer(8, 8, bytes, filter);
+                    let _ = decode_vertex_buffer(4, 4, bytes, filter);
+                }
+                let _ = decode_index_buffer(6, 4, bytes);
+                let _ = decode_index_buffer(9, 2, bytes);
+                let _ = decode_index_sequence(6, 2, bytes);
+            })
+        };
+        for seed in FUZZ_CORPUS {
+            for len in 0..=seed.len() {
+                assert!(
+                    decode_all(&seed[..len]).is_ok(),
+                    "truncation {len} panicked"
+                );
+            }
+            for position in 0..seed.len() {
+                for replacement in [0x00u8, 0xff, seed[position] ^ 0x80] {
+                    let mut mutated = seed.to_vec();
+                    mutated[position] = replacement;
+                    assert!(
+                        decode_all(&mutated).is_ok(),
+                        "mutation at {position} = {replacement:#x} panicked"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn filter_and_mode_names_parse() {
         assert_eq!(
