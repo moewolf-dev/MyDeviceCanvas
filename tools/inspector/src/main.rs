@@ -111,6 +111,16 @@ fn heap_peak(count: u32, interval_ms: u64, size_kb: u64) -> serde_json::Value {
     })
 }
 
+/// N550: write the verdict as the final line of a JSONL series, through the same
+/// writer the samples used, so it can never interleave or go missing.
+fn write_verdict<W: Write>(
+    mut out: W,
+    summary: &WatchSummary,
+    alerts: &[String],
+) -> std::io::Result<()> {
+    writeln!(out, "{}", verdict_line(summary, alerts))
+}
+
 /// N539: the one-line verdict a thresholded watch ends with.
 fn verdict_line(summary: &WatchSummary, alerts: &[String]) -> String {
     serde_json::json!({
@@ -283,7 +293,10 @@ fn main() {
         } else {
             0
         };
-        let summary = match watch(count, interval, &board, heap_kb, std::io::stdout()) {
+        // N550: samples and the trailing verdict share one writer, so the verdict
+        // is always the last line of the `--jsonl` sequence and never interleaves.
+        let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+        let summary = match watch(count, interval, &board, heap_kb, &mut out) {
             Ok(summary) => summary,
             Err(error) => {
                 eprintln!("inspector error: {error}");
@@ -305,13 +318,12 @@ fn main() {
                 ));
             }
         }
-        // N529: a JSON verdict makes the watch machine-checkable. N539: it is
-        // emitted as one JSONL record so the series stays line-oriented.
-        let thresholded =
-            flag_value("--max-peak-bytes").is_some() || flag_value("--max-diagnostics").is_some();
-        if thresholded {
-            println!("{}", verdict_line(&summary, &alerts));
+        // N529/N539/N550: a one-line JSONL verdict terminates the series.
+        if let Err(error) = write_verdict(&mut out, &summary, &alerts) {
+            eprintln!("inspector error: {error}");
+            std::process::exit(1);
         }
+        let _ = out.flush();
         if !alerts.is_empty() {
             eprintln!("inspector alert: {}", alerts.join("; "));
             std::process::exit(2);
@@ -422,6 +434,27 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&ok).unwrap()["ok"],
             true
         );
+    }
+
+    #[test]
+    fn verdict_is_the_final_line_of_the_jsonl_series() {
+        // N550: samples and verdict go through one writer, so the last parsed
+        // line is the verdict.
+        let mut out = Vec::new();
+        let summary = watch(3, 1, "default", 0, &mut out).unwrap();
+        write_verdict(&mut out, &summary, &[]).unwrap();
+        let lines = parse_lines(&out);
+        assert_eq!(lines.len(), 4, "three samples plus the verdict");
+        assert_eq!(lines[3]["kind"], "verdict");
+        assert_eq!(lines[3]["ok"], true);
+        // A threshold still applies to the same trailing record.
+        let mut out = Vec::new();
+        let summary = watch(1, 1, "default", 0, &mut out).unwrap();
+        write_verdict(&mut out, &summary, &["boom".to_string()]).unwrap();
+        let lines = parse_lines(&out);
+        assert_eq!(lines.last().unwrap()["kind"], "verdict");
+        assert_eq!(lines.last().unwrap()["ok"], false);
+        assert_eq!(lines.last().unwrap()["alerts"].as_array().unwrap().len(), 1);
     }
 
     #[test]

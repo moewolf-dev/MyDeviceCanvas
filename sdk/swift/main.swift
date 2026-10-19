@@ -86,8 +86,9 @@ struct MdcSwiftHello {
 
         // Form B mirror over the async stream (simulator board with a GPU).
         let gpu = try! MdcSession(boardId: "linux-virt")
+        // N549: the mode is selected explicitly (the board supports dirty-region).
         let mirrorTask = Task {
-            for await frame in gpu.mirrorFrames() {
+            for await frame in gpu.mirrorFrames(mode: .dirtyRegion) {
                 if frame.width == 800 && frame.height == 480 && !frame.pixels.isEmpty {
                     return true
                 }
@@ -100,6 +101,12 @@ struct MdcSwiftHello {
             fputs("async stream missed mirror frame\n", stderr)
             exit(1)
         }
+        if gpu.mirrorStats().received < 1 {
+            fputs("mirror mode did not produce a frame\n", stderr)
+            exit(1)
+        }
+        // N549: the buffered-frame skip counter is readable (parity with C/Node).
+        _ = gpu.mirrorSkips()
         // N508: the bounded (latest-wins) mirror stream also yields a frame.
         let bounded = try! MdcSession(boardId: "linux-virt")
         let boundedTask = Task {

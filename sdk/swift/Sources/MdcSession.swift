@@ -28,6 +28,13 @@ public struct MdcMirrorFrame {
     public let pixels: [UInt8]
 }
 
+/// N549: the negotiated mirror mode for a Form B (`dirty-region` also mirrors
+/// only changed regions, which the host patches onto its shadow frame).
+public enum MdcMirrorMode: String {
+    case fullFrame = "full-frame"
+    case dirtyRegion = "dirty-region"
+}
+
 /// N307: surface pixel format exposed by the C ABI. Only `rgb565` is implemented
 /// by the host/frame path; the rest decode but are rejected as unsupported.
 public enum MdcPixelFormat: Int32 {
@@ -342,6 +349,17 @@ public final class MdcSession {
         return surfaceId.withCString { mdc_start_mirror(raw, $0, maxFps) }
     }
 
+    /// N549: ask the device to start mirroring with an explicit mode
+    /// (`full-frame` | `dirty-region`), matching the C ABI and Node SDK.
+    public func startMirror(
+        surfaceId: String = "main", mode: MdcMirrorMode, maxFps: UInt16 = 15
+    ) -> Int32 {
+        guard let raw else { return -1 }
+        return surfaceId.withCString { surface in
+            mode.rawValue.withCString { mdc_start_mirror_mode(raw, surface, $0, maxFps) }
+        }
+    }
+
     public func stopMirror(surfaceId: String = "main") -> Int32 {
         guard let raw else { return -1 }
         return surfaceId.withCString { mdc_stop_mirror(raw, $0) }
@@ -381,10 +399,48 @@ public final class MdcSession {
         return (received, dropped)
     }
 
+    /// N549: frames dropped because the caller's mirror buffer was too small
+    /// (parity with the C ABI's `mdc_mirror_skips`).
+    public func mirrorSkips() -> UInt64 {
+        guard let raw else { return 0 }
+        var skips: UInt64 = 0
+        _ = mdc_mirror_skips(raw, &skips)
+        return skips
+    }
+
+    /// N518/N549: like `takeMirrorFrame`, but reports the surface id the device
+    /// actually sent (parity with the C ABI and Node SDK).
+    public func takeMirrorFrameWithSurface() -> MdcMirrorFrame? {
+        guard let raw else { return nil }
+        guard let (width, height) = try? surfaceSize() else { return nil }
+        var surfaceId = [CChar](repeating: 0, count: 64)
+        var outWidth = width
+        var outHeight = height
+        var frameId: UInt64 = 0
+        var pixels = [UInt8](repeating: 0, count: Int(width) * Int(height) * 2)
+        let copied = surfaceId.withUnsafeMutableBufferPointer { id in
+            pixels.withUnsafeMutableBufferPointer { buffer in
+                mdc_take_mirror_frame_with_surface(
+                    raw, id.baseAddress, id.count, &outWidth, &outHeight, &frameId,
+                    buffer.baseAddress, buffer.count)
+            }
+        }
+        guard copied > 0 else { return nil }
+        if copied < pixels.count {
+            pixels.removeLast(pixels.count - Int(copied))
+        }
+        return MdcMirrorFrame(
+            surfaceId: String(cString: surfaceId), frameId: frameId,
+            width: outWidth, height: outHeight, pixels: pixels)
+    }
+
     /// AsyncStream of Form B mirrored frames. A simulator session emits locally.
-    public func mirrorFrames(surfaceId: String = "main", maxFps: UInt16 = 15) -> AsyncStream<MdcMirrorFrame> {
+    /// N549: `mode` selects `full-frame` or `dirty-region` mirroring.
+    public func mirrorFrames(
+        surfaceId: String = "main", mode: MdcMirrorMode = .fullFrame, maxFps: UInt16 = 15
+    ) -> AsyncStream<MdcMirrorFrame> {
         let session = self
-        _ = startMirror(surfaceId: surfaceId, maxFps: maxFps)
+        _ = startMirror(surfaceId: surfaceId, mode: mode, maxFps: maxFps)
         return AsyncStream(unfolding: {
             while !Task.isCancelled {
                 _ = session.emitMirrorFrame()
@@ -400,11 +456,13 @@ public final class MdcSession {
     /// N508: a bounded, paced mirror stream. Unlike `mirrorFrames`, a producer
     /// task pulls frames and buffers at most one; a slow consumer drops older
     /// frames instead of queueing them (`mirrorStats().dropped` counts them).
+    /// N549: `mode` selects the negotiated mirror mode; `maxFps` is the paced
+    /// slice interval, so a slow consumer gets fewer, whole frames.
     public func mirrorFramesBounded(
-        surfaceId: String = "main", maxFps: UInt16 = 15
+        surfaceId: String = "main", mode: MdcMirrorMode = .fullFrame, maxFps: UInt16 = 15
     ) -> AsyncStream<MdcMirrorFrame> {
         let session = self
-        _ = startMirror(surfaceId: surfaceId, maxFps: maxFps)
+        _ = startMirror(surfaceId: surfaceId, mode: mode, maxFps: maxFps)
         let interval = UInt64(1_000 / max(1, Int(maxFps))) * 1_000_000
         return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             let task = Task {

@@ -510,6 +510,8 @@ fn cmd_package(
     let mut mip_level: usize = 0;
     // N524: cap the vertices the package draws (0 = no cap).
     let mut max_draw_vertices: u64 = 0;
+    // N545: losslessly merge duplicate vertices and drop unreferenced ones.
+    let mut compact_geometry = false;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -539,6 +541,8 @@ fn cmd_package(
             "--max-draw-vertices" => {
                 max_draw_vertices = iter.next().and_then(|v| v.parse().ok()).unwrap_or(0)
             }
+            // N545: losslessly compact the geometry before compiling.
+            "--compact-geometry" => compact_geometry = true,
             other => out = Some(other.to_string()),
         }
     }
@@ -567,6 +571,20 @@ fn cmd_package(
                     && geometry.uv.len() >= geometry.positions.len()
                 {
                     geometry.tangents = mdc_bake::generate_tangents(geometry);
+                }
+            }
+        }
+    }
+    // N545: optionally merge duplicate vertices and drop unreferenced ones.
+    let mut compacted_vertices: usize = 0;
+    if compact_geometry {
+        for mesh in &mut model.meshes {
+            if let Some(geometry) = mesh.geometry.as_mut() {
+                let removed = mdc_bake::compact_geometry(geometry);
+                if removed > 0 {
+                    compacted_vertices += removed;
+                    mesh.vertices = geometry.positions.len() as u32;
+                    mesh.indices = geometry.indices.len() as u32;
                 }
             }
         }
@@ -727,6 +745,8 @@ fn cmd_package(
                 // N524: the drawn-vertex budget and how many meshes it trimmed.
                 "draw_vertices": mdc_bake::draw_vertices(&package.package),
                 "trimmed_meshes": trimmed_meshes,
+                // N545: vertices removed by lossless geometry compaction.
+                "compacted_vertices": compacted_vertices,
                 "output": out,
             }))?
         );
@@ -2080,6 +2100,8 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
         // N517: server pings and silent peers dropped.
         "ws_pings_sent": http_server.as_ref().map(|s| s.ws_pings_sent()),
         "ws_timeouts": http_server.as_ref().map(|s| s.ws_timeouts()),
+        // N548: complete client -> server WebSocket messages reassembled.
+        "ws_messages": http_server.as_ref().map(|s| s.ws_messages()),
         // N510: the recorded sequence manifest, when requested.
         "manifest": manifest,
         "frames_written": written.len(),
@@ -3821,6 +3843,37 @@ fn cmd_model_info(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut summary = serde_json::to_value(model.summary())?;
     if let Some(map) = summary.as_object_mut() {
         map.insert("reserved_extensions".into(), serde_json::json!(reserved));
+        // N544: report each texture's real size/format, including the KTX2 header
+        // fields when the payload is a Basis container.
+        let textures: Vec<serde_json::Value> = model
+            .textures
+            .iter()
+            .enumerate()
+            .map(|(index, texture)| {
+                let mut entry = serde_json::json!({
+                    "index": index,
+                    "format": texture.format,
+                    "width": texture.width,
+                    "height": texture.height,
+                    "ktx2": texture.is_ktx2(),
+                });
+                if let Some(header) = texture
+                    .data
+                    .as_deref()
+                    .and_then(mdc_model::Ktx2Header::parse)
+                {
+                    if let Some(map) = entry.as_object_mut() {
+                        map.insert("vkFormat".into(), serde_json::json!(header.format_name()));
+                        map.insert(
+                            "supercompression".into(),
+                            serde_json::json!(header.scheme_name()),
+                        );
+                    }
+                }
+                entry
+            })
+            .collect();
+        map.insert("textures".into(), serde_json::json!(textures));
     }
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
