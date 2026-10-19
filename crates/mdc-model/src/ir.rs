@@ -188,6 +188,8 @@ pub struct ModelSummary {
     /// N544: textures stored as a KTX2/Basis container (metadata only; the host
     /// does not transcode them).
     pub ktx2_textures: usize,
+    /// N570: total KTX2 image slices (`layer * face` summed over KTX2 textures).
+    pub ktx2_slices: u64,
 }
 
 /// Node local transform. glTF applies `T * R * S` to the node's children and
@@ -314,6 +316,15 @@ impl Texture {
     pub fn is_ktx2(&self) -> bool {
         self.format.eq_ignore_ascii_case("image/ktx2")
             || self.data.as_deref().is_some_and(crate::ktx2::is_ktx2)
+    }
+
+    /// N570: the KTX2 container metadata (layer/face/depth/mips), derived from the
+    /// retained bytes. Keeping the bytes in the IR means the metadata is preserved
+    /// through the package without a second, duplicated field.
+    pub fn ktx2_header(&self) -> Option<crate::ktx2::Ktx2Header> {
+        self.data
+            .as_deref()
+            .and_then(crate::ktx2::Ktx2Header::parse)
     }
 }
 
@@ -881,6 +892,13 @@ impl Model {
             cameras: self.cameras.len(),
             morph_targets: self.meshes.iter().map(|m| m.morph_targets.len()).sum(),
             ktx2_textures: self.textures.iter().filter(|t| t.is_ktx2()).count(),
+            // N570: sum the per-container slice counts reported by the header.
+            ktx2_slices: self
+                .textures
+                .iter()
+                .filter_map(|t| t.ktx2_header())
+                .map(|header| u64::from(header.slices()))
+                .sum(),
             ..ModelSummary::default()
         };
         for g in geometry {

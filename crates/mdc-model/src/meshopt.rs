@@ -1345,6 +1345,87 @@ mod tests {
     }
 
     #[test]
+    fn every_decoder_guard_reports_a_meshopt_error() {
+        // N563: a directed corpus that walks each validation branch. Each guard
+        // must surface as a `meshopt:` error (never a panic), which pins the
+        // branch inventory documented in docs/meshopt-coverage.md.
+        let vertex_bad: &[(&str, Result<Vec<u8>, ModelError>)] = &[
+            (
+                "vertex header",
+                decode_vertex_buffer(4, 4, &[0x00, 1, 2, 3, 4], MeshoptFilter::None),
+            ),
+            (
+                "vertex stride zero",
+                decode_vertex_buffer(4, 0, &[0xa0, 1, 2, 3], MeshoptFilter::None),
+            ),
+            (
+                "vertex stride over 256",
+                decode_vertex_buffer(4, 260, &[0xa0, 1, 2, 3, 4], MeshoptFilter::None),
+            ),
+            (
+                "vertex stride not multiple of 4",
+                decode_vertex_buffer(4, 6, &[0xa0, 1, 2, 3], MeshoptFilter::None),
+            ),
+            (
+                "vertex truncated tail",
+                decode_vertex_buffer(4, 12, &[0xa0, 1, 2], MeshoptFilter::None),
+            ),
+            (
+                "vertex budget",
+                decode_vertex_buffer(usize::MAX / 4, 8, &[0xa0; 32], MeshoptFilter::None),
+            ),
+            (
+                "octahedral wrong stride",
+                decode_vertex_buffer(1, 6, &[0xa0; 64], MeshoptFilter::Octahedral),
+            ),
+            (
+                "quaternion wrong stride",
+                decode_vertex_buffer(1, 4, &[0xa1; 64], MeshoptFilter::Quaternion),
+            ),
+            (
+                "exponential wrong stride",
+                decode_vertex_buffer(1, 6, &[0xa1; 64], MeshoptFilter::Exponential),
+            ),
+            (
+                "color wrong stride",
+                decode_vertex_buffer(1, 6, &[0xa1; 64], MeshoptFilter::Color),
+            ),
+        ];
+        for (name, result) in vertex_bad {
+            let error = result.as_ref().unwrap_err().to_string();
+            assert!(error.contains("meshopt:"), "{name}: {error}");
+        }
+
+        let index_bad: &[(&str, Result<Vec<u8>, ModelError>)] = &[
+            ("index header", decode_index_buffer(3, 4, &[0x00, 0, 0, 0])),
+            ("index version", decode_index_buffer(3, 4, &[0xe2, 0, 0, 0])),
+            (
+                "index count not multiple of 3",
+                decode_index_buffer(4, 4, &[0xe1, 0]),
+            ),
+            ("index stride", decode_index_buffer(3, 3, &[0xe1, 0])),
+            ("index too short", decode_index_buffer(3, 4, &[0xe1, 0])),
+            (
+                "sequence header",
+                decode_index_sequence(2, 4, &[0x00, 0, 0, 0, 0]),
+            ),
+            (
+                "sequence version",
+                decode_index_sequence(2, 4, &[0xd2, 0, 0, 0, 0]),
+            ),
+            (
+                "sequence stride",
+                decode_index_sequence(2, 3, &[0xd1, 0, 0, 0, 0]),
+            ),
+            ("sequence too short", decode_index_sequence(2, 4, &[0xd1])),
+        ];
+        for (name, result) in index_bad {
+            let error = result.as_ref().unwrap_err().to_string();
+            assert!(error.contains("meshopt:"), "{name}: {error}");
+        }
+    }
+
+    #[test]
     fn filter_and_mode_names_parse() {
         assert_eq!(
             MeshoptFilter::from_name("OCTAHEDRAL"),

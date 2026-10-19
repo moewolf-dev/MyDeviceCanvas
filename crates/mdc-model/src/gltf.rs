@@ -4078,6 +4078,10 @@ mod tests {
         );
         assert!(model.textures[0].is_ktx2());
         assert_eq!(model.summary().ktx2_textures, 1);
+        // N570: the container metadata is reachable from the IR.
+        let header = model.textures[0].ktx2_header().expect("ktx2 header");
+        assert_eq!(header.mip_levels(), 1);
+        assert_eq!(model.summary().ktx2_slices, 1);
         // The report flags it as metadata-only rather than silently dropping it.
         let report = model.validate();
         assert!(report
