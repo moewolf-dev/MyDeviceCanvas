@@ -1426,6 +1426,24 @@ mod tests {
     }
 
     #[test]
+    fn malformed_leb128_and_half_packets_are_errors() {
+        // N573: directed cases for the LEB128 reader and for streams cut in the
+        // middle of a field. All must return, never panic or over-read.
+        // An index sequence whose value overflows the 16-bit output.
+        assert!(decode_index_sequence(1, 2, &[0xd1, 0x80, 0x80, 0x10, 0, 0, 0, 0]).is_err());
+        // A LEB128 run that never terminates (shift would exceed 28 bits).
+        assert!(
+            decode_index_sequence(1, 4, &[0xd1, 0x80, 0x80, 0x80, 0x80, 0x80, 0, 0, 0, 0]).is_err()
+        );
+        // A valid header with a LEB128 value truncated mid-field.
+        assert!(decode_index_sequence(2, 4, &[0xd1, 0x80, 0x80, 0, 0, 0]).is_err());
+        // An index buffer whose aux table is a byte short of the minimum.
+        assert!(decode_index_buffer(3, 4, &[0xe1, 0x00, 0x00, 0x00]).is_err());
+        // A vertex stream shorter than its tail (header + 3 bytes < 5-byte tail).
+        assert!(decode_vertex_buffer(1, 4, &[0xa1, 0x00, 0x00], MeshoptFilter::None).is_err());
+    }
+
+    #[test]
     fn filter_and_mode_names_parse() {
         assert_eq!(
             MeshoptFilter::from_name("OCTAHEDRAL"),
