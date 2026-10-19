@@ -627,6 +627,9 @@ fn cmd_package(
     // zero value selects a mesh-scaled cache (N574).
     let mut index_cache_misses: u64 = 0;
     let mut reordered_meshes: usize = 0;
+    // N644: aggregate hit/miss counters over the reordered meshes.
+    let mut cache_hits: u64 = 0;
+    let mut cache_lookups: u64 = 0;
     if optimize_geometry || optimize_index > 0 {
         for mesh in &mut model.meshes {
             if let Some(geometry) = mesh.geometry.as_mut() {
@@ -638,6 +641,9 @@ fn cmd_package(
                 let before = mdc_bake::index_cache_misses(geometry, cache);
                 let after = mdc_bake::optimize_index_order(geometry, cache);
                 index_cache_misses += after;
+                let (hits, misses) = mdc_bake::index_cache_stats(geometry, cache);
+                cache_hits += hits;
+                cache_lookups += hits + misses;
                 if after < before {
                     reordered_meshes += 1;
                 }
@@ -811,6 +817,12 @@ fn cmd_package(
                 // N594: which vertex-cache policy ran (off | adaptive | fixed).
                 "cache_mode": cache_mode(optimize_geometry, optimize_index),
                 "cache_size": optimize_index,
+                // N644: the vertex-cache hit rate after any reordering.
+                "cache_hit_rate": if cache_lookups == 0 {
+                    0.0
+                } else {
+                    cache_hits as f64 / cache_lookups as f64
+                },
                 "output": out,
             }))?
         );

@@ -1058,6 +1058,17 @@ pub fn index_cache_misses(geometry: &mdc_model::MeshGeometry, cache_size: usize)
     geometry.cache_misses(cache_size)
 }
 
+/// N644: hit/miss counters for an index order under a FIFO vertex cache.
+pub fn index_cache_stats(geometry: &mdc_model::MeshGeometry, cache_size: usize) -> (u64, u64) {
+    let mut cache = mdc_model::VertexCache::new(cache_size);
+    for triangle in geometry.indices.chunks_exact(3) {
+        for &vertex in triangle {
+            cache.touch(vertex);
+        }
+    }
+    (cache.hits(), cache.misses())
+}
+
 /// N555: the look-ahead window when picking the next triangle.
 const INDEX_ORDER_WINDOW: usize = 16;
 
@@ -1557,6 +1568,21 @@ mod tests {
             decode_resize_rgb565(&png, (8, 8), &limits),
             Err(BakeError::Dimensions(64, 64, 16))
         ));
+    }
+
+    #[test]
+    fn index_cache_stats_complement_the_miss_metric() {
+        // N644: hits + misses equals the index count, so the rate and the miss
+        // metric come from the same walk.
+        let geometry = mdc_model::MeshGeometry {
+            positions: (0..5).map(|i| [i as f32, 0.0, 0.0]).collect(),
+            indices: vec![0, 1, 2, 0, 2, 3, 0, 3, 4],
+            ..Default::default()
+        };
+        let (hits, misses) = index_cache_stats(&geometry, 4);
+        assert_eq!(hits + misses, geometry.indices.len() as u64);
+        assert_eq!(misses, index_cache_misses(&geometry, 4));
+        assert_eq!(hits, 4);
     }
 
     #[test]

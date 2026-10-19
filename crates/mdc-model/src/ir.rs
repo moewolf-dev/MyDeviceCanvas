@@ -81,6 +81,10 @@ pub struct MeshGeometry {
 pub struct VertexCache {
     entries: std::collections::VecDeque<u32>,
     size: usize,
+    /// N644: lookup counters, so a caller can report a hit rate from the same
+    /// source that scores an index order.
+    hits: u64,
+    misses: u64,
 }
 
 impl Default for VertexCache {
@@ -95,6 +99,8 @@ impl VertexCache {
         Self {
             entries: std::collections::VecDeque::new(),
             size: size.max(1),
+            hits: 0,
+            misses: 0,
         }
     }
 
@@ -106,13 +112,41 @@ impl VertexCache {
     /// Touch `vertex`, inserting it when absent. Returns true on a cache miss.
     pub fn touch(&mut self, vertex: u32) -> bool {
         if self.contains(vertex) {
+            self.hits = self.hits.saturating_add(1);
             return false;
         }
+        self.misses = self.misses.saturating_add(1);
         if self.entries.len() == self.size {
             self.entries.pop_front();
         }
         self.entries.push_back(vertex);
         true
+    }
+
+    /// N644: cache hits so far.
+    pub fn hits(&self) -> u64 {
+        self.hits
+    }
+
+    /// N644: cache misses so far.
+    pub fn misses(&self) -> u64 {
+        self.misses
+    }
+
+    /// N644: hits / (hits + misses), 0 when nothing was looked up.
+    pub fn hit_rate(&self) -> f64 {
+        let total = self.hits.saturating_add(self.misses);
+        if total == 0 {
+            0.0
+        } else {
+            self.hits as f64 / total as f64
+        }
+    }
+
+    /// N644: clear the counters (the cached vertices are kept).
+    pub fn reset_stats(&mut self) {
+        self.hits = 0;
+        self.misses = 0;
     }
 
     /// Vertices currently held.
@@ -130,16 +164,24 @@ impl MeshGeometry {
     /// order and count misses. Lives on the IR so a package manifest can carry the
     /// locality metric without depending on the bake crate.
     pub fn cache_misses(&self, cache_size: usize) -> u64 {
-        let mut misses = 0u64;
         let mut cache = VertexCache::new(cache_size);
         for triangle in self.indices.chunks_exact(3) {
             for &vertex in triangle {
-                if cache.touch(vertex) {
-                    misses += 1;
-                }
+                cache.touch(vertex);
             }
         }
-        misses
+        cache.misses()
+    }
+
+    /// N644: the vertex-cache hit rate for an index order (0 when empty).
+    pub fn cache_hit_rate(&self, cache_size: usize) -> f64 {
+        let mut cache = VertexCache::new(cache_size);
+        for triangle in self.indices.chunks_exact(3) {
+            for &vertex in triangle {
+                cache.touch(vertex);
+            }
+        }
+        cache.hit_rate()
     }
 
     /// N273: append another primitive's geometry, rebasing its indices by this
@@ -1107,6 +1149,32 @@ mod tests {
         assert!(tiny.touch(8));
         assert_eq!(tiny.len(), 1);
         assert!(VertexCache::default().is_empty());
+    }
+
+    #[test]
+    fn vertex_cache_tracks_hits_and_misses() {
+        // N644: the counters and the hit rate come from the same lookups the
+        // locality metric uses.
+        let mut cache = VertexCache::new(4);
+        assert_eq!(cache.hit_rate(), 0.0, "nothing looked up yet");
+        cache.touch(1); // miss
+        cache.touch(1); // hit
+        cache.touch(2); // miss
+        cache.touch(1); // hit
+        assert_eq!((cache.hits(), cache.misses()), (2, 2));
+        assert!((cache.hit_rate() - 0.5).abs() < f64::EPSILON);
+        cache.reset_stats();
+        assert_eq!((cache.hits(), cache.misses()), (0, 0));
+        assert_eq!(cache.len(), 2, "the cached vertices survive a reset");
+        // A fan reuses its hub, so the geometry-level rate is high.
+        let geometry = MeshGeometry {
+            positions: (0..5).map(|i| [i as f32, 0.0, 0.0]).collect(),
+            indices: vec![0, 1, 2, 0, 2, 3, 0, 3, 4],
+            ..Default::default()
+        };
+        let rate = geometry.cache_hit_rate(4);
+        assert!(rate > 0.3 && rate <= 1.0, "fan hit rate {rate}");
+        assert_eq!(geometry.cache_hit_rate(4), 1.0 - 5.0 / 9.0);
     }
 
     #[test]
