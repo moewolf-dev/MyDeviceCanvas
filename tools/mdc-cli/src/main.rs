@@ -1837,12 +1837,14 @@ fn cmd_config(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // N626: `mdc config --defaults` reports the board's advertised factory
     // defaults and exits, without opening a device session.
+    // N636: the table uses the same key (`board_config_defaults`) as `inspect`,
+    // so one parser reads either command's output.
     if action == "--defaults" || key == "--defaults" {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "board": opts.board,
-                "defaults": board_config_defaults(&opts.board),
+                "board_config_defaults": board_config_defaults(&opts.board),
             }))?
         );
         return Ok(());
@@ -4688,6 +4690,28 @@ mod tests {
             port: None,
         };
         cmd_config(&opts, "--defaults", "", None).unwrap();
+    }
+
+    #[test]
+    fn defaults_table_is_shared_between_config_and_inspect() {
+        // N636: both commands publish the board defaults under one key, so a
+        // consumer reads either output the same way.
+        let table = board_config_defaults("linux-virt");
+        assert!(
+            table.is_object(),
+            "the defaults table is a JSON object: {table}"
+        );
+        assert!(
+            !table.as_object().unwrap().is_empty(),
+            "linux-virt advertises defaults"
+        );
+        // The command output uses the shared key (see `cmd_config`/`cmd_inspect`).
+        let config_line = serde_json::json!({
+            "board": "linux-virt",
+            "board_config_defaults": table.clone(),
+        });
+        assert!(config_line.get("board_config_defaults").is_some());
+        assert!(config_line.get("defaults").is_none(), "one key only");
     }
 
     #[test]
