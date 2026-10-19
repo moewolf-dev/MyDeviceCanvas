@@ -2509,3 +2509,65 @@ fn websocket_client_fragments_stay_bounded() {
     assert_eq!(server.ws_messages(), 200);
     assert_eq!(server.ws_clients(), 1, "the peer stayed connected");
 }
+
+#[test]
+fn index_order_optimization_soak_is_bounded() {
+    // N555/N561: repeated optimization is idempotent and the index count is fixed.
+    let mut geometry = mdc_model::MeshGeometry {
+        positions: (0..32).map(|i| [i as f32, 0.0, 0.0]).collect(),
+        indices: (0..30).map(|i| (i * 3 + 1) % 32).collect(),
+        ..Default::default()
+    };
+    let triangles = geometry.indices.len();
+    let mut last = mdc_bake::index_cache_misses(&geometry, 8);
+    for _ in 0..200 {
+        let after = mdc_bake::optimize_index_order(&mut geometry, 8);
+        assert_eq!(geometry.indices.len(), triangles, "index count constant");
+        // Re-running never increases misses (it is a stable local optimum).
+        assert!(after <= last, "misses {last} -> {after}");
+        last = after;
+    }
+}
+
+#[test]
+fn scaled_image_render_soak_is_bounded() {
+    // N556/N561: bilinear image scaling keeps a fixed frame size over many ticks.
+    use mdc_protocol::SceneNode;
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 32,
+        height: 32,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    let source = "f80007e0001fffff";
+    session
+        .set_scene(SceneNode {
+            name: "pic".into(),
+            kind: "image".into(),
+            rect: Some([0, 0, 32, 32]),
+            children: Vec::new(),
+            value: Some(source.into()),
+            value2: Some("2,2".into()),
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: Some("linear".into()),
+            focus: None,
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    for tilt in 0..200 {
+        device.clock.tick = tilt;
+        assert!(device.render_scene());
+        assert_eq!(device.pixels().len(), 32 * 32 * 2);
+    }
+}
