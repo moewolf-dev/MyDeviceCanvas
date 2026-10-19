@@ -213,16 +213,41 @@ fn verify_archive(dir: &str, max_bytes: u64) -> std::io::Result<serde_json::Valu
     let mut missing = Vec::new();
     let mut empty = Vec::new();
     let mut oversized = Vec::new();
+    // N639: per-file byte counts, so a consumer sees where the archive's weight is.
+    let mut sizes: Vec<serde_json::Value> = Vec::new();
+    let mut total_bytes: u64 = 0;
     for file in &files {
         let Some(name) = file.as_str() else { continue };
         let path = std::path::Path::new(dir).join(name);
         match std::fs::metadata(&path) {
-            Ok(meta) if meta.len() == 0 => empty.push(name.to_string()),
-            Ok(meta) if max_bytes > 0 && meta.len() > max_bytes => oversized.push(name.to_string()),
-            Ok(_) => {}
-            Err(_) => missing.push(name.to_string()),
+            Ok(meta) if meta.len() == 0 => {
+                empty.push(name.to_string());
+                sizes.push(serde_json::json!({ "file": name, "bytes": 0 }));
+            }
+            Ok(meta) if max_bytes > 0 && meta.len() > max_bytes => {
+                oversized.push(name.to_string());
+                total_bytes = total_bytes.saturating_add(meta.len());
+                sizes.push(serde_json::json!({ "file": name, "bytes": meta.len() }));
+            }
+            Ok(meta) => {
+                total_bytes = total_bytes.saturating_add(meta.len());
+                sizes.push(serde_json::json!({ "file": name, "bytes": meta.len() }));
+            }
+            Err(_) => {
+                missing.push(name.to_string());
+                sizes.push(serde_json::json!({ "file": name, "bytes": null }));
+            }
         }
     }
+    let largest = sizes
+        .iter()
+        .filter_map(|entry| {
+            entry["bytes"]
+                .as_u64()
+                .map(|bytes| (entry["file"].clone(), bytes))
+        })
+        .max_by_key(|(_, bytes)| *bytes)
+        .map(|(file, bytes)| serde_json::json!({ "file": file, "bytes": bytes }));
     Ok(serde_json::json!({
         "dir": dir,
         "declared": files.len(),
@@ -230,6 +255,9 @@ fn verify_archive(dir: &str, max_bytes: u64) -> std::io::Result<serde_json::Valu
         "empty": empty,
         "oversized": oversized,
         "maxBytes": max_bytes,
+        "files": sizes,
+        "totalBytes": total_bytes,
+        "largest": largest,
         "ok": missing.is_empty() && empty.is_empty() && oversized.is_empty(),
     }))
 }
@@ -669,6 +697,21 @@ mod tests {
         let check = verify_archive(dir.to_str().unwrap(), 0).unwrap();
         assert_eq!(check["ok"], true, "{check}");
         assert_eq!(check["declared"], 2);
+        // N639: every file reports its byte count, with a total and the largest.
+        let sizes = check["files"].as_array().unwrap();
+        assert_eq!(sizes.len(), 2);
+        let listed: u64 = sizes
+            .iter()
+            .map(|entry| entry["bytes"].as_u64().unwrap())
+            .sum();
+        assert_eq!(listed, check["totalBytes"].as_u64().unwrap());
+        assert!(listed > 0, "the history files carry bytes");
+        let largest = check["largest"].as_object().unwrap();
+        assert!(largest["bytes"].as_u64().unwrap() >= listed / 2);
+        assert!(largest["file"]
+            .as_str()
+            .unwrap()
+            .starts_with("mdc-history.jsonl"));
         // N629: a per-file byte cap flags oversized files.
         let check = verify_archive(dir.to_str().unwrap(), 1).unwrap();
         assert_eq!(check["ok"], false);
