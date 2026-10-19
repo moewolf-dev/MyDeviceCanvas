@@ -5256,4 +5256,55 @@ fn mirror_websocket_rejects_reserved_bit_with_close_1002() {
     }
     assert_eq!(close[0], 0x88);
     assert_eq!(u16::from_be_bytes([close[2], close[3]]), 1002);
+    // N577/N581: the decline/failure reasons are logged.
+    assert!(server
+        .ws_log()
+        .iter()
+        .any(|entry| entry.contains("declined extension")));
+    assert!(server
+        .ws_log()
+        .iter()
+        .any(|entry| entry.contains("closed 1002")));
+}
+
+#[test]
+fn image_fit_letterboxes_on_the_device() {
+    // N575/N581: `mode: fit` preserves the source aspect ratio.
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 4,
+        height: 1,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    session
+        .set_scene(mdc_protocol::SceneNode {
+            name: "pic".into(),
+            kind: "image".into(),
+            rect: Some([0, 0, 4, 1]),
+            children: Vec::new(),
+            value: Some("f800".into()),
+            value2: Some("1,1".into()),
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: Some("fit".into()),
+            focus: None,
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.render_scene());
+    // Only the centre column of the 4x1 rect is drawn.
+    assert_eq!(device.pixel_rgb565(0, 0).unwrap(), 0);
+    assert_eq!(device.pixel_rgb565(1, 0).unwrap(), 0xF800);
+    assert_eq!(device.pixel_rgb565(2, 0).unwrap(), 0);
+    assert_eq!(device.pixel_rgb565(3, 0).unwrap(), 0);
 }

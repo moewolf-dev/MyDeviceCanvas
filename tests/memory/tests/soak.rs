@@ -2573,6 +2573,23 @@ fn scaled_image_render_soak_is_bounded() {
 }
 
 #[test]
+fn adaptive_cache_size_tracks_mesh_scale() {
+    // N574/N581: a small mesh gets a small cache, a large one a bigger cache.
+    let mesh = |triangles: usize| mdc_model::MeshGeometry {
+        positions: (0..triangles as u32 + 2)
+            .map(|i| [i as f32, 0.0, 0.0])
+            .collect(),
+        indices: (0..triangles * 3)
+            .map(|i| (i as u32) % (triangles as u32 + 2))
+            .collect(),
+        ..Default::default()
+    };
+    assert_eq!(mdc_bake::adaptive_cache_size(&mesh(4)), 16);
+    assert_eq!(mdc_bake::adaptive_cache_size(&mesh(500)), 32);
+    assert_eq!(mdc_bake::adaptive_cache_size(&mesh(5000)), 64);
+}
+
+#[test]
 fn combined_geometry_optimization_soak_is_bounded() {
     // N564/N571: compaction + reordering is idempotent and keeps a fixed size.
     let quad = || mdc_model::MeshGeometry {
