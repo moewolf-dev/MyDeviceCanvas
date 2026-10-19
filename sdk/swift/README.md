@@ -106,4 +106,4 @@ queueing them, and `mirrorStats().dropped` reports how many were skipped.
 `mode`. `mirrorMode()` reports the negotiated mode (parity with the C ABI's
 `mdc_mirror_mode` and the Node SDK), and `mirrorSkips()` /
 `takeMirrorFrameWithSurface()` expose the buffered-frame skip counter and the
-per-frame surface id.
+per-frame surface id (the smoke test exercises both — N578).

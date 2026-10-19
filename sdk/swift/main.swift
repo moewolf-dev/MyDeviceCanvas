@@ -105,8 +105,18 @@ struct MdcSwiftHello {
             fputs("mirror mode did not produce a frame\n", stderr)
             exit(1)
         }
-        // N549: the buffered-frame skip counter is readable (parity with C/Node).
+        // N549/N578: the buffered-frame skip counter is readable (parity with C/Node).
         _ = gpu.mirrorSkips()
+        // N578: the surface-carrying take matches the C ABI / Node SDK.
+        _ = gpu.emitMirrorFrame()
+        guard let tagged = gpu.takeMirrorFrameWithSurface() else {
+            fputs("takeMirrorFrameWithSurface returned no frame\n", stderr)
+            exit(1)
+        }
+        if tagged.surfaceId != "main" {
+            fputs("takeMirrorFrameWithSurface reported \(tagged.surfaceId)\n", stderr)
+            exit(1)
+        }
         // N568: the negotiated mode is reported (parity with C/Node).
         if gpu.mirrorMode() != "dirty-region" {
             fputs("mirror mode not reported\n", stderr)
