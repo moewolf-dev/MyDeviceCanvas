@@ -1442,7 +1442,12 @@ impl HttpMirrorServer {
                                         header_value(headers, "sec-websocket-extensions")
                                     {
                                         offered += 1;
-                                        notes.push(format!("declined extension: {ext}"));
+                                        // N597: log only the extension token, never
+                                        // its parameters (which may carry peer data).
+                                        notes.push(format!(
+                                            "declined extension: {}",
+                                            extension_name(ext)
+                                        ));
                                     }
                                     client.websocket = true;
                                     client.streaming = true;
@@ -1865,6 +1870,18 @@ fn ws_parse_client_frame(bytes: &mut Vec<u8>) -> Option<(bool, bool, u8, Vec<u8>
     }
     bytes.drain(..header + payload_len);
     Some((fin, rsv1, opcode, payload))
+}
+
+/// N597: the extension token from a `Sec-WebSocket-Extensions` value (before any
+/// `;`/`,` parameter), restricted to name characters and capped. This keeps peer
+/// data (addresses, window bits) out of the log.
+fn extension_name(value: &str) -> String {
+    let token = value.split([';', ',']).next().unwrap_or("").trim();
+    token
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        .take(32)
+        .collect()
 }
 
 /// N587: escape a string for inclusion in the hand-built `/health` JSON.
@@ -3577,6 +3594,40 @@ mod tests {
         let text = String::from_utf8_lossy(&body);
         assert!(text.contains("\"ws_log_last\""), "{text}");
         assert!(text.contains("1002"), "{text}");
+    }
+
+    #[test]
+    fn websocket_log_redacts_extension_parameters() {
+        // N597: only the extension token is logged, never its parameters.
+        assert_eq!(
+            extension_name("permessage-deflate; server_max_window_bits=15"),
+            "permessage-deflate"
+        );
+        assert_eq!(extension_name("x-custom; peer=1.2.3.4:9999"), "x-custom");
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
+        client
+            .write_all(
+                b"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+                  Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+                  Sec-WebSocket-Extensions: permessage-deflate; peer=10.0.0.7:4242\r\n\r\n",
+            )
+            .unwrap();
+        for _ in 0..100 {
+            let _ = server.pump();
+            if !server.ws_log().is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let log = server.ws_log().join("\n");
+        assert!(log.contains("permessage-deflate"), "{log}");
+        assert!(!log.contains("10.0.0.7"), "the peer address is not logged");
+        assert!(!log.contains("4242"), "extension parameters are not logged");
     }
 
     #[test]
