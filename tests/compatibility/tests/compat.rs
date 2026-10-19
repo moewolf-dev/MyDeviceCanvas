@@ -5308,3 +5308,100 @@ fn image_fit_letterboxes_on_the_device() {
     assert_eq!(device.pixel_rgb565(2, 0).unwrap(), 0);
     assert_eq!(device.pixel_rgb565(3, 0).unwrap(), 0);
 }
+
+#[test]
+fn tile_missing_threshold_is_negotiated() {
+    // N586/N591: the host reads the device's tolerated-miss threshold from config
+    // and uses it to decide when to force a full frame.
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 8,
+        height: 8,
+        supports_partial_update: true,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session.get_config("tile_missing_threshold").unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert_eq!(session.tile_missing_threshold(), Some(0));
+    session.set_config("tile_missing_threshold", "5").unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert_eq!(session.tile_missing_threshold(), Some(5));
+
+    // Two unacknowledged tiles are fine under 5, but not under 0.
+    session
+        .send_frame(Frame {
+            surface_id: "main".into(),
+            width: 8,
+            height: 8,
+            bytes: vec![0u8; 8 * 8 * 2],
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    let base = device.current_frame_id();
+    let frame = vec![0u8; 8 * 8 * 2];
+    let mut tracker = mdc_core::DirtyTracker::new((8, 8), 4, 0.9);
+    tracker.mark((0, 0, 1, 1));
+    tracker.mark((4, 4, 1, 1));
+    session
+        .send_dirty_update("main", base, &frame, &mut tracker)
+        .unwrap();
+    let report = session.enforce_tile_reconciliation_from_config();
+    assert_eq!(report.missing(), 2);
+    assert!(!session.needs_full_frame, "under the negotiated threshold");
+    session.set_config("tile_missing_threshold", "0").unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    session.enforce_tile_reconciliation_from_config();
+    assert!(session.needs_full_frame, "at the negotiated threshold");
+}
+
+#[test]
+fn image_fit_alignment_on_the_device() {
+    // N585/N591: `fit` honours `align` for the letterbox position.
+    let render = |align: &str| {
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 4,
+            height: 1,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .set_scene(mdc_protocol::SceneNode {
+                name: "pic".into(),
+                kind: "image".into(),
+                rect: Some([0, 0, 4, 1]),
+                children: Vec::new(),
+                value: Some("f800".into()),
+                value2: Some("1,1".into()),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: Some(align.into()),
+                z: None,
+                wrap: None,
+                mode: Some("fit".into()),
+                focus: None,
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        (0..4)
+            .map(|x| device.pixel_rgb565(x, 0).unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(render("left"), vec![0xF800, 0, 0, 0]);
+    assert_eq!(render("center"), vec![0, 0xF800, 0, 0]);
+    assert_eq!(render("right"), vec![0, 0, 0, 0xF800]);
+}
