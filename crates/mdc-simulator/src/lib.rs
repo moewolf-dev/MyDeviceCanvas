@@ -328,6 +328,7 @@ fn blit_hex_rgb565(
     src_h: u16,
     mode: ImageMode,
     rotate: u16,
+    align: &str,
 ) -> bool {
     if w == 0 || h == 0 || src_w == 0 || src_h == 0 {
         return false;
@@ -341,7 +342,13 @@ fn blit_hex_rgb565(
         let scale = (f32::from(w) / f32::from(src_w)).min(f32::from(h) / f32::from(src_h));
         let draw_w = ((f32::from(src_w) * scale).round() as u16).clamp(1, w);
         let draw_h = ((f32::from(src_h) * scale).round() as u16).clamp(1, h);
-        (draw_w, draw_h, (w - draw_w) / 2, (h - draw_h) / 2)
+        // N585: horizontal alignment of the letterbox (default centred).
+        let off_x = match align {
+            "left" => 0,
+            "right" => w - draw_w,
+            _ => (w - draw_w) / 2,
+        };
+        (draw_w, draw_h, off_x, (h - draw_h) / 2)
     } else {
         (w, h, 0, 0)
     };
@@ -1254,6 +1261,7 @@ fn fill_scene(
                 src_h,
                 mode,
                 node.rotate.unwrap_or(0),
+                node.align.as_deref().unwrap_or("center"),
             ) {
                 *drew = true;
             }
@@ -1434,6 +1442,9 @@ fn default_config() -> BTreeMap<String, String> {
     map.insert("rotation".into(), "0".into());
     map.insert("wifi_ssid".into(), "mdc-sim".into());
     map.insert("wifi_password".into(), "mdc-sim-secret".into());
+    // N586: how many unacknowledged tiles the host may accumulate before it must
+    // resend a full frame (0 = resynchronise on the first missing tile).
+    map.insert(mdc_core::TILES_MISSING_THRESHOLD_CONFIG.into(), "0".into());
     map
 }
 
@@ -1467,6 +1478,8 @@ fn validate_config(key: &str, value: &str) -> Result<(), &'static str> {
                 Err("E_VALUE")
             }
         }
+        // N586: a bounded tile-miss threshold.
+        "tile_missing_threshold" => value.parse::<u64>().map(|_| ()).map_err(|_| "E_VALUE"),
         _ => Ok(()),
     }
 }
@@ -1595,6 +1608,8 @@ impl Default for BoardProfile {
                 "animation".into(),
                 // N347: device texture sampling filter.
                 "filtering".into(),
+                // N586: tolerated unacknowledged tiles before a full frame.
+                "tile_missing_threshold".into(),
             ],
             // N308: an MCU-class panel prefers 32-pixel tiles and takes both
             // partial and full updates (it advertises tile support).
@@ -3987,7 +4002,7 @@ mod tests {
         // N575: `fit` letterboxes a 1x1 source into a 4x1 rect (only the centre
         // column is drawn); stretching fills every column.
         use mdc_protocol::SceneNode;
-        let render = |mode: &str| {
+        let render = |mode: &str, align: Option<&str>| {
             let (_host, mut device) = FakeDevice::pair(BoardProfile {
                 width: 4,
                 height: 1,
@@ -4005,7 +4020,7 @@ mod tests {
                 anim: None,
                 rotate: None,
                 blend: None,
-                align: None,
+                align: align.map(str::to_string),
                 z: None,
                 wrap: None,
                 mode: Some(mode.into()),
@@ -4016,8 +4031,11 @@ mod tests {
                 .map(|x| device.pixel_rgb565(x, 0).unwrap())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(render(""), vec![0xF800, 0xF800, 0xF800, 0xF800]);
-        assert_eq!(render("fit"), vec![0, 0xF800, 0, 0]);
+        assert_eq!(render("", None), vec![0xF800, 0xF800, 0xF800, 0xF800]);
+        assert_eq!(render("fit", None), vec![0, 0xF800, 0, 0]);
+        // N585: `align` places the letterbox left/right.
+        assert_eq!(render("fit", Some("left")), vec![0xF800, 0, 0, 0]);
+        assert_eq!(render("fit", Some("right")), vec![0, 0, 0, 0xF800]);
     }
 
     #[test]

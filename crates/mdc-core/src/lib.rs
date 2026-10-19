@@ -421,6 +421,10 @@ pub struct SessionStats {
 /// N547: the metric name a device uses to report applied partial-update tiles.
 pub const TILES_RECEIVED_METRIC: &str = "tiles_received";
 
+/// N586: the device config key that negotiates how many unacknowledged tiles the
+/// host tolerates before forcing a full frame.
+pub const TILES_MISSING_THRESHOLD_CONFIG: &str = "tile_missing_threshold";
+
 #[derive(Debug, Clone)]
 pub struct Frame {
     pub surface_id: String,
@@ -1416,6 +1420,22 @@ impl<T: Transport> Session<T> {
             self.needs_full_frame = true;
         }
         report
+    }
+
+    /// N586: the device-negotiated `tile_missing_threshold`, when it has been read
+    /// via `get_config`. `None` means the device did not advertise one.
+    pub fn tile_missing_threshold(&self) -> Option<u64> {
+        self.config(TILES_MISSING_THRESHOLD_CONFIG)
+            .and_then(|value| value.trim().parse().ok())
+    }
+
+    /// N586: enforce the reconciled threshold from the device configuration. With
+    /// no advertised key the check is a no-op (returns the report unchanged).
+    pub fn enforce_tile_reconciliation_from_config(&mut self) -> TileReconciliation {
+        match self.tile_missing_threshold() {
+            Some(threshold) => self.enforce_tile_reconciliation(threshold),
+            None => self.tile_reconciliation(),
+        }
     }
 
     pub fn poll(&mut self) -> Result<ConnectionState, CoreError> {
