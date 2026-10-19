@@ -955,6 +955,47 @@ mod tests {
     }
 
     #[test]
+    fn vertex_buffer_v1_group_width_matrix() {
+        // N653: every (control mode 0/1, sentinel width 1/2/4) combination
+        // round-trips with real deltas (literal and escape paths).
+        for control in [0u8, 1] {
+            for bits in [1u8, 2, 4] {
+                let stride = 4usize;
+                let modes = [3u8, control, 3, control];
+                let count = 18usize;
+                let values: Vec<Vec<u8>> = (0..count)
+                    .map(|element| {
+                        (0..stride)
+                            .map(|byte| {
+                                if modes[byte] == control {
+                                    // Small steps plus periodic jumps, so a narrow
+                                    // width must use escapes.
+                                    if element % 4 == 3 {
+                                        (element * 37) as u8
+                                    } else {
+                                        (element + byte) as u8
+                                    }
+                                } else {
+                                    ((element * 11 + byte * 7) % 256) as u8
+                                }
+                            })
+                            .collect()
+                    })
+                    .collect();
+                let encoded = encode_vertex_buffer_modes_bits(&values, stride, &modes, bits);
+                let decoded = unwrap_decode(decode_vertex_buffer(
+                    count,
+                    stride,
+                    &encoded,
+                    MeshoptFilter::None,
+                ));
+                let flat: Vec<u8> = values.iter().flatten().copied().collect();
+                assert_eq!(decoded, flat, "control mode {control}, group width {bits}");
+            }
+        }
+    }
+
+    #[test]
     fn vertex_buffer_v1_two_bit_group_round_trip() {
         // N643: a control-mode-1 lane uses 2-bit sentinel groups (literals 0..2,
         // 3 escapes to a raw byte).
@@ -1670,9 +1711,9 @@ mod tests {
         }
     }
 
-    /// N623: a v1 encoder with an explicit control mode per byte lane. Mode 3
-    /// carries arbitrary raw deltas; modes 0/1/2 carry zero deltas (the caller
-    /// must keep those lanes constant at the tail seed), so all v1 branches run.
+    /// N623/N653: a v1 encoder with an explicit control mode per byte lane. Mode 3
+    /// carries raw deltas, modes 0/1 carry sentinel-group deltas (the group width
+    /// is chosen by the caller) and mode 2 carries zero deltas.
     fn encode_vertex_buffer_modes(values: &[Vec<u8>], stride: usize, modes: &[u8]) -> Vec<u8> {
         encode_vertex_buffer_modes_bits(values, stride, modes, 4)
     }
@@ -1717,21 +1758,23 @@ mod tests {
                         // value (the tail seed, 0).
                         assert!(values[offset..offset + block].iter().all(|v| v[byte] == 0));
                     }
-                    0 => {
-                        // control mode 0 → header_modes[1]; group mode 0 = no
-                        // deltas, so only the header bytes are written.
-                        out.extend(std::iter::repeat_n(0u8, header_bytes));
-                        assert!(values[offset..offset + block].iter().all(|v| v[byte] == 0));
-                    }
-                    1 => {
-                        // control mode 1 → header_modes[2]. Each group uses the
-                        // sentinel mode for `group_bits` (1 → group mode 0, 2 → 1,
-                        // 4 → 2): a literal per element, or the all-ones sentinel
-                        // plus a raw byte when the zigzag delta does not fit.
-                        let group_mode = match group_bits {
-                            1 => 0u8,
-                            2 => 1u8,
-                            _ => 2u8,
+                    0 | 1 => {
+                        // N653: control modes 0 and 1 share the sentinel-group
+                        // writer; only the group-mode code differs because the
+                        // header table differs (`header_modes[1]` = [0,1,2,4],
+                        // `header_modes[2]` = [1,2,4,8]).
+                        let group_mode = if mode == 0 {
+                            match group_bits {
+                                1 => 1u8,
+                                2 => 2u8,
+                                _ => 3u8,
+                            }
+                        } else {
+                            match group_bits {
+                                1 => 0u8,
+                                2 => 1u8,
+                                _ => 2u8,
+                            }
                         };
                         let mut header = vec![0u8; header_bytes];
                         for group in 0..group_count {
@@ -1811,7 +1854,7 @@ mod tests {
                                 }
                             }
                             2 => 0,
-                            0 => 0,
+                            0 => ((element * 7 + byte * 3 + 1) % 256) as u8,
                             _ => ((element * 9 + byte * 5 + 4) % 256) as u8,
                         }
                     })
