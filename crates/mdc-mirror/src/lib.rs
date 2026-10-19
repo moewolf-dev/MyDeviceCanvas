@@ -1054,6 +1054,8 @@ pub struct HttpMirrorServer {
     ws_timeouts: u64,
     /// N527: fragment payload size for WebSocket messages (0 = one frame).
     ws_fragment: usize,
+    /// N548: complete client -> server WebSocket messages reassembled.
+    ws_messages: u64,
 }
 
 struct HttpClient {
@@ -1083,6 +1085,11 @@ struct HttpClient {
     ws_last_seen: u64,
     /// N527: pending WebSocket fragments for the current message.
     ws_pending: std::collections::VecDeque<Vec<u8>>,
+    /// N548: a client message being reassembled from fragments, and its opcode.
+    ws_message: Vec<u8>,
+    ws_message_opcode: u8,
+    /// N548: a fragmented client message is in progress.
+    ws_fragmenting: bool,
     /// The peer closed or errored; dropped on the next pump.
     dead: bool,
     /// Frames skipped because the previous part was still being written.
@@ -1157,6 +1164,7 @@ impl HttpMirrorServer {
             ws_pings_sent: 0,
             ws_timeouts: 0,
             ws_fragment: 0,
+            ws_messages: 0,
         })
     }
 
@@ -1194,6 +1202,11 @@ impl HttpMirrorServer {
     /// N517: WebSocket peers dropped for silence.
     pub fn ws_timeouts(&self) -> u64 {
         self.ws_timeouts
+    }
+
+    /// N548: complete client -> server WebSocket messages reassembled.
+    pub fn ws_messages(&self) -> u64 {
+        self.ws_messages
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -1287,6 +1300,9 @@ impl HttpMirrorServer {
                         ws_closing: false,
                         ws_last_seen: 0,
                         ws_pending: std::collections::VecDeque::new(),
+                        ws_message: Vec::new(),
+                        ws_message_opcode: 0,
+                        ws_fragmenting: false,
                         dead: false,
                         clipped: 0,
                     });
@@ -1308,7 +1324,7 @@ impl HttpMirrorServer {
         let health = {
             let body = format!(
                 "{{\"frames\":{},\"clients\":{},\"streaming\":{},\"clipped\":{},\"ws\":{},\
-                  \"ws_pings\":{},\"ws_closes\":{},\"ws_timeouts\":{}}}",
+                  \"ws_pings\":{},\"ws_closes\":{},\"ws_timeouts\":{},\"ws_messages\":{}}}",
                 self.frames,
                 self.clients.len(),
                 self.streaming_clients(),
@@ -1316,7 +1332,8 @@ impl HttpMirrorServer {
                 self.ws_clients(),
                 self.ws_pings,
                 self.ws_closes,
-                self.ws_timeouts
+                self.ws_timeouts,
+                self.ws_messages
             );
             simple_response(200, "application/json", body.as_bytes())
         };
@@ -1389,15 +1406,17 @@ impl HttpMirrorServer {
         }
         // N507: service WebSocket control frames, then flush pending output.
         let (mut pings, mut closes) = (0u64, 0u64);
+        let mut messages = 0u64;
         let mut timeouts = 0u64;
         for client in &mut self.clients {
             if client.dead || !client.streaming {
                 continue;
             }
             if client.websocket {
-                let (seen_pings, seen_closes) = pump_websocket(client, self.frames);
+                let (seen_pings, seen_closes, seen_messages) = pump_websocket(client, self.frames);
                 pings += seen_pings;
                 closes += seen_closes;
+                messages += seen_messages;
                 // N517: drop a peer that has been silent past the timeout.
                 if self.ws_timeout > 0
                     && self.frames.saturating_sub(client.ws_last_seen) > self.ws_timeout
@@ -1413,6 +1432,7 @@ impl HttpMirrorServer {
         }
         self.ws_pings = self.ws_pings.saturating_add(pings);
         self.ws_closes = self.ws_closes.saturating_add(closes);
+        self.ws_messages = self.ws_messages.saturating_add(messages);
         self.ws_timeouts = self.ws_timeouts.saturating_add(timeouts);
         self.clients.retain_mut(|client| {
             if client.dead {
@@ -1588,14 +1608,16 @@ fn flush_stream(client: &mut HttpClient) {
 }
 
 /// N507: read and answer WebSocket control frames (ping/pong/close).
-/// Returns `(pings, closes)` observed. N517: any bytes from the peer refresh the
-/// heartbeat (`frames` is the server's current published-frame counter).
-fn pump_websocket(client: &mut HttpClient, frames: u64) -> (u64, u64) {
+/// Returns `(pings, closes, messages)` observed. N517: any bytes from the peer
+/// refresh the heartbeat (`frames` is the server's current published-frame
+/// counter). N548: data frames (including fragmentation/continuation) are
+/// reassembled into complete messages.
+fn pump_websocket(client: &mut HttpClient, frames: u64) -> (u64, u64, u64) {
     let mut buffer = [0u8; 512];
     match client.stream.read(&mut buffer) {
         Ok(0) => {
             client.dead = true;
-            return (0, 0);
+            return (0, 0, 0);
         }
         Ok(read) => {
             // N517: any traffic from the peer counts as a heartbeat.
@@ -1606,15 +1628,15 @@ fn pump_websocket(client: &mut HttpClient, frames: u64) -> (u64, u64) {
                 client.ws_in.clear();
             }
         }
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock => return (0, 0),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => return (0, 0, 0),
         Err(_) => {
             client.dead = true;
-            return (0, 0);
+            return (0, 0, 0);
         }
     }
-    let (mut pings, mut closes) = (0u64, 0u64);
+    let (mut pings, mut closes, mut messages) = (0u64, 0u64, 0u64);
     loop {
-        let Some((opcode, payload)) = ws_parse_client_frame(&mut client.ws_in) else {
+        let Some((fin, opcode, payload)) = ws_parse_client_frame(&mut client.ws_in) else {
             break;
         };
         match opcode {
@@ -1632,18 +1654,53 @@ fn pump_websocket(client: &mut HttpClient, frames: u64) -> (u64, u64) {
                     .extend_from_slice(&ws_frame_opcode(0x8, &payload));
                 client.ws_closing = true;
             }
+            // N548: a data frame (text/binary) starts or is a whole message.
+            0x1 | 0x2 => {
+                if fin {
+                    messages += 1;
+                } else {
+                    client.ws_fragmenting = true;
+                    client.ws_message_opcode = opcode;
+                    client.ws_message.clear();
+                    ws_append_fragment(client, &payload);
+                }
+            }
+            // N548: a continuation frame finishes the in-progress message.
+            0x0 => {
+                if client.ws_fragmenting {
+                    ws_append_fragment(client, &payload);
+                    if fin {
+                        client.ws_fragmenting = false;
+                        messages += 1;
+                    }
+                }
+            }
             _ => {}
         }
     }
-    (pings, closes)
+    (pings, closes, messages)
+}
+
+/// N548: append a continuation payload, keeping the buffer bounded. An overlong
+/// message is dropped (the fragmenting state resets) rather than grown.
+fn ws_append_fragment(client: &mut HttpClient, payload: &[u8]) {
+    const MAX_WS_MESSAGE: usize = 64 * 1024;
+    if client.ws_message.len() + payload.len() > MAX_WS_MESSAGE {
+        client.ws_message.clear();
+        client.ws_fragmenting = false;
+        return;
+    }
+    client.ws_message.extend_from_slice(payload);
 }
 
 /// N507: parse one masked client frame from the front of `bytes`, consuming it.
-/// Returns the opcode and payload, or `None` when more bytes are needed.
-fn ws_parse_client_frame(bytes: &mut Vec<u8>) -> Option<(u8, Vec<u8>)> {
+/// Returns `(fin, opcode, payload)`, or `None` when more bytes are needed.
+/// N548: `fin` distinguishes fragmentation from close.
+fn ws_parse_client_frame(bytes: &mut Vec<u8>) -> Option<(bool, u8, Vec<u8>)> {
     if bytes.len() < 2 {
         return None;
     }
+    let fin = bytes[0] & 0x80 != 0;
     let opcode = bytes[0] & 0x0f;
     let masked = bytes[1] & 0x80 != 0;
     let (mut header, payload_len) = match bytes[1] & 0x7f {
@@ -1690,7 +1747,7 @@ fn ws_parse_client_frame(bytes: &mut Vec<u8>) -> Option<(u8, Vec<u8>)> {
         }
     }
     bytes.drain(..header + payload_len);
-    Some((opcode, payload))
+    Some((fin, opcode, payload))
 }
 
 fn find_header_end(request: &[u8]) -> Option<usize> {
@@ -3144,6 +3201,82 @@ mod tests {
         }
         assert_eq!(server.ws_closes(), 1);
         assert_eq!(server.ws_clients(), 0, "the client was dropped");
+    }
+
+    #[test]
+    fn websocket_reassembles_fragmented_client_messages() {
+        // N548: a client text message split across a first frame and a
+        // continuation is reassembled and counted once.
+        fn client_frame(fin: bool, opcode: u8, payload: &[u8]) -> Vec<u8> {
+            let mask = [0x21u8, 0x43, 0x65, 0x87];
+            let first = if fin { 0x80 } else { 0x00 } | opcode;
+            let mut out = vec![first, 0x80 | payload.len() as u8];
+            out.extend_from_slice(&mask);
+            out.extend(
+                payload
+                    .iter()
+                    .enumerate()
+                    .map(|(i, byte)| byte ^ mask[i % 4]),
+            );
+            out
+        }
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
+        client
+            .write_all(
+                b"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+                  Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+            )
+            .unwrap();
+        let mut seen = Vec::new();
+        for _ in 0..100 {
+            let _ = server.pump();
+            let mut buffer = [0u8; 4096];
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => seen.extend_from_slice(&buffer[..n]),
+                Err(_) => std::thread::sleep(Duration::from_millis(2)),
+            }
+            if seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        assert_eq!(server.ws_clients(), 1);
+
+        // A fragmented text message reassembles into one complete message.
+        client.write_all(&client_frame(false, 0x1, b"hel")).unwrap();
+        client.write_all(&client_frame(true, 0x0, b"lo")).unwrap();
+        for _ in 0..100 {
+            let _ = server.pump();
+            if server.ws_messages() == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(server.ws_messages(), 1, "one reassembled message");
+
+        // A ping interleaved between the fragments is answered and does not break
+        // reassembly; the follow-up message counts too.
+        client.write_all(&client_frame(false, 0x2, b"AB")).unwrap();
+        client.write_all(&client_frame(true, 0x9, b"x")).unwrap();
+        client.write_all(&client_frame(true, 0x0, b"CD")).unwrap();
+        for _ in 0..100 {
+            let _ = server.pump();
+            if server.ws_messages() == 2 && server.ws_pings() == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(server.ws_messages(), 2);
+        assert_eq!(
+            server.ws_pings(),
+            1,
+            "the ping between fragments was answered"
+        );
     }
 
     #[test]
