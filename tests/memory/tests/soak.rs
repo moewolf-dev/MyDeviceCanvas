@@ -2571,3 +2571,37 @@ fn scaled_image_render_soak_is_bounded() {
         assert_eq!(device.pixels().len(), 32 * 32 * 2);
     }
 }
+
+#[test]
+fn combined_geometry_optimization_soak_is_bounded() {
+    // N564/N571: compaction + reordering is idempotent and keeps a fixed size.
+    let quad = || mdc_model::MeshGeometry {
+        positions: vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [9.0, 9.0, 9.0],
+        ],
+        indices: vec![4, 5, 6, 0, 1, 2, 6, 7, 3, 2, 1, 3],
+        ..Default::default()
+    };
+    let mut geometry = quad();
+    let first = mdc_bake::optimize_geometry(&mut geometry, 4);
+    assert!(first.compacted > 0);
+    let positions = geometry.positions.len();
+    let indices = geometry.indices.len();
+    let mut misses = first.cache_misses;
+    for _ in 0..200 {
+        let result = mdc_bake::optimize_geometry(&mut geometry, 4);
+        assert_eq!(result.compacted, 0, "already compact");
+        assert_eq!(geometry.positions.len(), positions);
+        assert_eq!(geometry.indices.len(), indices);
+        assert!(result.cache_misses <= misses, "misses never increase");
+        misses = result.cache_misses;
+    }
+}

@@ -4911,6 +4911,9 @@ fn ktx2_array_and_cube_containers_import_without_transcoding() {
         .unwrap();
     assert!(model.textures[0].is_ktx2());
     assert_eq!(model.summary().ktx2_textures, 1);
+    // N570: two layers × six faces = twelve slices survive to the IR summary.
+    assert_eq!(model.summary().ktx2_slices, 12);
+    assert_eq!(model.textures[0].ktx2_header().unwrap().slices(), 12);
 }
 
 #[test]
@@ -5086,4 +5089,171 @@ fn mirror_websocket_ignores_reserved_compression_bit_end_to_end() {
     }
     assert_eq!(server.ws_reserved(), 1);
     assert_eq!(server.ws_messages(), 0);
+}
+
+#[test]
+fn tile_threshold_clears_after_a_full_frame() {
+    // N566/N571: once a threshold raises the full-frame barrier, a full frame
+    // clears it and the host converges back to tiling.
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 8,
+        height: 8,
+        supports_partial_update: true,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .send_frame(Frame {
+            surface_id: "main".into(),
+            width: 8,
+            height: 8,
+            bytes: vec![0u8; 8 * 8 * 2],
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    let frame = vec![0u8; 8 * 8 * 2];
+    let mut tracker = mdc_core::DirtyTracker::new((8, 8), 4, 0.9);
+    tracker.mark((0, 0, 1, 1));
+    tracker.mark((4, 4, 1, 1));
+    let base = device.current_frame_id();
+    session
+        .send_dirty_update("main", base, &frame, &mut tracker)
+        .unwrap();
+    // The device never polls, so nothing was acknowledged: a tight threshold
+    // raises the barrier.
+    session.enforce_tile_reconciliation(0);
+    assert!(session.needs_full_frame);
+    // A full frame satisfies the barrier.
+    session
+        .send_frame(Frame {
+            surface_id: "main".into(),
+            width: 8,
+            height: 8,
+            bytes: vec![1u8; 8 * 8 * 2],
+        })
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(!session.needs_full_frame, "converged after a full frame");
+    // Tiling is accepted again.
+    let mut tracker = mdc_core::DirtyTracker::new((8, 8), 4, 0.9);
+    tracker.mark((0, 0, 1, 1));
+    let base = device.current_frame_id();
+    assert!(session
+        .send_dirty_update("main", base, &frame, &mut tracker)
+        .is_ok());
+}
+
+#[test]
+fn image_node_flip_and_rotate_on_the_device() {
+    // N565/N571: a scene image flipped/rotated on the device swaps its halves.
+    let render = |mode: &str, rotate: u16| {
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 4,
+            height: 1,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .set_scene(mdc_protocol::SceneNode {
+                name: "pic".into(),
+                kind: "image".into(),
+                rect: Some([0, 0, 4, 1]),
+                children: Vec::new(),
+                value: Some("f800001f".into()),
+                value2: Some("2,1".into()),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: Some(rotate),
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: Some(mode.into()),
+                focus: None,
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        device.pixel_rgb565(0, 0).unwrap()
+    };
+    // Baseline left column is red; flip and 180° make it blue.
+    assert_eq!(render("", 0), 0xF800);
+    assert_eq!(render("flip-h", 0), 0x001F);
+    assert_eq!(render("", 180), 0x001F);
+}
+
+#[test]
+fn mirror_websocket_rejects_reserved_bit_with_close_1002() {
+    // N567/N571: with the option on, a compressed-bit frame closes with 1002.
+    use std::io::{Read, Write};
+    let mut server = mdc_mirror::HttpMirrorServer::bind("127.0.0.1:0")
+        .unwrap()
+        .with_ws_reject_reserved(true);
+    let addr = server.local_addr().unwrap();
+    let mut client = std::net::TcpStream::connect(addr).unwrap();
+    client
+        .set_read_timeout(Some(std::time::Duration::from_millis(20)))
+        .unwrap();
+    client
+        .write_all(
+            b"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n\
+              Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+              Sec-WebSocket-Extensions: permessage-deflate\r\n\r\n",
+        )
+        .unwrap();
+    let mut handshake = Vec::new();
+    for _ in 0..100 {
+        let _ = server.pump();
+        let mut buffer = [0u8; 4096];
+        match client.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => {
+                handshake.extend_from_slice(&buffer[..n]);
+                if handshake.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(2)),
+        }
+    }
+    assert_eq!(server.ws_offered(), 1);
+    assert!(!String::from_utf8_lossy(&handshake)
+        .to_ascii_lowercase()
+        .contains("permessage-deflate"));
+    let mask = [0xAAu8, 0xBB, 0xCC, 0xDD];
+    let payload = b"z";
+    let mut frame = vec![0x80 | 0x40 | 0x02, 0x80 | payload.len() as u8];
+    frame.extend_from_slice(&mask);
+    frame.extend(
+        payload
+            .iter()
+            .enumerate()
+            .map(|(i, byte)| byte ^ mask[i % 4]),
+    );
+    client.write_all(&frame).unwrap();
+    let mut close = Vec::new();
+    for _ in 0..100 {
+        let _ = server.pump();
+        let mut buffer = [0u8; 64];
+        match client.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => close.extend_from_slice(&buffer[..n]),
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(2)),
+        }
+        if close.len() >= 4 {
+            break;
+        }
+    }
+    assert_eq!(close[0], 0x88);
+    assert_eq!(u16::from_be_bytes([close[2], close[3]]), 1002);
 }
