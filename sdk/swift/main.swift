@@ -128,6 +128,16 @@ struct MdcSwiftHello {
             fputs("tile reconciliation fields are wrong for a fresh mirror\n", stderr)
             exit(1)
         }
+        // N658: the invariants match the C ABI and Node (missing = sent - received,
+        // consistent = sent == received).
+        if tiles.missing != tiles.sent &- tiles.received {
+            fputs("tile reconciliation missing invariant broken\n", stderr)
+            exit(1)
+        }
+        if tiles.consistent != (tiles.sent == tiles.received) {
+            fputs("tile reconciliation consistency invariant broken\n", stderr)
+            exit(1)
+        }
         // N568: the negotiated mode is reported (parity with C/Node).
         if gpu.mirrorMode() != "dirty-region" {
             fputs("mirror mode not reported\n", stderr)
