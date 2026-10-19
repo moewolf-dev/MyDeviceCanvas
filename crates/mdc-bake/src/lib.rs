@@ -888,6 +888,167 @@ pub fn trim_to_vertex_budget(package: &mut mdc_model::DevicePackage, max_vertice
     dropped.len()
 }
 
+/// N545: a deterministic per-vertex key over every attribute that affects the
+/// rendered vertex. Two vertices with an equal key are bit-identical, so one can
+/// stand in for the other without changing any pixel.
+fn vertex_key(geometry: &mdc_model::MeshGeometry, index: usize) -> Vec<u8> {
+    fn f32s<const N: usize>(key: &mut Vec<u8>, values: &[[f32; N]], index: usize) {
+        if let Some(v) = values.get(index) {
+            for component in v {
+                key.extend_from_slice(&component.to_bits().to_le_bytes());
+            }
+        }
+    }
+    fn joints(key: &mut Vec<u8>, values: &[[u16; 4]], index: usize) {
+        if let Some(v) = values.get(index) {
+            for joint in v {
+                key.extend_from_slice(&joint.to_le_bytes());
+            }
+        }
+    }
+    let mut key = Vec::with_capacity(64);
+    f32s(&mut key, &geometry.positions, index);
+    f32s(&mut key, &geometry.uv, index);
+    f32s(&mut key, &geometry.uv2, index);
+    f32s(&mut key, &geometry.normals, index);
+    f32s(&mut key, &geometry.colors, index);
+    f32s(&mut key, &geometry.tangents, index);
+    joints(&mut key, &geometry.skin_joints, index);
+    f32s(&mut key, &geometry.skin_weights, index);
+    joints(&mut key, &geometry.skin_joints2, index);
+    f32s(&mut key, &geometry.skin_weights2, index);
+    for target in &geometry.morph_targets {
+        f32s(&mut key, target, index);
+    }
+    key
+}
+
+/// N545: drop unreferenced vertices and merge bit-identical ones, rewriting the
+/// index buffer. This is the dependency-free, lossless counterpart of a mesh
+/// compressor: the same triangles render identically with fewer vertices and
+/// bytes. Returns the number of vertices removed.
+///
+/// A geometry with no indices is returned unchanged (there is nothing to remap).
+pub fn compact_geometry(geometry: &mut mdc_model::MeshGeometry) -> usize {
+    use std::collections::HashMap;
+    let count = geometry.positions.len();
+    if count == 0 || geometry.indices.is_empty() {
+        return 0;
+    }
+    let mut referenced = vec![false; count];
+    for &index in &geometry.indices {
+        if let Some(flag) = referenced.get_mut(index as usize) {
+            *flag = true;
+        }
+    }
+    let mut remap = vec![u32::MAX; count];
+    let mut kept: Vec<usize> = Vec::new();
+    let mut seen: HashMap<Vec<u8>, u32> = HashMap::new();
+    for (index, is_referenced) in referenced.iter().enumerate() {
+        if !*is_referenced {
+            continue;
+        }
+        let key = vertex_key(geometry, index);
+        let new_index = *seen.entry(key).or_insert_with(|| {
+            let position = kept.len() as u32;
+            kept.push(index);
+            position
+        });
+        remap[index] = new_index;
+    }
+    if kept.len() == count {
+        return 0;
+    }
+    let pick3 = |values: &[[f32; 3]]| -> Vec<[f32; 3]> {
+        if values.is_empty() {
+            Vec::new()
+        } else {
+            kept.iter()
+                .filter_map(|&i| values.get(i).copied())
+                .collect()
+        }
+    };
+    let pick2 = |values: &[[f32; 2]]| -> Vec<[f32; 2]> {
+        if values.is_empty() {
+            Vec::new()
+        } else {
+            kept.iter()
+                .filter_map(|&i| values.get(i).copied())
+                .collect()
+        }
+    };
+    let pick4 = |values: &[[f32; 4]]| -> Vec<[f32; 4]> {
+        if values.is_empty() {
+            Vec::new()
+        } else {
+            kept.iter()
+                .filter_map(|&i| values.get(i).copied())
+                .collect()
+        }
+    };
+    let pick_joints = |values: &[[u16; 4]]| -> Vec<[u16; 4]> {
+        if values.is_empty() {
+            Vec::new()
+        } else {
+            kept.iter()
+                .filter_map(|&i| values.get(i).copied())
+                .collect()
+        }
+    };
+    let positions = pick3(&geometry.positions);
+    let uv = pick2(&geometry.uv);
+    let uv2 = pick2(&geometry.uv2);
+    let normals = pick3(&geometry.normals);
+    let colors = pick4(&geometry.colors);
+    let tangents = pick4(&geometry.tangents);
+    let skin_joints = pick_joints(&geometry.skin_joints);
+    let skin_weights = pick4(&geometry.skin_weights);
+    let skin_joints2 = pick_joints(&geometry.skin_joints2);
+    let skin_weights2 = pick4(&geometry.skin_weights2);
+    let morph_targets = geometry
+        .morph_targets
+        .iter()
+        .map(|target| pick3(target))
+        .collect();
+    let indices: Vec<u32> = geometry
+        .indices
+        .iter()
+        .map(|&index| remap.get(index as usize).copied().unwrap_or(index))
+        .collect();
+    let removed = count - kept.len();
+    geometry.positions = positions;
+    geometry.uv = uv;
+    geometry.uv2 = uv2;
+    geometry.normals = normals;
+    geometry.colors = colors;
+    geometry.tangents = tangents;
+    geometry.skin_joints = skin_joints;
+    geometry.skin_weights = skin_weights;
+    geometry.skin_joints2 = skin_joints2;
+    geometry.skin_weights2 = skin_weights2;
+    geometry.morph_targets = morph_targets;
+    geometry.indices = indices;
+    removed
+}
+
+/// N545: compact every mesh's geometry, returning `(meshes_changed, vertices_removed)`.
+pub fn compact_package_geometry(package: &mut mdc_model::DevicePackage) -> (usize, usize) {
+    let mut changed = 0usize;
+    let mut removed = 0usize;
+    for mesh in &mut package.meshes {
+        if let Some(geometry) = mesh.geometry.as_mut() {
+            let dropped = compact_geometry(geometry);
+            if dropped > 0 {
+                changed += 1;
+                removed += dropped;
+                mesh.vertices = geometry.positions.len() as u32;
+                mesh.indices = geometry.indices.len() as u32;
+            }
+        }
+    }
+    (changed, removed)
+}
+
 /// N504: the coarsest mip level that still covers the target size in both axes.
 /// Returns 0 when the target is at least as large as the source.
 pub fn select_mip_level(width: u32, height: u32, target_w: u32, target_h: u32) -> usize {
@@ -1303,6 +1464,89 @@ mod tests {
         assert_eq!(package.nodes[0].mesh, Some(0));
         // A generous budget trims nothing.
         assert_eq!(trim_to_vertex_budget(&mut package, 1_000), 0);
+    }
+
+    #[test]
+    fn compact_geometry_merges_duplicates_and_drops_unreferenced() {
+        // N545: two triangles that repeat the same three vertices collapse to
+        // three vertices, and a trailing unused vertex is dropped.
+        let mut geometry = mdc_model::MeshGeometry {
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [9.0, 9.0, 9.0],
+            ],
+            indices: vec![0, 1, 2, 3, 4, 5],
+            ..Default::default()
+        };
+        assert_eq!(compact_geometry(&mut geometry), 4);
+        assert_eq!(geometry.positions.len(), 3);
+        assert_eq!(geometry.indices, vec![0, 1, 2, 0, 1, 2]);
+    }
+
+    #[test]
+    fn compact_geometry_keeps_vertices_that_differ_in_any_attribute() {
+        // N545: identical positions but different UVs are distinct vertices.
+        let mut geometry = mdc_model::MeshGeometry {
+            positions: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
+            uv: vec![[0.0, 0.0], [1.0, 1.0], [0.5, 0.5]],
+            indices: vec![0, 1, 2],
+            ..Default::default()
+        };
+        assert_eq!(compact_geometry(&mut geometry), 0);
+        assert_eq!(geometry.positions.len(), 3);
+        // No indices means no remap and no compaction.
+        let mut indexless = mdc_model::MeshGeometry {
+            positions: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            ..Default::default()
+        };
+        assert_eq!(compact_geometry(&mut indexless), 0);
+    }
+
+    #[test]
+    fn compact_package_geometry_updates_the_mesh_counts() {
+        let mut package = mdc_model::DevicePackage {
+            target: "esp32-plane".into(),
+            mode: mdc_model::PackageMode::Mesh,
+            nodes: Vec::new(),
+            meshes: vec![mdc_model::Mesh {
+                vertices: 6,
+                indices: 6,
+                geometry: Some(mdc_model::MeshGeometry {
+                    positions: vec![
+                        [0.0, 0.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        [1.0, 1.0, 0.0],
+                        [0.0, 0.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        [1.0, 1.0, 0.0],
+                    ],
+                    indices: vec![0, 1, 2, 3, 4, 5],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            textures: Vec::new(),
+            materials: Vec::new(),
+            lights: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 0,
+            atlas: None,
+            texture: None,
+            texture_blobs: Vec::new(),
+        };
+        assert_eq!(compact_package_geometry(&mut package), (1, 3));
+        assert_eq!(package.meshes[0].vertices, 3);
+        assert_eq!(package.meshes[0].indices, 6);
+        // A second pass finds nothing left to merge.
+        assert_eq!(compact_package_geometry(&mut package), (0, 0));
     }
 
     #[test]
