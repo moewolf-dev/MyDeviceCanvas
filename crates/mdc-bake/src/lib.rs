@@ -1054,22 +1054,8 @@ pub fn compact_package_geometry(package: &mut mdc_model::DevicePackage) -> (usiz
 /// vertex fetch reuses more vertices, which is what `optimize_index_order`
 /// improves.
 pub fn index_cache_misses(geometry: &mdc_model::MeshGeometry, cache_size: usize) -> u64 {
-    let mut misses = 0u64;
-    let mut cache: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
-    let size = cache_size.max(1);
-    for triangle in geometry.indices.chunks_exact(3) {
-        for &vertex in triangle {
-            if cache.contains(&vertex) {
-                continue;
-            }
-            misses += 1;
-            if cache.len() == size {
-                cache.pop_front();
-            }
-            cache.push_back(vertex);
-        }
-    }
-    misses
+    // N614: the metric lives on the IR so it can also ride in a package manifest.
+    geometry.cache_misses(cache_size)
 }
 
 /// N555: the look-ahead window when picking the next triangle.
