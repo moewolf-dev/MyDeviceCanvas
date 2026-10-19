@@ -46,6 +46,20 @@ test("native simulator session lists a device and accepts an RGB565 frame", { sk
   await assert.rejects(mdc.devices(), /disposed/);
 });
 
+test("native tile reconciliation keeps its invariants", { skip: !native }, async () => {
+  // N648: `missing` and `consistent` agree with `sent`/`received`, matching the
+  // C `mdc_session_tile_reconciliation_ex` fields the other SDKs expose.
+  const mdc = await MyDeviceCanvas.create();
+  const report = await mdc.tileReconciliation();
+  assert.ok(report, "a reconciliation report");
+  assert.equal(report.missing, report.sent - report.received);
+  assert.equal(report.consistent, report.sent === report.received);
+  assert.equal(report.sent, 0, "a fresh simulator sent no tiles");
+  assert.equal(report.bytesSent, 0);
+  assert.equal(report.missing, 0);
+  mdc.dispose();
+});
+
 test("native bounded mirror take drops an oversized frame", { skip: !native }, async () => {
   // N528: `takeMirrorFrameBounded` returns the frame when it fits the cap and
   // drops (counting) it otherwise.
