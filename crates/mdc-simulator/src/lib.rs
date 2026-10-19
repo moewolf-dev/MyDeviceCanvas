@@ -339,9 +339,16 @@ fn blit_hex_rgb565(
     // N575: `fit` preserves the source aspect ratio (letterboxed in the rect);
     // the default stretches each axis independently.
     let (draw_w, draw_h, off_x, off_y) = if mode.fit {
-        let scale = (f32::from(w) / f32::from(src_w)).min(f32::from(h) / f32::from(src_h));
-        let draw_w = ((f32::from(src_w) * scale).round() as u16).clamp(1, w);
-        let draw_h = ((f32::from(src_h) * scale).round() as u16).clamp(1, h);
+        // N605: a quarter-turn swaps the image's effective width/height, so the
+        // fitted box keeps the rotated aspect ratio.
+        let (eff_w, eff_h) = if rotate == 90 || rotate == 270 {
+            (src_h, src_w)
+        } else {
+            (src_w, src_h)
+        };
+        let scale = (f32::from(w) / f32::from(eff_w)).min(f32::from(h) / f32::from(eff_h));
+        let draw_w = ((f32::from(eff_w) * scale).round() as u16).clamp(1, w);
+        let draw_h = ((f32::from(eff_h) * scale).round() as u16).clamp(1, h);
         // N585: horizontal alignment of the letterbox (default centred).
         let off_x = match align {
             "left" => 0,
@@ -4103,6 +4110,54 @@ mod tests {
             render("fit,flip-h", None, Some("left")),
             vec![0x001F, 0xF800, 0, 0]
         );
+    }
+
+    #[test]
+    fn image_fit_quarter_turn_swaps_the_box() {
+        // N605: a 1x2 source fitted into 4x4 is a tall 2x4 box; rotated 90° it
+        // becomes a wide 4x2 box.
+        use mdc_protocol::SceneNode;
+        let render = |rotate: Option<u16>| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 4,
+                height: 4,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "pic".into(),
+                kind: "image".into(),
+                rect: Some([0, 0, 4, 4]),
+                value: Some("f800001f".into()),
+                value2: Some("1,2".into()),
+                children: Vec::new(),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: Some("fit".into()),
+                focus: None,
+            });
+            assert!(device.render_scene());
+            (0..4)
+                .map(|y| {
+                    (0..4)
+                        .map(|x| device.pixel_rgb565(x, y).unwrap())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        // Tall box: column 0 is outside (centred at column 1).
+        let tall = render(None);
+        assert_eq!(tall[0][0], 0, "column 0 is outside the tall box");
+        assert_ne!(tall[0][1], 0, "column 1 is inside");
+        // Wide box: row 0 is outside (centred at row 1).
+        let wide = render(Some(90));
+        assert_eq!(wide[0][0], 0, "row 0 is outside the wide box");
+        assert_ne!(wide[1][0], 0, "row 1 is inside");
     }
 
     #[test]
