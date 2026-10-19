@@ -367,8 +367,22 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
   (`0xe0`/`0xe1`) and index sequences (`0xd0`/`0xd1`). The port is checked against
   the reference decoder's golden fixtures. A malformed stream is a clear error,
   never silent garbage.
-- `KHR_draco_mesh_compression` and `KHR_texture_basisu` are still **rejected**
-  with a clear error (a required extension fails the import).
+- N543: the meshopt decoder is fuzz/bounds hardened. A zero-alpha COLOR filter no
+  longer underflows, every declared size is `checked_mul`'d, and a stream over
+  `MAX_VERTEX_DECODE_BYTES`/`MAX_INDEX_DECODE_BYTES` is rejected before any
+  allocation. Truncated and pseudo-random streams return an error, never panic.
+  meshopt **encoding** is still a gap (no reference encoder to cross-check).
+- N544: `KHR_texture_basisu` is **recognised, not transcoded**. A bounded KTX2
+  header reader (`Ktx2Header::parse`) reports the real pixel size, `vkFormat` and
+  supercompression scheme (`mdc model-info` lists them per texture). A document
+  that merely *uses* the extension imports (metadata only); a document that
+  *requires* it fails. `KHR_draco_mesh_compression` is still rejected outright.
+- `KHR_draco_mesh_compression` is still **rejected** with a clear error (a
+  required extension fails the import).
+- N545: `compact_geometry` is a dependency-free, lossless geometry pass that
+  merges bit-identical vertices (across positions, UVs, normals, colours,
+  tangents, skin and morphs) and drops unreferenced ones, rewriting the index
+  buffer. `mdc package --compact-geometry` reports `compacted_vertices`.
 - N504: a texture with a mip chain (`--texture-mips`) can bake from a coarser
   level (`--mip-level N`); at render time the device picks the coarsest level
   that still covers the target size (`select_mip_level`).

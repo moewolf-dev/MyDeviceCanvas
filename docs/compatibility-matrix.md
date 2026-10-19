@@ -281,6 +281,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Gesture tuning (N488) | sim-verified (`set_gesture_config`) | n/a |
 | e-ink ghosting (N489) | sim-verified (partial refresh) | physical: pending |
 | Texture mip chains (N490) | sim-verified (`TextureBlob.mips`) | physical: pending |
+| meshopt fuzz hardening (N543) | sim-verified (no panic on malformed) | n/a |
+| KTX2 header (N544) | sim-verified (size/format; no transcode) | physical: pending |
+| Geometry compaction (N545) | sim-verified (lossless merge + install) | physical: pending |
+| Focus animation (N546) | sim-verified (centre moves over time) | physical: pending |
+| Tile snapshot (N547) | sim-verified (device metric folded in) | n/a |
+| WS client fragments (N548) | sim-verified (continuation reassembly) | n/a |
+| Swift mirror mode (N549) | sim-verified (mode + skips parity) | physical: pending |
+| JSONL verdict tail (N550) | sim-verified (last line) | n/a |
 
 ## G03 sim exit
 

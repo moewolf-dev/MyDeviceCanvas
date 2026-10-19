@@ -165,6 +165,12 @@ falls back to requiring a full frame). A `full-frame`-only host still receives
 full frames; `dirty-region` never replaces the full-frame contract. The simulator
 models this with `BoardProfile.mirror_dirty_region` (`linux-virt` / `pi4-hdmi`).
 
+N547 adds a host-side accounting path: a device reports an applied-tile count as a
+`tiles_received` `Metric` on the independent diagnostics channel, and
+`Session::stats()` folds it into `SessionStats.device_tiles_received` /
+`tiles_missing` (with `Session::tile_reconciliation()` for the sent/received
+pair). The count travels on diagnostics, so a saturated image link cannot lose it.
+
 ### 4.3 Mirror read source — what `MIRRORFRAME` actually captures (N309)
 
 Open question from report 2: does the device mirror the **LVGL/drawer buffer** it

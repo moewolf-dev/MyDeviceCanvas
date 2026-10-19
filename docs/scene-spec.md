@@ -74,6 +74,8 @@ A device that accepts a scene rasterizes it locally:
 - N463: `anim` is `{duration_ms, looping, opacity: [[time_ms, opacity]...],
   rect: [[time_ms, x, y, w, h]...]}`. Keyframes are linearly interpolated on the
   device clock; a looping clip wraps, otherwise it holds the last frame.
+- N546: `anim.focus: [[time_ms, cx%, cy%]...]` animates the radial `gradient`
+  centre (same percent semantics as `focus`); values are clamped to `0..=100`.
 - N475: `rotate: 90|180|270` swaps the rect axes for axis-aligned fills; a rotated
   `gradient` runs horizontally.
 - N480: `blend: "additive"` adds a `rect`/`gradient` to the framebuffer (saturating

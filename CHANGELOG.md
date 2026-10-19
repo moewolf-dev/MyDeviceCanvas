@@ -2,6 +2,46 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.67] — meshopt fuzz hardening, KTX2 header, geometry compaction, focus animation, tile snapshot, WS client fragments (N543–N552)
+
+### Added
+
+- `KHR_texture_basisu`: a bounded **KTX2 header reader** (`mdc_model::Ktx2Header`,
+  `is_ktx2`) reports a Basis texture's real size, `vkFormat` and
+  supercompression scheme. Metadata now imports; only a document that *requires*
+  the extension is rejected, and transcoding is still refused (the bake yields an
+  empty blob). `mdc model-info` lists per-texture size/format + KTX2 fields
+  (N544)
+- `mdc_bake::compact_geometry`/`compact_package_geometry`: a dependency-free,
+  lossless geometry pass that merges bit-identical vertices and drops
+  unreferenced ones; `mdc package --compact-geometry` reports
+  `compacted_vertices` (N545)
+- scene `gradient` `focus` keyframes (`SceneAnim.focus`, `focus_at`) animate the
+  radial centre on the device clock (N546)
+- `SessionStats.device_tiles_received`/`tiles_missing` and
+  `Session::tile_reconciliation`: a device `tiles_received` metric is folded into
+  the one `stats()` snapshot (N547)
+- `mdc-mirror` `/ws` reassembles **client → server** WebSocket messages
+  (fragmentation + continuation, control frames interleaved); `ws_messages()`
+  counter, `/health` and `mdc mirror` expose it (N548)
+- Swift `MdcMirrorMode` + `startMirror(surfaceId:mode:maxFps:)`,
+  `takeMirrorFrameWithSurface`, `mirrorSkips`, and mode-aware `mirrorFrames`/
+  `mirrorFramesBounded` (parity with C/Node) (N549)
+
+### Changed
+
+- `meshopt` decoding is **fuzz/bounds hardened**: a zero-alpha COLOR filter no
+  longer underflows, and a declared size over `MAX_VERTEX_DECODE_BYTES` /
+  `MAX_INDEX_DECODE_BYTES` is rejected before allocating (N543)
+- `mdc-inspector --jsonl` always ends with the one-line JSON verdict, written
+  through the same writer as the samples (N550)
+
+### Notes
+
+- meshopt **encoding** remains a gap (no reference encoder to cross-check); the
+  compaction pass is the host-side, verifiable substitute (N545). Physical
+  verification (D05/G03/H06) is still pending.
+
 ## [0.1.66] — meshopt decoding, radial gradient focus, tile reconciliation, WS fragment floor, C mirror mode, paced replay (N533–N542)
 
 ### Added
