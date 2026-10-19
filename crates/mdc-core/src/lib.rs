@@ -509,6 +509,12 @@ impl TileReconciliation {
     pub fn missing(&self) -> u64 {
         self.sent.saturating_sub(self.received)
     }
+
+    /// N557: whether the device has fallen behind by more than `max_missing`
+    /// tiles, so the next update should resynchronise with a full frame.
+    pub fn needs_full_frame(&self, max_missing: u64) -> bool {
+        self.missing() > max_missing
+    }
 }
 
 /// N536: compare the host's tile counters with the device's reported count, so a
@@ -1401,6 +1407,17 @@ impl<T: Transport> Session<T> {
         reconcile_tiles(&self.stats(), self.device_tiles_received)
     }
 
+    /// N557: if the device has not acknowledged more than `max_missing` tiles,
+    /// set `needs_full_frame` so the next update resynchronises. Returns the
+    /// reconciliation that was evaluated.
+    pub fn enforce_tile_reconciliation(&mut self, max_missing: u64) -> TileReconciliation {
+        let report = self.tile_reconciliation();
+        if report.needs_full_frame(max_missing) {
+            self.needs_full_frame = true;
+        }
+        report
+    }
+
     pub fn poll(&mut self) -> Result<ConnectionState, CoreError> {
         // 已经进缓冲区的包先处理。对端先写下 cancel 再关闭时，不能让关闭错误吞掉这些包。
         loop {
@@ -2258,6 +2275,11 @@ impl<T: Transport> Session<T> {
     /// one frame; a newer frame replaces an unread one (latest-frame-wins).
     pub fn take_mirror_frame(&mut self) -> Option<MirrorFrame> {
         self.mirror_inbox.take()
+    }
+    /// N559: the negotiated mirror mode (`"full-frame"` | `"dirty-region"`; empty
+    /// before the device confirms a `MIRRORCTRL start`).
+    pub fn mirror_mode(&self) -> &str {
+        &self.mirror_mode
     }
     /// N24: mirror counters for a host/inspector without draining the inbox.
     pub fn mirror_stats(&self) -> MirrorStats {
@@ -4560,6 +4582,63 @@ mod tests {
         assert_eq!((report.sent, report.received), (1, 1));
         assert_eq!(report.missing(), 0);
         assert!(report.consistent);
+    }
+
+    #[test]
+    fn tile_reconciliation_threshold_forces_a_full_frame() {
+        // N557: too many unacknowledged tiles set the full-frame barrier.
+        let (host_link, mut device_link) = MemoryLink::pair();
+        let mut session = Session::new(host_link);
+        session.connect().unwrap();
+        let hello_bytes = device_link.read().unwrap().unwrap();
+        let (hello, _) = Packet::decode(&hello_bytes, 4096).unwrap();
+        write_caps(&mut device_link, hello.request_id, &caps());
+        session.poll().unwrap();
+        for (x, y) in [(0u16, 0u16), (1, 0), (0, 1)] {
+            session
+                .send_tile(Tile {
+                    surface_id: "main".into(),
+                    base_frame_id: 1,
+                    x,
+                    y,
+                    width: 1,
+                    height: 1,
+                    bytes: vec![0x11, 0x22],
+                })
+                .unwrap();
+        }
+        let metric = MetricReport {
+            name: TILES_RECEIVED_METRIC.into(),
+            value: 1.0,
+            unit: None,
+            boot_id: 0,
+            run_id: 0,
+            event_seq: 1,
+        };
+        device_link
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Metric,
+                    flags: 0,
+                    request_id: 0,
+                    payload: encode_control(&metric).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        assert_eq!(session.tile_reconciliation().missing(), 2);
+        // A generous threshold keeps tiling; a tight one forces a full frame.
+        assert!(!session.tile_reconciliation().needs_full_frame(5));
+        let report = session.enforce_tile_reconciliation(1);
+        assert!(report.needs_full_frame(1));
+        assert!(session.needs_full_frame);
+        // The check itself is side-effect free when it passes.
+        session.needs_full_frame = false;
+        session.enforce_tile_reconciliation(5);
+        assert!(!session.needs_full_frame);
     }
 
     #[test]

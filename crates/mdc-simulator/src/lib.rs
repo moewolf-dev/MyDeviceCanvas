@@ -238,6 +238,56 @@ fn draw_text(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// N556: decode a tightly packed `w*h` RGB565 hex word string (4 nibbles each).
+fn decode_hex_words(hex: &str, count: usize) -> Option<Vec<u16>> {
+    if hex.len() != count * 4 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(count);
+    for index in 0..count {
+        let start = index * 4;
+        out.push(u16::from_str_radix(&hex[start..start + 4], 16).ok()?);
+    }
+    Some(out)
+}
+
+/// N556: sample a decoded source grid at `(fx, fy)` in `0..=1`, nearest (default)
+/// or bilinear. Edge samples clamp to the border texel.
+fn sample_source(source: &[u16], src_w: u32, src_h: u32, fx: f32, fy: f32, linear: bool) -> u16 {
+    let max_x = src_w.saturating_sub(1);
+    let max_y = src_h.saturating_sub(1);
+    if !linear {
+        let sx = ((fx * src_w as f32) as u32).min(max_x);
+        let sy = ((fy * src_h as f32) as u32).min(max_y);
+        return source[(sy * src_w + sx) as usize];
+    }
+    // Clamp the (continuous) sample position to the source edges first, so a
+    // border pixel blends toward the edge texel rather than reading outside it.
+    let px = (fx * src_w as f32 - 0.5).clamp(0.0, max_x as f32);
+    let py = (fy * src_h as f32 - 0.5).clamp(0.0, max_y as f32);
+    let x0 = px.floor() as u32;
+    let y0 = py.floor() as u32;
+    let x1 = (x0 + 1).min(max_x);
+    let y1 = (y0 + 1).min(max_y);
+    let tx = px - x0 as f32;
+    let ty = py - y0 as f32;
+    let at = |x: u32, y: u32| source[(y * src_w + x) as usize];
+    let mix = |a: u16, b: u16, t: f32| -> u16 {
+        let channel = |shift: u32| -> u16 {
+            let av = (a >> shift) & 0x1f;
+            let bv = (b >> shift) & 0x1f;
+            ((av as f32) + ((bv as f32) - (av as f32)) * t).round() as u16 & 0x1f
+        };
+        (channel(11) << 11) | (channel(5) << 5) | channel(0)
+    };
+    let top = mix(at(x0, y0), at(x1, y0), tx);
+    let bottom = mix(at(x0, y1), at(x1, y1), tx);
+    mix(top, bottom, ty)
+}
+
+/// N556: blit a hex RGB565 image, optionally scaling a `src_w × src_h` source
+/// grid into the `w × h` destination with nearest or bilinear sampling.
+#[allow(clippy::too_many_arguments)]
 fn blit_hex_rgb565(
     pixels: &mut [u8],
     width: u32,
@@ -248,29 +298,42 @@ fn blit_hex_rgb565(
     h: u16,
     hex: &str,
     alpha: u8,
+    src_w: u16,
+    src_h: u16,
+    linear: bool,
 ) -> bool {
-    let expected = usize::from(w) * usize::from(h) * 4;
-    if hex.len() != expected || w == 0 || h == 0 {
+    if w == 0 || h == 0 || src_w == 0 || src_h == 0 {
         return false;
     }
+    let Some(source) = decode_hex_words(hex, usize::from(src_w) * usize::from(src_h)) else {
+        return false;
+    };
     let mut drew = false;
     for row in 0..u32::from(h) {
+        let py = u32::from(y) + row;
+        if py >= height {
+            break;
+        }
+        let fy = (row as f32 + 0.5) / f32::from(h);
         for col in 0..u32::from(w) {
             let px = u32::from(x) + col;
-            let py = u32::from(y) + row;
-            if px >= width || py >= height {
-                continue;
+            if px >= width {
+                break;
             }
-            let start = ((row * u32::from(w) + col) * 4) as usize;
-            let Ok(value) = u16::from_str_radix(&hex[start..start + 4], 16) else {
-                return false;
-            };
+            let fx = (col as f32 + 0.5) / f32::from(w);
+            let value = sample_source(&source, u32::from(src_w), u32::from(src_h), fx, fy, linear);
             let at = ((py * width + px) * 2) as usize;
             put_pixel(pixels, at, value, alpha);
             drew = true;
         }
     }
     drew
+}
+
+/// N556: a `"sw,sh"` source dimension spec for an `image` node.
+fn parse_source_dims(spec: Option<&str>) -> Option<(u16, u16)> {
+    let (w, h) = spec?.split_once(',')?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1104,7 +1167,13 @@ fn fill_scene(
     } else if node.kind == "image" {
         if let (Some(rect), Some(hex)) = (rect, node.value.as_deref()) {
             let [x, y, w, h] = transform.apply(rect);
-            if blit_hex_rgb565(pixels, width, height, x, y, w, h, hex, alpha) {
+            // N556: `value2` gives the source grid ("sw,sh", default the rect
+            // size); `mode: "linear"` scales it with bilinear filtering.
+            let (src_w, src_h) = parse_source_dims(node.value2.as_deref()).unwrap_or((w, h));
+            let linear = node.mode.as_deref() == Some("linear");
+            if blit_hex_rgb565(
+                pixels, width, height, x, y, w, h, hex, alpha, src_w, src_h, linear,
+            ) {
                 *drew = true;
             }
         }
@@ -3739,6 +3808,50 @@ mod tests {
         assert!(device.render_scene());
         assert_ne!(device.pixel_rgb565(0, 0), Some(0));
         assert_eq!(device.pixel_rgb565(12, 0), Some(0x07e0));
+    }
+
+    #[test]
+    fn image_node_scales_with_nearest_and_bilinear() {
+        // N556: a 2x1 source (red, blue) scaled to a 4x1 rect.
+        use mdc_protocol::SceneNode;
+        let render = |mode: Option<&str>| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 4,
+                height: 1,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "pic".into(),
+                kind: "image".into(),
+                rect: Some([0, 0, 4, 1]),
+                value: Some("f800001f".into()),
+                value2: Some("2,1".into()),
+                children: Vec::new(),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: mode.map(str::to_string),
+                focus: None,
+            });
+            assert!(device.render_scene());
+            (0..4)
+                .map(|x| device.pixel_rgb565(x, 0).unwrap())
+                .collect::<Vec<_>>()
+        };
+        // Nearest: two columns of red then two of blue.
+        let nearest = render(None);
+        assert_eq!(nearest, vec![0xF800, 0xF800, 0x001F, 0x001F]);
+        // Bilinear: the interior column is a blend, not an exact endpoint colour.
+        let linear = render(Some("linear"));
+        assert_ne!(linear[1], 0xF800, "bilinear blends");
+        assert_ne!(linear[1], 0x001F, "bilinear blends");
+        assert_eq!(linear[0], 0xF800, "the first column is still red");
+        assert_eq!(linear[3], 0x001F, "the last column is still blue");
     }
 
     #[test]
