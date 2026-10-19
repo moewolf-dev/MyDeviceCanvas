@@ -2,6 +2,32 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.69] — meshopt branch coverage, combined geometry optimization, image flip/rotate, tile convergence, WS extension rejection, C/Swift mirror mode, JSONL rotation (N563–N572)
+
+### Added
+
+- a directed meshopt guard corpus + [`meshopt-coverage.md`](docs/meshopt-coverage.md)
+  documenting the branch inventory and declared gaps (N563)
+- `mdc_bake::optimize_geometry`/`optimize_package_geometry`: compaction **then**
+  index reordering; `mdc package --optimize-geometry [CACHE]` (N564)
+- scene `image` `mode` flip tokens (`flip-h`/`flip-v`) and `rotate` sampling
+  (N565)
+- an end-to-end convergence test that a full frame clears the tile-threshold
+  barrier (N566)
+- `mdc-mirror` records WebSocket extension offers (`ws_offered`) and, via
+  `with_ws_reject_reserved` / `mirror --ws-reject-reserved`, fails a reserved-bit
+  frame with close `1002` (N567)
+- C `mdc_mirror_mode` + Swift `mirrorMode()` (parity with Node) (N568)
+- `mdc-inspector --out PATH --append --max-bytes N` appends and rotates the JSONL
+  file (N569)
+- KTX2 container metadata reachable from the IR (`Texture::ktx2_header`),
+  `ModelSummary.ktx2_slices`, and `mdc package --report` `ktx2_textures`/
+  `ktx2_slices` (N570)
+
+### Notes
+
+- Physical verification (D05/G03/H06) is still pending.
+
 ## [0.1.68] — meshopt fuzz corpus, KTX2 container dims, cache-friendly index order, image scaling, tile threshold, WS compression bit, Node mirror mode, JSONL file (N553–N562)
 
 ### Added

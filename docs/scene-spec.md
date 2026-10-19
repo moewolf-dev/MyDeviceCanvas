@@ -93,8 +93,10 @@ A device that accepts a scene rasterizes it locally:
   reported one on the input event.
 - `image` blits tightly packed RGB565 when `value` is `sw*sh` hex words (4 digits
   each, little-endian on the framebuffer). `value2: "sw,sh"` sets the source grid
-  (default: the rect size) and `mode: "linear"` scales it with bilinear filtering
-  (`nearest` is the default). A short or malformed string draws nothing.
+  (default: the rect size) and `mode` is a comma list of `linear` (bilinear
+  filtering; nearest is the default), `flip-h` and `flip-v`. N565: the node's
+  `rotate` (0/90/180/270) turns the sampled image about the rect centre. A short
+  or malformed string draws nothing.
 - `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour.
   A missing atlas or index draws nothing.
 - `circle` fills the ellipse inscribed in `rect` with the `value` colour; a  zero width or height draws nothing.

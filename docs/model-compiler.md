@@ -392,6 +392,14 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
   (a bounded look-ahead greedy over a FIFO cache); the triangle set is unchanged.
   `mdc package --optimize-index [CACHE]` reports `index_cache_misses` and
   `reordered_meshes`.
+- N563: the decoder's branch inventory and fuzz passes are documented in
+  [`meshopt-coverage.md`](meshopt-coverage.md).
+- N564: `optimize_geometry`/`optimize_package_geometry` run compaction *before*
+  index reordering (smaller working set); `mdc package --optimize-geometry [CACHE]`
+  enables both at once.
+- N570: a KTX2 texture's container metadata (mip levels, slices, 2D/array/cubemap/
+  volume) is reachable from the IR via `Texture::ktx2_header()`; `ModelSummary`
+  sums `ktx2_slices` and `mdc package --report` reports `ktx2_textures`/`ktx2_slices`.
 - N504: a texture with a mip chain (`--texture-mips`) can bake from a coarser
   level (`--mip-level N`); at render time the device picks the coarsest level
   that still covers the target size (`select_mip_level`).

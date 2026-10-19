@@ -87,7 +87,10 @@ fragmentation and continuation frames is completed (control frames may interleav
 bounded at 64 KiB per message, and counted in `/health`'s `ws_messages` field and
 `mdc mirror`'s `ws_messages`. N558 handles the reserved (compression) bit:
 `permessage-deflate` is never negotiated, so a frame that sets it is counted
-(`ws_reserved`) and ignored instead of being mis-read as plain data.
+(`ws_reserved`) and ignored instead of being mis-read as plain data. N567 records
+extension offers (`ws_offered`, never echoed) and, with
+`--ws-reject-reserved` / `with_ws_reject_reserved(true)`, fails the connection
+with a `1002` close instead of ignoring the frame.
 
 ## Guarantees
 

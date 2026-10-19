@@ -297,6 +297,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | WS compression bit (N558) | sim-verified (counted, ignored) | n/a |
 | Node mirror mode (N559) | sim-verified (`normalizeMirrorMode` + `mirrorMode`) | n/a |
 | JSONL file (N560) | sim-verified (`--out`) | n/a |
+| meshopt branch corpus (N563) | sim-verified (guard inventory) | n/a |
+| Combined optimization (N564) | sim-verified (compact then reorder) | physical: pending |
+| Image flip/rotate (N565) | sim-verified (flip-h + 180°) | physical: pending |
+| Tile convergence (N566) | sim-verified (full frame clears) | n/a |
+| WS extension rejection (N567) | sim-verified (1002 close) | n/a |
+| C/Swift mirror mode (N568) | sim-verified (`mdc_mirror_mode` + Swift) | n/a |
+| JSONL rotation (N569) | sim-verified (`--append`/`--max-bytes`) | n/a |
+| KTX2 metadata in IR (N570) | sim-verified (`ktx2_slices`) | n/a |
 
 ## G03 sim exit
 
