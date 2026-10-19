@@ -4555,22 +4555,31 @@ mod tests {
         let report = model.validate();
         let json = validation_json(&report, false);
         let text = serde_json::to_string(&json).unwrap();
-        // The keys appear in sorted order, so a consumer can diff the output.
-        let expected = [
-            "\"ktx2_slices\"",
-            "\"ktx2_textures\"",
-            "\"problems\"",
-            "\"strict\"",
-            "\"summary\"",
-            "\"valid\"",
-            "\"warnings\"",
-        ];
-        let mut cursor = 0usize;
-        for key in expected {
-            let found = text[cursor..]
-                .find(key)
-                .unwrap_or_else(|| panic!("{key} missing after {cursor}"));
-            cursor += found + key.len();
+        // N660: a snapshot of the top-level key order (pretty lines at exactly one
+        // level of indentation), so a reordering is caught, not just a rename.
+        let pretty = serde_json::to_string_pretty(&json).unwrap();
+        let top: Vec<&str> = pretty
+            .lines()
+            .filter(|line| line.starts_with("  \"") && !line.starts_with("   "))
+            .filter_map(|line| line.trim().split('"').nth(1))
+            .collect();
+        assert_eq!(
+            top,
+            vec![
+                "ktx2_slices",
+                "ktx2_textures",
+                "problems",
+                "strict",
+                "summary",
+                "valid",
+                "warnings",
+            ],
+            "the top-level key order is a contract"
+        );
+        // The compact form stays one line and carries the same keys.
+        assert!(!text.contains('\n'));
+        for key in &top {
+            assert!(text.contains(&format!("\"{key}\":")), "{key}");
         }
         // The nested summary carries its own stable keys too.
         assert!(text.contains("\"ktx2_textures\":"));
