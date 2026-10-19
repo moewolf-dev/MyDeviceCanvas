@@ -2,6 +2,26 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.70] — meshopt LEB128 corpus, adaptive cache, image fit, tile reconciliation to C/Node, WS log, JSONL dir rotation (N573–N582)
+
+### Added
+
+- directed LEB128 / half-packet meshopt corpus (N573)
+- `mdc_bake::adaptive_cache_size` / `optimize_geometry_auto`: a mesh-scaled
+  vertex cache, selected by `mdc package --optimize-geometry` with no value
+  (N574)
+- scene `image` `mode: fit` (aspect-preserving letterbox) (N575)
+- C `mdc_session_tile_reconciliation` + Node `tileReconciliation()` (N576)
+- `mdc-mirror` `ws_log()`: a bounded log of WebSocket declines/failures
+  (`/health` count, `mdc mirror` `ws_log`) (N577)
+- Swift smoke exercises `takeMirrorFrameWithSurface`/`mirrorSkips` (N578)
+- `mdc-inspector --keep N` shifts JSONL rotations to `PATH.1..PATH.N` (N579)
+
+### Docs
+
+- KTX2 render-path degradation is documented as a declared, non-silent
+  limitation (N580).
+
 ## [0.1.69] — meshopt branch coverage, combined geometry optimization, image flip/rotate, tile convergence, WS extension rejection, C/Swift mirror mode, JSONL rotation (N563–N572)
 
 ### Added

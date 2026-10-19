@@ -400,6 +400,12 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
 - N570: a KTX2 texture's container metadata (mip levels, slices, 2D/array/cubemap/
   volume) is reachable from the IR via `Texture::ktx2_header()`; `ModelSummary`
   sums `ktx2_slices` and `mdc package --report` reports `ktx2_textures`/`ktx2_slices`.
+- N580: KTX2/Basis is **metadata only** in the render path. `attach_model_textures`
+  returns an empty blob for a KTX2 image (the host does not transcode), so the
+  mesh renders with its material colour and no base-colour texture; `Model::validate`
+  warns and `mdc validate`/`mdc model-info` report it. `mdc render-package`/device
+  rendering therefore show a solid fill rather than the packed texture — this is a
+  declared degradation, not a silent fallback to a wrong texel.
 - N504: a texture with a mip chain (`--texture-mips`) can bake from a coarser
   level (`--mip-level N`); at render time the device picks the coarsest level
   that still covers the target size (`select_mip_level`).

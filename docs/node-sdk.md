@@ -33,6 +33,7 @@ is idempotent and cancels listeners; every method rejects after dispose.
 | `mirrorMode()` | N559: the negotiated mode (`full-frame` \| `dirty-region`) |
 | `MyDeviceCanvas.normalizeMirrorMode(mode)` | N559: static; rejects an unknown mode |
 | `takeMirrorFrame()` / `onMirrorFrame(fn)` / `mirrorStats()` / `mirrorSkips()` | pixel + stats access |
+| `tileReconciliation()` | N576: partial-update `{sent, received, missing, bytesSent, consistent}` |
 | `getConfig(key)` / `setConfig(key, value)` | capability-gated |
 | `setScene(node)` / `clearScene()` | CBOR scene |
 | `setAnimation(clip)` / `stopAnimation()` | baked-atlas clip |

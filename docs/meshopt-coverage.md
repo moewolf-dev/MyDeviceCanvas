@@ -39,6 +39,9 @@ checked against expected output, not a self-consistent pair:
   index buffer, index sequence, all-ones header, oversized LEB128) with every
   single-byte mutation (`0x00`, `0xFF`, MSB flip) and every truncation.
 - `color_filter_with_zero_alpha_does_not_panic`: the specific underflow (N543).
+- `malformed_leb128_and_half_packets_are_errors` (N573): directed LEB128 overflow,
+  a never-terminating LEB128 run, a value truncated mid-field, a short aux table,
+  and a stream shorter than its vertex tail.
 
 ## Not covered (declared gaps)
 

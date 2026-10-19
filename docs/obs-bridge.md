@@ -90,7 +90,10 @@ bounded at 64 KiB per message, and counted in `/health`'s `ws_messages` field an
 (`ws_reserved`) and ignored instead of being mis-read as plain data. N567 records
 extension offers (`ws_offered`, never echoed) and, with
 `--ws-reject-reserved` / `with_ws_reject_reserved(true)`, fails the connection
-with a `1002` close instead of ignoring the frame.
+with a `1002` close instead of ignoring the frame. N577 keeps a bounded
+`ws_log()` of these decisions (`declined extension: …`,
+`reserved bit set: closed 1002`); `/health` reports `ws_log` (a count) and
+`mdc mirror` reports `ws_log` (the entries).
 
 ## Guarantees
 

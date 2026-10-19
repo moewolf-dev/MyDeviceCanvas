@@ -305,6 +305,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | C/Swift mirror mode (N568) | sim-verified (`mdc_mirror_mode` + Swift) | n/a |
 | JSONL rotation (N569) | sim-verified (`--append`/`--max-bytes`) | n/a |
 | KTX2 metadata in IR (N570) | sim-verified (`ktx2_slices`) | n/a |
+| meshopt LEB128 corpus (N573) | sim-verified (overflow + half-packet) | n/a |
+| Adaptive cache (N574) | sim-verified (mesh-scaled) | physical: pending |
+| Image `fit` (N575) | sim-verified (letterbox) | physical: pending |
+| Tile reconciliation (N576) | sim-verified (C + Node) | n/a |
+| WS decline log (N577) | sim-verified (`ws_log`) | n/a |
+| Swift mirror parity (N578) | sim-verified (surface take + skips) | physical: pending |
+| JSONL dir rotation (N579) | sim-verified (`--keep`) | n/a |
+| KTX2 degradation doc (N580) | documented | n/a |
 
 ## G03 sim exit
 
