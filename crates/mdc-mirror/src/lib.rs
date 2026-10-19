@@ -1281,6 +1281,16 @@ impl HttpMirrorServer {
     }
 
     /// N617: the WebSocket notes of one `kind` (`"extension"` | `"reserved"`).
+    /// N647: how many retained notes there are per kind. The log itself is
+    /// bounded, so this summary is too.
+    pub fn ws_log_counts(&self) -> std::collections::BTreeMap<String, usize> {
+        let mut counts = std::collections::BTreeMap::new();
+        for note in &self.ws_log {
+            *counts.entry(note.kind.clone()).or_insert(0) += 1;
+        }
+        counts
+    }
+
     pub fn ws_log_of_kind<'a>(&'a self, kind: &'a str) -> impl Iterator<Item = &'a WebSocketNote> {
         self.ws_log.iter().filter(move |note| note.kind == kind)
     }
@@ -3129,6 +3139,27 @@ mod tests {
             pixels: &pixels[..64],
         });
         assert_eq!(server.frames_published(), 1);
+    }
+
+    #[test]
+    fn websocket_log_counts_summarize_each_kind() {
+        // N647: the per-kind summary covers exactly the retained notes.
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        for _ in 0..3 {
+            server.note_ws("reserved", "ignored");
+        }
+        for _ in 0..2 {
+            server.note_ws("fragment", "continued");
+        }
+        let counts = server.ws_log_counts();
+        assert_eq!(counts.get("reserved"), Some(&3));
+        assert_eq!(counts.get("fragment"), Some(&2));
+        assert_eq!(
+            counts.values().sum::<usize>(),
+            server.ws_log().len(),
+            "the summary matches the log"
+        );
+        assert!(!server.ws_log_counts().contains_key("timeout"));
     }
 
     #[test]
