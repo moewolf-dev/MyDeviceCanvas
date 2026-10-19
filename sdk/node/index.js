@@ -201,6 +201,11 @@ export class MyDeviceCanvas {
     if (this._disposed) throw new Error("manager is disposed");
     return (await this._native.mirrorStats?.()) ?? null;
   }
+  /** N576: partial-update tiles sent/received/missing (parity with C). */
+  async tileReconciliation() {
+    if (this._disposed) throw new Error("manager is disposed");
+    return (await this._native.tileReconciliation?.()) ?? null;
+  }
   /** N42: read a device configuration value. */
   async getConfig(key) {
     if (this._disposed) throw new Error("manager is disposed");

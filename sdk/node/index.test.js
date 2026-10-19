@@ -145,6 +145,21 @@ test("mirror events and controls go through the public SDK", async () => {
   assert.equal(stats.framesReceived, 1);
 });
 
+test("tile reconciliation goes through the public SDK", async () => {
+  // N576: the host snapshot exposes sent/received/missing.
+  const mdc = new MyDeviceCanvas({
+    tileReconciliation: async () => ({
+      sent: 3, received: 2, missing: 1, bytesSent: 48, consistent: false,
+    }),
+  });
+  const report = await mdc.tileReconciliation();
+  assert.equal(report.sent, 3);
+  assert.equal(report.received, 2);
+  assert.equal(report.missing, 1);
+  assert.equal(report.consistent, false);
+  mdc.dispose();
+});
+
 test("config get/set go through the public SDK", async () => {
   const writes = [];
   const mdc = new MyDeviceCanvas({

@@ -56,6 +56,14 @@ export interface MirrorStats {
   framesDropped: number;
   lastFrameId: number;
 }
+/** N576: partial-update tile reconciliation. */
+export interface TileReconciliation {
+  sent: number;
+  received: number;
+  missing: number;
+  bytesSent: number;
+  consistent: boolean;
+}
 /** N349: one diagnostics record. */
 export interface DiagnosticDto {
   kind: string;
@@ -119,6 +127,8 @@ export declare class MyDeviceCanvas {
   /** N528: frames dropped because the caller's cap was too small. */
   mirrorSkips(): Promise<number>;
   mirrorStats(): Promise<MirrorStats | null>;
+  /** N576: partial-update tiles sent/received/missing (parity with C). */
+  tileReconciliation(): Promise<TileReconciliation | null>;
   getConfig(key: string): Promise<string>;
   setConfig(key: string, value: string | number): Promise<string>;
   setScene(node: { name: string; kind: string; children?: unknown[]; value?: string }): Promise<void>;

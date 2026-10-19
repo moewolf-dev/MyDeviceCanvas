@@ -67,6 +67,17 @@ pub struct SessionStatsDto {
     pub pacing_dropped: i64,
 }
 
+/// N576: the host's partial-update reconciliation against the device.
+#[napi(object)]
+pub struct TileReconciliationDto {
+    pub sent: i64,
+    pub received: i64,
+    pub missing: i64,
+    #[napi(js_name = "bytesSent")]
+    pub bytes_sent: i64,
+    pub consistent: bool,
+}
+
 #[napi(object)]
 pub struct InputEventDto {
     #[napi(js_name = "deviceId")]
@@ -1039,6 +1050,28 @@ impl NativeManager {
             packages_sent: stats.packages_sent as i64,
             mirror_frames: stats.mirror_frames as i64,
             pacing_dropped: stats.pacing_dropped as i64,
+        })
+    }
+
+    /// N576: the host's partial-update reconciliation (parity with C `mdc_session_tile_reconciliation`).
+    #[napi(js_name = "tileReconciliation")]
+    pub fn tile_reconciliation(&self) -> Result<TileReconciliationDto> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_ref().unwrap();
+        let report = sim.session.tile_reconciliation();
+        Ok(TileReconciliationDto {
+            sent: report.sent as i64,
+            received: report.received as i64,
+            missing: report.missing() as i64,
+            bytes_sent: report.bytes_sent as i64,
+            consistent: report.consistent,
         })
     }
 
