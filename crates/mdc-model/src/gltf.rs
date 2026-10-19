@@ -3959,6 +3959,45 @@ mod tests {
     }
 
     #[test]
+    fn ktx2_size_mismatch_is_a_validation_problem() {
+        // N600: an IR texture whose declared size disagrees with its KTX2 header
+        // is a validation problem (the importer never produces this, but a hand
+        // edited or merged IR can).
+        let mut ktx2 = crate::ktx2::KTX2_IDENTIFIER.to_vec();
+        let mut field = |value: u32| ktx2.extend_from_slice(&value.to_le_bytes());
+        field(0);
+        field(0);
+        field(16);
+        field(8);
+        field(0);
+        field(0);
+        field(1);
+        field(1);
+        field(1);
+        for _ in 0..4 {
+            field(0);
+        }
+        ktx2.extend_from_slice(&0u64.to_le_bytes());
+        ktx2.extend_from_slice(&0u64.to_le_bytes());
+        let mut model = Model::default();
+        model.textures.push(crate::ir::Texture {
+            name: "basis".into(),
+            width: 8,
+            height: 8,
+            format: "image/ktx2".into(),
+            bytes: ktx2.len() as u32,
+            data: Some(ktx2),
+            wrap: None,
+        });
+        let report = model.validate();
+        assert!(!report.valid);
+        assert!(report
+            .problems
+            .iter()
+            .any(|problem| problem.contains("KTX2 declares")));
+    }
+
+    #[test]
     fn webp_headers_are_probed_and_sniffed() {
         // N523: VP8 (lossy), VP8L (lossless), and VP8X (extended) headers.
         let mut vp8 = Vec::new();

@@ -967,6 +967,16 @@ impl Model {
                 warnings.push(format!(
                     "texture {i} is a KTX2/Basis container (transcoding is not supported)"
                 ));
+                // N600: a readable header must agree with the declared size.
+                if let Some(header) = texture.ktx2_header() {
+                    if header.pixel_width != texture.width || header.pixel_height != texture.height
+                    {
+                        problems.push(format!(
+                            "texture {i} KTX2 declares {}x{} but the header says {}x{}",
+                            texture.width, texture.height, header.pixel_width, header.pixel_height
+                        ));
+                    }
+                }
             }
         }
         for (i, skeleton) in self.skeletons.iter().enumerate() {

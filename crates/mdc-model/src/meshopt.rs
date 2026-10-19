@@ -1498,6 +1498,66 @@ mod tests {
         assert_eq!(round, small);
     }
 
+    /// N593: a test-only v1 vertex-buffer encoder. Every byte lane uses control
+    /// mode 3 (raw deltas), and each delta is wrapped into `i8` so any byte value
+    /// round-trips (`prev + delta ≡ value (mod 256)`).
+    fn encode_vertex_buffer(values: &[Vec<u8>], stride: usize) -> Vec<u8> {
+        assert!(
+            stride.is_multiple_of(4) && stride > 0 && stride <= 256,
+            "stride"
+        );
+        let count = values.len();
+        let max_block = ((0x2000 / stride) & !0x0f).min(0x100);
+        let mut out = vec![0xa1u8];
+        let mut temp = vec![0u8; stride];
+        let mut offset = 0usize;
+        while offset < count {
+            let block = (count - offset).min(max_block);
+            // control bits: every byte lane's 2-bit field = 3 (raw block)
+            let mut control = vec![0u8; stride / 4];
+            for byte in 0..stride {
+                control[byte >> 2] |= 0b11 << ((byte & 3) << 1);
+            }
+            out.extend_from_slice(&control);
+            for byte in 0..stride {
+                for element in 0..block {
+                    let value = values[offset + element][byte];
+                    let delta = (((value as i32 - temp[byte] as i32) + 128).rem_euclid(256)) - 128;
+                    out.push(((delta << 1) ^ (delta >> 7)) as u8);
+                    temp[byte] = value;
+                }
+            }
+            offset += block;
+        }
+        // tail: `stride` seed bytes + `stride / 4` channel bytes (channel_mode 0)
+        out.extend(std::iter::repeat_n(0u8, stride + stride / 4));
+        out
+    }
+
+    #[test]
+    fn vertex_buffer_round_trips() {
+        // N593: decode(encode(values)) == values for v1 raw-delta streams.
+        let cases: [(usize, usize); 3] = [(4, 3), (8, 300), (12, 5)];
+        for (stride, count) in cases {
+            let values: Vec<Vec<u8>> = (0..count)
+                .map(|element| {
+                    (0..stride)
+                        .map(|byte| ((element * 7 + byte * 13 + 5) % 256) as u8)
+                        .collect()
+                })
+                .collect();
+            let encoded = encode_vertex_buffer(&values, stride);
+            let decoded = unwrap_decode(decode_vertex_buffer(
+                count,
+                stride,
+                &encoded,
+                MeshoptFilter::None,
+            ));
+            let flat: Vec<u8> = values.iter().flatten().copied().collect();
+            assert_eq!(decoded, flat, "stride {stride}, count {count}");
+        }
+    }
+
     #[test]
     fn filter_and_mode_names_parse() {
         assert_eq!(
