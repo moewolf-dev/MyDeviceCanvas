@@ -650,6 +650,9 @@ fn cmd_package(
     // N644: aggregate hit/miss counters over the reordered meshes.
     let mut cache_hits: u64 = 0;
     let mut cache_lookups: u64 = 0;
+    // N654: the same counters before the reorder, for a before/after report.
+    let mut cache_hits_before: u64 = 0;
+    let mut cache_lookups_before: u64 = 0;
     if optimize_geometry || optimize_index > 0 {
         for mesh in &mut model.meshes {
             if let Some(geometry) = mesh.geometry.as_mut() {
@@ -658,13 +661,16 @@ fn cmd_package(
                 } else {
                     optimize_index
                 };
-                let before = mdc_bake::index_cache_misses(geometry, cache);
-                let after = mdc_bake::optimize_index_order(geometry, cache);
-                index_cache_misses += after;
+                // N654: one call reports locality before and after the reorder.
+                let (before_hits, before_misses) = mdc_bake::index_cache_stats(geometry, cache);
+                let report = mdc_bake::optimize_index_order_report(geometry, cache);
+                index_cache_misses += report.after_misses;
+                cache_hits_before += before_hits;
+                cache_lookups_before += before_hits + before_misses;
                 let (hits, misses) = mdc_bake::index_cache_stats(geometry, cache);
                 cache_hits += hits;
                 cache_lookups += hits + misses;
-                if after < before {
+                if report.after_misses < report.before_misses {
                     reordered_meshes += 1;
                 }
             }
@@ -842,6 +848,12 @@ fn cmd_package(
                     0.0
                 } else {
                     cache_hits as f64 / cache_lookups as f64
+                },
+                // N654: the hit rate before the reorder (same walk).
+                "cache_hit_rate_before": if cache_lookups_before == 0 {
+                    0.0
+                } else {
+                    cache_hits_before as f64 / cache_lookups_before as f64
                 },
                 "output": out,
             }))?

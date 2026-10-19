@@ -1072,6 +1072,46 @@ pub fn index_cache_stats(geometry: &mdc_model::MeshGeometry, cache_size: usize) 
 /// N555: the look-ahead window when picking the next triangle.
 const INDEX_ORDER_WINDOW: usize = 16;
 
+/// N654: what an index reorder changed (miss counts and hit rates).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IndexOrderReport {
+    pub before_misses: u64,
+    pub after_misses: u64,
+    pub before_hit_rate: f64,
+    pub after_hit_rate: f64,
+}
+
+impl IndexOrderReport {
+    /// N654: misses removed by the reorder (0 when it did not help).
+    pub fn saved_misses(&self) -> u64 {
+        self.before_misses.saturating_sub(self.after_misses)
+    }
+}
+
+/// N654: reorder the triangles and report the locality before and after.
+pub fn optimize_index_order_report(
+    geometry: &mut mdc_model::MeshGeometry,
+    cache_size: usize,
+) -> IndexOrderReport {
+    let (before_hits, before_misses) = index_cache_stats(geometry, cache_size);
+    let after = optimize_index_order(geometry, cache_size);
+    let (after_hits, after_misses) = index_cache_stats(geometry, cache_size);
+    let rate = |hits: u64, misses: u64| {
+        let total = hits.saturating_add(misses);
+        if total == 0 {
+            0.0
+        } else {
+            hits as f64 / total as f64
+        }
+    };
+    IndexOrderReport {
+        before_misses,
+        after_misses: after,
+        before_hit_rate: rate(before_hits, before_misses),
+        after_hit_rate: rate(after_hits, after_misses),
+    }
+}
+
 /// N555: reorder triangles so consecutive ones share cached vertices, reducing
 /// vertex-fetch misses. The triangle *set* is unchanged (only its order), so the
 /// rendered image is identical. Returns the cache-miss count afterwards.
@@ -1568,6 +1608,37 @@ mod tests {
             decode_resize_rgb565(&png, (8, 8), &limits),
             Err(BakeError::Dimensions(64, 64, 16))
         ));
+    }
+
+    #[test]
+    fn index_order_report_improves_locality() {
+        // N654: a deliberately scattered triangle list reorders into fewer misses.
+        let geometry = mdc_model::MeshGeometry {
+            positions: (0..6).map(|i| [i as f32, 0.0, 0.0]).collect(),
+            // The two triangles that share vertices are separated by one that
+            // evicts them from a 3-entry cache.
+            indices: vec![0, 1, 2, 3, 4, 5, 0, 1, 2],
+            ..Default::default()
+        };
+        let mut reordered = geometry.clone();
+        let report = optimize_index_order_report(&mut reordered, 3);
+        assert!(report.after_misses <= report.before_misses);
+        assert!(report.saved_misses() >= 1, "the reorder helped: {report:?}");
+        assert!(report.after_hit_rate >= report.before_hit_rate);
+        // The triangle set is unchanged, only its order.
+        let mut before: Vec<[u32; 3]> = geometry
+            .indices
+            .chunks_exact(3)
+            .map(|t| [t[0], t[1], t[2]])
+            .collect();
+        let mut after: Vec<[u32; 3]> = reordered
+            .indices
+            .chunks_exact(3)
+            .map(|t| [t[0], t[1], t[2]])
+            .collect();
+        before.sort_unstable();
+        after.sort_unstable();
+        assert_eq!(before, after);
     }
 
     #[test]
