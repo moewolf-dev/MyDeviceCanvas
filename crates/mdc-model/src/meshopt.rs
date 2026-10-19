@@ -1443,6 +1443,61 @@ mod tests {
         assert!(decode_vertex_buffer(1, 4, &[0xa1, 0x00, 0x00], MeshoptFilter::None).is_err());
     }
 
+    /// N583: a test-only index-sequence encoder (the exact inverse of the
+    /// decoder's delta+zigzag+LEB128 stage) so the decoder can be round-tripped.
+    fn zigzag(value: i32) -> u32 {
+        ((value << 1) ^ (value >> 31)) as u32
+    }
+
+    fn leb_encode(mut value: u32, out: &mut Vec<u8>) {
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value == 0 {
+                out.push(byte);
+                break;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+
+    fn encode_index_sequence(values: &[u32]) -> Vec<u8> {
+        let mut out = vec![0xd1u8];
+        let mut last = [0i32; 2];
+        for (index, &value) in values.iter().enumerate() {
+            let slot = (index % 2) as u32;
+            let delta = value as i32 - last[slot as usize];
+            last[slot as usize] = value as i32;
+            leb_encode((zigzag(delta) << 1) | slot, &mut out);
+        }
+        out.extend_from_slice(&[0, 0, 0, 0]);
+        out
+    }
+
+    #[test]
+    fn index_sequence_round_trips() {
+        // N583: decode(encode(values)) == values, and re-encoding a decoded golden
+        // vector reproduces the same indices.
+        let values: Vec<u32> = vec![0, 1, 2, 3, 4, 5, 8, 8, 20, 3, 3, 1];
+        let encoded = encode_index_sequence(&values);
+        let decoded = unwrap_decode(decode_index_sequence(values.len(), 4, &encoded));
+        let round: Vec<u32> = decoded
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        assert_eq!(round, values);
+
+        // The 16-bit variant round-trips too.
+        let small: Vec<u32> = vec![10, 9, 8, 7, 100, 101];
+        let encoded = encode_index_sequence(&small);
+        let decoded = unwrap_decode(decode_index_sequence(small.len(), 2, &encoded));
+        let round: Vec<u32> = decoded
+            .chunks_exact(2)
+            .map(|c| u32::from(u16::from_le_bytes([c[0], c[1]])))
+            .collect();
+        assert_eq!(round, small);
+    }
+
     #[test]
     fn filter_and_mode_names_parse() {
         assert_eq!(

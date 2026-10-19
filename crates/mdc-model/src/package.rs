@@ -25,6 +25,8 @@ pub struct PackageVerification {
     pub body_bytes_ok: bool,
     pub target_ok: bool,
     pub version_ok: bool,
+    /// N590: KTX2 textures' declared size matches their container header.
+    pub ktx2_ok: bool,
     pub checksum: u64,
     pub body_bytes: u64,
     pub manifest_checksum: u64,
@@ -79,12 +81,26 @@ impl MdcPackage {
         let body_bytes_ok = body_bytes == self.manifest.body_bytes;
         let target_ok = self.package.target == self.manifest.target;
         let version_ok = self.manifest.version == PACKAGE_VERSION;
+        // N590: when a texture carries a readable KTX2 header, its declared size
+        // must agree with the container (a mismatch means the metadata was edited
+        // or the wrong bytes were attached).
+        let ktx2_ok = self
+            .package
+            .textures
+            .iter()
+            .all(|texture| match texture.ktx2_header() {
+                Some(header) if texture.is_ktx2() => {
+                    header.pixel_width == texture.width && header.pixel_height == texture.height
+                }
+                _ => true,
+            });
         PackageVerification {
-            valid: checksum_ok && body_bytes_ok && target_ok && version_ok,
+            valid: checksum_ok && body_bytes_ok && target_ok && version_ok && ktx2_ok,
             checksum_ok,
             body_bytes_ok,
             target_ok,
             version_ok,
+            ktx2_ok,
             checksum,
             body_bytes,
             manifest_checksum: self.manifest.checksum,
@@ -351,6 +367,54 @@ mod tests {
         assert_eq!(&bytes[0..4], PACKAGE_MAGIC);
         let back = MdcPackage::from_bytes(&bytes).unwrap();
         assert_eq!(back, package);
+    }
+
+    fn ktx2_header(width: u32, height: u32) -> Vec<u8> {
+        let mut out = crate::ktx2::KTX2_IDENTIFIER.to_vec();
+        let mut field = |value: u32| out.extend_from_slice(&value.to_le_bytes());
+        field(0); // vkFormat
+        field(0); // typeSize
+        field(width);
+        field(height);
+        field(0); // depth
+        field(0); // layers
+        field(1); // faces
+        field(1); // levels
+        field(1); // scheme
+        field(0);
+        field(0);
+        field(0);
+        field(0);
+        out.extend_from_slice(&0u64.to_le_bytes());
+        out.extend_from_slice(&0u64.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn ktx2_size_mismatch_fails_verification() {
+        // N590: a KTX2 texture whose declared size disagrees with its header fails
+        // verification; matching metadata passes.
+        let texture = |width: u32, height: u32| crate::ir::Texture {
+            name: "basis".into(),
+            width,
+            height,
+            format: "image/ktx2".into(),
+            bytes: 80,
+            data: Some(ktx2_header(16, 8)),
+            wrap: None,
+        };
+        let base = compile_to_package(&model(), &RendererCapability::sprite_only()).unwrap();
+        let mut mismatched = base.package.clone();
+        mismatched.textures.push(texture(8, 8));
+        let report = MdcPackage::seal(mismatched).unwrap().verify();
+        assert!(!report.ktx2_ok);
+        assert!(!report.valid);
+
+        let mut matched = base.package.clone();
+        matched.textures.push(texture(16, 8));
+        let report = MdcPackage::seal(matched).unwrap().verify();
+        assert!(report.ktx2_ok);
+        assert!(report.valid);
     }
 
     #[test]
