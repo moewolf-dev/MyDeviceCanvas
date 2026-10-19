@@ -80,10 +80,11 @@ test("native mirror mode and tile reconciliation are exposed", { skip: !native }
   assert.equal(await mdc.mirrorMode(), "dirty-region");
   const report = await mdc.tileReconciliation();
   assert.ok(report, "a reconciliation snapshot");
-  assert.equal(typeof report.sent, "number");
-  assert.equal(typeof report.received, "number");
-  assert.equal(typeof report.missing, "number");
+  // N608: the same field set the C smoke asserts.
   assert.equal(report.sent, 0, "no partial updates were sent");
+  assert.equal(report.received, 0);
+  assert.equal(report.missing, 0);
+  assert.equal(report.bytesSent, 0);
   assert.equal(report.consistent, true);
   await mdc.stopMirror("main");
   assert.equal(await mdc.mirrorMode(), "");
