@@ -1062,7 +1062,12 @@ pub struct HttpMirrorServer {
     ws_offered: u64,
     /// N567: close (1002) on a reserved-bit frame instead of ignoring it.
     ws_reject_reserved: bool,
+    /// N577: bounded log of why a WebSocket connection was declined/failed.
+    ws_log: Vec<String>,
 }
+
+/// N577: the most recent WebSocket notes kept.
+const WS_LOG_MAX: usize = 16;
 
 struct HttpClient {
     stream: TcpStream,
@@ -1174,6 +1179,7 @@ impl HttpMirrorServer {
             ws_reserved: 0,
             ws_offered: 0,
             ws_reject_reserved: false,
+            ws_log: Vec::new(),
         })
     }
 
@@ -1238,6 +1244,18 @@ impl HttpMirrorServer {
     pub fn with_ws_reject_reserved(mut self, reject: bool) -> Self {
         self.ws_reject_reserved = reject;
         self
+    }
+
+    /// N577: the bounded log of WebSocket declines/failures (oldest first).
+    pub fn ws_log(&self) -> &[String] {
+        &self.ws_log
+    }
+
+    fn note_ws(&mut self, entry: impl Into<String>) {
+        if self.ws_log.len() >= WS_LOG_MAX {
+            self.ws_log.remove(0);
+        }
+        self.ws_log.push(entry.into());
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -1356,7 +1374,7 @@ impl HttpMirrorServer {
             let body = format!(
                 "{{\"frames\":{},\"clients\":{},\"streaming\":{},\"clipped\":{},\"ws\":{},\
                   \"ws_pings\":{},\"ws_closes\":{},\"ws_timeouts\":{},\"ws_messages\":{},\
-                  \"ws_reserved\":{},\"ws_offered\":{}}}",
+                  \"ws_reserved\":{},\"ws_offered\":{},\"ws_log\":{}}}",
                 self.frames,
                 self.clients.len(),
                 self.streaming_clients(),
@@ -1367,12 +1385,14 @@ impl HttpMirrorServer {
                 self.ws_timeouts,
                 self.ws_messages,
                 self.ws_reserved,
-                self.ws_offered
+                self.ws_offered,
+                self.ws_log.len()
             );
             simple_response(200, "application/json", body.as_bytes())
         };
-        // N567: extension offers counted in this pass.
+        // N567: extension offers counted in this pass. N577: reasons logged.
         let mut offered = 0u64;
+        let mut notes: Vec<String> = Vec::new();
         for client in &mut self.clients {
             if client.streaming || client.response.is_some() {
                 continue;
@@ -1403,8 +1423,11 @@ impl HttpMirrorServer {
                                     // N567: count (but never echo) extension
                                     // offers such as `permessage-deflate`, so the
                                     // handshake explicitly declines compression.
-                                    if header_value(headers, "sec-websocket-extensions").is_some() {
+                                    if let Some(ext) =
+                                        header_value(headers, "sec-websocket-extensions")
+                                    {
                                         offered += 1;
+                                        notes.push(format!("declined extension: {ext}"));
                                     }
                                     client.websocket = true;
                                     client.streaming = true;
@@ -1481,6 +1504,16 @@ impl HttpMirrorServer {
         self.ws_reserved = self.ws_reserved.saturating_add(reserved);
         self.ws_offered = self.ws_offered.saturating_add(offered);
         self.ws_timeouts = self.ws_timeouts.saturating_add(timeouts);
+        for note in notes {
+            self.note_ws(note);
+        }
+        if reserved > 0 {
+            self.note_ws(if self.ws_reject_reserved {
+                "reserved bit set: closed 1002"
+            } else {
+                "reserved bit set: ignored"
+            });
+        }
         self.clients.retain_mut(|client| {
             if client.dead {
                 return false;
@@ -3478,6 +3511,15 @@ mod tests {
         assert!(server.ws_closes() >= 1, "a close was sent");
         assert_eq!(close[0], 0x88, "close opcode");
         assert_eq!(u16::from_be_bytes([close[2], close[3]]), 1002);
+        // N577: the decline reason is logged (extension + reserved frame).
+        assert!(server
+            .ws_log()
+            .iter()
+            .any(|entry| entry.contains("declined extension")));
+        assert!(server
+            .ws_log()
+            .iter()
+            .any(|entry| entry.contains("closed 1002")));
     }
 
     #[test]

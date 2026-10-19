@@ -291,9 +291,11 @@ struct ImageMode {
     linear: bool,
     flip_h: bool,
     flip_v: bool,
+    /// N575: preserve aspect ratio (contain) instead of stretching to the rect.
+    fit: bool,
 }
 
-/// N565: parse comma-separated `mode` tokens for an `image` node.
+/// N565/N575: parse comma-separated `mode` tokens for an `image` node.
 fn parse_image_mode(mode: Option<&str>) -> ImageMode {
     let mut parsed = ImageMode::default();
     for token in mode.unwrap_or("").split(',').map(str::trim) {
@@ -301,6 +303,7 @@ fn parse_image_mode(mode: Option<&str>) -> ImageMode {
             "linear" => parsed.linear = true,
             "flip-h" => parsed.flip_h = true,
             "flip-v" => parsed.flip_v = true,
+            "fit" => parsed.fit = true,
             _ => {}
         }
     }
@@ -332,19 +335,29 @@ fn blit_hex_rgb565(
     let Some(source) = decode_hex_words(hex, usize::from(src_w) * usize::from(src_h)) else {
         return false;
     };
+    // N575: `fit` preserves the source aspect ratio (letterboxed in the rect);
+    // the default stretches each axis independently.
+    let (draw_w, draw_h, off_x, off_y) = if mode.fit {
+        let scale = (f32::from(w) / f32::from(src_w)).min(f32::from(h) / f32::from(src_h));
+        let draw_w = ((f32::from(src_w) * scale).round() as u16).clamp(1, w);
+        let draw_h = ((f32::from(src_h) * scale).round() as u16).clamp(1, h);
+        (draw_w, draw_h, (w - draw_w) / 2, (h - draw_h) / 2)
+    } else {
+        (w, h, 0, 0)
+    };
     let mut drew = false;
-    for row in 0..u32::from(h) {
-        let py = u32::from(y) + row;
+    for row in 0..u32::from(draw_h) {
+        let py = u32::from(y) + u32::from(off_y) + row;
         if py >= height {
             break;
         }
-        for col in 0..u32::from(w) {
-            let px = u32::from(x) + col;
+        for col in 0..u32::from(draw_w) {
+            let px = u32::from(x) + u32::from(off_x) + col;
             if px >= width {
                 break;
             }
-            let mut fx = (col as f32 + 0.5) / f32::from(w);
-            let mut fy = (row as f32 + 0.5) / f32::from(h);
+            let mut fx = (col as f32 + 0.5) / f32::from(draw_w);
+            let mut fy = (row as f32 + 0.5) / f32::from(draw_h);
             // N565: flip first, then rotate (both about the rect centre).
             if mode.flip_h {
                 fx = 1.0 - fx;
@@ -3967,6 +3980,44 @@ mod tests {
             render(None, Some(180)),
             vec![0x001F, 0x001F, 0xF800, 0xF800]
         );
+    }
+
+    #[test]
+    fn image_fit_preserves_aspect_ratio() {
+        // N575: `fit` letterboxes a 1x1 source into a 4x1 rect (only the centre
+        // column is drawn); stretching fills every column.
+        use mdc_protocol::SceneNode;
+        let render = |mode: &str| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 4,
+                height: 1,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "pic".into(),
+                kind: "image".into(),
+                rect: Some([0, 0, 4, 1]),
+                value: Some("f800".into()),
+                value2: Some("1,1".into()),
+                children: Vec::new(),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: Some(mode.into()),
+                focus: None,
+            });
+            assert!(device.render_scene());
+            (0..4)
+                .map(|x| device.pixel_rgb565(x, 0).unwrap())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(render(""), vec![0xF800, 0xF800, 0xF800, 0xF800]);
+        assert_eq!(render("fit"), vec![0, 0xF800, 0, 0]);
     }
 
     #[test]
