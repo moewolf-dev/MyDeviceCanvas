@@ -1756,6 +1756,23 @@ mod tests {
     }
 
     #[test]
+    fn larger_cache_never_increases_misses() {
+        // N584: for one fixed index order, a larger vertex cache cannot fetch more
+        // than a smaller one (it holds a superset of recent vertices).
+        let mut geometry = mdc_model::MeshGeometry {
+            positions: (0..48).map(|i| [i as f32, 0.0, 0.0]).collect(),
+            indices: (0..120).map(|i| ((i * 7 + 3) % 48) as u32).collect(),
+            ..Default::default()
+        };
+        optimize_index_order(&mut geometry, 64);
+        let small = index_cache_misses(&geometry, 16);
+        let large = index_cache_misses(&geometry, 64);
+        assert!(large <= small, "16->{small}, 64->{large}");
+        // And the adaptive size is one of the documented tiers.
+        assert!(matches!(adaptive_cache_size(&geometry), 16 | 32 | 64));
+    }
+
+    #[test]
     fn combined_optimization_compacts_then_reorders() {
         // N564: compaction first, then index reordering; the combined pass is at
         // least as good as either alone.
