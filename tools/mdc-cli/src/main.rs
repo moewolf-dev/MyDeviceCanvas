@@ -2243,8 +2243,10 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
         // N517: server pings and silent peers dropped.
         "ws_pings_sent": http_server.as_ref().map(|s| s.ws_pings_sent()),
         "ws_timeouts": http_server.as_ref().map(|s| s.ws_timeouts()),
-        // N647: the retained WebSocket notes by kind.
-        "ws_log": http_server.as_ref().map(|s| s.ws_log_counts()),
+        // N647/N657: the retained WebSocket note count and the per-kind summary,
+        // matching `/health`.
+        "ws_log": http_server.as_ref().map(|s| s.ws_log().len()),
+        "ws_log_kinds": http_server.as_ref().map(|s| s.ws_log_counts()),
         // N548: complete client -> server WebSocket messages reassembled.
         "ws_messages": http_server.as_ref().map(|s| s.ws_messages()),
         // N558: client frames whose reserved (compression) bit was set.

@@ -1085,6 +1085,23 @@ pub const WS_NOTE_DETAIL_MAX: usize = 256;
 /// N617: the shape version of a [`WebSocketNote`]; a consumer can pin to it.
 pub const WS_NOTE_VERSION: u8 = 1;
 
+/// N657: escape a string for the hand-built `/health` object.
+fn escape_json(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            other if (other as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", other as u32)),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// N637: clamp a note's detail to [`WS_NOTE_DETAIL_MAX`] bytes on a char boundary.
 fn truncate_detail(detail: &str) -> String {
     if detail.len() <= WS_NOTE_DETAIL_MAX {
@@ -1291,6 +1308,21 @@ impl HttpMirrorServer {
         counts
     }
 
+    /// N657: the per-kind summary as a JSON object (the mirror crate has no
+    /// serde_json dependency, so the small map is written directly).
+    fn ws_log_kinds_json(&self) -> String {
+        let counts = self.ws_log_counts();
+        let mut out = String::from("{");
+        for (index, (kind, count)) in counts.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!("\"{}\":{}", escape_json(kind), count));
+        }
+        out.push('}');
+        out
+    }
+
     pub fn ws_log_of_kind<'a>(&'a self, kind: &'a str) -> impl Iterator<Item = &'a WebSocketNote> {
         self.ws_log.iter().filter(move |note| note.kind == kind)
     }
@@ -1438,7 +1470,8 @@ impl HttpMirrorServer {
             let body = format!(
                 "{{\"frames\":{},\"clients\":{},\"streaming\":{},\"clipped\":{},\"ws\":{},\
                   \"ws_pings\":{},\"ws_closes\":{},\"ws_timeouts\":{},\"ws_messages\":{},\
-                  \"ws_reserved\":{},\"ws_offered\":{},\"ws_log\":{},\"ws_log_last\":\"{}\"}}",
+                  \"ws_reserved\":{},\"ws_offered\":{},\"ws_log\":{},\
+                  \"ws_log_kinds\":{},\"ws_log_last\":\"{}\"}}",
                 self.frames,
                 self.clients.len(),
                 self.streaming_clients(),
@@ -1451,6 +1484,7 @@ impl HttpMirrorServer {
                 self.ws_reserved,
                 self.ws_offered,
                 self.ws_log.len(),
+                self.ws_log_kinds_json(),
                 last
             );
             simple_response(200, "application/json", body.as_bytes())
@@ -3139,6 +3173,26 @@ mod tests {
             pixels: &pixels[..64],
         });
         assert_eq!(server.frames_published(), 1);
+    }
+
+    #[test]
+    fn health_reports_the_note_kinds() {
+        // N657: `/health` carries the per-kind summary as a JSON object.
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        server.note_ws("reserved", "ignored");
+        server.note_ws("reserved", "ignored");
+        server.note_ws("fragment", "continued");
+        let health = String::from_utf8_lossy(&http_get(&mut server, "/health")).to_string();
+        assert!(
+            health.contains("\"ws_log_kinds\":{\"fragment\":1,\"reserved\":2}"),
+            "{health}"
+        );
+        // The entry-count field stays a number.
+        assert!(health.contains("\"ws_log\":3"), "{health}");
+        // Escaping: a hostile kind cannot break the JSON.
+        server.note_ws("we\"ird\\kind", "x");
+        let health = String::from_utf8_lossy(&http_get(&mut server, "/health")).to_string();
+        assert!(health.contains("\"we\\\"ird\\\\kind\":1"), "{health}");
     }
 
     #[test]
