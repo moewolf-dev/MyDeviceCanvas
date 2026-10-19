@@ -1049,6 +1049,98 @@ pub fn compact_package_geometry(package: &mut mdc_model::DevicePackage) -> (usiz
     (changed, removed)
 }
 
+/// N555: simulate a FIFO vertex cache of `cache_size` entries over the triangle
+/// list and return the number of cache misses. A smaller count means the GPU/MCU
+/// vertex fetch reuses more vertices, which is what `optimize_index_order`
+/// improves.
+pub fn index_cache_misses(geometry: &mdc_model::MeshGeometry, cache_size: usize) -> u64 {
+    let mut misses = 0u64;
+    let mut cache: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
+    let size = cache_size.max(1);
+    for triangle in geometry.indices.chunks_exact(3) {
+        for &vertex in triangle {
+            if cache.contains(&vertex) {
+                continue;
+            }
+            misses += 1;
+            if cache.len() == size {
+                cache.pop_front();
+            }
+            cache.push_back(vertex);
+        }
+    }
+    misses
+}
+
+/// N555: the look-ahead window when picking the next triangle.
+const INDEX_ORDER_WINDOW: usize = 16;
+
+/// N555: reorder triangles so consecutive ones share cached vertices, reducing
+/// vertex-fetch misses. The triangle *set* is unchanged (only its order), so the
+/// rendered image is identical. Returns the cache-miss count afterwards.
+pub fn optimize_index_order(geometry: &mut mdc_model::MeshGeometry, cache_size: usize) -> u64 {
+    let triangles: Vec<[u32; 3]> = geometry
+        .indices
+        .chunks_exact(3)
+        .map(|t| [t[0], t[1], t[2]])
+        .collect();
+    if triangles.len() < 2 {
+        return index_cache_misses(geometry, cache_size);
+    }
+    let size = cache_size.max(1);
+    let mut remaining: Vec<[u32; 3]> = triangles.clone();
+    let mut ordered: Vec<[u32; 3]> = Vec::with_capacity(remaining.len());
+    let mut cache: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
+    while !remaining.is_empty() {
+        // Find, within a bounded window, the triangle with the most cache hits.
+        let window = remaining.len().min(INDEX_ORDER_WINDOW);
+        let mut best_index = 0usize;
+        let mut best_hits = usize::MAX;
+        for (index, triangle) in remaining[..window].iter().enumerate() {
+            let hits = triangle.iter().filter(|v| cache.contains(v)).count();
+            // Prefer the fewest *new* vertices; ties keep the earliest triangle.
+            let new_vertices = 3 - hits;
+            if new_vertices < best_hits {
+                best_hits = new_vertices;
+                best_index = index;
+                if new_vertices == 0 {
+                    break;
+                }
+            }
+        }
+        let triangle = remaining.remove(best_index);
+        for vertex in triangle {
+            if !cache.contains(&vertex) {
+                if cache.len() == size {
+                    cache.pop_front();
+                }
+                cache.push_back(vertex);
+            }
+        }
+        ordered.push(triangle);
+    }
+    geometry.indices = ordered.into_iter().flatten().collect();
+    index_cache_misses(geometry, cache_size)
+}
+
+/// N555: optimize every mesh's index order, returning the meshes changed.
+pub fn optimize_package_index_order(
+    package: &mut mdc_model::DevicePackage,
+    cache_size: usize,
+) -> usize {
+    let mut changed = 0usize;
+    for mesh in &mut package.meshes {
+        if let Some(geometry) = mesh.geometry.as_mut() {
+            let before = index_cache_misses(geometry, cache_size);
+            let after = optimize_index_order(geometry, cache_size);
+            if after < before {
+                changed += 1;
+            }
+        }
+    }
+    changed
+}
+
 /// N504: the coarsest mip level that still covers the target size in both axes.
 /// Returns 0 when the target is at least as large as the source.
 pub fn select_mip_level(width: u32, height: u32, target_w: u32, target_h: u32) -> usize {
@@ -1547,6 +1639,45 @@ mod tests {
         assert_eq!(package.meshes[0].indices, 6);
         // A second pass finds nothing left to merge.
         assert_eq!(compact_package_geometry(&mut package), (0, 0));
+    }
+
+    #[test]
+    fn index_order_optimization_reduces_cache_misses() {
+        // N555: a scrambled strip is reordered to share cached vertices; the
+        // triangle set is unchanged.
+        let strip = |indices: Vec<u32>| mdc_model::MeshGeometry {
+            positions: (0..6).map(|i| [i as f32, 0.0, 0.0]).collect(),
+            indices,
+            ..Default::default()
+        };
+        let mut geometry = strip(vec![2, 3, 4, 0, 1, 2, 4, 3, 5, 2, 1, 3]);
+        let before = index_cache_misses(&geometry, 4);
+        let mut before_set: Vec<[u32; 3]> = geometry
+            .indices
+            .chunks_exact(3)
+            .map(|t| [t[0], t[1], t[2]])
+            .collect();
+        for triangle in &mut before_set {
+            triangle.sort_unstable();
+        }
+        before_set.sort_unstable();
+        let after = optimize_index_order(&mut geometry, 4);
+        assert_eq!(after, index_cache_misses(&geometry, 4));
+        assert!(after < before, "misses {before} -> {after}");
+        assert_eq!(geometry.indices.len(), 12, "triangle count preserved");
+        let mut after_set: Vec<[u32; 3]> = geometry
+            .indices
+            .chunks_exact(3)
+            .map(|t| [t[0], t[1], t[2]])
+            .collect();
+        for triangle in &mut after_set {
+            triangle.sort_unstable();
+        }
+        after_set.sort_unstable();
+        assert_eq!(before_set, after_set, "the triangle set is unchanged");
+        // A geometry without triangles is left alone.
+        let mut empty = strip(vec![]);
+        assert_eq!(optimize_index_order(&mut empty, 4), 0);
     }
 
     #[test]
