@@ -295,6 +295,11 @@ struct ImageMode {
     fit: bool,
     /// N645: inset the fit box by this many pixels on every side.
     pad: u16,
+    /// N655: per-side overrides for `pad` (unset sides use `pad`).
+    pad_left: Option<u16>,
+    pad_top: Option<u16>,
+    pad_right: Option<u16>,
+    pad_bottom: Option<u16>,
 }
 
 /// N565/N575: parse comma-separated `mode` tokens for an `image` node.
@@ -307,9 +312,19 @@ fn parse_image_mode(mode: Option<&str>) -> ImageMode {
             "flip-v" => parsed.flip_v = true,
             "fit" => parsed.fit = true,
             // N645: `pad=N` insets the letterbox inside the rect.
+            // N655: `pad-l/-t/-r/-b=N` override one side.
             other => {
                 if let Some(value) = other.strip_prefix("pad=") {
                     parsed.pad = value.trim().parse::<u16>().unwrap_or(0);
+                } else if let Some((side, value)) = other.split_once('=') {
+                    let value = value.trim().parse::<u16>().unwrap_or(0);
+                    match side {
+                        "pad-l" => parsed.pad_left = Some(value),
+                        "pad-t" => parsed.pad_top = Some(value),
+                        "pad-r" => parsed.pad_right = Some(value),
+                        "pad-b" => parsed.pad_bottom = Some(value),
+                        _ => {}
+                    }
                 }
             }
         }
@@ -353,14 +368,16 @@ fn blit_hex_rgb565(
         } else {
             (src_w, src_h)
         };
-        // N645: `pad` shrinks the fit box on every side (clamped so it stays
-        // non-empty).
-        let pad = mode
-            .pad
-            .min(w.saturating_sub(1) / 2)
-            .min(h.saturating_sub(1) / 2);
-        let inner_w = w.saturating_sub(pad.saturating_mul(2)).max(1);
-        let inner_h = h.saturating_sub(pad.saturating_mul(2)).max(1);
+        // N645: `pad` shrinks the fit box; N655: each side can be overridden.
+        // Every side is clamped so the inner box stays non-empty.
+        let max_lr = w.saturating_sub(1) / 2;
+        let max_tb = h.saturating_sub(1) / 2;
+        let left = mode.pad_left.unwrap_or(mode.pad).min(max_lr);
+        let right = mode.pad_right.unwrap_or(mode.pad).min(max_lr);
+        let top = mode.pad_top.unwrap_or(mode.pad).min(max_tb);
+        let bottom = mode.pad_bottom.unwrap_or(mode.pad).min(max_tb);
+        let inner_w = w.saturating_sub(left.saturating_add(right)).max(1);
+        let inner_h = h.saturating_sub(top.saturating_add(bottom)).max(1);
         let scale =
             (f32::from(inner_w) / f32::from(eff_w)).min(f32::from(inner_h) / f32::from(eff_h));
         let draw_w = ((f32::from(eff_w) * scale).round() as u16).clamp(1, inner_w);
@@ -369,13 +386,13 @@ fn blit_hex_rgb565(
         // N635: `align` may also carry `top`/`bottom`/`middle` for the vertical
         // axis, either alone or comma-separated (`"right,bottom"`).
         let (halign, valign) = parse_align(align);
-        let off_x = pad
+        let off_x = left
             + match halign {
                 Align::Start => 0,
                 Align::End => inner_w - draw_w,
                 Align::Center => (inner_w - draw_w) / 2,
             };
-        let off_y = pad
+        let off_y = top
             + match valign {
                 Align::Start => 0,
                 Align::End => inner_h - draw_h,
@@ -4222,6 +4239,63 @@ mod tests {
         assert_eq!(render("fit,pad=3").len(), 4);
         // Padding does not apply to a stretch (no fit).
         assert_eq!(render("pad=1").len(), 16);
+    }
+
+    #[test]
+    fn image_fit_per_side_padding() {
+        // N655: `pad-l/-t/-r/-b` inset one side each.
+        use mdc_protocol::SceneNode;
+        let render = |mode: &str| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 5,
+                height: 5,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "pic".into(),
+                kind: "image".into(),
+                rect: Some([0, 0, 5, 5]),
+                value: Some("f800".into()),
+                value2: Some("1,1".into()),
+                children: Vec::new(),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: Some(mode.into()),
+                focus: None,
+            });
+            assert!(device.render_scene());
+            let mut lit = Vec::new();
+            for y in 0..5u16 {
+                for x in 0..5u16 {
+                    if device.pixel_rgb565(x, y).unwrap() != 0 {
+                        lit.push((x, y));
+                    }
+                }
+            }
+            let min_x = lit.iter().map(|(x, _)| *x).min().unwrap();
+            let max_x = lit.iter().map(|(x, _)| *x).max().unwrap();
+            let min_y = lit.iter().map(|(_, y)| *y).min().unwrap();
+            let max_y = lit.iter().map(|(_, y)| *y).max().unwrap();
+            (lit.len(), min_x, min_y, max_x, max_y)
+        };
+        // All sides: a 3x3 inner box, so a 1x1 source fills 9 pixels.
+        assert_eq!(render("fit,pad=1"), (9, 1, 1, 3, 3));
+        // Left only: 3 wide, full height -> 3x3, centred vertically.
+        assert_eq!(render("fit,pad-l=2"), (9, 2, 1, 4, 3));
+        // Top 1, bottom 2: inner height 2 -> a 2x2 block at x/y 1..2.
+        assert_eq!(render("fit,pad-t=1,pad-b=2"), (4, 1, 1, 2, 2));
+        // Right and bottom together: the box shrinks to 4x4 and the square source
+        // fills it from the (unpadded) top-left corner.
+        assert_eq!(render("fit,pad-r=1,pad-b=1"), (16, 0, 0, 3, 3));
+        // A huge per-side value is clamped so the inner box stays non-empty.
+        let (count, min_x, _, max_x, _) = render("fit,pad-l=99");
+        assert!(count > 0 && max_x >= min_x);
     }
 
     #[test]
