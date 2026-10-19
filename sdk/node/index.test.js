@@ -130,6 +130,12 @@ test("mirror events and controls go through the public SDK", async () => {
 
   assert.equal(await mdc.startMirror("main", { mode: "dirty-region", maxFps: 15 }), 7);
   assert.deepEqual(started, ["main", "dirty-region", 15]);
+  // N559: an empty mode defaults to full-frame, an unknown one is rejected.
+  assert.equal(await mdc.startMirror("main", {}), 7);
+  assert.deepEqual(started, ["main", "full-frame", 30]);
+  assert.throws(() => MyDeviceCanvas.normalizeMirrorMode("weird"), RangeError);
+  assert.equal(MyDeviceCanvas.normalizeMirrorMode(undefined), "full-frame");
+  assert.equal(MyDeviceCanvas.normalizeMirrorMode("dirty-region"), "dirty-region");
   assert.equal(await mdc.stopMirror("main"), 8);
 
   const frame = await mdc.takeMirrorFrame();

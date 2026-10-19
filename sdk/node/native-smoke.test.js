@@ -52,6 +52,10 @@ test("native bounded mirror take drops an oversized frame", { skip: !native }, a
   const mdc = await MyDeviceCanvas.create();
   await mdc.openBoard("linux-virt");
   assert.equal(await mdc.mirrorSkips(), 0);
+  // N559: the mode is validated and the negotiated mode is readable.
+  await mdc.startMirror("main", { mode: "dirty-region" });
+  assert.equal(await mdc.mirrorMode(), "dirty-region");
+  await assert.rejects(mdc.startMirror("main", { mode: "nope" }), /mirror mode/);
   await mdc.startMirror("main");
   await mdc.emitMirrorFrame();
   // A tiny cap cannot hold the 800x480 RGB565 frame.

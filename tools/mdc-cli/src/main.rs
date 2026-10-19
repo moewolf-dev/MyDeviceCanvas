@@ -512,6 +512,8 @@ fn cmd_package(
     let mut max_draw_vertices: u64 = 0;
     // N545: losslessly merge duplicate vertices and drop unreferenced ones.
     let mut compact_geometry = false;
+    // N555: reorder triangles for vertex-cache locality (0 = 32-entry cache).
+    let mut optimize_index: usize = 0;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -543,6 +545,10 @@ fn cmd_package(
             }
             // N545: losslessly compact the geometry before compiling.
             "--compact-geometry" => compact_geometry = true,
+            // N555: reorder triangles for vertex-cache locality.
+            "--optimize-index" => {
+                optimize_index = iter.next().and_then(|v| v.parse().ok()).unwrap_or(32)
+            }
             other => out = Some(other.to_string()),
         }
     }
@@ -585,6 +591,21 @@ fn cmd_package(
                     compacted_vertices += removed;
                     mesh.vertices = geometry.positions.len() as u32;
                     mesh.indices = geometry.indices.len() as u32;
+                }
+            }
+        }
+    }
+    // N555: optionally reorder triangles for vertex-cache locality.
+    let mut index_cache_misses: u64 = 0;
+    let mut reordered_meshes: usize = 0;
+    if optimize_index > 0 {
+        for mesh in &mut model.meshes {
+            if let Some(geometry) = mesh.geometry.as_mut() {
+                let before = mdc_bake::index_cache_misses(geometry, optimize_index);
+                let after = mdc_bake::optimize_index_order(geometry, optimize_index);
+                index_cache_misses += after;
+                if after < before {
+                    reordered_meshes += 1;
                 }
             }
         }
@@ -747,6 +768,9 @@ fn cmd_package(
                 "trimmed_meshes": trimmed_meshes,
                 // N545: vertices removed by lossless geometry compaction.
                 "compacted_vertices": compacted_vertices,
+                // N555: cache misses after reordering and meshes that improved.
+                "index_cache_misses": index_cache_misses,
+                "reordered_meshes": reordered_meshes,
                 "output": out,
             }))?
         );
@@ -2102,6 +2126,8 @@ fn cmd_mirror(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::er
         "ws_timeouts": http_server.as_ref().map(|s| s.ws_timeouts()),
         // N548: complete client -> server WebSocket messages reassembled.
         "ws_messages": http_server.as_ref().map(|s| s.ws_messages()),
+        // N558: client frames whose reserved (compression) bit was set.
+        "ws_reserved": http_server.as_ref().map(|s| s.ws_reserved()),
         // N510: the recorded sequence manifest, when requested.
         "manifest": manifest,
         "frames_written": written.len(),
@@ -3867,6 +3893,21 @@ fn cmd_model_info(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                         map.insert(
                             "supercompression".into(),
                             serde_json::json!(header.scheme_name()),
+                        );
+                        // N554: container dimensions beyond width/height.
+                        map.insert("mipLevels".into(), serde_json::json!(header.mip_levels()));
+                        map.insert("slices".into(), serde_json::json!(header.slices()));
+                        map.insert(
+                            "container".into(),
+                            serde_json::json!(if header.is_volume() {
+                                "volume"
+                            } else if header.is_cubemap() {
+                                "cubemap"
+                            } else if header.is_array() {
+                                "array"
+                            } else {
+                                "2d"
+                            }),
                         );
                     }
                 }

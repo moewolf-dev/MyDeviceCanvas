@@ -102,10 +102,14 @@ export declare class MyDeviceCanvas {
   diagnosticCount(): Promise<number>;
   pollEvents(): Promise<NativeEvent[]>;
   onMirrorFrame(listener: (frame: MirrorInfo) => void): () => void;
+  /** N559: restrict a mirror mode to `full-frame` | `dirty-region`. */
+  static normalizeMirrorMode(mode?: string | null): "full-frame" | "dirty-region";
   startMirror(
     surfaceId: string,
-    options?: { mode?: string; maxFps?: number },
+    options?: { mode?: "full-frame" | "dirty-region"; maxFps?: number },
   ): Promise<number>;
+  /** N559: the negotiated mirror mode (parity with Swift/C; "" before confirm). */
+  mirrorMode(): Promise<string>;
   stopMirror(surfaceId: string): Promise<number>;
   /** Sim-only: push one mirrored frame from the local FakeDevice. */
   emitMirrorFrame(): Promise<void>;

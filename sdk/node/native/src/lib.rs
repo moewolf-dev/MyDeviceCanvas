@@ -770,6 +770,22 @@ impl NativeManager {
         Ok(state.mirror_skips as f64)
     }
 
+    /// N559: the negotiated mirror mode (`full-frame` | `dirty-region`, empty
+    /// before the device confirms). Parity with the Swift/C SDKs.
+    #[napi(js_name = "mirrorMode")]
+    pub fn mirror_mode(&self) -> Result<String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        Ok(sim.session.mirror_mode().to_string())
+    }
+
     #[napi(js_name = "mirrorStats")]
     pub fn mirror_stats(&self) -> Result<MirrorStatsDto> {
         let mut state = self

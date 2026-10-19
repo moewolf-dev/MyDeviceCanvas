@@ -144,13 +144,25 @@ export class MyDeviceCanvas {
   onMirrorFrame(listener) {
     return this.on("mirror", listener);
   }
+  /** N559: restrict a mirror mode to the two the protocol negotiates. */
+  static normalizeMirrorMode(mode) {
+    if (mode === undefined || mode === null || mode === "") return "full-frame";
+    if (mode === "full-frame" || mode === "dirty-region") return mode;
+    throw new RangeError(`unknown mirror mode: ${mode}`);
+  }
   /** Form B: ask the device to start mirroring `surfaceId`. */
   async startMirror(surfaceId, { mode = "full-frame", maxFps = 30 } = {}) {
     if (this._disposed) throw new Error("manager is disposed");
     if (typeof this._native.startMirror !== "function") {
       throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
     }
-    return this._native.startMirror(surfaceId, mode, maxFps);
+    const normalized = MyDeviceCanvas.normalizeMirrorMode(mode);
+    return this._native.startMirror(surfaceId, normalized, maxFps);
+  }
+  /** N559: the negotiated mirror mode (parity with Swift/C; "" before confirm). */
+  async mirrorMode() {
+    if (this._disposed) throw new Error("manager is disposed");
+    return (await this._native.mirrorMode?.()) ?? "";
   }
   async stopMirror(surfaceId) {
     if (this._disposed) throw new Error("manager is disposed");

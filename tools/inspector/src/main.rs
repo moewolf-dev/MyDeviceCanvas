@@ -121,6 +121,16 @@ fn write_verdict<W: Write>(
     writeln!(out, "{}", verdict_line(summary, alerts))
 }
 
+/// N560: the JSONL sink — a file when `--out PATH` is given, else stdout.
+fn jsonl_sink(path: Option<&str>) -> std::io::Result<Box<dyn Write>> {
+    match path {
+        Some(path) => Ok(Box::new(std::io::BufWriter::new(std::fs::File::create(
+            path,
+        )?))),
+        None => Ok(Box::new(std::io::BufWriter::new(std::io::stdout().lock()))),
+    }
+}
+
 /// N539: the one-line verdict a thresholded watch ends with.
 fn verdict_line(summary: &WatchSummary, alerts: &[String]) -> String {
     serde_json::json!({
@@ -295,7 +305,15 @@ fn main() {
         };
         // N550: samples and the trailing verdict share one writer, so the verdict
         // is always the last line of the `--jsonl` sequence and never interleaves.
-        let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+        // N560: `--out PATH` archives the series (and verdict) to a file.
+        let out_path = flag_value("--out");
+        let mut out = match jsonl_sink(out_path.as_deref()) {
+            Ok(out) => out,
+            Err(error) => {
+                eprintln!("inspector error: {error}");
+                std::process::exit(1);
+            }
+        };
         let summary = match watch(count, interval, &board, heap_kb, &mut out) {
             Ok(summary) => summary,
             Err(error) => {
@@ -324,6 +342,9 @@ fn main() {
             std::process::exit(1);
         }
         let _ = out.flush();
+        if let Some(path) = &out_path {
+            println!("jsonl written to {path}");
+        }
         if !alerts.is_empty() {
             eprintln!("inspector alert: {}", alerts.join("; "));
             std::process::exit(2);
@@ -455,6 +476,26 @@ mod tests {
         assert_eq!(lines.last().unwrap()["kind"], "verdict");
         assert_eq!(lines.last().unwrap()["ok"], false);
         assert_eq!(lines.last().unwrap()["alerts"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn jsonl_sink_writes_a_series_to_a_file() {
+        // N560: `--out` writes the samples and verdict to a file.
+        let path = std::env::temp_dir().join(format!("mdc-jsonl-{}.jsonl", std::process::id()));
+        {
+            let mut out = jsonl_sink(Some(path.to_str().unwrap())).unwrap();
+            let summary = watch(2, 1, "default", 0, &mut out).unwrap();
+            write_verdict(&mut out, &summary, &[]).unwrap();
+            out.flush().unwrap();
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3, "two samples plus the verdict");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(lines[2]).unwrap()["kind"],
+            "verdict"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
