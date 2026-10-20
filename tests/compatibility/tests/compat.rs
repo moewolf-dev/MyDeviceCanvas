@@ -5886,3 +5886,109 @@ fn sprite_fit_and_pad_on_the_device() {
         .iter()
         .all(|(x, y)| (1..=2).contains(x) && (1..=2).contains(y)));
 }
+
+#[test]
+fn sprite_linear_filter_reaches_the_device() {
+    // N705/N711: a sprite's `linear` token is honoured on the device double, so
+    // an upscaled atlas frame blends instead of repeating the nearest texel.
+    let render = |mode: Option<&str>| {
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 4,
+            height: 1,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        let package = mdc_model::DevicePackage {
+            target: "esp32-plane".into(),
+            mode: mdc_model::PackageMode::BakedSprites,
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            textures: Vec::new(),
+            materials: Vec::new(),
+            lights: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 8,
+            atlas: Some(mdc_model::AtlasBlob {
+                sprite_width: 2,
+                sprite_height: 1,
+                frames: 1,
+                columns: 1,
+                rows: 1,
+                rgb565: vec![0x00, 0xF8, 0x1F, 0x00],
+                clips: Vec::new(),
+                mips: Vec::new(),
+            }),
+            texture: None,
+            texture_blobs: Vec::new(),
+        };
+        let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+        session
+            .install_package(&sealed.to_bytes().unwrap())
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .set_scene(mdc_protocol::SceneNode {
+                name: "icon".into(),
+                kind: "sprite".into(),
+                rect: Some([0, 0, 4, 1]),
+                children: Vec::new(),
+                value: Some("0".into()),
+                value2: None,
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: mode.map(str::to_string),
+                focus: None,
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        [0, 1, 2, 3].map(|x| device.pixel_rgb565(x, 0).unwrap())
+    };
+    assert_eq!(render(None), [0xF800, 0xF800, 0x001F, 0x001F]);
+    let linear = render(Some("linear"));
+    assert_eq!(linear[0], 0xF800);
+    assert_eq!(linear[3], 0x001F);
+    assert_ne!(linear[1], 0xF800);
+    assert_ne!(linear[1], 0x001F);
+}
+
+#[test]
+fn package_order_summary_survives_a_round_trip() {
+    // N704/N711: the persisted before/after locality summary is metadata only;
+    // the container still verifies and the fields survive a re-open.
+    let doc = br#"{"asset":{"version":"2.0"},
+        "nodes":[{"name":"root","mesh":0}],
+        "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+        "accessors":[{"count":4,"type":"VEC3"}]}"#;
+    let model = mdc_model::GltfImporter
+        .import(doc, &mdc_model::ImportLimits::default())
+        .unwrap();
+    let mut package =
+        mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::sprite_only())
+            .unwrap();
+    let before = package.manifest.cache_misses + 9;
+    package.set_cache_report(before);
+    let back = mdc_model::MdcPackage::from_bytes(&package.to_bytes().unwrap()).unwrap();
+    assert_eq!(back.manifest.cache_misses_before, before);
+    assert_eq!(back.manifest.cache_misses_saved, 9);
+    let report = back.verify();
+    assert!(report.valid);
+    assert_eq!(report.manifest_cache_misses_before, before);
+    assert_eq!(report.manifest_cache_misses_saved, 9);
+    assert_eq!(back.package.ktx2_summary().textures, 0);
+    assert_eq!(back.package.ktx2_summary().slices, 0);
+}

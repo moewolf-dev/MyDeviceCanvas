@@ -2345,6 +2345,12 @@ fn websocket_note_log_stays_bounded() {
         .ws_log()
         .iter()
         .all(|note| note.detail.len() <= mdc_mirror::WS_NOTE_DETAIL_MAX));
+    // N707: the structured array the health endpoint embeds is bounded too.
+    let entries = server.ws_log_entries_json();
+    assert!(entries.starts_with('[') && entries.ends_with(']'));
+    assert!(
+        entries.len() <= 16 * (mdc_mirror::WS_NOTE_KIND_MAX + mdc_mirror::WS_NOTE_DETAIL_MAX + 32)
+    );
 }
 
 #[test]
@@ -2666,5 +2672,27 @@ fn combined_geometry_optimization_soak_is_bounded() {
         assert_eq!(geometry.indices.len(), indices);
         assert!(result.cache_misses <= misses, "misses never increase");
         misses = result.cache_misses;
+    }
+}
+
+#[test]
+fn package_order_summary_soak_is_bounded() {
+    // N704/N711: the persisted locality summary is a fixed-size manifest field;
+    // resealing and reopening never grows the container.
+    let package = tiny_package();
+    let before = package.manifest.cache_misses + 5;
+    let mut size = 0usize;
+    for _ in 0..100 {
+        let mut package = package.clone();
+        package.set_cache_report(before);
+        let bytes = package.to_bytes().unwrap();
+        if size == 0 {
+            size = bytes.len();
+        }
+        assert_eq!(bytes.len(), size, "the container size is stable");
+        let back = mdc_model::MdcPackage::from_bytes(&bytes).unwrap();
+        assert_eq!(back.manifest.cache_misses_before, before);
+        assert_eq!(back.manifest.cache_misses_saved, 5);
+        assert!(back.verify().valid);
     }
 }
