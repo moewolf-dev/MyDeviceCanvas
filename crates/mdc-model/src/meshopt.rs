@@ -1968,6 +1968,37 @@ mod tests {
     }
 
     #[test]
+    fn vertex_buffer_v0_multiblock_group_modes_corpus() {
+        // N713: v0 writes one header per byte lane and a single group mode per
+        // block; counts past the 256-element block boundary exercise multiple
+        // blocks plus their tail groups for every group width.
+        let mut state = 0x51A7_3C29u32;
+        let mut next = || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 23) as u8
+        };
+        for group_bits in [2u8, 4, 8] {
+            for (stride, count) in [(4usize, 257usize), (8, 271), (12, 511), (4, 527)] {
+                let values: Vec<Vec<u8>> = (0..count)
+                    .map(|_| (0..stride).map(|_| next()).collect())
+                    .collect();
+                let encoded = encode_vertex_buffer_v0_bits(&values, stride, group_bits);
+                let decoded = unwrap_decode(decode_vertex_buffer(
+                    count,
+                    stride,
+                    &encoded,
+                    MeshoptFilter::None,
+                ));
+                assert_eq!(
+                    decoded,
+                    values.iter().flatten().copied().collect::<Vec<_>>(),
+                    "v0 group {group_bits} stride {stride}, count {count}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn vertex_buffer_v1_control_modes_round_trip() {
         // N623/N633: modes 1/2/3 all decode back to the source values, including
         // a control-mode-1 lane encoded with 4-bit sentinel deltas.
