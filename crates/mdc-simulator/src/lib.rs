@@ -6623,6 +6623,93 @@ mod tests {
     }
 
     #[test]
+    fn sprite_fit_pad_bilinear_compose() {
+        // N715: `fit`, `pad` and `linear` compose on a sprite: the letterbox is
+        // inset, the draw box keeps the atlas aspect, and interior pixels blend.
+        use mdc_protocol::SceneNode;
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 6,
+            height: 6,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        let package = mdc_model::DevicePackage {
+            target: "esp32-plane".into(),
+            mode: mdc_model::PackageMode::BakedSprites,
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            textures: Vec::new(),
+            materials: Vec::new(),
+            lights: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 8,
+            atlas: Some(mdc_model::AtlasBlob {
+                sprite_width: 2,
+                sprite_height: 1,
+                frames: 1,
+                columns: 1,
+                rows: 1,
+                rgb565: vec![0x00, 0xF8, 0x1F, 0x00],
+                clips: Vec::new(),
+                mips: Vec::new(),
+            }),
+            texture: None,
+            texture_blobs: Vec::new(),
+        };
+        let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+        session
+            .install_package(&sealed.to_bytes().unwrap())
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .set_scene(SceneNode {
+                name: "icon".into(),
+                kind: "sprite".into(),
+                rect: Some([0, 0, 6, 6]),
+                children: Vec::new(),
+                value: Some("0".into()),
+                value2: None,
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: Some("fit,pad=1,linear".into()),
+                focus: None,
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        // fit 2x1 into the 4x4 inner box -> 4x2 at (1,2); the corners stay clear.
+        assert_eq!(device.pixel_rgb565(0, 0), Some(0));
+        assert_eq!(device.pixel_rgb565(5, 5), Some(0));
+        let left = device.pixel_rgb565(1, 2).unwrap();
+        let right = device.pixel_rgb565(4, 2).unwrap();
+        assert_eq!(left, 0xF800);
+        assert_eq!(right, 0x001F);
+        let (mid_left, mid_right) = (
+            device.pixel_rgb565(2, 2).unwrap(),
+            device.pixel_rgb565(3, 2).unwrap(),
+        );
+        assert_ne!(mid_left, 0xF800, "the interior blends");
+        assert_ne!(mid_right, 0x001F, "the interior blends");
+        // The row below is part of the same fitted box, not a repeat outside it.
+        assert_ne!(device.pixel_rgb565(2, 3), Some(0));
+        assert_eq!(device.pixel_rgb565(2, 4), Some(0));
+    }
+
+    #[test]
     fn atlas_fade_in_darkens_the_first_frame() {
         let (host, mut device) = FakeDevice::pair(BoardProfile {
             width: 1,
