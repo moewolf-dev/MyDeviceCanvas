@@ -115,6 +115,7 @@ A device that accepts a scene rasterizes it locally:
   stays inside the padded area. N675: `align` (horizontal and `top`/`middle`/
   `bottom`) then positions the fitted image inside the padded box. A short or
   malformed string draws nothing.
+- N695: `sprite` uses the same `fit`/`pad` box and applies `flip-h`/`flip-v`/quarter-turn `rotate` sampling as `image`.
 - `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour.
   N685: it shares the image's `fit`/`pad`/`align` box (aspect-preserving
   letterbox and padding). A missing atlas or index draws nothing.

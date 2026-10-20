@@ -400,6 +400,15 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Archive --json alias (N689) | sim-verified (pretty/compact) | n/a |
 | Verify manifest locality (N690) | sim-verified | n/a |
 
+| v0 verbatim boundary (N693) | sim-verified (partial group) | n/a |
+| Package order diff (N694) | sim-verified | n/a |
+| Sprite rotate/flip (N695) | sim-verified (device) | physical: pending |
+| Defaults key parity (N696) | sim-verified | n/a |
+| WS kind visibility (N697) | sim-verified | n/a |
+| SDK smoke invariants (N698) | sim-verified | n/a |
+| Archive compact contract (N699) | sim-verified | n/a |
+| Strict verify locality (N700) | sim-verified | n/a |
+
 ## G03 sim exit
 
 Host Core + FakeDevice path demonstrates HELLO → Capabilities → Frame → Ack without physical hardware. Marked **sim-verified**; G03 physical exit remains open.

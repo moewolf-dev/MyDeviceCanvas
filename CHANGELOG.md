@@ -2,6 +2,29 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.82] — verbatim tail fixture, package-order diff, sprite rotation, defaults parity, WS kind visibility, Swift/C smoke parity, strict verify (N693–N702)
+
+### Added
+
+- v0 verbatim trailing-group boundary coverage (N693)
+- `mdc diff` package-order locality lines (N694)
+- sprite flip/rotation sampling parity with image (N695)
+- `inspect --defaults --key` parity with `config --defaults --key` (N696)
+- `mdc mirror`/health WS kind visibility (N697)
+- Swift/C/Node tile reconciliation smoke invariants (N698)
+- compact archive key contract and verify strict locality behavior (N699/N700)
+
+### Fixed
+
+- Sprite rendering now applies the same flip/quarter-turn sampling rules as image
+  rendering (N695).
+
+### Notes
+
+- N688 was already provided by N638 (`mdc_session_tile_reconciliation_ex`); this
+  batch keeps the three SDK surfaces covered by tests. Physical verification
+  (D05/G03/H06) is still pending.
+
 ## [0.1.81] — meshopt verbatim tail cases, sprite fit/pad, shared fit box, configurable kind limit, defaults alias, report/verify detail (N683–N692)
 
 ### Added

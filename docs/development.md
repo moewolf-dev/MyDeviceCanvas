@@ -75,7 +75,9 @@ cargo run -p mdc -- --board linux-virt inspect                        # board_co
 cargo run -p mdc-inspector -- --check-archive archive                 # validate archive (N619)
 cargo run -p mdc-inspector -- --check-archive archive --max-bytes 1048576  # cap (N629)
 cargo run -p mdc -- validate model.gltf --strict                      # KTX2 notes fail strict (N620)
-cargo run -p mdc -- --board linux-virt config --defaults --key tile_missing_threshold  # one key (N666)
+cargo run -p mdc -- --board linux-virt config --defaults --key tile_missing_threshold  # key parity (N696)
+cargo run -p mdc -- --board linux-virt inspect --defaults --key tile_missing_threshold
+cargo run -p mdc -- --board linux-virt verify out.mdcpkg --strict  # locality contract (N700)  # one key (N666)
 cargo run -p mdc-inspector -- --check-archive archive --compact       # one-line report (N668)
 cargo run -p mdc -- package model.gltf --optimize-geometry --report   # index_cache_saved (N669)
 cargo run -p mdc -- --board linux-virt inspect                        # config_defaults merged (N676)
