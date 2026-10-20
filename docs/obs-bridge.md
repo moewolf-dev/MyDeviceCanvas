@@ -105,7 +105,7 @@ window size never enters the log. N617: `WS_NOTE_VERSION` pins the entry shape
 and `ws_log_of_kind(kind)` filters the log. N667: `/health`'s `ws_log_last` is escaped by the shared `escape_json`, so a
 host-supplied note with quotes/newlines cannot break the body. N677: a note's `kind` is clamped to `WS_NOTE_KIND_MAX` and the `/health`
 kind map reports at most `WS_LOG_KINDS_MAX` kinds in sorted (stable) order. N687: the cap is configurable with
-`with_ws_kind_limit(n)` (clamped to `1..=WS_LOG_KINDS_MAX`). N697: `mdc mirror` exposes the same `ws_log_kinds` object in its JSON summary. N707: `/health` also carries `ws_log_entries`, the oldest-first array of `{kind, detail}` notes (bounded by `WS_LOG_MAX`, strings escaped), so a monitor sees the reasons rather than only counts. N717: `/health?kind=extension` narrows only `ws_log_entries` to that kind (an unknown kind yields `[]`); the counter fields stay global.
+`with_ws_kind_limit(n)` (clamped to `1..=WS_LOG_KINDS_MAX`). N697: `mdc mirror` exposes the same `ws_log_kinds` object in its JSON summary. N707: `/health` also carries `ws_log_entries`, the oldest-first array of `{kind, detail}` notes (bounded by `WS_LOG_MAX`, strings escaped), so a monitor sees the reasons rather than only counts. N717: `/health?kind=extension` narrows only `ws_log_entries` to that kind (an unknown kind yields `[]`); the counter fields stay global. N727: `/frame.*` and `/health` emit `ETag` + `Last-Modified`; a client sending a matching `If-None-Match` gets `304 Not Modified` with no body, so a browser source or poller can avoid re-downloading an unchanged frame.
 
 ## Guarantees
 

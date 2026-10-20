@@ -2,6 +2,31 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.85] — scene polygons, eased animation, pinch gestures, DQS, conditional HTTP, OTA resume, chunk dedup, playback modes, per-material cutoff, adaptive dirty threshold (N723–N732)
+
+### Added
+
+- `polygon` / `polyline` scene nodes with bounded absolute points (N723)
+- `anim.easing` (`ease-in`/`ease-out`/`ease-in-out`) for opacity/rect/focus (N724)
+- two-pointer `Pinch` gestures with scale/rotation (N725)
+- `SkinMode::Dqs` dual-quaternion skinning, capability-gated (N726)
+- `ETag`/`Last-Modified` + `304 Not Modified` for `/frame.*` and `/health` (N727)
+- `Session::ota_resume_commands` and CLI resume after a reconnect (N728)
+- `mdc_assets::ChunkStore` content-addressed chunk dedup with refcounts (N729)
+- atlas clip `mode` (`loop`/`once`/`ping-pong`) and `speed_permille` (N730)
+- per-material `alphaCutoff` thresholding at bake time, host + device (N731)
+- bandwidth-adaptive `DirtyTracker` threshold + `Session::measure_bitrate` (N732)
+
+### Fixed
+
+- DQS blending now keeps a vertex under opposing joint rotations instead of
+  collapsing like LBS (N726).
+
+### Notes
+
+- All of the above are host/simulator logic. D05, G03 and H06 remain open until
+  physical hardware is measured; no board is claimed working.
+
 ## [0.1.84] — v0 multi-block corpus, package-order reconciliation, sprite fit/pad/linear, source filter, health kind filter, C tile sequence, prune manifest, KTX2 matrix row (N713–N722)
 
 ### Added

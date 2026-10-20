@@ -454,6 +454,15 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
   size mismatches) shared by the model summary and `DevicePackage`, so
   `mdc model-info`, `mdc verify` and `mdc diff` cannot disagree about the same
   container.
+- N726: `SkinMode::{Lbs, Dqs}`. LBS remains the default; a board that advertises
+  `RendererCapability.dqs` selects dual-quaternion blending for its device
+  renderer, and `mdc render-mesh --dqs` selects it for offline renders. DQS
+  blends the rigid joint transforms (removing the LBS candy-wrapper collapse),
+  while scale/shear is reduced to the nearest rotation.
+- N731: a `MASK` material's `alphaCutoff` is applied when its texture is baked:
+  `bake_texture_blob_with_cutoff`/`decode_rgba_native_with_cutoff` threshold the
+  1-bit mask at `material.cutoff_u8()` instead of a fixed 128. Host and device
+  both consume that mask, so the cutout is identical.
 - N714: the package-order report and the sealed manifest are reconciled by test:
   `optimize_package_index_order(..., CACHE_REPORT_SIZE)` must equal
   `manifest.cache_misses`, and `set_cache_report(report.misses_before)` must

@@ -175,4 +175,25 @@ N710: `mdc verify`, `mdc diff` and `mdc model-info` share one KTX2 summary
 counts. N720: `mdc verify` additionally prints `compatibility_row`, a
 ready-to-paste matrix row derived from that same summary.
 
+N728: `Session::ota_resume_commands(version, size, sha256)` filters the OTA
+begin/chunk/confirm sequence by `ota_phase`, so a driver that reconnects only
+sends what the device has not acknowledged; `mdc ota` uses it for both the
+simulator and TCP paths.
+
+N729: `mdc_assets::ChunkStore` stores fixed-size chunks once (SHA-256 keys) and
+returns a `StoredBlob` index; `release` reference-counts chunks and the quota is
+checked before any mutation.
+
+N732: `DirtyTracker::adapt_to_bandwidth(bytes_per_second, frame_bytes)` maps the
+measured link to a full-frame threshold (0.05 below ~1 FPS, up to 0.9 at 8+ FPS),
+and `Session::measure_bitrate`/`adapt_dirty_threshold` derive the rate from the
+outbound byte counter and the virtual clock.
+
+N725: `GestureKind::Pinch` carries `scale` (permille) and `rotation` (degrees)
+from two simultaneous pointers; both fingers are consumed so their release is
+not reported as a tap/drag.
+
+N730: `AtlasClip.mode` (`loop`/`once`/`ping-pong`) and `speed_permille` scale
+device-side atlas playback; `animation_loops()` accounts for both.
+
 

@@ -74,13 +74,24 @@ contract.
 ## Renderer capability (N17)
 
 `CAPABILITIES` optionally carries `renderer { sprite_2d, mesh2d, mesh3d,
-skeleton, max_texture, max_vertices }`: the local rendering a device supports.
+skeleton, dqs?, max_texture, max_vertices }`: the local rendering a device
+supports. `dqs` (N726) is additive and omitted when false, so a device that does
+not advertise it produces the same bytes as before.
 It is `Option` and `skip_serializing_if = "Option::is_none"`, so a pre-renderer
 device produces a 15-entry map and a device that advertises renderer produces a
 16-entry map. The host model compiler reads it to pick a target backend
 (`mdc-model::RendererCapability::from_wire`); an absent capability is treated as
 sprite-only. Rust and C++ share the exact encoding
 (`cbor_control_test.cpp` reproduces the `mdc-protocol` bytes).
+
+## Scene payload (N723/N724)
+
+`SCENE` uses CBOR `SceneCommand { action, scene? }`. `SceneNode.kind` accepts
+`polygon` and `polyline` (N723); their absolute vertices live in `value2` as
+`"x,y;x,y;..."` (at most 64 points, at least two), while `rect` remains the
+bounding box. `SceneAnim.easing` (N724) is an optional `linear`/`ease-in`/
+`ease-out`/`ease-in-out` token shaping each keyframe segment. Both fields are
+additive; nodes without them behave as before.
 
 ## Runtime package transfer (N22)
 

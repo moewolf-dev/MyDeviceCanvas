@@ -425,6 +425,16 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | C tile sequence (N718) | sim-verified (C ABI) | physical: pending |
 | Prune manifest refresh (N719) | sim-verified (archive) | n/a |
 | KTX2 compatibility row (N720) | sim-verified (`mdc verify`) | n/a |
+| Scene polygon/polyline (N723) | sim-verified (device pixels) | physical: pending |
+| Scene animation easing (N724) | sim-verified (endpoints exact) | n/a |
+| Pinch/rotate gestures (N725) | sim-verified (manager event) | physical: pending |
+| Dual-quaternion skinning (N726) | sim-verified (host + package) | physical: pending |
+| HTTP conditional GET (N727) | sim-verified (304) | n/a |
+| OTA resume (N728) | sim-verified (phase plan) | physical: pending |
+| Chunk dedup store (N729) | sim-verified (refcounts/quota) | n/a |
+| Clip playback modes (N730) | sim-verified (ping-pong/speed) | physical: pending |
+| Per-material cutoff (N731) | sim-verified (host == device) | physical: pending |
+| Adaptive dirty threshold (N732) | sim-verified (low/high rate) | n/a |
 
 Rows marked `sim-verified` describe host/simulator behaviour only. The KTX2 row
 is also emitted by `mdc verify` as `compatibility_row`, generated from the same

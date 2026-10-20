@@ -59,7 +59,10 @@ While a clip runs, the device indexes the current frame from its clock
 (`current_atlas_frame`), renders it into the local framebuffer, and — when
 mirroring — emits it as a `MIRRORFRAME` so the host/OBS sees the device-rendered
 result. An unknown clip or a device with no atlas is refused. `animation_loops()`
-reports how many times a looping clip has wrapped. N345: `mdc bake-mesh
+reports how many times a looping clip has wrapped. N730: `AtlasClip.mode`
+(`loop` default, `once`, `ping-pong`) and `speed_permille` (1000 = authored FPS)
+change frame selection: `once` holds the last frame, `ping-pong` reverses at both
+ends, and the loop count uses the ping-pong period. N345: `mdc bake-mesh
 --all-animations --package out.mdcpkg` bakes one clip per model animation into a
 single multi-clip atlas package.
 

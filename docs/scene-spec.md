@@ -22,7 +22,7 @@ SceneCommand:
 
 SceneNode:
   name:     string
-  kind:     "group" | "rect" | "text" | "sprite" | "image" | "circle" | "line" | "gradient" | "rounded-rect" | "clip"
+  kind:     "group" | "rect" | "text" | "sprite" | "image" | "circle" | "line" | "polygon" | "polyline" | "gradient" | "rounded-rect" | "clip"
   rect:     [x, y, w, h]?     # geometry for kinds that rasterize (N79); a group's transform (N138)
   children: [SceneNode]?      # optional, ordered back-to-front
   value:    string?           # rect/circle/line: "#RRGGBB"/"#RGB"/name; text: glyphs; image: packed RGB565 hex
@@ -81,8 +81,10 @@ A device that accepts a scene rasterizes it locally:
 - N450: `visible: false` hides a node and its children from drawing and hit-testing
   (`true`/absent is visible).
 - N463: `anim` is `{duration_ms, looping, opacity: [[time_ms, opacity]...],
-  rect: [[time_ms, x, y, w, h]...]}`. Keyframes are linearly interpolated on the
-  device clock; a looping clip wraps, otherwise it holds the last frame.
+  rect: [[time_ms, x, y, w, h]...]}`. Keyframes are interpolated on the device
+  clock; a looping clip wraps, otherwise it holds the last frame. N724:
+  `easing` (`linear` default, `ease-in`, `ease-out`, `ease-in-out`) shapes each
+  segment while keeping both endpoints exact.
 - N546: `anim.focus: [[time_ms, cx%, cy%]...]` animates the radial `gradient`
   centre (same percent semantics as `focus`); values are clamped to `0..=100`.
 - N475: `rotate: 90|180|270` swaps the rect axes for axis-aligned fills; a rotated
@@ -122,6 +124,12 @@ A device that accepts a scene rasterizes it locally:
 - `circle` fills the ellipse inscribed in `rect` with the `value` colour; a  zero width or height draws nothing.
 - `line` draws a Bresenham segment from `rect[0..2]` to `rect[2..4]`. A degenerate
   segment draws a single pixel; endpoints outside the framebuffer are clipped.
+- N723: `polygon` fills a closed polygon and `polyline` strokes it. Both read
+  absolute points from `value2` (`"x,y;x,y;..."`, up to 64 points, at least two);
+  `rect` is the bounding box used for lint/hit-testing. `polygon` uses the
+  even-odd rule and clips to the framebuffer; `polyline` joins the points with
+  Bresenham segments and `mode: "closed"` also draws the last-to-first edge.
+  Malformed/over-limit point lists draw nothing.
 - `group` (and any node whose kind does not rasterize) does not draw; its `rect`
   is a transform for its children: `x`/`y` become a pixel offset and `w`/`h` a
   scale in permille (1000 = 1×; `0` leaves an axis unscaled). Nested groups
