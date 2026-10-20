@@ -245,6 +245,18 @@ pub struct DiskChunkStore {
 /// N738: the most blobs the on-disk index retains.
 pub const MAX_DISK_BLOBS: usize = 4096;
 
+/// N747: what a [`DiskChunkStore::compact`] pass removed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DiskMaintenance {
+    /// Blob index entries dropped because a chunk file was missing.
+    pub missing_blobs: usize,
+    /// Chunk files with no remaining blob reference.
+    pub orphan_chunks: usize,
+    /// Temporary `.tmp`/`.chunk-*` files removed.
+    pub temp_files: usize,
+    pub bytes_reclaimed: usize,
+}
+
 impl DiskChunkStore {
     pub fn open(
         dir: impl Into<PathBuf>,
@@ -408,6 +420,52 @@ impl DiskChunkStore {
             out.extend_from_slice(&std::fs::read(self.chunk_path(key)).ok()?);
         }
         (out.len() == blob.len).then_some(out)
+    }
+
+    /// N747: reindex the directory — drop blobs with missing chunks, delete
+    /// orphan/temporary files, recompute the byte total and rewrite the index.
+    pub fn compact(&mut self) -> Result<DiskMaintenance, AssetError> {
+        let mut report = DiskMaintenance::default();
+        let entries: Vec<(String, DiskBlob)> = self.blobs.clone().into_iter().collect();
+        for (key, entry) in entries {
+            if entry
+                .blob
+                .chunks
+                .iter()
+                .any(|chunk| !self.chunk_path(chunk).is_file())
+            {
+                self.blobs.remove(&key);
+                report.missing_blobs += 1;
+            }
+        }
+        let referenced: BTreeSet<String> = self
+            .blobs
+            .values()
+            .flat_map(|entry| entry.blob.chunks.iter().map(|chunk| chunk.0.clone()))
+            .collect();
+        let mut total = 0usize;
+        for entry in std::fs::read_dir(self.dir.join("chunks")).map_err(io_err)? {
+            let entry = entry.map_err(io_err)?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                let bytes = entry.metadata().map_err(io_err)?.len() as usize;
+                std::fs::remove_file(entry.path()).map_err(io_err)?;
+                report.temp_files += 1;
+                report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(bytes);
+                continue;
+            }
+            if !referenced.contains(&name) {
+                let bytes = entry.metadata().map_err(io_err)?.len() as usize;
+                std::fs::remove_file(entry.path()).map_err(io_err)?;
+                report.orphan_chunks += 1;
+                report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(bytes);
+                continue;
+            }
+            total = total.saturating_add(entry.metadata().map_err(io_err)?.len() as usize);
+        }
+        self.total = total;
+        self.save_index()?;
+        Ok(report)
     }
 
     pub fn release(&mut self, blob: &StoredBlob) -> Result<(), AssetError> {
@@ -1008,6 +1066,34 @@ mod tests {
         assert_eq!(store.total_bytes(), 0);
         assert_eq!(store.unique_chunks(), 0);
         assert_eq!(std::fs::read_dir(dir.join("chunks")).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disk_chunk_store_compacts_orphans_and_missing_blobs() {
+        // N747: compaction drops a blob with a missing chunk, removes orphan and
+        // temporary files, and rewrites a consistent index.
+        let dir = std::env::temp_dir().join(format!("mdc-disk-compact-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut store = DiskChunkStore::open(&dir, 4, 64).unwrap();
+        let a = store.insert(b"AAAA").unwrap();
+        let b = store.insert(b"BBBB").unwrap();
+        std::fs::write(dir.join("chunks").join("ORPHAN"), b"zz").unwrap();
+        std::fs::write(dir.join("chunks").join(".tmp-file"), b"zz").unwrap();
+        let missing = dir.join("chunks").join(AssetKey::from_bytes(b"BBBB").0);
+        std::fs::remove_file(&missing).unwrap();
+        let report = store.compact().unwrap();
+        assert_eq!(report.missing_blobs, 1);
+        assert_eq!(report.orphan_chunks, 1);
+        assert_eq!(report.temp_files, 1);
+        assert_eq!(store.total_bytes(), 4);
+        assert_eq!(store.unique_chunks(), 1);
+        assert_eq!(store.ref_count(&a), 1);
+        assert!(store.get(&b).is_none());
+        drop(store);
+        let store = DiskChunkStore::open(&dir, 4, 64).unwrap();
+        assert_eq!(store.unique_chunks(), 1);
+        assert_eq!(store.total_bytes(), 4);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
