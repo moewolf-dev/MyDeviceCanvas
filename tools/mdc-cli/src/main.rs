@@ -1915,10 +1915,13 @@ fn cmd_render_package(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
     let mut time: f32 = 0.0;
     let mut mip: usize = 0;
     let mut smooth = false;
+    let mut dqs = false;
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "--out" => out = iter.next().cloned(),
+            // N746: dual-quaternion skinning for a skinned mesh package.
+            "--dqs" => dqs = true,
             "--frame" => frame = iter.next().and_then(|v| v.parse().ok()).unwrap_or(frame),
             "--sprite" => sprite = iter.next().and_then(|v| v.parse().ok()).unwrap_or(sprite),
             // N429: select the animation clip by name at `--time` seconds.
@@ -1947,12 +1950,24 @@ fn cmd_render_package(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
                 mdc_bake::Filter::Nearest,
                 mdc_bake::ShadeMode::Flat,
             )?,
-            None if smooth => mdc_bake::render_package_mesh_mode(
-                &package.package,
-                (sprite, sprite),
-                mdc_bake::ShadeMode::Smooth,
-            )?,
-            None => mdc_bake::render_package_mesh(&package.package, (sprite, sprite))?,
+            None => {
+                let mode = if smooth {
+                    mdc_bake::ShadeMode::Smooth
+                } else {
+                    mdc_bake::ShadeMode::Flat
+                };
+                let skin = if dqs {
+                    mdc_bake::SkinMode::Dqs
+                } else {
+                    mdc_bake::SkinMode::Lbs
+                };
+                mdc_bake::render_package_mesh_skinned(
+                    &package.package,
+                    (sprite, sprite),
+                    mode,
+                    skin,
+                )?
+            }
         };
         std::fs::write(
             &out,
@@ -1964,6 +1979,7 @@ fn cmd_render_package(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
                 "package": file,
                 "mode": package.manifest.mode,
                 "sprite": format!("{}x{}", frame.width, frame.height),
+                "skinning": if dqs { "dqs" } else { "lbs" },
                 "output": out,
             }))?
         );
@@ -4367,6 +4383,60 @@ fn cmd_diff(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// N752: report an image's alpha coverage/opaque bounds and trim potential.
+fn cmd_texture_report(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let path = args.first().cloned().ok_or("texture-report <image>")?;
+    let bytes = std::fs::read(&path)?;
+    let (baked, alpha) = mdc_bake::decode_rgba8_native(&bytes, &mdc_bake::BakeLimits::default())?;
+    let width = baked.width as usize;
+    let height = baked.height as usize;
+    let mut opaque = 0usize;
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (width, height, 0usize, 0usize);
+    for y in 0..height {
+        for x in 0..width {
+            if alpha.get(y * width + x).copied().unwrap_or(0) >= 128 {
+                opaque += 1;
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+    let covered = if opaque > 0 {
+        Some([
+            min_x as u32,
+            min_y as u32,
+            (max_x - min_x + 1) as u32,
+            (max_y - min_y + 1) as u32,
+        ])
+    } else {
+        None
+    };
+    let total_pixels = width.saturating_mul(height).max(1);
+    let rgb565_bytes = total_pixels.saturating_mul(2);
+    let cropped_bytes = covered
+        .map(|[_, _, w, h]| (w as usize).saturating_mul(h as usize).saturating_mul(2))
+        .unwrap_or(0);
+    let report = serde_json::json!({
+        "source": path,
+        "width": width,
+        "height": height,
+        "opaque_pixels": opaque,
+        "coverage": opaque as f64 / total_pixels as f64,
+        "bbox": covered,
+        "rgb565_bytes": rgb565_bytes,
+        "cropped_bytes": cropped_bytes,
+        "trimmable_bytes": rgb565_bytes.saturating_sub(cropped_bytes),
+        "fully_transparent": opaque == 0,
+    });
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    if opaque == 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 /// N399: import a model and print a validation report; exit non-zero when invalid.
 /// N620: whether a validation report fails (a problem always, a warning under
 /// `--strict`). KTX2 issues land here: size mismatch is a problem, and the
@@ -4538,7 +4608,7 @@ motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] [--clip NAME] [--time T] [--mip N] [--smooth] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> [--time MS] --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss] [--defaults|--defaults-only [--key K]]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|asset verify <dir>|\
-model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg> [--strict]|diff <a.mdcpkg> <b.mdcpkg>"
+model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg> [--strict]|diff <a.mdcpkg> <b.mdcpkg>|texture-report <image>"
     );
 }
 
@@ -4724,6 +4794,7 @@ fn main() {
         Some("validate") => cmd_validate(&args[1..]),
         Some("verify") => cmd_verify(&args[1..]),
         Some("scene-lint") => cmd_scene_lint(&args[1..]),
+        Some("texture-report") => cmd_texture_report(&args[1..]),
         Some("diff") => cmd_diff(&args[1..]),
         Some("switch-demo") => {
             let mut o = opts.clone();
@@ -5053,6 +5124,35 @@ mod tests {
             mdc_bake::ShadeMode::Flat,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn texture_report_accepts_an_rgba_image() {
+        // N752: a valid image reports successfully (fully transparent images
+        // exit 1; that path is not exercised here).
+        use image::RgbaImage;
+        let dir = std::env::temp_dir().join(format!("mdc-texture-report-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("tex.png");
+        let image = RgbaImage::from_raw(4, 4, {
+            let mut pixels = vec![0u8; 4 * 4 * 4];
+            for y in 1..3 {
+                for x in 1..3 {
+                    let index = (y * 4 + x) * 4;
+                    pixels[index..index + 4].copy_from_slice(&[255, 0, 0, 255]);
+                }
+            }
+            pixels
+        })
+        .unwrap();
+        image
+            .write_to(
+                &mut std::fs::File::create(&path).unwrap(),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        cmd_texture_report(&[path.to_string_lossy().into_owned()]).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
