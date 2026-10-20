@@ -48,6 +48,11 @@ see an unchanged capabilities map. `CONFIG` (0x33) carries a CBOR
   stored value never enters a log.
 - **No silent overwrite on failure**: a rejected `set` leaves the last known
   value in the host cache.
+- **Provenance** (N706): `mdc inspect` reports `config_default_sources` — for each
+  merged key its effective value, whether it came from the board profile or the
+  device, and a `conflict` flag when the device overrode a different profile
+  default. `config_default_conflicts` lists just those keys, so an operator can
+  see *why* a default differs without diffing two tables.
 
 ## Non-goals
 

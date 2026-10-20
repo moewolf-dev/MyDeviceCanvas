@@ -409,6 +409,15 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Archive compact contract (N699) | sim-verified | n/a |
 | Strict verify locality (N700) | sim-verified | n/a |
 
+| v0 multi-lane verbatim corpus (N703) | sim-verified (round-trip) | n/a |
+| Package-order manifest summary (N704) | sim-verified (metadata only) | n/a |
+| Sprite bilinear filter (N705) | sim-verified (device blend) | physical: pending |
+| Default provenance/conflicts (N706) | sim-verified | n/a |
+| Structured `/health` WS notes (N707) | sim-verified (bounded) | n/a |
+| Swift tile send + full fields (N708) | sim-verified (smoke) | physical: pending |
+| Archive prune retention (N709) | sim-verified (rotations) | n/a |
+| Shared KTX2 summary (N710) | sim-verified (verify/diff/model-info) | n/a |
+
 ## G03 sim exit
 
 Host Core + FakeDevice path demonstrates HELLO → Capabilities → Frame → Ack without physical hardware. Marked **sim-verified**; G03 physical exit remains open.

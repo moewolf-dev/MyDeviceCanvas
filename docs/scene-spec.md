@@ -116,7 +116,7 @@ A device that accepts a scene rasterizes it locally:
   `bottom`) then positions the fitted image inside the padded box. A short or
   malformed string draws nothing.
 - N695: `sprite` uses the same `fit`/`pad` box and applies `flip-h`/`flip-v`/quarter-turn `rotate` sampling as `image`.
-- `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour.
+- `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour by default. N705: the `mode` token `linear` selects bilinear sampling, matching `image` (interior upscaled pixels blend instead of repeating a texel).
   N685: it shares the image's `fit`/`pad`/`align` box (aspect-preserving
   letterbox and padding). A missing atlas or index draws nothing.
 - `circle` fills the ellipse inscribed in `rect` with the `value` colour; a  zero width or height draws nothing.

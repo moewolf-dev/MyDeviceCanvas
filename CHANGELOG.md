@@ -2,6 +2,32 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.83] — v0 multi-lane corpus, package-order manifest, sprite filtering, default provenance, health entries, Swift tiles, archive pruning, shared KTX2 summary (N703–N712)
+
+### Added
+
+- deterministic v0 multi-lane verbatim round-trip corpus (N703)
+- persisted package-order locality summary in the manifest, surfaced by
+  `verify`/`diff` (N704)
+- sprite `linear` (bilinear) sampling matching `image` (N705)
+- `inspect` default provenance (`config_default_sources`) and
+  `config_default_conflicts` (N706)
+- bounded structured `ws_log_entries` in `/health` (N707)
+- Swift `sendTile`/`currentFrameId` plus a full-field reconciliation smoke (N708)
+- `mdc-inspector --prune-archive DIR --keep N` (N709)
+- one `Ktx2Summary` shared by `model-info`, `verify` and `diff` (N710)
+
+### Fixed
+
+- The sprite path still sampled nearest-neighbour even when the device requested
+  bilinear filtering; it now decodes one bounded frame and uses the shared
+  sampler (N705).
+
+### Notes
+
+- All of the above are host/simulator logic. D05, G03 and H06 remain open until
+  physical hardware is measured; no board is claimed working.
+
 ## [0.1.82] — verbatim tail fixture, package-order diff, sprite rotation, defaults parity, WS kind visibility, Swift/C smoke parity, strict verify (N693–N702)
 
 ### Added

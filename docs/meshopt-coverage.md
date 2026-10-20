@@ -80,6 +80,10 @@ checked against expected output, not a self-consistent pair:
 - `malformed_leb128_and_half_packets_are_errors` (N573): directed LEB128 overflow,
   a never-terminating LEB128 run, a value truncated mid-field, a short aux table,
   and a stream shorter than its vertex tail.
+- `vertex_buffer_v0_multilane_verbatim_fuzz_corpus` (N703): a deterministic LCG
+  corpus over strides 4/8/12/16 and counts 17/31/33/47/49/63, crossing block and
+  group boundaries (including 16k+1/15 tails) on every byte lane. The v0 verbatim
+  group carries raw zigzag deltas, so all byte values must round-trip exactly.
 
 ## Not covered (declared gaps)
 

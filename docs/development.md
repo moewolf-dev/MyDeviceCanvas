@@ -157,4 +157,19 @@ entries (`mdc_bake::quantize_palette`), writing `atlas.pal.json` + `atlas.idx`.
 advertises the `touch` capability; the C ABI `mdc_session_send_input(...)` and the
 Node `_native.sendInput(...)` wrap it.
 
+N704: `mdc package --optimize-geometry`/`--optimize-index` persists the
+before/after vertex-cache summary in the package manifest
+(`cache_misses_before`/`cache_misses_saved`); `mdc verify` and `mdc diff` surface
+it, and the fields are metadata (the body checksum is unchanged).
+
+N709: `mdc-inspector --prune-archive DIR --keep N` keeps the live
+`mdc-history.jsonl` plus `.1..N` rotated copies and deletes higher rotations
+(unrelated files are left alone). Combine with `--check-archive DIR` to verify
+the resulting manifest.
+
+N710: `mdc verify`, `mdc diff` and `mdc model-info` share one KTX2 summary
+(`ktx2_textures`, `ktx2_slices`, `ktx2_size_mismatches`); `diff` also emits a
+`ktx2` field so a metadata mismatch is visible without inspecting structure
+counts.
+
 

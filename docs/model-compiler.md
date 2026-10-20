@@ -446,6 +446,14 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
 - N524: `mdc package --max-draw-vertices N` trims meshes once the cumulative
   vertex count would exceed `N` (`trim_to_vertex_budget`); mesh indices stay
   stable and the nodes that referenced a trimmed mesh stop drawing it.
+- N704: when a package-order pass runs, the manifest persists
+  `cache_misses_before`/`cache_misses_saved` next to the recomputable
+  `cache_misses`; the body/checksum are unaffected, and older packages (fields
+  default to 0) still verify.
+- N710: KTX2 metadata is reported through one `Ktx2Summary` (textures, slices,
+  size mismatches) shared by the model summary and `DevicePackage`, so
+  `mdc model-info`, `mdc verify` and `mdc diff` cannot disagree about the same
+  container.
 
 ## Non-goals (this wave)
 
