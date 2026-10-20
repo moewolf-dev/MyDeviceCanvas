@@ -1464,7 +1464,7 @@ impl HttpMirrorServer {
                     } else {
                         ""
                     };
-                    format!("{}{}", json_escape(&truncated), ellipsis)
+                    format!("{}{}", escape_json(&truncated), ellipsis)
                 })
                 .unwrap_or_default();
             let body = format!(
@@ -1972,23 +1972,6 @@ fn extension_name(value: &str) -> String {
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
         .take(32)
         .collect()
-}
-
-/// N587: escape a string for inclusion in the hand-built `/health` JSON.
-fn json_escape(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 fn find_header_end(request: &[u8]) -> Option<usize> {
@@ -3798,6 +3781,40 @@ mod tests {
             !note.detail.contains("4242"),
             "extension parameters are not logged"
         );
+    }
+
+    #[test]
+    fn health_escapes_custom_ws_notes() {
+        // N667: a host-supplied note with quotes/newlines must not break the
+        // hand-built /health JSON.
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        server.note_ws("custom", "a\"b\\c\nd");
+        let addr = server.local_addr().unwrap();
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        client
+            .write_all(b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+        let mut body = Vec::new();
+        for _ in 0..100 {
+            let _ = server.pump();
+            let mut buffer = [0u8; 4096];
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => body.extend_from_slice(&buffer[..n]),
+                Err(_) => std::thread::sleep(Duration::from_millis(2)),
+            }
+            if body.windows(4).any(|w| w == b"\r\n\r\n") && body.len() > 200 {
+                break;
+            }
+        }
+        let text = String::from_utf8_lossy(&body);
+        let json = text.split("\r\n\r\n").nth(1).unwrap_or("");
+        let parsed: serde_json::Value = serde_json::from_str(json)
+            .unwrap_or_else(|error| panic!("health is not valid JSON: {error}: {json}"));
+        assert_eq!(parsed["ws_log_last"], "custom: a\"b\\c\nd");
     }
 
     #[test]

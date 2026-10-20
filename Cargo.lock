@@ -450,6 +450,7 @@ dependencies = [
  "mdc-protocol",
  "mdc-transport",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 

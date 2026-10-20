@@ -9,3 +9,6 @@ mdc-protocol = { path = "../mdc-protocol" }
 mdc-transport = { path = "../mdc-transport" }
 serde = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
