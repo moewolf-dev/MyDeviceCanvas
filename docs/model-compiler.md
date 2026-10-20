@@ -403,6 +403,9 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
 - N614: `MdcPackage::seal` records `manifest.cache_misses`/`cache_size` (the
   vertex-cache locality at a 32-entry cache); `verify` recomputes it as
   `cache_misses_ok`, and `mdc verify`/`mdc diff` report `cache_misses`.
+- N664: `optimize_package_index_order` returns a `PackageOrderReport`
+  (`meshes`/`reordered`/`misses_before`/`misses_after`); N669 surfaces the saving
+  as `index_cache_saved` in `mdc package --report`.
 - N590: `MdcPackage::verify()` sets `ktx2_ok` — a texture that carries a readable
   KTX2 header must declare the same width/height as the container, otherwise the
   package is invalid. `mdc diff` compares `ktx2_textures`/`ktx2_slices`.

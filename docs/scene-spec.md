@@ -111,7 +111,8 @@ A device that accepts a scene rasterizes it locally:
   horizontally.   N605: a 90°/270° `rotate` swaps the fitted box's width/height so
   the rotated image keeps its aspect. N625: the image uses its **authored** rect
   for the fit box (the axis swap the other fills use would double-rotate it), and
-  `align` positions the box. A short or malformed string draws nothing.
+  N665: `pad`/`pad-l/-t/-r/-b` inset the box before the fit, so a rotated image
+  stays inside the padded area. A short or malformed string draws nothing.
 - `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour.
   A missing atlas or index draws nothing.
 - `circle` fills the ellipse inscribed in `rect` with the `value` colour; a  zero width or height draws nothing.

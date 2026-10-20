@@ -2,6 +2,27 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.79] — meshopt verbatim groups, package order report, pad+rotate, defaults key filter, health escaping, compact archive, report savings (N663–N672)
+
+### Added
+
+- a meshopt control-mode-1 **8-bit verbatim group** round-trip (N663)
+- `PackageOrderReport` from `optimize_package_index_order`
+  (`meshes`/`reordered`/`misses_before`/`misses_after`/`saved`) (N664)
+- `mdc config --defaults --key K` selects a single default (N666)
+- `mdc-inspector --check-archive --compact` emits one JSON line (N668)
+- `mdc package --report` reports `index_cache_saved` (N669)
+
+### Fixed
+
+- `/health`'s `ws_log_last` now uses the single shared JSON escaper (the
+  duplicate helper was removed); a host-supplied note with quotes/newlines can no
+  longer break the hand-built body (N667).
+
+### Notes
+
+- Physical verification (D05/G03/H06) is still pending.
+
 ## [0.1.78] — meshopt width matrix, reorder hit rate, per-side image padding, defaults key, note kinds in health, Swift invariants, archive kinds, validate snapshot (N653–N662)
 
 ### Added

@@ -102,7 +102,8 @@ reports `ws_log` (the entries). N597/N607: each entry is a structured
 `{ kind, detail }` (`extension`/`reserved`), and an extension `detail` is its
 token only (`permessage-deflate`), never its parameters, so a peer address or
 window size never enters the log. N617: `WS_NOTE_VERSION` pins the entry shape
-and `ws_log_of_kind(kind)` filters the log.
+and `ws_log_of_kind(kind)` filters the log. N667: `/health`'s `ws_log_last` is escaped by the shared `escape_json`, so a
+host-supplied note with quotes/newlines cannot break the body.
 
 ## Guarantees
 

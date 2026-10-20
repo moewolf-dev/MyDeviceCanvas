@@ -376,6 +376,13 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Filterable WS log (N617) | sim-verified (`WS_NOTE_VERSION`) | n/a |
 | Archive byte cap (N629) | sim-verified (`--max-bytes`) | n/a |
 | Validate KTX2 summary (N630) | sim-verified | n/a |
+| meshopt verbatim group (N663) | sim-verified (8-bit group) | n/a |
+| Package order report (N664) | sim-verified (before/after) | n/a |
+| Fit pad+rotate (N665) | sim-verified (device render) | physical: pending |
+| Defaults key filter (N666) | sim-verified (`--key`) | n/a |
+| Health escaping (N667) | sim-verified (valid JSON) | n/a |
+| Compact archive (N668) | sim-verified (one line) | n/a |
+| Report cache savings (N669) | sim-verified (`index_cache_saved`) | n/a |
 
 ## G03 sim exit
 
