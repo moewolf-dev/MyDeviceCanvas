@@ -444,6 +444,16 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Text ellipsis/valign (N740) | sim-verified (device pixels) | physical: pending |
 | Adaptive frame pacing (N741) | sim-verified (convergence) | n/a |
 | HEAD/Content-Length (N742) | sim-verified (no body) | n/a |
+| Path command streams (N743) | sim-verified (device pixels) | physical: pending |
+| Polygon mask node (N744) | sim-verified (child clipping) | physical: pending |
+| Three-finger swipe (N745) | sim-verified (manager event) | physical: pending |
+| DQS mesh package (N746) | sim-verified (host render) | physical: pending |
+| Disk store compaction (N747) | sim-verified (reindex) | n/a |
+| HTTP Range/206 (N748) | sim-verified (single range) | n/a |
+| Trim + mip chain (N749) | sim-verified (levels/1x1) | n/a |
+| Joint streaming tuning (N750) | sim-verified (both knobs) | n/a |
+| Text bg/underline (N751) | sim-verified (device pixels) | physical: pending |
+| texture-report (N752) | sim-verified (JSON/exit) | n/a |
 
 Rows marked `sim-verified` describe host/simulator behaviour only. The KTX2 row
 is also emitted by `mdc verify` as `compatibility_row`, generated from the same

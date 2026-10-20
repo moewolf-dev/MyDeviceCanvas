@@ -90,7 +90,8 @@ sprite-only. Rust and C++ share the exact encoding
 `polygon` and `polyline` (N723); their absolute vertices live in `value2` as
 `"x,y;x,y;..."` (at most 64 points, at least two), while `rect` remains the
 bounding box. `arc`/`pie` (N733) read `"start,end"` degrees and `path` (N734)
-reads three/four bezier points. `text` `mode` tokens (N740) add `ellipsis` and
+reads three/four bezier points; N743 also accepts a bounded `M/L/Q/C/Z` command
+stream. `mask` (N744) clips children to its polygon. `text` `mode` tokens (N740) add `ellipsis` and
 `valign=top|middle|bottom`. `SceneAnim.easing` (N724) is an optional `linear`/`ease-in`/
 `ease-out`/`ease-in-out` token shaping each keyframe segment. Both fields are
 additive; nodes without them behave as before.

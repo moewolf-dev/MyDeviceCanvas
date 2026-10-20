@@ -108,7 +108,9 @@ kind map reports at most `WS_LOG_KINDS_MAX` kinds in sorted (stable) order. N687
 `with_ws_kind_limit(n)` (clamped to `1..=WS_LOG_KINDS_MAX`). N697: `mdc mirror` exposes the same `ws_log_kinds` object in its JSON summary. N707: `/health` also carries `ws_log_entries`, the oldest-first array of `{kind, detail}` notes (bounded by `WS_LOG_MAX`, strings escaped), so a monitor sees the reasons rather than only counts. N717: `/health?kind=extension` narrows only `ws_log_entries` to that kind (an unknown kind yields `[]`); the counter fields stay global. N727: `/frame.*` and `/health` emit `ETag` + `Last-Modified`; a client sending a matching `If-None-Match` gets `304 Not Modified` with no body, so a browser source or poller can avoid re-downloading an unchanged frame. N742:
 `HEAD /frame.*` and `HEAD /health` return the same headers (including
 `Content-Length` and the validators) with no body; a conditional HEAD still gets
-`304`.
+`304`. N748: `/frame.*` honours a single `Range: bytes=...` with
+`206 Partial Content` + `Content-Range`; multiple ranges are rejected with
+`416` (browser sources only need one).
 
 ## Guarantees
 

@@ -2,6 +2,31 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.87] — path command streams, polygon masks, three-finger swipe, DQS mesh packages, disk compaction, Range/206, trim mips, joint tuning, text backgrounds, texture-report (N743–N752)
+
+### Added
+
+- `path` `M/L/Q/C/Z` command streams (N743)
+- `mask` node clipping children to a polygon (N744)
+- three-finger `Swipe` gestures (N745)
+- `render_package_mesh_skinned` + `mdc render-package --dqs` (N746)
+- `DiskChunkStore::compact` reindex/orphan cleanup (N747)
+- HTTP `Range` with `206 Partial Content` / `416` (N748)
+- mip-chain rebuild after texture trimming (N749)
+- `Session::tune_streaming` updating pacing and dirty threshold together (N750)
+- text `bg=` and `underline` tokens (N751)
+- `mdc texture-report <image>` (N752)
+
+### Fixed
+
+- Three-finger midpoint math now averages every pointer, so a swipe is
+  recognised instead of silently ignored (N745).
+
+### Notes
+
+- Host/simulator only. D05, G03 and H06 remain open until physical hardware is
+  measured; no board is claimed working.
+
 ## [0.1.86] — arc/pie/path, pan+pinch, DQS normals, ranged OTA, disk chunk store, texture trim, text ellipsis, adaptive pacing, HEAD (N733–N742)
 
 ### Added

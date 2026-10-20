@@ -462,6 +462,12 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
 - N736: with `SkinMode::Dqs`, normals and tangents are rotated by the same
   blended joint quaternion (the linear part is no longer averaged), so shading
   follows the DQS pose; `w` handedness is preserved.
+- N746: `render_package_mesh_skinned` sends skinned mesh packages through the
+  scene renderer with an explicit `SkinMode`, so DQS affects mesh-package
+  normals/tangents as well as the scene path; skeleton-less packages keep the
+  flat renderer.
+- N749: when `trim_package_textures` shrinks a texture with an existing mip
+  chain, it rebuilds the chain at the same level count, ending at 1x1.
 - N739: `trim_texture_blob` crops fully transparent margins of an alpha-masked
   texture; `trim_package_textures` also rewrites the UVs of meshes using that
   texture, so the rendered pixels are unchanged while the atlas/upload shrinks.

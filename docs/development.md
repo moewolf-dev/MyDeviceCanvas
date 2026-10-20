@@ -213,4 +213,19 @@ N741: `Scheduler::adapt_to_bitrate(rate, frame_bytes)` caps FPS at the
 sustainable rate and never budgets above the measured rate;
 `Session::adapt_frame_pacing` applies it to the active scheduler.
 
+N743/N744: `path` also accepts an `M/L/Q/C/Z` command stream (64-command bound),
+and `mask` clips child nodes to a polygon. `mdc scene-lint` accepts both.
+
+N747: `DiskChunkStore::compact()` reindexes the directory, drops blobs with
+missing chunks, deletes orphan/temporary files and returns a
+`DiskMaintenance { missing_blobs, orphan_chunks, temp_files, bytes_reclaimed }`.
+
+N750: `Session::tune_streaming(&mut DirtyTracker, frame_bytes)` measures the
+rate once and updates both the scheduler and the dirty threshold; it returns
+`AdaptiveTuning { bitrate, pacing, dirty_threshold }`.
+
+N752: `mdc texture-report <image>` decodes PNG/JPEG/WebP and reports opaque
+coverage, the opaque bounding box and trimmable RGB565 bytes; a fully
+transparent image exits 1.
+
 

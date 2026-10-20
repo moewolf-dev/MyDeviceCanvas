@@ -22,7 +22,7 @@ SceneCommand:
 
 SceneNode:
   name:     string
-  kind:     "group" | "rect" | "text" | "sprite" | "image" | "circle" | "line" | "polygon" | "polyline" | "arc" | "pie" | "path" | "gradient" | "rounded-rect" | "clip"
+  kind:     "group" | "rect" | "text" | "sprite" | "image" | "circle" | "line" | "polygon" | "polyline" | "arc" | "pie" | "path" | "mask" | "gradient" | "rounded-rect" | "clip"
   rect:     [x, y, w, h]?     # geometry for kinds that rasterize (N79); a group's transform (N138)
   children: [SceneNode]?      # optional, ordered back-to-front
   value:    string?           # rect/circle/line: "#RRGGBB"/"#RGB"/name; text: glyphs; image: packed RGB565 hex
@@ -135,10 +135,16 @@ A device that accepts a scene rasterizes it locally:
   non-positive sweep wraps to the full circle. `value` is the colour.
 - N734: `path` strokes a bezier curve from `value2` (`"x0,y0;cx,cy;x1,y1"` for
   quadratic or one more control point for cubic), flattened into 32 segments.
-  Three/four points only; other counts draw nothing.
+  Three/four points only; other counts draw nothing. N743: a command stream
+  instead (`"M1,1;L5,1;Q8,4 5,8;C1,1 2,2 3,3;Z"`, ≤64 commands, must start with
+  `M`); `M/L/Q/C/Z` are supported and `Z` closes to the start.
+- N744: `mask` composites its children only inside the polygon from `value2`
+  (same point syntax as `polygon`); children keep absolute coordinates and the
+  node is clipped to the framebuffer. A missing/short polygon draws nothing.
 - N740: `text` `mode` accepts `ellipsis` (cut over-long lines to the rect width
   and append `...`) and `valign=top|middle|bottom` (place the glyph block inside
-  the rect height). Both are comma-separated with other tokens.
+  the rect height). Both are comma-separated with other tokens. N751 adds
+  `bg=#RRGGBB` (fill each line box) and `underline` (stroke below the glyphs).
 - `group` (and any node whose kind does not rasterize) does not draw; its `rect`
   is a transform for its children: `x`/`y` become a pixel offset and `w`/`h` a
   scale in permille (1000 = 1×; `0` leaves an axis unscaled). Nested groups
