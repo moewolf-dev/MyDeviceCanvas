@@ -436,6 +436,32 @@ impl Texture {
     }
 }
 
+/// N710: one consistent KTX2 summary shared by `model-info`, `verify` and `diff`.
+/// `textures` counts KTX2 containers, `slices` sums their declared slices and
+/// `size_mismatches` counts headers whose pixel size disagrees with the IR.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Ktx2Summary {
+    pub textures: usize,
+    pub slices: u64,
+    pub size_mismatches: usize,
+}
+
+impl Ktx2Summary {
+    pub fn of(textures: &[Texture]) -> Self {
+        let mut summary = Self::default();
+        for texture in textures.iter().filter(|texture| texture.is_ktx2()) {
+            summary.textures += 1;
+            if let Some(header) = texture.ktx2_header() {
+                summary.slices = summary.slices.saturating_add(u64::from(header.slices()));
+                if header.pixel_width != texture.width || header.pixel_height != texture.height {
+                    summary.size_mismatches += 1;
+                }
+            }
+        }
+        summary
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Material {
     pub name: String,
@@ -978,9 +1004,15 @@ impl Model {
             .collect()
     }
 
+    /// N710: the KTX2 container summary over this model's textures.
+    pub fn ktx2_summary(&self) -> Ktx2Summary {
+        Ktx2Summary::of(&self.textures)
+    }
+
     /// N388: a compact import report (counts and feature flags).
     pub fn summary(&self) -> ModelSummary {
         let geometry = self.meshes.iter().filter_map(|m| m.geometry.as_ref());
+        let ktx2 = self.ktx2_summary();
         let mut summary = ModelSummary {
             source: self.source.clone(),
             nodes: self.nodes.len(),
@@ -999,14 +1031,9 @@ impl Model {
             variants: self.variants.len(),
             cameras: self.cameras.len(),
             morph_targets: self.meshes.iter().map(|m| m.morph_targets.len()).sum(),
-            ktx2_textures: self.textures.iter().filter(|t| t.is_ktx2()).count(),
-            // N570: sum the per-container slice counts reported by the header.
-            ktx2_slices: self
-                .textures
-                .iter()
-                .filter_map(|t| t.ktx2_header())
-                .map(|header| u64::from(header.slices()))
-                .sum(),
+            // N710: the same summary `verify`/`diff` report (one computation).
+            ktx2_textures: ktx2.textures,
+            ktx2_slices: ktx2.slices,
             ..ModelSummary::default()
         };
         for g in geometry {

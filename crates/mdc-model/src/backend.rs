@@ -267,6 +267,14 @@ pub struct DevicePackage {
     pub texture_blobs: Vec<TextureBlob>,
 }
 
+impl DevicePackage {
+    /// N710: the KTX2 container summary over the package's textures (same
+    /// computation as `Model::ktx2_summary`).
+    pub fn ktx2_summary(&self) -> crate::ir::Ktx2Summary {
+        crate::ir::Ktx2Summary::of(&self.textures)
+    }
+}
+
 /// A compiler that turns MDC IR into a device package for one target family.
 pub trait TargetBackend {
     fn name(&self) -> &'static str;

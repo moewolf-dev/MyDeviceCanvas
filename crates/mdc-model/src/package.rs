@@ -36,6 +36,9 @@ pub struct PackageVerification {
     pub cache_size: u16,
     pub cache_misses: u64,
     pub manifest_cache_misses: u64,
+    /// N704: persisted before/after package-order summary.
+    pub manifest_cache_misses_before: u64,
+    pub manifest_cache_misses_saved: u64,
 }
 
 /// N614: the vertex-cache size used for the manifest locality metric.
@@ -56,6 +59,12 @@ pub struct PackageManifest {
     /// N614: the cache size the locality metric was computed at (0 = absent).
     #[serde(default)]
     pub cache_size: u16,
+    /// N704: cache misses before an optional package-order optimization.
+    #[serde(default)]
+    pub cache_misses_before: u64,
+    /// N704: misses removed by an optional package-order optimization.
+    #[serde(default)]
+    pub cache_misses_saved: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -94,9 +103,18 @@ impl MdcPackage {
                 checksum: fnv1a(&body),
                 cache_misses: package_cache_misses(&package, CACHE_REPORT_SIZE as usize),
                 cache_size: CACHE_REPORT_SIZE,
+                cache_misses_before: 0,
+                cache_misses_saved: 0,
             },
             package,
         })
+    }
+
+    /// N704: persist the before/after locality summary when the host optimized
+    /// geometry before sealing. The sealed body/checksum remain unchanged.
+    pub fn set_cache_report(&mut self, before: u64) {
+        self.manifest.cache_misses_before = before;
+        self.manifest.cache_misses_saved = before.saturating_sub(self.manifest.cache_misses);
     }
 
     /// N408: verify the manifest against the serialized body (checksum + sizes).
@@ -144,6 +162,8 @@ impl MdcPackage {
             cache_size,
             cache_misses,
             manifest_cache_misses: self.manifest.cache_misses,
+            manifest_cache_misses_before: self.manifest.cache_misses_before,
+            manifest_cache_misses_saved: self.manifest.cache_misses_saved,
         }
     }
 
@@ -431,6 +451,43 @@ mod tests {
     }
 
     #[test]
+    fn ktx2_summary_is_shared_by_the_model_and_the_package() {
+        // N710: one summary (textures/slices/size mismatches) feeds
+        // `model-info`, `verify` and `diff`; the model and package agree.
+        use crate::ir::{Ktx2Summary, Model, Texture};
+        let texture = |width: u32, height: u32| Texture {
+            name: "basis".into(),
+            width,
+            height,
+            format: "image/ktx2".into(),
+            bytes: 80,
+            data: Some(ktx2_header(16, 8)),
+            wrap: None,
+        };
+        let base = compile_to_package(&model(), &RendererCapability::sprite_only()).unwrap();
+        let mut package = base.package.clone();
+        package.textures = vec![texture(16, 8), texture(8, 8), texture(16, 8)];
+        let summary = package.ktx2_summary();
+        assert_eq!(
+            summary,
+            Ktx2Summary {
+                textures: 3,
+                slices: 3,
+                size_mismatches: 1,
+            }
+        );
+        let model = Model {
+            source: "t".into(),
+            textures: package.textures.clone(),
+            ..Model::default()
+        };
+        assert_eq!(model.ktx2_summary(), summary);
+        let counts = model.summary();
+        assert_eq!(counts.ktx2_textures, summary.textures);
+        assert_eq!(counts.ktx2_slices, summary.slices);
+    }
+
+    #[test]
     fn ktx2_size_mismatch_fails_verification() {
         // N590: a KTX2 texture whose declared size disagrees with its header fails
         // verification; matching metadata passes.
@@ -493,6 +550,30 @@ mod tests {
         assert!(report.cache_misses_ok);
         assert_eq!(report.cache_misses, package.manifest.cache_misses);
         assert_eq!(report.cache_size, CACHE_REPORT_SIZE);
+    }
+
+    #[test]
+    fn package_order_summary_survives_the_container() {
+        // N704: the host can persist the pre-optimization miss count; the
+        // manifest keeps it (and the saving) across seal/parse, and verify
+        // surfaces both without treating them as integrity failures.
+        let mut package = compile_to_package(&model(), &RendererCapability::sprite_only()).unwrap();
+        let before = package.manifest.cache_misses + 7;
+        package.set_cache_report(before);
+        assert_eq!(package.manifest.cache_misses_before, before);
+        assert_eq!(package.manifest.cache_misses_saved, 7);
+
+        let bytes = package.to_bytes().unwrap();
+        let back = MdcPackage::from_bytes(&bytes).unwrap();
+        // The locality summary is metadata: it does not change the body checksum.
+        assert_eq!(back.package, package.package);
+        assert_eq!(back.manifest.cache_misses_before, before);
+        assert_eq!(back.manifest.cache_misses_saved, 7);
+        let report = back.verify();
+        assert!(report.valid);
+        assert!(report.cache_misses_ok);
+        assert_eq!(report.manifest_cache_misses_before, before);
+        assert_eq!(report.manifest_cache_misses_saved, 7);
     }
 
     #[test]

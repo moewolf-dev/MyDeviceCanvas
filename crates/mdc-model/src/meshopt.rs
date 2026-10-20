@@ -1931,6 +1931,43 @@ mod tests {
     }
 
     #[test]
+    fn vertex_buffer_v0_multilane_verbatim_fuzz_corpus() {
+        // N703: a deterministic corpus over strides/counts that cross block and
+        // group boundaries (including 16k+1/15 tails) on every byte lane. The v0
+        // verbatim group carries raw zigzag deltas, so arbitrary bytes must
+        // round-trip exactly through the seed/tail path.
+        let mut state = 0xC0FF_EE42u32;
+        let mut next = || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        };
+        for (stride, count) in [
+            (4usize, 17usize),
+            (8, 31),
+            (12, 33),
+            (16, 47),
+            (8, 49),
+            (4, 63),
+        ] {
+            let values: Vec<Vec<u8>> = (0..count)
+                .map(|_| (0..stride).map(|_| next()).collect())
+                .collect();
+            let encoded = encode_vertex_buffer_v0_bits(&values, stride, 8);
+            let decoded = unwrap_decode(decode_vertex_buffer(
+                count,
+                stride,
+                &encoded,
+                MeshoptFilter::None,
+            ));
+            assert_eq!(
+                decoded,
+                values.iter().flatten().copied().collect::<Vec<_>>(),
+                "v0 verbatim stride {stride}, count {count}"
+            );
+        }
+    }
+
+    #[test]
     fn vertex_buffer_v1_control_modes_round_trip() {
         // N623/N633: modes 1/2/3 all decode back to the source values, including
         // a control-mode-1 lane encoded with 4-bit sentinel deltas.
