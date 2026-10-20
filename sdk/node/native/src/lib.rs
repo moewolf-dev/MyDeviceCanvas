@@ -344,6 +344,7 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                         mdc_core::GestureKind::Drag => "drag".into(),
                         mdc_core::GestureKind::Pinch => "pinch".into(),
                         mdc_core::GestureKind::Pan => "pan".into(),
+                        mdc_core::GestureKind::Swipe => "swipe".into(),
                     },
                     pointer_id: gesture.pointer_id,
                     x: gesture.x,

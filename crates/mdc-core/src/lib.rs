@@ -241,6 +241,8 @@ pub enum GestureKind {
     Pinch,
     /// N735: two pointers translated together.
     Pan,
+    /// N745: three pointers swiped together.
+    Swipe,
 }
 
 /// N464: a gesture derived from raw input events.
@@ -256,7 +258,7 @@ pub struct Gesture {
     pub scale: u16,
     /// N725: for `Pinch`, the angle change in degrees (signed).
     pub rotation: i16,
-    /// N735: for `Pan`, the midpoint translation in pixels.
+    /// N735: for `Pan`/`Swipe`, the midpoint translation in pixels.
     pub dx: i16,
     pub dy: i16,
 }
@@ -308,6 +310,8 @@ struct PinchAnchor {
 /// N725: minimum change before a pinch reports another event.
 const PINCH_SCALE_STEP: u16 = 20;
 const PINCH_ROTATE_STEP: i16 = 4;
+/// N745: minimum three-finger midpoint movement before a swipe is reported.
+const SWIPE_THRESHOLD: i32 = 8;
 
 /// N725: wrap an angle difference into `-180..=180` degrees.
 fn normalize_degrees(degrees: f32) -> i16 {
@@ -327,6 +331,8 @@ pub struct GestureTracker {
     config: GestureConfig,
     pointers: std::collections::BTreeMap<u16, PointerState>,
     pinch: Option<PinchAnchor>,
+    /// N745: the midpoint anchor for a three-finger swipe.
+    swipe: Option<(u16, u16)>,
 }
 
 impl GestureTracker {
@@ -335,6 +341,7 @@ impl GestureTracker {
             config,
             pointers: std::collections::BTreeMap::new(),
             pinch: None,
+            swipe: None,
         }
     }
 
@@ -376,14 +383,51 @@ impl GestureTracker {
                 // subsequently become a tap/long-press.
                 if self.pointers.len() == 2 {
                     self.pinch = self.anchor();
+                }
+                if self.pointers.len() >= 2 {
                     for state in self.pointers.values_mut() {
                         state.pinched = true;
                         state.long_pressed = true;
                     }
                 }
+                if self.pointers.len() == 3 {
+                    self.swipe = self.midpoint_all();
+                }
                 Vec::new()
             }
             "move" => {
+                // N745: three pointers become a swipe (no pan/pinch).
+                if self.pointers.len() >= 3 {
+                    let Some(state) = self.pointers.get_mut(&event.pointer_id) else {
+                        return Vec::new();
+                    };
+                    state.x = event.x;
+                    state.y = event.y;
+                    state.pinched = true;
+                    let Some(anchor) = self.swipe else {
+                        return Vec::new();
+                    };
+                    let Some((x, y)) = self.midpoint_all() else {
+                        return Vec::new();
+                    };
+                    let dx = i32::from(x) - i32::from(anchor.0);
+                    let dy = i32::from(y) - i32::from(anchor.1);
+                    if dx.abs().max(dy.abs()) < SWIPE_THRESHOLD {
+                        return Vec::new();
+                    }
+                    self.swipe = Some((x, y));
+                    return vec![Gesture {
+                        kind: GestureKind::Swipe,
+                        pointer_id: event.pointer_id,
+                        x,
+                        y,
+                        node: None,
+                        scale: 1000,
+                        rotation: 0,
+                        dx: dx.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+                        dy: dy.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+                    }];
+                }
                 if self.pointers.len() >= 2 {
                     let Some(state) = self.pointers.get_mut(&event.pointer_id) else {
                         return Vec::new();
@@ -481,6 +525,11 @@ impl GestureTracker {
                         pointer.pinched = true;
                     }
                 }
+                if self.pointers.len() < 3 && self.swipe.take().is_some() {
+                    for pointer in self.pointers.values_mut() {
+                        pointer.pinched = true;
+                    }
+                }
                 if state.pinched {
                     return Vec::new();
                 }
@@ -552,6 +601,21 @@ impl GestureTracker {
         ))
     }
 
+    /// N745: the midpoint of every active pointer (three-finger swipe).
+    fn midpoint_all(&self) -> Option<(u16, u16)> {
+        let count = self.pointers.len() as u32;
+        if count == 0 {
+            return None;
+        }
+        let (x, y) = self
+            .pointers
+            .values()
+            .fold((0u32, 0u32), |(x, y), pointer| {
+                (x + u32::from(pointer.x), y + u32::from(pointer.y))
+            });
+        Some(((x / count) as u16, (y / count) as u16))
+    }
+
     /// Advance held pointers; emits `LongPress` once per pointer.
     pub fn tick(&mut self, now_ms: u64) -> Option<Gesture> {
         for (pointer_id, state) in self.pointers.iter_mut() {
@@ -577,6 +641,14 @@ impl GestureTracker {
         }
         None
     }
+}
+
+/// N750: the result of one joint streaming tuning pass.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AdaptiveTuning {
+    pub bitrate: u64,
+    pub pacing: Option<mdc_schedule::SchedulerConfig>,
+    pub dirty_threshold: Option<f64>,
 }
 
 /// N398: host-side session counters.
@@ -1656,6 +1728,26 @@ impl<T: Transport> Session<T> {
     ) -> Option<f64> {
         let rate = self.measure_bitrate().or(self.last_bitrate)?;
         Some(tracker.adapt_to_bandwidth(rate, frame_bytes))
+    }
+
+    /// N750: one tuning pass for both streaming knobs. Measures the outbound
+    /// rate once, adapts the active scheduler (if any) and the dirty tracker.
+    pub fn tune_streaming(
+        &mut self,
+        tracker: &mut DirtyTracker,
+        frame_bytes: u64,
+    ) -> Option<AdaptiveTuning> {
+        let bitrate = self.measure_bitrate().or(self.last_bitrate)?;
+        let pacing = self
+            .pacing
+            .as_mut()
+            .map(|scheduler| scheduler.adapt_to_bitrate(bitrate, frame_bytes));
+        let dirty_threshold = Some(tracker.adapt_to_bandwidth(bitrate, frame_bytes));
+        Some(AdaptiveTuning {
+            bitrate,
+            pacing,
+            dirty_threshold,
+        })
     }
 
     /// N741: adapt an active frame-pacing scheduler to the measured outbound
@@ -4933,6 +5025,37 @@ mod tests {
     }
 
     #[test]
+    fn joint_streaming_tuning_updates_both_knobs() {
+        // N750: one measured rate drives both pacing and dirty thresholds.
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        session.set_frame_pacing(30, 0);
+        session.tick(0).unwrap();
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![0x11; 8],
+            })
+            .unwrap();
+        session.tick(1_000).unwrap();
+        let mut tracker = DirtyTracker::new((32, 32), 8, 0.5);
+        for tile in 0..4 {
+            tracker.mark((tile * 8, 0, 8, 8));
+        }
+        let tuning = session
+            .tune_streaming(&mut tracker, 10_000_000)
+            .expect("rate present");
+        assert!(tuning.bitrate > 0);
+        assert_eq!(tuning.pacing.unwrap().max_fps, 1);
+        assert_eq!(tuning.dirty_threshold, Some(0.05));
+        assert_eq!(tracker.decide(), UpdateDecision::Full);
+    }
+
+    #[test]
     fn session_send_tile_writes_tile_packet() {
         let (host_link, mut device_link) = MemoryLink::pair();
         let mut session = Session::new(host_link);
@@ -6343,6 +6466,32 @@ mod tests {
                 .kind,
             GestureKind::Pinch
         );
+    }
+
+    #[test]
+    fn three_pointer_swipe_reports_direction() {
+        // N745: three fingers moving together emit a Swipe when the midpoint
+        // travels beyond the threshold; releases do not become taps.
+        let event = |pointer_id: u16, phase: &str, x: u16, y: u16| mdc_protocol::InputEvent {
+            surface_id: "main".into(),
+            pointer_id,
+            phase: phase.into(),
+            x,
+            y,
+            node: None,
+        };
+        let mut tracker = GestureTracker::new(GestureConfig::default());
+        for (id, x, y) in [(1, 10, 10), (2, 20, 10), (3, 10, 20)] {
+            assert!(tracker.on_events(&event(id, "down", x, y), 0).is_empty());
+        }
+        let gestures = tracker.on_events(&event(3, "move", 40, 20), 10);
+        assert_eq!(gestures.len(), 1);
+        assert_eq!(gestures[0].kind, GestureKind::Swipe);
+        assert_eq!((gestures[0].dx, gestures[0].dy), (10, 0));
+        assert_eq!((gestures[0].x, gestures[0].y), (23, 13));
+        assert!(tracker.on_events(&event(3, "up", 40, 20), 20).is_empty());
+        assert!(tracker.on_events(&event(2, "up", 20, 10), 30).is_empty());
+        assert!(tracker.on_events(&event(1, "up", 10, 10), 40).is_empty());
     }
 
     #[test]
