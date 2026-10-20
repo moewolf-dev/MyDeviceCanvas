@@ -704,7 +704,12 @@ pub fn trim_texture_blob(blob: &mdc_model::TextureBlob) -> (mdc_model::TextureBl
     let full = [0.0, 0.0, 1.0, 1.0];
     let width = blob.width as usize;
     let height = blob.height as usize;
-    if width == 0 || height == 0 || blob.alpha.is_empty() || blob.is_indexed() {
+    if width == 0
+        || height == 0
+        || blob.alpha.is_empty()
+        || blob.is_indexed()
+        || blob.rgb565.len() < width.saturating_mul(height).saturating_mul(2)
+    {
         return (blob.clone(), full);
     }
     let opaque = |x: usize, y: usize| {
