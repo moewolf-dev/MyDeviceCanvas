@@ -202,6 +202,15 @@ fn write_archive_manifest(dir: &str, keep: usize, max_bytes: u64) -> std::io::Re
     )
 }
 
+/// N668: render an archive report as pretty JSON (default) or one line.
+fn format_archive_report(report: &serde_json::Value, compact: bool) -> String {
+    if compact {
+        report.to_string()
+    } else {
+        serde_json::to_string_pretty(report).unwrap_or_else(|_| report.to_string())
+    }
+}
+
 /// N619/N629: check an archive's `manifest.json` against the files on disk —
 /// each listed file must exist, be non-empty and be at most `max_bytes` (0 =
 /// no cap). Returns a small report.
@@ -452,7 +461,9 @@ fn main() {
             .unwrap_or(0);
         match verify_archive(&dir, max_bytes) {
             Ok(report) => {
-                println!("{report}");
+                // N668: `--compact` keeps the report to one line for a log.
+                let compact = args.iter().any(|a| a == "--compact");
+                println!("{}", format_archive_report(&report, compact));
                 // N649: the exit code follows this contract.
                 std::process::exit(archive_exit_code(&report));
             }
@@ -802,6 +813,20 @@ mod tests {
         assert_eq!(archive_exit_code(&check), 1);
         assert_eq!(check["missing"].as_array().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn archive_report_compact_is_one_line() {
+        // N668: compact output is a single JSON line; pretty is multi-line.
+        let report = serde_json::json!({ "ok": true, "declared": 2, "files": [] });
+        let compact = format_archive_report(&report, true);
+        assert!(!compact.contains('\n'));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&compact).unwrap(),
+            report
+        );
+        let pretty = format_archive_report(&report, false);
+        assert!(pretty.contains('\n'));
     }
 
     #[test]

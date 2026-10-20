@@ -529,6 +529,17 @@ fn defaults_key_json(board: &str, key: &str) -> serde_json::Value {
     })
 }
 
+/// N666: select one config default (by key) or return them all.
+fn filter_config_defaults(all: &serde_json::Value, key: Option<&str>) -> serde_json::Value {
+    match key {
+        Some(name) => match all.get(name) {
+            Some(value) => serde_json::json!({ name: value.clone() }),
+            None => serde_json::json!({}),
+        },
+        None => all.clone(),
+    }
+}
+
 /// N606: the board's own `config_defaults` as a JSON object (empty when none).
 fn board_config_defaults(board: &str) -> serde_json::Value {
     serde_json::to_value(mdc_simulator::BoardProfile::from_board_id(board).config_defaults)
@@ -662,6 +673,8 @@ fn cmd_package(
     // N555/N574: optionally reorder triangles for vertex-cache locality. A
     // zero value selects a mesh-scaled cache (N574).
     let mut index_cache_misses: u64 = 0;
+    // N669: the miss count before the pass, so the report can show the saving.
+    let mut index_cache_before: u64 = 0;
     let mut reordered_meshes: usize = 0;
     // N644: aggregate hit/miss counters over the reordered meshes.
     let mut cache_hits: u64 = 0;
@@ -681,6 +694,7 @@ fn cmd_package(
                 let (before_hits, before_misses) = mdc_bake::index_cache_stats(geometry, cache);
                 let report = mdc_bake::optimize_index_order_report(geometry, cache);
                 index_cache_misses += report.after_misses;
+                index_cache_before += report.before_misses;
                 cache_hits_before += before_hits;
                 cache_lookups_before += before_hits + before_misses;
                 let (hits, misses) = mdc_bake::index_cache_stats(geometry, cache);
@@ -855,6 +869,8 @@ fn cmd_package(
                 "compacted_vertices": compacted_vertices,
                 // N555: cache misses after reordering and meshes that improved.
                 "index_cache_misses": index_cache_misses,
+                // N669: misses removed by the reorder.
+                "index_cache_saved": index_cache_before.saturating_sub(index_cache_misses),
                 "reordered_meshes": reordered_meshes,
                 // N594: which vertex-cache policy ran (off | adaptive | fixed).
                 "cache_mode": cache_mode(optimize_geometry, optimize_index),
@@ -1900,11 +1916,22 @@ fn cmd_config(
     // N636: the table uses the same key (`board_config_defaults`) as `inspect`,
     // so one parser reads either command's output.
     if action == "--defaults" || key == "--defaults" {
+        // N666: `--key K` (or a positional key) selects a single default.
+        let filter = if key == "--key" {
+            value.map(str::to_string)
+        } else if !key.is_empty() && key != "--defaults" {
+            Some(key.to_string())
+        } else {
+            None
+        };
+        let all = board_config_defaults(&opts.board);
+        let defaults = filter_config_defaults(&all, filter.as_deref());
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "board": opts.board,
-                "board_config_defaults": board_config_defaults(&opts.board),
+                "key": filter,
+                "defaults": defaults,
             }))?
         );
         return Ok(());
@@ -4394,8 +4421,11 @@ fn main() {
         Some("config") => {
             let action = args.get(1).cloned().unwrap_or_default();
             let key = args.get(2).cloned().unwrap_or_default();
-            if action.is_empty() || key.is_empty() {
-                eprintln!("config get <key> | config set <key> <value>");
+            // N666: `--defaults` may omit the key (optionally `--key K`).
+            if action.is_empty() || (key.is_empty() && action != "--defaults") {
+                eprintln!(
+                    "config get <key> | config set <key> <value> | config --defaults [--key K]"
+                );
                 std::process::exit(2);
             }
             let mut o = opts.clone();
@@ -4842,6 +4872,18 @@ mod tests {
             port: None,
         };
         cmd_config(&opts, "--defaults", "", None).unwrap();
+        // N666: `--key K` filters to one default.
+        cmd_config(&opts, "--defaults", "--key", Some("tile_missing_threshold")).unwrap();
+        let all = board_config_defaults("linux-virt");
+        assert_eq!(
+            filter_config_defaults(&all, Some("tile_missing_threshold"))["tile_missing_threshold"],
+            "2"
+        );
+        assert!(filter_config_defaults(&all, Some("missing"))
+            .as_object()
+            .unwrap()
+            .is_empty());
+        assert_eq!(filter_config_defaults(&all, None), all);
     }
 
     #[test]
