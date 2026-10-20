@@ -127,6 +127,29 @@ impl Scheduler {
         self.config.max_bytes_per_second.saturating_mul(interval) / WINDOW_MS
     }
 
+    /// N741: adapt pacing to a measured byte rate. `frame_bytes` is one full
+    /// frame; the sustainable FPS becomes `rate / frame_bytes` (clamped to the
+    /// configured cap) and the byte budget never exceeds the measured rate.
+    pub fn adapt_to_bitrate(&mut self, bytes_per_second: u64, frame_bytes: u64) -> SchedulerConfig {
+        if frame_bytes == 0 {
+            return self.config;
+        }
+        let sustainable = bytes_per_second / frame_bytes;
+        let cap = if self.config.max_fps == 0 {
+            60
+        } else {
+            self.config.max_fps
+        };
+        let fps = sustainable.clamp(1, u64::from(cap)) as u16;
+        self.config.max_fps = fps;
+        if self.config.max_bytes_per_second == 0
+            || self.config.max_bytes_per_second > bytes_per_second
+        {
+            self.config.max_bytes_per_second = bytes_per_second.max(1);
+        }
+        self.config
+    }
+
     /// Decide which tiles fit at `now_ms`. Pure: the caller calls [`commit`]
     /// once the selected tiles are actually queued. Dirty tiles are packed
     /// first so a partial update makes visible progress before clean tiles.
@@ -298,5 +321,41 @@ mod tests {
         ];
         assert_eq!(merge_dirty_ranges(&tiles), vec![(1, 2), (5, 5), (7, 8)]);
         assert!(merge_dirty_ranges(&[]).is_empty());
+    }
+
+    #[test]
+    fn bitrate_adaptation_lowers_fps_and_budget() {
+        // N741: a link that sustains 6 frames/s caps a 30 FPS scheduler at 6 and
+        // spends at most the measured rate.
+        let mut scheduler = Scheduler::new(30, 0);
+        let config = scheduler.adapt_to_bitrate(192_000, 32_000);
+        assert_eq!(config.max_fps, 6);
+        assert_eq!(config.max_bytes_per_second, 192_000);
+        assert_eq!(scheduler.min_interval_ms(), 166);
+        assert_eq!(scheduler.budget_bytes(), 31_872);
+
+        // 8 x 4 KiB tiles exceed one interval's budget; two ticks drain all.
+        let tiles: Vec<TileCost> = (0..8).map(|i| TileCost::new(i, 4096, false)).collect();
+        let first = scheduler.plan(0, &tiles);
+        let selected = first.selected().to_vec();
+        let deferred = match &first {
+            FrameDecision::Send { deferred, .. } => deferred.clone(),
+            FrameDecision::Defer { .. } => panic!("expected a send"),
+        };
+        assert!(!first.is_defer());
+        assert!(!deferred.is_empty(), "budget defers some tiles");
+        scheduler.commit(0);
+        assert!(scheduler.plan(100, &tiles).is_defer());
+        let rest: Vec<TileCost> = deferred
+            .iter()
+            .map(|index| TileCost::new(*index, 4096, false))
+            .collect();
+        let second = scheduler.plan(166, &rest);
+        assert!(!second.is_defer());
+        assert_eq!(second.selected().len(), rest.len(), "the rest fits");
+        let mut all: Vec<u32> = selected;
+        all.extend_from_slice(second.selected());
+        all.sort_unstable();
+        assert_eq!(all, (0..8).collect::<Vec<u32>>(), "the frame converges");
     }
 }

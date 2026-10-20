@@ -163,6 +163,9 @@ pub struct GestureDto {
     pub scale: u16,
     /// N725: pinch angle change in degrees (0 for other gestures).
     pub rotation: i16,
+    /// N735: pan midpoint translation in pixels (0 for other gestures).
+    pub dx: i16,
+    pub dy: i16,
 }
 
 struct SimSession {
@@ -340,6 +343,7 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                         mdc_core::GestureKind::LongPress => "long-press".into(),
                         mdc_core::GestureKind::Drag => "drag".into(),
                         mdc_core::GestureKind::Pinch => "pinch".into(),
+                        mdc_core::GestureKind::Pan => "pan".into(),
                     },
                     pointer_id: gesture.pointer_id,
                     x: gesture.x,
@@ -347,6 +351,8 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                     node: gesture.node,
                     scale: gesture.scale,
                     rotation: gesture.rotation,
+                    dx: gesture.dx,
+                    dy: gesture.dy,
                 }),
                 device_id: Some(device_id),
                 input: None,

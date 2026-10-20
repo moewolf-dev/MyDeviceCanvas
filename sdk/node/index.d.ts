@@ -8,6 +8,9 @@ export interface SurfaceInfo {
   implemented: boolean;
   stride: number;
   rotation: number;
+  /** N735: pan midpoint translation in pixels (0 for other gestures). */
+  dx: number;
+  dy: number;
 }
 export interface DeviceInfo {
   deviceId: string;
@@ -24,7 +27,7 @@ export interface TileRequest {
 }
 /** N474: a recognised pointer gesture. */
 export interface GestureDto {
-  kind: "tap" | "long-press" | "drag" | "pinch";
+  kind: "tap" | "long-press" | "drag" | "pinch" | "pan";
   pointerId: number;
   x: number;
   y: number;

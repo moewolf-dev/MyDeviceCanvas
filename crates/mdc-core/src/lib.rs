@@ -239,6 +239,8 @@ pub enum GestureKind {
     Drag,
     /// N725: two pointers changed their distance and/or angle.
     Pinch,
+    /// N735: two pointers translated together.
+    Pan,
 }
 
 /// N464: a gesture derived from raw input events.
@@ -254,6 +256,9 @@ pub struct Gesture {
     pub scale: u16,
     /// N725: for `Pinch`, the angle change in degrees (signed).
     pub rotation: i16,
+    /// N735: for `Pan`, the midpoint translation in pixels.
+    pub dx: i16,
+    pub dy: i16,
 }
 
 /// N464: thresholds for gesture recognition.
@@ -297,6 +302,7 @@ struct PinchAnchor {
     angle: f32,
     last_scale: u16,
     last_rotation: i16,
+    last_mid: (u16, u16),
 }
 
 /// N725: minimum change before a pinch reports another event.
@@ -344,6 +350,14 @@ impl GestureTracker {
 
     /// Feed one input event; returns a gesture when it completes one.
     pub fn on_event(&mut self, event: &mdc_protocol::InputEvent, now_ms: u64) -> Option<Gesture> {
+        // A two-finger move can produce a pan and a pinch in the same event;
+        // the single-gesture API reports the pinch (the richer gesture).
+        self.on_events(event, now_ms).pop()
+    }
+
+    /// N735: like [`on_event`](Self::on_event) but returns every gesture derived
+    /// from the event (a two-finger move may both pan and pinch).
+    pub fn on_events(&mut self, event: &mdc_protocol::InputEvent, now_ms: u64) -> Vec<Gesture> {
         match event.phase.as_str() {
             "down" => {
                 self.pointers.insert(
@@ -367,16 +381,45 @@ impl GestureTracker {
                         state.long_pressed = true;
                     }
                 }
-                None
+                Vec::new()
             }
             "move" => {
                 if self.pointers.len() >= 2 {
-                    let state = self.pointers.get_mut(&event.pointer_id)?;
+                    let Some(state) = self.pointers.get_mut(&event.pointer_id) else {
+                        return Vec::new();
+                    };
                     state.x = event.x;
                     state.y = event.y;
                     state.pinched = true;
-                    let anchor = self.pinch?;
-                    let (distance, angle) = self.metrics()?;
+                    let Some(anchor) = self.pinch else {
+                        return Vec::new();
+                    };
+                    let mut out = Vec::new();
+                    let Some((x, y)) = self.midpoint() else {
+                        return out;
+                    };
+                    // N735: report the midpoint translation whenever it changes.
+                    let dx = i32::from(x) - i32::from(anchor.last_mid.0);
+                    let dy = i32::from(y) - i32::from(anchor.last_mid.1);
+                    if dx != 0 || dy != 0 {
+                        out.push(Gesture {
+                            kind: GestureKind::Pan,
+                            pointer_id: event.pointer_id,
+                            x,
+                            y,
+                            node: None,
+                            scale: 1000,
+                            rotation: 0,
+                            dx: dx.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+                            dy: dy.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+                        });
+                        if let Some(anchor) = self.pinch.as_mut() {
+                            anchor.last_mid = (x, y);
+                        }
+                    }
+                    let Some((distance, angle)) = self.metrics() else {
+                        return out;
+                    };
                     let scale = ((distance / anchor.distance) * 1000.0)
                         .round()
                         .clamp(0.0, f32::from(u16::MAX)) as u16;
@@ -388,12 +431,11 @@ impl GestureTracker {
                     if scale_delta >= u32::from(PINCH_SCALE_STEP)
                         || rotation_delta >= u32::from(PINCH_ROTATE_STEP.unsigned_abs())
                     {
-                        let (x, y) = self.midpoint()?;
                         if let Some(anchor) = self.pinch.as_mut() {
                             anchor.last_scale = scale;
                             anchor.last_rotation = rotation;
                         }
-                        return Some(Gesture {
+                        out.push(Gesture {
                             kind: GestureKind::Pinch,
                             pointer_id: event.pointer_id,
                             x,
@@ -401,17 +443,21 @@ impl GestureTracker {
                             node: None,
                             scale,
                             rotation,
+                            dx: 0,
+                            dy: 0,
                         });
                     }
-                    return None;
+                    return out;
                 }
-                let state = self.pointers.get_mut(&event.pointer_id)?;
+                let Some(state) = self.pointers.get_mut(&event.pointer_id) else {
+                    return Vec::new();
+                };
                 let dx = i32::from(event.x) - i32::from(state.x);
                 let dy = i32::from(event.y) - i32::from(state.y);
                 if !state.dragged && dx.abs().max(dy.abs()) >= i32::from(self.config.drag_threshold)
                 {
                     state.dragged = true;
-                    return Some(Gesture {
+                    return vec![Gesture {
                         kind: GestureKind::Drag,
                         pointer_id: event.pointer_id,
                         x: event.x,
@@ -419,12 +465,16 @@ impl GestureTracker {
                         node: event.node.clone(),
                         scale: 1000,
                         rotation: 0,
-                    });
+                        dx: 0,
+                        dy: 0,
+                    }];
                 }
-                None
+                Vec::new()
             }
             "up" | "cancel" => {
-                let state = self.pointers.remove(&event.pointer_id)?;
+                let Some(state) = self.pointers.remove(&event.pointer_id) else {
+                    return Vec::new();
+                };
                 // N725: ending a pinch suppresses taps for the remaining finger.
                 if self.pointers.len() < 2 && self.pinch.take().is_some() {
                     for pointer in self.pointers.values_mut() {
@@ -432,10 +482,10 @@ impl GestureTracker {
                     }
                 }
                 if state.pinched {
-                    return None;
+                    return Vec::new();
                 }
                 if state.dragged {
-                    return Some(Gesture {
+                    return vec![Gesture {
                         kind: GestureKind::Drag,
                         pointer_id: event.pointer_id,
                         x: event.x,
@@ -443,13 +493,15 @@ impl GestureTracker {
                         node: event.node.clone(),
                         scale: 1000,
                         rotation: 0,
-                    });
+                        dx: 0,
+                        dy: 0,
+                    }];
                 }
                 if state.long_pressed {
-                    return None;
+                    return Vec::new();
                 }
                 if now_ms.saturating_sub(state.down_ms) <= self.config.tap_max_ms {
-                    Some(Gesture {
+                    vec![Gesture {
                         kind: GestureKind::Tap,
                         pointer_id: event.pointer_id,
                         x: event.x,
@@ -457,23 +509,27 @@ impl GestureTracker {
                         node: event.node.clone().or(state.node.clone()),
                         scale: 1000,
                         rotation: 0,
-                    })
+                        dx: 0,
+                        dy: 0,
+                    }]
                 } else {
-                    None
+                    Vec::new()
                 }
             }
-            _ => None,
+            _ => Vec::new(),
         }
     }
 
     /// N725: the initial distance/angle between the first two pointers.
     fn anchor(&self) -> Option<PinchAnchor> {
         let (distance, angle) = self.metrics()?;
+        let (mx, my) = self.midpoint()?;
         Some(PinchAnchor {
             distance,
             angle,
             last_scale: 1000,
             last_rotation: 0,
+            last_mid: (mx, my),
         })
     }
 
@@ -514,6 +570,8 @@ impl GestureTracker {
                     node: state.node.clone(),
                     scale: 1000,
                     rotation: 0,
+                    dx: 0,
+                    dy: 0,
                 });
             }
         }
@@ -1600,6 +1658,17 @@ impl<T: Transport> Session<T> {
         Some(tracker.adapt_to_bandwidth(rate, frame_bytes))
     }
 
+    /// N741: adapt an active frame-pacing scheduler to the measured outbound
+    /// bitrate. Returns the new configuration (None without a scheduler/rate).
+    pub fn adapt_frame_pacing(
+        &mut self,
+        frame_bytes: u64,
+    ) -> Option<mdc_schedule::SchedulerConfig> {
+        let rate = self.measure_bitrate().or(self.last_bitrate)?;
+        let scheduler = self.pacing.as_mut()?;
+        Some(scheduler.adapt_to_bitrate(rate, frame_bytes))
+    }
+
     /// N547: reconcile the host's sent tiles against the device's reported count.
     pub fn tile_reconciliation(&self) -> TileReconciliation {
         reconcile_tiles(&self.stats(), self.device_tiles_received)
@@ -2263,18 +2332,24 @@ impl<T: Transport> Session<T> {
             version: Some(version.to_string()),
             size,
             sha256: None,
+            offset: None,
+            len: None,
         };
         let chunk = mdc_protocol::OtaCommand {
             action: "chunk".into(),
             version: None,
             size: None,
             sha256,
+            offset: None,
+            len: None,
         };
         let confirm = mdc_protocol::OtaCommand {
             action: "confirm".into(),
             version: None,
             size: None,
             sha256: None,
+            offset: None,
+            len: None,
         };
         match self.ota_phase {
             0 => vec![begin, chunk, confirm],
@@ -2282,6 +2357,84 @@ impl<T: Transport> Session<T> {
             2 => vec![confirm],
             _ => Vec::new(),
         }
+    }
+
+    /// N737: the chunk ranges of an image (`chunk_size` clamped to at least 1),
+    /// with the final range shortened to the image length.
+    pub fn ota_chunk_ranges(total_bytes: u64, chunk_size: u32) -> Vec<(u32, u32)> {
+        let total = total_bytes.min(u64::from(u32::MAX)) as u32;
+        let chunk = chunk_size.max(1);
+        let mut out = Vec::new();
+        let mut offset = 0u32;
+        while offset < total {
+            let len = chunk.min(total - offset);
+            out.push((offset, len));
+            offset = offset.saturating_add(len);
+        }
+        out
+    }
+
+    /// N737: the chunk ranges not fully covered by `acknowledged`.
+    pub fn ota_missing_chunks(
+        total_bytes: u64,
+        chunk_size: u32,
+        acknowledged: &[(u32, u32)],
+    ) -> Vec<(u32, u32)> {
+        Self::ota_chunk_ranges(total_bytes, chunk_size)
+            .into_iter()
+            .filter(|(offset, len)| {
+                !acknowledged.iter().any(|(ack_offset, ack_len)| {
+                    *ack_offset <= *offset
+                        && u64::from(*ack_offset) + u64::from(*ack_len)
+                            >= u64::from(*offset) + u64::from(*len)
+                })
+            })
+            .collect()
+    }
+
+    /// N737: like [`Self::ota_resume_commands`] but chunk-aware. The caller
+    /// supplies the image size, chunk size and the ranges the device confirmed;
+    /// only missing chunks are emitted (begin is skipped once phase >= 1).
+    pub fn ota_resume_commands_chunked(
+        &self,
+        version: &str,
+        total_bytes: u64,
+        chunk_size: u32,
+        acknowledged: &[(u32, u32)],
+    ) -> Vec<mdc_protocol::OtaCommand> {
+        if self.ota_phase >= 3 {
+            return Vec::new();
+        }
+        let mut commands = Vec::new();
+        if self.ota_phase == 0 {
+            commands.push(mdc_protocol::OtaCommand {
+                action: "begin".into(),
+                version: Some(version.to_string()),
+                size: Some(total_bytes),
+                sha256: None,
+                offset: None,
+                len: None,
+            });
+        }
+        for (offset, len) in Self::ota_missing_chunks(total_bytes, chunk_size, acknowledged) {
+            commands.push(mdc_protocol::OtaCommand {
+                action: "chunk".into(),
+                version: None,
+                size: None,
+                sha256: None,
+                offset: Some(offset),
+                len: Some(len),
+            });
+        }
+        commands.push(mdc_protocol::OtaCommand {
+            action: "confirm".into(),
+            version: None,
+            size: None,
+            sha256: None,
+            offset: None,
+            len: None,
+        });
+        commands
     }
 
     /// N419: clear the OTA checkpoint (a fresh update or an abort).
@@ -2911,14 +3064,15 @@ impl<T: Transport> Session<T> {
                     .as_ref()
                     .map(|d| d.capabilities.device_id.clone())
                     .unwrap_or_default();
-                // N473: feed the gesture tracker before forwarding the raw event.
-                let gesture = self.gestures.on_event(&event, self.virtual_ms);
+                // N473/N735: feed the gesture tracker before forwarding the raw
+                // event; a two-finger move may emit both a pan and a pinch.
+                let gestures = self.gestures.on_events(&event, self.virtual_ms);
                 if let Some(mgr) = &self.manager {
                     mgr.lock()
                         .map_err(|e| CoreError::Transport(e.to_string()))?
                         .push_input(device_id, event);
                 }
-                if let Some(gesture) = gesture {
+                for gesture in gestures {
                     self.emit_gesture(gesture);
                 }
                 Ok(())
@@ -3954,6 +4108,8 @@ mod tests {
                     version: None,
                     size: None,
                     sha256: None,
+                    offset: None,
+                    len: None,
                 })
                 .unwrap();
         }
@@ -3963,6 +4119,8 @@ mod tests {
                 version: None,
                 size: None,
                 sha256: None,
+                offset: None,
+                len: None,
             }),
             Err(CoreError::ControlQueueFull)
         );
@@ -4747,6 +4905,31 @@ mod tests {
         assert!((0.05..=0.9).contains(&threshold));
         // A second sample with no time elapsed has no rate.
         assert_eq!(session.measure_bitrate(), None);
+    }
+
+    #[test]
+    fn session_adapts_frame_pacing_to_the_measured_rate() {
+        // N741: a low measured rate caps the scheduler at one frame per second.
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        session.set_frame_pacing(30, 0);
+        session.tick(0).unwrap();
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![0x11; 8],
+            })
+            .unwrap();
+        session.tick(1_000).unwrap();
+        let config = session
+            .adapt_frame_pacing(10_000_000)
+            .expect("scheduler and rate present");
+        assert_eq!(config.max_fps, 1);
+        assert!(config.max_bytes_per_second > 0);
     }
 
     #[test]
@@ -5974,6 +6157,8 @@ mod tests {
                 node: None,
                 scale: 1000,
                 rotation: 0,
+                dx: 0,
+                dy: 0,
             })
         );
 
@@ -5989,6 +6174,8 @@ mod tests {
                 node: None,
                 scale: 1000,
                 rotation: 0,
+                dx: 0,
+                dy: 0,
             })
         );
         assert_eq!(
@@ -6001,6 +6188,8 @@ mod tests {
                 node: None,
                 scale: 1000,
                 rotation: 0,
+                dx: 0,
+                dy: 0,
             })
         );
 
@@ -6017,6 +6206,8 @@ mod tests {
                 node: None,
                 scale: 1000,
                 rotation: 0,
+                dx: 0,
+                dy: 0,
             })
         );
         assert_eq!(tracker.tick(2000), None, "long-press emits once");
@@ -6049,6 +6240,8 @@ mod tests {
                 node: None,
                 scale: 2000,
                 rotation: 0,
+                dx: 0,
+                dy: 0,
             })
         );
         // Diagonal: distance 10*sqrt(2), angle 45 degrees (scale ~1414).
@@ -6117,6 +6310,98 @@ mod tests {
     }
 
     #[test]
+    fn two_pointer_move_emits_pan_and_pinch_together() {
+        // N735: one two-finger move reports both the midpoint translation and
+        // the scale/rotation change.
+        let event = |pointer_id: u16, phase: &str, x: u16, y: u16| mdc_protocol::InputEvent {
+            surface_id: "main".into(),
+            pointer_id,
+            phase: phase.into(),
+            x,
+            y,
+            node: None,
+        };
+        let mut tracker = GestureTracker::new(GestureConfig::default());
+        assert!(tracker.on_events(&event(1, "down", 10, 10), 0).is_empty());
+        assert!(tracker.on_events(&event(2, "down", 20, 10), 10).is_empty());
+        let gestures = tracker.on_events(&event(2, "move", 30, 20), 20);
+        assert_eq!(gestures.len(), 2, "{gestures:?}");
+        assert_eq!(gestures[0].kind, GestureKind::Pan);
+        assert_eq!((gestures[0].x, gestures[0].y), (20, 15));
+        assert_eq!((gestures[0].dx, gestures[0].dy), (5, 5));
+        assert_eq!(gestures[1].kind, GestureKind::Pinch);
+        assert_eq!(gestures[1].scale, 2236);
+        assert_eq!(gestures[1].rotation, 27);
+        // The single-gesture API still reports the richer pinch.
+        let mut tracker = GestureTracker::new(GestureConfig::default());
+        tracker.on_events(&event(1, "down", 10, 10), 0);
+        tracker.on_events(&event(2, "down", 20, 10), 10);
+        assert_eq!(
+            tracker
+                .on_event(&event(2, "move", 30, 20), 20)
+                .unwrap()
+                .kind,
+            GestureKind::Pinch
+        );
+    }
+
+    #[test]
+    fn ota_chunk_ranges_and_missing_ranges() {
+        // N737: fixed chunking shortens the final range and subtracts confirmed
+        // byte ranges exactly.
+        assert_eq!(
+            Session::<MemoryLink>::ota_chunk_ranges(10, 4),
+            vec![(0, 4), (4, 4), (8, 2)]
+        );
+        assert_eq!(
+            Session::<MemoryLink>::ota_missing_chunks(10, 4, &[(0, 4)]),
+            vec![(4, 4), (8, 2)]
+        );
+        assert_eq!(
+            Session::<MemoryLink>::ota_missing_chunks(10, 4, &[(0, 10)]),
+            Vec::<(u32, u32)>::new()
+        );
+    }
+
+    #[test]
+    fn ota_chunked_resume_plan_skips_acknowledged_chunks() {
+        // N737: at phase 2 the plan contains only missing chunks plus confirm.
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        let hello = Packet::decode(&device.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        let mut advertised = caps();
+        advertised.ota = true;
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: hello.request_id,
+                    payload: encode_control(&advertised).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        let plan = session.ota_resume_commands_chunked("2.0.0", 10, 4, &[]);
+        assert_eq!(plan.len(), 5, "begin + three chunks + confirm");
+        assert_eq!(plan[0].action, "begin");
+        session.send_ota(plan[0].clone()).unwrap();
+        session.send_ota(plan[1].clone()).unwrap();
+        let plan = session.ota_resume_commands_chunked("2.0.0", 10, 4, &[(0, 4)]);
+        assert_eq!(plan.len(), 3, "two missing chunks + confirm");
+        assert!(plan[..2].iter().all(|command| command.action == "chunk"));
+        assert_eq!(plan[0].offset, Some(4));
+        assert_eq!(plan[1].offset, Some(8));
+        assert_eq!(plan[2].action, "confirm");
+    }
+
+    #[test]
     fn ota_phase_checkpoint_resumes_across_reconnect() {
         // N419: the OTA phase survives a reconnect so a driver can resume.
         let (host, mut device) = MemoryLink::pair();
@@ -6150,6 +6435,8 @@ mod tests {
             version: None,
             size: None,
             sha256: None,
+            offset: None,
+            len: None,
         };
         session.send_ota(command("begin")).unwrap();
         assert_eq!(session.ota_phase(), 1);
