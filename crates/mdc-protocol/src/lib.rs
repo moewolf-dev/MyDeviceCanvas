@@ -668,6 +668,19 @@ impl SceneAnim {
     }
 }
 
+/// N723: parse `"x,y;x,y;..."` into bounded integer points.
+fn parse_point_list(spec: &str) -> Option<Vec<[i32; 2]>> {
+    let mut points = Vec::new();
+    for token in spec.split([';', ' ', '\n', '\t']).filter(|t| !t.is_empty()) {
+        let (x, y) = token.split_once(',')?;
+        points.push([x.trim().parse().ok()?, y.trim().parse().ok()?]);
+        if points.len() > SceneNode::MAX_POINTS {
+            return None;
+        }
+    }
+    (points.len() >= 2).then_some(points)
+}
+
 /// Interpolate `[time, value]` keyframes at `t`; returns the last value past the end.
 fn sample_keys<F>(keys: &[[u16; 2]], t: u32, map: F, easing: Easing) -> Option<u32>
 where
@@ -776,7 +789,7 @@ impl SceneNode {
     }
 
     fn lint_into(&self, report: &mut SceneLint, names: &mut std::collections::BTreeSet<String>) {
-        const KINDS: [&str; 12] = [
+        const KINDS: [&str; 15] = [
             "group",
             "rect",
             "text",
@@ -789,6 +802,9 @@ impl SceneNode {
             "clip",
             "polygon",
             "polyline",
+            "arc",
+            "pie",
+            "path",
         ];
         let drawable = !matches!(self.kind.as_str(), "group" | "clip");
         if !KINDS.contains(&self.kind.as_str()) {
@@ -815,6 +831,14 @@ impl SceneNode {
                 .push(format!("node '{}' ({}) has no value", self.name, self.kind)),
             "polygon" | "polyline" if self.points().is_none() => report.problems.push(format!(
                 "node '{}' ({}) has no valid points",
+                self.name, self.kind
+            )),
+            "path" if self.bezier().is_none() => report.problems.push(format!(
+                "node '{}' (path) has no valid bezier points",
+                self.name
+            )),
+            "arc" | "pie" if self.arc_angles().is_none() => report.problems.push(format!(
+                "node '{}' ({}) has no valid angles",
                 self.name, self.kind
             )),
             _ => {}
@@ -863,16 +887,31 @@ impl SceneNode {
     /// (`"x,y;x,y;..."`; spaces may separate points). Returns `None` for a
     /// malformed list, fewer than two points, or more than [`Self::MAX_POINTS`].
     pub fn points(&self) -> Option<Vec<[i32; 2]>> {
-        let spec = self.value2.as_deref()?;
-        let mut points = Vec::new();
-        for token in spec.split([';', ' ', '\n', '\t']).filter(|t| !t.is_empty()) {
-            let (x, y) = token.split_once(',')?;
-            points.push([x.trim().parse().ok()?, y.trim().parse().ok()?]);
-            if points.len() > Self::MAX_POINTS {
-                return None;
-            }
+        parse_point_list(self.value2.as_deref()?)
+    }
+
+    /// N734: the start/control/end points of a `path` curve from `value2`.
+    /// Three points mean quadratic; four mean cubic. More or fewer are rejected.
+    pub fn bezier(&self) -> Option<Vec<[i32; 2]>> {
+        let points = parse_point_list(self.value2.as_deref()?)?;
+        matches!(points.len(), 3 | 4).then_some(points)
+    }
+
+    /// N733: the sector start/end angles (degrees) for `arc`/`pie` from
+    /// `value2` (`"start,end"`). A non-positive sweep means the full circle.
+    pub fn arc_angles(&self) -> Option<(f32, f32)> {
+        let (start, end) = self.value2.as_deref()?.split_once(',')?;
+        let start: f32 = start.trim().parse().ok()?;
+        let end: f32 = end.trim().parse().ok()?;
+        if !start.is_finite() || !end.is_finite() {
+            return None;
         }
-        (points.len() >= 2).then_some(points)
+        let start = start.rem_euclid(360.0);
+        let mut sweep = end.rem_euclid(360.0) - start;
+        if sweep <= 0.0 {
+            sweep += 360.0;
+        }
+        Some((start, sweep.min(360.0)))
     }
 
     /// N79/N136: the fill colour for a `rect`, parsed from `value` as
@@ -1138,11 +1177,17 @@ pub struct InputEvent {
 /// OTA control command (CBOR for MessageType::Ota).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OtaCommand {
-    /// begin | abort | confirm
+    /// begin | abort | confirm | chunk | timeout
     pub action: String,
     pub version: Option<String>,
     pub size: Option<u64>,
     pub sha256: Option<String>,
+    /// N737: a chunk's byte offset (additive; older peers omit it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u32>,
+    /// N737: a chunk's byte length.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub len: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1803,6 +1848,8 @@ mod tests {
             version: Some("1.0.0".into()),
             size: Some(100),
             sha256: None,
+            offset: None,
+            len: None,
         };
         let err = ErrorPayload {
             code: "E_UNSUPPORTED".into(),
@@ -2776,6 +2823,43 @@ mod tests {
         node.anim = Some(ease_in);
         apply_scene_animation(&mut node, 250);
         assert_eq!(node.opacity, Some(16));
+    }
+
+    #[test]
+    fn scene_polygon_bezier_and_arc_parsing_is_bounded() {
+        // N723/N733/N734: point, curve and angle specs are parsed and bounded.
+        let mut node = plain_node("p", "polygon");
+        node.value2 = Some("0,0;4,0;4,4".into());
+        assert_eq!(node.points().unwrap().len(), 3);
+        node.value2 = Some("0,0;1,1".into());
+        assert_eq!(node.points().unwrap().len(), 2);
+        node.value2 = Some("bad".into());
+        assert!(node.points().is_none());
+        node.value2 = Some(
+            (0..65)
+                .map(|i| format!("{i},0"))
+                .collect::<Vec<_>>()
+                .join(";"),
+        );
+        assert!(node.points().is_none());
+
+        let mut path = plain_node("c", "path");
+        path.value2 = Some("0,0;4,4;8,0".into());
+        assert_eq!(path.bezier().unwrap().len(), 3);
+        path.value2 = Some("0,0;2,2;4,4;8,0".into());
+        assert_eq!(path.bezier().unwrap().len(), 4);
+        path.value2 = Some("0,0;8,0".into());
+        assert!(path.bezier().is_none());
+
+        let mut arc = plain_node("a", "arc");
+        arc.value2 = Some("350,30".into());
+        let (start, sweep) = arc.arc_angles().unwrap();
+        assert!((start - 350.0).abs() < 0.01);
+        assert!((sweep - 40.0).abs() < 0.01);
+        arc.value2 = Some("0,360".into());
+        assert_eq!(arc.arc_angles(), Some((0.0, 360.0)));
+        arc.value2 = Some("x,y".into());
+        assert!(arc.arc_angles().is_none());
     }
 
     fn config_command_vector() -> Capabilities {
