@@ -165,11 +165,14 @@ it, and the fields are metadata (the body checksum is unchanged).
 N709: `mdc-inspector --prune-archive DIR --keep N` keeps the live
 `mdc-history.jsonl` plus `.1..N` rotated copies and deletes higher rotations
 (unrelated files are left alone). Combine with `--check-archive DIR` to verify
-the resulting manifest.
+the resulting manifest. N719: when `manifest.json` exists, pruning also rewrites
+its `files`/`rotated`/`keep` and refreshes `generatedAt`, so the manifest never
+describes deleted files.
 
 N710: `mdc verify`, `mdc diff` and `mdc model-info` share one KTX2 summary
 (`ktx2_textures`, `ktx2_slices`, `ktx2_size_mismatches`); `diff` also emits a
 `ktx2` field so a metadata mismatch is visible without inspecting structure
-counts.
+counts. N720: `mdc verify` additionally prints `compatibility_row`, a
+ready-to-paste matrix row derived from that same summary.
 
 

@@ -84,6 +84,10 @@ checked against expected output, not a self-consistent pair:
   corpus over strides 4/8/12/16 and counts 17/31/33/47/49/63, crossing block and
   group boundaries (including 16k+1/15 tails) on every byte lane. The v0 verbatim
   group carries raw zigzag deltas, so all byte values must round-trip exactly.
+- `vertex_buffer_v0_multiblock_group_modes_corpus` (N713): v0's 2/4/8-bit group
+  widths across counts that exceed the 256-element block size (257/271/511/527),
+  so both the multi-block header reset and the trailing partial group are
+  exercised for every lane.
 
 ## Not covered (declared gaps)
 

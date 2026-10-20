@@ -417,6 +417,18 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Swift tile send + full fields (N708) | sim-verified (smoke) | physical: pending |
 | Archive prune retention (N709) | sim-verified (rotations) | n/a |
 | Shared KTX2 summary (N710) | sim-verified (verify/diff/model-info) | n/a |
+| v0 multi-block group corpus (N713) | sim-verified (round-trip) | n/a |
+| Package-order manifest reconciliation (N714) | sim-verified (same pass) | n/a |
+| Sprite fit+pad+linear (N715) | sim-verified (device blend) | physical: pending |
+| Inspect source filter (N716) | sim-verified (profile/device) | n/a |
+| Health kind filter (N717) | sim-verified (HTTP) | n/a |
+| C tile sequence (N718) | sim-verified (C ABI) | physical: pending |
+| Prune manifest refresh (N719) | sim-verified (archive) | n/a |
+| KTX2 compatibility row (N720) | sim-verified (`mdc verify`) | n/a |
+
+Rows marked `sim-verified` describe host/simulator behaviour only. The KTX2 row
+is also emitted by `mdc verify` as `compatibility_row`, generated from the same
+`Ktx2Summary` the other tools use (N720).
 
 ## G03 sim exit
 

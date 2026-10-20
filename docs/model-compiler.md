@@ -454,6 +454,10 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
   size mismatches) shared by the model summary and `DevicePackage`, so
   `mdc model-info`, `mdc verify` and `mdc diff` cannot disagree about the same
   container.
+- N714: the package-order report and the sealed manifest are reconciled by test:
+  `optimize_package_index_order(..., CACHE_REPORT_SIZE)` must equal
+  `manifest.cache_misses`, and `set_cache_report(report.misses_before)` must
+  persist `report.saved()` — the two views of one pass cannot drift.
 
 ## Non-goals (this wave)
 

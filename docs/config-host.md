@@ -52,7 +52,10 @@ see an unchanged capabilities map. `CONFIG` (0x33) carries a CBOR
   merged key its effective value, whether it came from the board profile or the
   device, and a `conflict` flag when the device overrode a different profile
   default. `config_default_conflicts` lists just those keys, so an operator can
-  see *why* a default differs without diffing two tables.
+  see *why* a default differs without diffing two tables. N716: `inspect
+  --source profile|device` narrows both `config_default_sources` and the
+  effective `config_defaults` to that source; an unknown source is rejected
+  before a session is opened.
 
 ## Non-goals
 

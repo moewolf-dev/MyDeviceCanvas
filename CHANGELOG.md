@@ -2,6 +2,30 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.84] — v0 multi-block corpus, package-order reconciliation, sprite fit/pad/linear, source filter, health kind filter, C tile sequence, prune manifest, KTX2 matrix row (N713–N722)
+
+### Added
+
+- v0 2/4/8-bit group-width corpus across multiple 256-element blocks (N713)
+- test reconciling `PackageOrderReport` with the sealed manifest (N714)
+- sprite `fit`+`pad`+`linear` composition (N715)
+- `mdc inspect --source profile|device` (N716)
+- `/health?kind=` filtering for `ws_log_entries` (N717)
+- C ABI frame → tile → reconciliation smoke matching Swift (N718)
+- archive prune refreshes `manifest.json` (`files`/`rotated`/`generatedAt`)
+  (N719)
+- `mdc verify` emits a `compatibility_row` from the shared KTX2 summary (N720)
+
+### Fixed
+
+- Pruning an archive no longer leaves a manifest that names deleted rotated
+  copies (N719).
+
+### Notes
+
+- Host/simulator only. D05, G03 and H06 remain open until physical hardware is
+  measured; no board is claimed working.
+
 ## [0.1.83] — v0 multi-lane corpus, package-order manifest, sprite filtering, default provenance, health entries, Swift tiles, archive pruning, shared KTX2 summary (N703–N712)
 
 ### Added
