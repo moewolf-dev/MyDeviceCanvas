@@ -1082,6 +1082,13 @@ const WS_LOG_MAX: usize = 16;
 /// sends a very long reason string.
 pub const WS_NOTE_DETAIL_MAX: usize = 256;
 
+/// N677: a note's `kind` is clamped too, so a host cannot bloat the health map.
+pub const WS_NOTE_KIND_MAX: usize = 32;
+
+/// N677: the most distinct kinds reported in the `/health` summary (the entries
+/// are taken in sorted order, so the subset is stable).
+pub const WS_LOG_KINDS_MAX: usize = 8;
+
 /// N617: the shape version of a [`WebSocketNote`]; a consumer can pin to it.
 pub const WS_NOTE_VERSION: u8 = 1;
 
@@ -1103,15 +1110,19 @@ fn escape_json(value: &str) -> String {
 }
 
 /// N637: clamp a note's detail to [`WS_NOTE_DETAIL_MAX`] bytes on a char boundary.
-fn truncate_detail(detail: &str) -> String {
-    if detail.len() <= WS_NOTE_DETAIL_MAX {
-        return detail.to_string();
+fn truncate_to(value: &str, max: usize) -> String {
+    if value.len() <= max {
+        return value.to_string();
     }
-    let mut end = WS_NOTE_DETAIL_MAX;
-    while end > 0 && !detail.is_char_boundary(end) {
+    let mut end = max;
+    while end > 0 && !value.is_char_boundary(end) {
         end -= 1;
     }
-    detail[..end].to_string()
+    value[..end].to_string()
+}
+
+fn truncate_detail(detail: &str) -> String {
+    truncate_to(detail, WS_NOTE_DETAIL_MAX)
 }
 
 struct HttpClient {
@@ -1313,7 +1324,8 @@ impl HttpMirrorServer {
     fn ws_log_kinds_json(&self) -> String {
         let counts = self.ws_log_counts();
         let mut out = String::from("{");
-        for (index, (kind, count)) in counts.iter().enumerate() {
+        // N677: a sorted, capped kind list keeps the health body bounded/stable.
+        for (index, (kind, count)) in counts.iter().take(WS_LOG_KINDS_MAX).enumerate() {
             if index > 0 {
                 out.push(',');
             }
@@ -1334,7 +1346,7 @@ impl HttpMirrorServer {
             self.ws_log.remove(0);
         }
         self.ws_log.push(WebSocketNote {
-            kind: kind.into(),
+            kind: truncate_to(&kind.into(), WS_NOTE_KIND_MAX),
             detail: truncate_detail(&detail.into()),
         });
     }
@@ -3176,6 +3188,34 @@ mod tests {
         server.note_ws("we\"ird\\kind", "x");
         let health = String::from_utf8_lossy(&http_get(&mut server, "/health")).to_string();
         assert!(health.contains("\"we\\\"ird\\\\kind\":1"), "{health}");
+    }
+
+    #[test]
+    fn ws_log_kinds_and_kind_length_are_bounded() {
+        // N677: the kind is clamped and the summary reports at most
+        // WS_LOG_KINDS_MAX kinds, in sorted (stable) order.
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        let long_kind = "k".repeat(WS_NOTE_KIND_MAX + 20);
+        server.note_ws(long_kind.clone(), "x");
+        assert_eq!(server.ws_log()[0].kind.chars().count(), WS_NOTE_KIND_MAX);
+        // More distinct kinds than the cap (the log itself holds at most 16).
+        for index in 0..12u8 {
+            server.note_ws(format!("kind{index:02}"), "x");
+        }
+        let counts = server.ws_log_counts();
+        assert!(counts.len() > WS_LOG_KINDS_MAX);
+        let kinds_json = server.ws_log_kinds_json();
+        assert_eq!(
+            kinds_json.matches(':').count(),
+            WS_LOG_KINDS_MAX,
+            "{kinds_json}"
+        );
+        // Sorted order: kind00 comes before kind11.
+        let first = kinds_json.find("kind00");
+        let later = kinds_json.find("kind11");
+        if let (Some(first), Some(later)) = (first, later) {
+            assert!(first < later, "{kinds_json}");
+        }
     }
 
     #[test]
