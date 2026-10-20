@@ -4243,6 +4243,57 @@ mod tests {
     }
 
     #[test]
+    fn image_fit_pad_composes_with_align() {
+        // N675: pad insets the box, then align/valign place the fitted image.
+        use mdc_protocol::SceneNode;
+        let bounds = |src: &str, align: &str| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 8,
+                height: 8,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "pic".into(),
+                kind: "image".into(),
+                rect: Some([0, 0, 8, 8]),
+                value: Some("f800001f".into()),
+                value2: Some(src.into()),
+                children: Vec::new(),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: Some(align.into()),
+                z: None,
+                wrap: None,
+                mode: Some("fit,pad=2".into()),
+                focus: None,
+            });
+            assert!(device.render_scene());
+            let mut min_x = u16::MAX;
+            let mut min_y = u16::MAX;
+            for y in 0..8u16 {
+                for x in 0..8u16 {
+                    if device.pixel_rgb565(x, y).unwrap() != 0 {
+                        min_x = min_x.min(x);
+                        min_y = min_y.min(y);
+                    }
+                }
+            }
+            (min_x, min_y)
+        };
+        // A tall 1x2 source: only the horizontal align has slack.
+        assert_eq!(bounds("1,2", "left"), (2, 2));
+        assert_eq!(bounds("1,2", "center"), (3, 2));
+        assert_eq!(bounds("1,2", "right"), (4, 2));
+        // A wide 2x1 source: only the vertical align has slack.
+        assert_eq!(bounds("2,1", "left,top"), (2, 2));
+        assert_eq!(bounds("2,1", "left,middle"), (2, 3));
+        assert_eq!(bounds("2,1", "left,bottom"), (2, 4));
+    }
+
+    #[test]
     fn image_fit_padding_insets_the_letterbox() {
         // N645: `pad=N` insets the fit box on every side.
         use mdc_protocol::SceneNode;
