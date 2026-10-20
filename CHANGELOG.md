@@ -2,6 +2,28 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.80] — meshopt v0 group widths, optimization savings, pad+align, merged defaults, bounded log kinds, SDK invariants, diff savings (N673–N682)
+
+### Added
+
+- a meshopt v0 group-width matrix (2-/4-bit sentinel groups plus raw) round-trip
+  (N673)
+- `GeometryOptimization` now carries `hits_before`/`misses_before`/`hits` plus
+  `saved()` and `hit_rate()` (N674)
+- an `image` `fit` + `pad` + `align` (horizontal/vertical) composition test (N675)
+- `mdc inspect` reports a merged `config_defaults` (profile + device-advertised)
+  and each device carries `configDefaults` (N676)
+- the websocket kind and the `/health` kind list are bounded
+  (`WS_NOTE_KIND_MAX`, `WS_LOG_KINDS_MAX`, sorted) (N677)
+- Node/Swift/C tile-reconciliation invariants are asserted (`missing ==
+  max(0, sent-received)`, `consistent == missing == 0`) (N678)
+- the archive report's top-level shape is pinned by a test (N679)
+- `mdc diff` reports `index_cache_saved` (how many fewer misses `b` has) (N680)
+
+### Notes
+
+- Physical verification (D05/G03/H06) is still pending.
+
 ## [0.1.79] — meshopt verbatim groups, package order report, pad+rotate, defaults key filter, health escaping, compact archive, report savings (N663–N672)
 
 ### Added

@@ -383,6 +383,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Health escaping (N667) | sim-verified (valid JSON) | n/a |
 | Compact archive (N668) | sim-verified (one line) | n/a |
 | Report cache savings (N669) | sim-verified (`index_cache_saved`) | n/a |
+| meshopt v0 group widths (N673) | sim-verified (2/4-bit + raw) | n/a |
+| Optimization hit/miss (N674) | sim-verified (`saved`/`hit_rate`) | n/a |
+| Fit pad+align (N675) | sim-verified (device render) | physical: pending |
+| Merged config defaults (N676) | sim-verified (inspect) | n/a |
+| Bounded log kinds (N677) | sim-verified (cap + order) | n/a |
+| SDK reconciliation invariants (N678) | sim-verified (three ends) | n/a |
+| Archive key snapshot (N679) | sim-verified | n/a |
+| Diff cache savings (N680) | sim-verified (`index_cache_saved`) | n/a |
 
 ## G03 sim exit
 

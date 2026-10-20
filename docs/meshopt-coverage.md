@@ -67,6 +67,9 @@ checked against expected output, not a self-consistent pair:
   (per-lane header / 1-bit / skip / raw) all round-trip. Note control mode 1 indexes
   `header_modes[2]` (its group mode 0 is the 1-bit mode), so the encoder writes the
   packed group bytes for that lane.
+- `vertex_buffer_v0_group_widths_round_trip` (N673): v0's `[0,2,4,8]` header
+  table supports 2-bit and 4-bit sentinel groups (plus raw); all round-trip with
+  escape bytes for large deltas.
 - `vertex_buffer_verbatim_group_round_trips` (N663): control mode 1 with the
   8-bit verbatim group (group mode 3) carries arbitrary deltas. Note only
   `header_modes[2]` (control mode 1) maps group mode 3 to 8 bits; control mode 0's

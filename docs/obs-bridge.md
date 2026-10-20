@@ -103,7 +103,8 @@ reports `ws_log` (the entries). N597/N607: each entry is a structured
 token only (`permessage-deflate`), never its parameters, so a peer address or
 window size never enters the log. N617: `WS_NOTE_VERSION` pins the entry shape
 and `ws_log_of_kind(kind)` filters the log. N667: `/health`'s `ws_log_last` is escaped by the shared `escape_json`, so a
-host-supplied note with quotes/newlines cannot break the body.
+host-supplied note with quotes/newlines cannot break the body. N677: a note's `kind` is clamped to `WS_NOTE_KIND_MAX` and the `/health`
+kind map reports at most `WS_LOG_KINDS_MAX` kinds in sorted (stable) order.
 
 ## Guarantees
 

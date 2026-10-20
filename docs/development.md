@@ -78,6 +78,8 @@ cargo run -p mdc -- validate model.gltf --strict                      # KTX2 not
 cargo run -p mdc -- --board linux-virt config --defaults --key tile_missing_threshold  # one key (N666)
 cargo run -p mdc-inspector -- --check-archive archive --compact       # one-line report (N668)
 cargo run -p mdc -- package model.gltf --optimize-geometry --report   # index_cache_saved (N669)
+cargo run -p mdc -- --board linux-virt inspect                        # config_defaults merged (N676)
+cargo run -p mdc -- diff a.mdcpkg b.mdcpkg                            # index_cache_saved (N680)
 cargo run -p mdc -- --board linux-virt inspect --watch --count 3 --rss
 cargo run -p mdc -- --board linux-virt diag --metric fps --value 29.5 --unit fps
 ```
