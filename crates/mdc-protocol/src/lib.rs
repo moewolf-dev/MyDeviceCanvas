@@ -474,6 +474,16 @@ impl SceneCapability {
     }
 }
 
+/// N743: one command of a scene `path` stream. Coordinates are absolute.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathCommand {
+    Move([i32; 2]),
+    Line([i32; 2]),
+    Quad([i32; 2], [i32; 2]),
+    Cubic([i32; 2], [i32; 2], [i32; 2]),
+    Close,
+}
+
 /// A node in the host vector scene (CBOR, N53). `kind` selects the primitive
 /// (rect/text/sprite/image); `value` is kind-specific. N79 adds optional geometry
 /// (`rect: [x, y, w, h]`) and treats `value` on a `rect` as a `#RRGGBB` colour.
@@ -789,7 +799,7 @@ impl SceneNode {
     }
 
     fn lint_into(&self, report: &mut SceneLint, names: &mut std::collections::BTreeSet<String>) {
-        const KINDS: [&str; 15] = [
+        const KINDS: [&str; 16] = [
             "group",
             "rect",
             "text",
@@ -805,6 +815,7 @@ impl SceneNode {
             "arc",
             "pie",
             "path",
+            "mask",
         ];
         let drawable = !matches!(self.kind.as_str(), "group" | "clip");
         if !KINDS.contains(&self.kind.as_str()) {
@@ -833,14 +844,16 @@ impl SceneNode {
                 "node '{}' ({}) has no valid points",
                 self.name, self.kind
             )),
-            "path" if self.bezier().is_none() => report.problems.push(format!(
-                "node '{}' (path) has no valid bezier points",
-                self.name
-            )),
+            "path" if self.bezier().is_none() && self.path_commands().is_none() => report
+                .problems
+                .push(format!("node '{}' (path) has no valid points", self.name)),
             "arc" | "pie" if self.arc_angles().is_none() => report.problems.push(format!(
                 "node '{}' ({}) has no valid angles",
                 self.name, self.kind
             )),
+            "mask" if self.points().is_none() => report
+                .problems
+                .push(format!("node '{}' (mask) has no valid points", self.name)),
             _ => {}
         }
         if !self.name.is_empty() && !names.insert(self.name.clone()) {
@@ -895,6 +908,46 @@ impl SceneNode {
     pub fn bezier(&self) -> Option<Vec<[i32; 2]>> {
         let points = parse_point_list(self.value2.as_deref()?)?;
         matches!(points.len(), 3 | 4).then_some(points)
+    }
+
+    /// N743: a `path` command stream from `value2`, e.g.
+    /// `"M1,1;L5,1;Q8,4 5,8;C1,1 2,2 3,3;Z"`. Commands are bounded to 64 and
+    /// must start with `M`; malformed input is rejected.
+    pub fn path_commands(&self) -> Option<Vec<PathCommand>> {
+        let mut out = Vec::new();
+        for part in self
+            .value2
+            .as_deref()?
+            .split(';')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+        {
+            let mut chars = part.chars();
+            let op = chars.next()?.to_ascii_uppercase();
+            let rest = chars.as_str();
+            let numbers: Option<Vec<i32>> = rest
+                .split([' ', '\t', '\n', ','])
+                .filter(|token| !token.is_empty())
+                .map(|token| token.parse().ok())
+                .collect();
+            let numbers = numbers?;
+            let point = |index: usize| [numbers[index], numbers[index + 1]];
+            match (op, numbers.len()) {
+                ('M', 2) => out.push(PathCommand::Move(point(0))),
+                ('L', 2) => out.push(PathCommand::Line(point(0))),
+                ('Q', 4) => out.push(PathCommand::Quad(point(0), point(2))),
+                ('C', 6) => out.push(PathCommand::Cubic(point(0), point(2), point(4))),
+                ('Z', 0) => out.push(PathCommand::Close),
+                _ => return None,
+            }
+            if out.len() > 64 {
+                return None;
+            }
+        }
+        match out.first() {
+            Some(PathCommand::Move(_)) => Some(out),
+            _ => None,
+        }
     }
 
     /// N733: the sector start/end angles (degrees) for `arc`/`pie` from
@@ -2860,6 +2913,27 @@ mod tests {
         assert_eq!(arc.arc_angles(), Some((0.0, 360.0)));
         arc.value2 = Some("x,y".into());
         assert!(arc.arc_angles().is_none());
+    }
+
+    #[test]
+    fn scene_path_command_stream_is_bounded() {
+        // N743: M/L/Q/C/Z parse into commands; a stream must start with M and
+        // stay within 64 commands.
+        let mut path = plain_node("p", "path");
+        path.value2 = Some("M1,1;L5,1;Q8,4 5,8;C1,1 2,2 3,3;Z".into());
+        let commands = path.path_commands().unwrap();
+        assert_eq!(commands.len(), 5);
+        assert_eq!(commands[0], PathCommand::Move([1, 1]));
+        assert_eq!(commands[4], PathCommand::Close);
+        path.value2 = Some("L1,1;L2,2".into());
+        assert!(path.path_commands().is_none(), "must start with M");
+        path.value2 = Some(
+            std::iter::once("M0,0".to_string())
+                .chain((0..64).map(|i| format!("L{i},0")))
+                .collect::<Vec<_>>()
+                .join(";"),
+        );
+        assert!(path.path_commands().is_none(), "over 64 commands");
     }
 
     fn config_command_vector() -> Capabilities {
