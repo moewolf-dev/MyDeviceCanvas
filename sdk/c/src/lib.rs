@@ -2240,6 +2240,59 @@ mod tests {
     }
 
     #[test]
+    fn c_tile_sequence_matches_the_swift_smoke() {
+        // N718: frame -> current frame id -> 1x1 tile -> full reconciliation,
+        // exactly the sequence the Swift smoke performs.
+        unsafe {
+            let session = mdc_session_create();
+            assert!(!session.is_null());
+            let (mut w, mut h) = (0u16, 0u16);
+            assert_eq!(mdc_session_surface_size(session, &mut w, &mut h), 0);
+            let frame = vec![0x11u8; usize::from(w) * usize::from(h) * 2];
+            assert_eq!(
+                mdc_session_send_frame(session, frame.as_ptr(), frame.len()),
+                0
+            );
+            let base = mdc_session_current_frame_id(session);
+            assert!(base > 0);
+            assert_eq!(mdc_session_needs_full_frame(session), 0);
+            let tile = [0x00u8, 0xF8];
+            assert_eq!(
+                mdc_session_send_tile(session, base, 0, 0, 1, 1, tile.as_ptr(), tile.len()),
+                0
+            );
+
+            let (mut tiles, mut tile_bytes) = (0u64, 0u64);
+            assert_eq!(
+                mdc_session_tile_stats(session, &mut tiles, &mut tile_bytes),
+                0
+            );
+            assert_eq!((tiles, tile_bytes), (1, 2));
+
+            let (mut sent, mut received, mut missing) = (0u64, 0u64, 0u64);
+            let (mut bytes, mut consistent) = (0u64, 1i32);
+            assert_eq!(
+                mdc_session_tile_reconciliation_ex(
+                    session,
+                    &mut sent,
+                    &mut received,
+                    &mut missing,
+                    &mut bytes,
+                    &mut consistent,
+                ),
+                0
+            );
+            assert_eq!(
+                (sent, received, missing, bytes, consistent),
+                (1, 0, 1, 2, 0)
+            );
+            assert_eq!(missing, sent - received);
+            assert_eq!(consistent != 0, sent == received);
+            mdc_session_destroy(session);
+        }
+    }
+
+    #[test]
     fn tile_reconciliation_ex_matches_node_fields() {
         // N638: bytes_sent/consistent are exposed for Swift parity.
         unsafe {
