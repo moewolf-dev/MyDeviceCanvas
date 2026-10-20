@@ -636,6 +636,15 @@ impl Material {
     pub fn cutoff(&self) -> f32 {
         self.alpha_cutoff.unwrap_or(0.5).clamp(0.0, 1.0)
     }
+
+    /// N731: the MASK cutoff as an 8-bit threshold (1..=255). Non-MASK materials
+    /// return 0 so callers can treat "0" as no cutout.
+    pub fn cutoff_u8(&self) -> u8 {
+        if !self.is_masked() {
+            return 0;
+        }
+        (self.cutoff() * 255.0).round().clamp(1.0, 255.0) as u8
+    }
     /// N333: whether this material is alpha-blended (`alphaMode: BLEND`).
     pub fn is_blended(&self) -> bool {
         self.alpha_mode

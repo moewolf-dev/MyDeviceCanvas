@@ -528,6 +528,26 @@ pub fn skin_points(
     )
 }
 
+/// N726: skin with an explicit blend mode.
+pub fn skin_points_with_mode(
+    mesh: &Mesh,
+    skeleton: &Skeleton,
+    worlds: &[Mat4],
+    positions: &[[f32; 3]],
+    mode: SkinMode,
+) -> Vec<[f32; 3]> {
+    skin_arrays_multi_with_mode(
+        &mesh.skin_joints,
+        &mesh.skin_weights,
+        &[],
+        &[],
+        positions,
+        skeleton,
+        worlds,
+        mode,
+    )
+}
+
 /// Linear blend skinning with explicit joint/weight arrays (used by the
 /// full-geometry path).
 pub fn skin_arrays(
@@ -540,10 +560,110 @@ pub fn skin_arrays(
     skin_arrays_multi(joints, weights, &[], &[], positions, skeleton, worlds)
 }
 
+/// N726: how a skinned vertex is blended. LBS is the default and preserves the
+/// previous behaviour; DQS blends rigid transforms with dual quaternions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SkinMode {
+    #[default]
+    Lbs,
+    Dqs,
+}
+
 /// N384: skin positions with up to eight influences (JOINTS_0/WEIGHTS_0 plus
 /// JOINTS_1/WEIGHTS_1). The weights of both sets are averaged together.
 #[allow(clippy::too_many_arguments)]
 pub fn skin_arrays_multi(
+    joints: &[[u16; 4]],
+    weights: &[[f32; 4]],
+    joints2: &[[u16; 4]],
+    weights2: &[[f32; 4]],
+    positions: &[[f32; 3]],
+    skeleton: &Skeleton,
+    worlds: &[Mat4],
+) -> Vec<[f32; 3]> {
+    skin_arrays_multi_with_mode(
+        joints,
+        weights,
+        joints2,
+        weights2,
+        positions,
+        skeleton,
+        worlds,
+        SkinMode::Lbs,
+    )
+}
+
+/// N726: as [`skin_arrays_multi`], with an explicit blend mode.
+#[allow(clippy::too_many_arguments)]
+pub fn skin_arrays_multi_with_mode(
+    joints: &[[u16; 4]],
+    weights: &[[f32; 4]],
+    joints2: &[[u16; 4]],
+    weights2: &[[f32; 4]],
+    positions: &[[f32; 3]],
+    skeleton: &Skeleton,
+    worlds: &[Mat4],
+    mode: SkinMode,
+) -> Vec<[f32; 3]> {
+    if mode == SkinMode::Lbs {
+        return skin_arrays_multi_lbs(
+            joints, weights, joints2, weights2, positions, skeleton, worlds,
+        );
+    }
+    let mut out = Vec::with_capacity(positions.len());
+    for (i, position) in positions.iter().enumerate() {
+        let mut real = [0.0f32; 4];
+        let mut dual = [0.0f32; 4];
+        let mut total = 0.0f32;
+        for (set_joints, set_weights) in [(joints, weights), (joints2, weights2)] {
+            let (Some(vertex_joints), Some(vertex_weights)) =
+                (set_joints.get(i), set_weights.get(i))
+            else {
+                continue;
+            };
+            for k in 0..4 {
+                let weight = vertex_weights[k];
+                if weight == 0.0 {
+                    continue;
+                }
+                let joint = vertex_joints[k] as usize;
+                let (Some(&node), Some(bind)) = (
+                    skeleton.joint_nodes.get(joint),
+                    skeleton.inverse_bind.get(joint),
+                ) else {
+                    continue;
+                };
+                let Some(world) = worlds.get(node) else {
+                    continue;
+                };
+                let Some(dq) = dual_quat_from_matrix(&mat4_mul(world, bind)) else {
+                    continue;
+                };
+                for c in 0..4 {
+                    real[c] += dq.real[c] * weight;
+                    dual[c] += dq.dual[c] * weight;
+                }
+                total += weight;
+            }
+        }
+        let norm =
+            (real[0] * real[0] + real[1] * real[1] + real[2] * real[2] + real[3] * real[3]).sqrt();
+        if total <= 0.0 || norm <= 1e-6 {
+            out.push(*position);
+            continue;
+        }
+        for c in 0..4 {
+            real[c] /= norm;
+            dual[c] /= norm;
+        }
+        out.push(transform_dual_quat(&real, &dual, *position));
+    }
+    out
+}
+
+/// N726: the linear-blend body (kept separate so DQS can delegate cleanly).
+#[allow(clippy::too_many_arguments)]
+fn skin_arrays_multi_lbs(
     joints: &[[u16; 4]],
     weights: &[[f32; 4]],
     joints2: &[[u16; 4]],
@@ -593,6 +713,79 @@ pub fn skin_arrays_multi(
         }
     }
     out
+}
+
+/// N726: a rigid transform as a unit dual quaternion (`real` = w,x,y,z).
+struct DualQuat {
+    real: [f32; 4],
+    dual: [f32; 4],
+}
+
+/// N726: split a matrix's rotation/translation into a dual quaternion. The
+/// linear part is reduced to its rotation (scale/shear is ignored).
+fn dual_quat_from_matrix(m: &Mat4) -> Option<DualQuat> {
+    let (r00, r10, r20) = (m[0], m[1], m[2]);
+    let (r01, r11, r21) = (m[4], m[5], m[6]);
+    let (r02, r12, r22) = (m[8], m[9], m[10]);
+    let trace = r00 + r11 + r22;
+    let mut q = if trace > 0.0 {
+        let s = (trace + 1.0).sqrt() * 2.0;
+        [0.25 * s, (r21 - r12) / s, (r02 - r20) / s, (r10 - r01) / s]
+    } else if r00 > r11 && r00 > r22 {
+        let s = (1.0 + r00 - r11 - r22).sqrt() * 2.0;
+        [(r21 - r12) / s, 0.25 * s, (r01 + r10) / s, (r02 + r20) / s]
+    } else if r11 > r22 {
+        let s = (1.0 + r11 - r00 - r22).sqrt() * 2.0;
+        [(r02 - r20) / s, (r01 + r10) / s, 0.25 * s, (r12 + r21) / s]
+    } else {
+        let s = (1.0 + r22 - r00 - r11).sqrt() * 2.0;
+        [(r10 - r01) / s, (r02 + r20) / s, (r12 + r21) / s, 0.25 * s]
+    };
+    let norm = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+    if norm <= 1e-6 {
+        return None;
+    }
+    for value in &mut q {
+        *value /= norm;
+    }
+    let t = [m[12], m[13], m[14]];
+    // dual = 0.5 * (0, t) * q
+    let dual = [
+        -0.5 * (t[0] * q[1] + t[1] * q[2] + t[2] * q[3]),
+        0.5 * (t[0] * q[0] + t[1] * q[3] - t[2] * q[2]),
+        0.5 * (t[1] * q[0] + t[2] * q[1] - t[0] * q[3]),
+        0.5 * (t[2] * q[0] + t[0] * q[2] - t[1] * q[1]),
+    ];
+    Some(DualQuat { real: q, dual })
+}
+
+/// N726: rotate + translate a point by a unit dual quaternion.
+fn transform_dual_quat(real: &[f32; 4], dual: &[f32; 4], p: [f32; 3]) -> [f32; 3] {
+    let [qw, qx, qy, qz] = *real;
+    let cross = |a: [f32; 3], b: [f32; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let qv = [qx, qy, qz];
+    let t = cross(qv, p);
+    let t = [t[0] + qw * p[0], t[1] + qw * p[1], t[2] + qw * p[2]];
+    let t = cross(qv, t);
+    let rotated = [p[0] + 2.0 * t[0], p[1] + 2.0 * t[1], p[2] + 2.0 * t[2]];
+    let dv = [dual[1], dual[2], dual[3]];
+    let c = cross(qv, dv);
+    let translation = [
+        2.0 * (qw * dv[0] - qv[0] * dual[0] + c[0]),
+        2.0 * (qw * dv[1] - qv[1] * dual[0] + c[1]),
+        2.0 * (qw * dv[2] - qv[2] * dual[0] + c[2]),
+    ];
+    [
+        rotated[0] + translation[0],
+        rotated[1] + translation[1],
+        rotated[2] + translation[2],
+    ]
 }
 
 /// Linear blend skinning of `mesh.preview_positions` by `worlds`.
@@ -675,6 +868,7 @@ fn skinned_points_at(
     skinned: &Skinned<'_>,
     time: f32,
     sprite: (u32, u32),
+    skin: SkinMode,
 ) -> Vec<(i16, i16)> {
     // N126: morph targets deform before skinning.
     let morphed;
@@ -693,7 +887,7 @@ fn skinned_points_at(
         &morphed
     };
     let worlds = pose_world_matrices(&model.nodes, skinned.animation, time);
-    skin_points(skinned.mesh, skinned.skeleton, &worlds, positions)
+    skin_points_with_mode(skinned.mesh, skinned.skeleton, &worlds, positions, skin)
         .iter()
         .map(|p| project(*p, sprite.0, sprite.1))
         .collect()
@@ -706,6 +900,16 @@ fn skinned_point_frames(
     animation_index: usize,
     frames: u32,
     sprite: (u32, u32),
+) -> Result<(PointFrames, &Mesh), BakeError> {
+    skinned_point_frames_mode(model, animation_index, frames, sprite, SkinMode::Lbs)
+}
+
+fn skinned_point_frames_mode(
+    model: &Model,
+    animation_index: usize,
+    frames: u32,
+    sprite: (u32, u32),
+    skin: SkinMode,
 ) -> Result<(PointFrames, &Mesh), BakeError> {
     if frames == 0 || frames > 64 {
         return Err(BakeError::FrameCount(frames as usize, 64));
@@ -722,7 +926,7 @@ fn skinned_point_frames(
         } else {
             start
         };
-        out.push(skinned_points_at(model, &skinned, time, sprite));
+        out.push(skinned_points_at(model, &skinned, time, sprite, skin));
     }
     Ok((out, skinned.mesh))
 }
@@ -737,11 +941,33 @@ pub fn render_frame_at(
     texture: Option<&crate::TextureMap>,
     color: u16,
 ) -> Result<BakedTexture, BakeError> {
+    render_frame_at_mode(
+        model,
+        animation_index,
+        time,
+        sprite,
+        texture,
+        color,
+        SkinMode::Lbs,
+    )
+}
+
+/// N726: [`render_frame_at`] with an explicit skinning mode.
+#[allow(clippy::too_many_arguments)]
+pub fn render_frame_at_mode(
+    model: &Model,
+    animation_index: usize,
+    time: f32,
+    sprite: (u32, u32),
+    texture: Option<&crate::TextureMap>,
+    color: u16,
+    skin: SkinMode,
+) -> Result<BakedTexture, BakeError> {
     if sprite.0 == 0 || sprite.1 == 0 || sprite.0 > 1024 || sprite.1 > 1024 {
         return Err(BakeError::Budget(sprite.0, sprite.1));
     }
     let skinned = resolve_skinned(model, animation_index)?;
-    let points = skinned_points_at(model, &skinned, time, sprite);
+    let points = skinned_points_at(model, &skinned, time, sprite, skin);
     let tint = material_color(model, skinned.mesh);
     let mask = material_masked(model, skinned.mesh);
     let fill = tint.unwrap_or(color);
@@ -968,12 +1194,34 @@ pub fn render_geometry_at(
     texture: Option<&crate::TextureMap>,
     color: u16,
 ) -> Result<BakedTexture, BakeError> {
+    render_geometry_at_mode(
+        model,
+        animation_index,
+        time,
+        size,
+        texture,
+        color,
+        SkinMode::Lbs,
+    )
+}
+
+/// N726: [`render_geometry_at`] with an explicit skinning mode.
+#[allow(clippy::too_many_arguments)]
+pub fn render_geometry_at_mode(
+    model: &Model,
+    animation_index: usize,
+    time: f32,
+    size: (u32, u32),
+    texture: Option<&crate::TextureMap>,
+    color: u16,
+    skin: SkinMode,
+) -> Result<BakedTexture, BakeError> {
     if size.0 == 0 || size.1 == 0 || size.0 > 1024 || size.1 > 1024 {
         return Err(BakeError::Budget(size.0, size.1));
     }
     let skinned = resolve_skinned(model, animation_index)?;
     let Some(geometry) = resolve_geometry(skinned.mesh) else {
-        return render_frame_at(model, animation_index, time, size, texture, color);
+        return render_frame_at_mode(model, animation_index, time, size, texture, color, skin);
     };
     let tint = material_color(model, skinned.mesh);
     let mask = material_masked(model, skinned.mesh);
@@ -987,12 +1235,15 @@ pub fn render_geometry_at(
         skinned.mesh_node,
         time,
     );
-    let deformed = skin_arrays(
+    let deformed = skin_arrays_multi_with_mode(
         &geometry.skin_joints,
         &geometry.skin_weights,
+        &geometry.skin_joints2,
+        &geometry.skin_weights2,
         &morphed,
         skinned.skeleton,
         &worlds,
+        skin,
     );
     // Fit against the bind-pose box so the whole animation shares one frame.
     let Some((min, max)) = bbox_xy(&geometry.positions) else {
@@ -1367,6 +1618,28 @@ pub fn render_scene_at(
     texture: Option<&crate::TextureMap>,
     fallback: u16,
 ) -> Result<BakedTexture, BakeError> {
+    render_scene_at_mode(
+        model,
+        animation_index,
+        time,
+        size,
+        texture,
+        fallback,
+        SkinMode::Lbs,
+    )
+}
+
+/// N726: [`render_scene_at`] with an explicit skinning mode.
+#[allow(clippy::too_many_arguments)]
+pub fn render_scene_at_mode(
+    model: &Model,
+    animation_index: usize,
+    time: f32,
+    size: (u32, u32),
+    texture: Option<&crate::TextureMap>,
+    fallback: u16,
+    skin: SkinMode,
+) -> Result<BakedTexture, BakeError> {
     if size.0 == 0 || size.1 == 0 || size.0 > 1024 || size.1 > 1024 {
         return Err(BakeError::Budget(size.0, size.1));
     }
@@ -1396,7 +1669,7 @@ pub fn render_scene_at(
         );
         let deformed: Vec<[f32; 3]> = if !geometry.skin_joints.is_empty() {
             match skeleton {
-                Some(skeleton) => skin_arrays_multi(
+                Some(skeleton) => skin_arrays_multi_with_mode(
                     &geometry.skin_joints,
                     &geometry.skin_weights,
                     &geometry.skin_joints2,
@@ -1404,6 +1677,7 @@ pub fn render_scene_at(
                     &morphed,
                     skeleton,
                     &worlds,
+                    skin,
                 ),
                 None => morphed
                     .iter()
@@ -2034,6 +2308,20 @@ pub fn render_package_scene_clip_mode(
     filter: crate::Filter,
     mode: ShadeMode,
 ) -> Result<BakedTexture, BakeError> {
+    render_package_scene_clip_skinned(package, clip, time, size, filter, mode, SkinMode::Lbs)
+}
+
+/// N726: [`render_package_scene_clip_mode`] with an explicit skinning mode.
+#[allow(clippy::too_many_arguments)]
+pub fn render_package_scene_clip_skinned(
+    package: &mdc_model::DevicePackage,
+    clip: SceneClip,
+    time: f32,
+    size: (u32, u32),
+    filter: crate::Filter,
+    mode: ShadeMode,
+    skin: SkinMode,
+) -> Result<BakedTexture, BakeError> {
     if size.0 == 0 || size.1 == 0 || size.0 > 1024 || size.1 > 1024 {
         return Err(BakeError::Budget(size.0, size.1));
     }
@@ -2099,7 +2387,7 @@ pub fn render_package_scene_clip_mode(
         let morphed = morphed_positions(geometry, mesh, animation, Some(index), time);
         let deformed: Vec<[f32; 3]> = if !geometry.skin_joints.is_empty() {
             match skeleton {
-                Some(skeleton) => skin_arrays_multi(
+                Some(skeleton) => skin_arrays_multi_with_mode(
                     &geometry.skin_joints,
                     &geometry.skin_weights,
                     &geometry.skin_joints2,
@@ -2107,6 +2395,7 @@ pub fn render_package_scene_clip_mode(
                     &morphed,
                     skeleton,
                     &worlds,
+                    skin,
                 ),
                 None => morphed
                     .iter()
@@ -2484,6 +2773,8 @@ fn frames_to_package(
         looping: true,
         fade_in_ms: 0,
         fade_out_ms: 0,
+        mode: None,
+        speed_permille: None,
     }];
     frames_to_clip_package(baked, clips, sprite)
 }
@@ -2573,6 +2864,8 @@ pub fn bake_scene_clips_to_package(
             looping: true,
             fade_in_ms: 0,
             fade_out_ms: 0,
+            mode: None,
+            speed_permille: None,
         });
         baked.extend(part);
     }
@@ -4227,5 +4520,42 @@ mod tests {
             bake_skinned_mesh(&model, 0, 3, (16, 16), 0xF800),
             Err(BakeError::Decode(_))
         ));
+    }
+
+    #[test]
+    fn dqs_handles_opposing_rotations_without_collapsing() {
+        // N726: LBS averages two opposite 180-degree transforms to the origin;
+        // DQS blends the rotations to 90 degrees and keeps the vertex length.
+        let identity = mat4_identity();
+        let half_turn = mat4_from_trs([0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [1.0, 1.0, 1.0]);
+        let skeleton = mdc_model::Skeleton {
+            joint_nodes: vec![0, 1],
+            inverse_bind: vec![identity, identity],
+            ..Default::default()
+        };
+        let mesh = mdc_model::Mesh {
+            skin_joints: vec![[0, 1, 0, 0]],
+            skin_weights: vec![[0.5, 0.5, 0.0, 0.0]],
+            ..Default::default()
+        };
+        let worlds = [identity, half_turn];
+        let position = [[1.0f32, 0.0, 0.0]];
+        let lbs = skin_points_with_mode(&mesh, &skeleton, &worlds, &position, SkinMode::Lbs);
+        assert!(lbs[0][0].abs() < 1e-3 && lbs[0][1].abs() < 1e-3);
+        let dqs = skin_points_with_mode(&mesh, &skeleton, &worlds, &position, SkinMode::Dqs);
+        assert!(dqs[0][0].abs() < 1e-3, "{dqs:?}");
+        assert!(dqs[0][1].abs() > 0.9, "rotated to the y axis: {dqs:?}");
+        assert_eq!(SkinMode::default(), SkinMode::Lbs);
+
+        // A pure translation still blends to the midpoint for both modes.
+        let moved = mat4_from_trs([2.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0]);
+        let dqs = skin_points_with_mode(
+            &mesh,
+            &skeleton,
+            &[identity, moved],
+            &position,
+            SkinMode::Dqs,
+        );
+        assert!((dqs[0][0] - 2.0).abs() < 1e-3, "{dqs:?}");
     }
 }

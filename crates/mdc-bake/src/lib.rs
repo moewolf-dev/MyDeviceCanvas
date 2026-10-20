@@ -20,12 +20,15 @@ pub use skin::{
     bake_scene_clips_to_package, bake_scene_frames, bake_scene_to_package, bake_skinned_mesh,
     bake_skinned_to_package, bake_textured_mesh, bake_textured_to_package, generate_tangents,
     mat4_from_trs, mat4_identity, mat4_mul, morph_weights_at, node_world_matrices,
-    pack_material_atlas, pose_world_matrices, render_frame_at, render_geometry_at,
-    render_package_mesh, render_package_mesh_mode, render_package_scene, render_package_scene_clip,
-    render_package_scene_clip_filtered, render_package_scene_clip_mode,
-    render_package_scene_clip_named, render_scene_at, sample_channel, sample_channel_looped,
-    skin_arrays, skin_arrays_multi, skin_normals, skin_normals_multi, skin_points, skin_preview,
+    pack_material_atlas, pose_world_matrices, render_frame_at, render_frame_at_mode,
+    render_geometry_at, render_geometry_at_mode, render_package_mesh, render_package_mesh_mode,
+    render_package_scene, render_package_scene_clip, render_package_scene_clip_filtered,
+    render_package_scene_clip_mode, render_package_scene_clip_named,
+    render_package_scene_clip_skinned, render_scene_at, render_scene_at_mode, sample_channel,
+    sample_channel_looped, skin_arrays, skin_arrays_multi, skin_arrays_multi_with_mode,
+    skin_normals, skin_normals_multi, skin_points, skin_points_with_mode, skin_preview,
     skin_tangents_multi, transform_direction, transform_point, Mat4, SceneClip, ShadeMode,
+    SkinMode,
 };
 pub use texture::{Filter, TextureMap, Wrap};
 
@@ -149,11 +152,22 @@ pub fn decode_rgba_native(
     bytes: &[u8],
     limits: &BakeLimits,
 ) -> Result<(BakedTexture, Vec<u8>), BakeError> {
-    // N344: 1-bit mask derived from the 8-bit alpha channel (threshold 128).
+    decode_rgba_native_with_cutoff(bytes, limits, 128)
+}
+
+/// N731: like [`decode_rgba_native`] with an explicit MASK threshold. A texel is
+/// opaque when its 8-bit alpha is at least `cutoff` (clamped to 1..=255; 0 is
+/// treated as 1 so a cutoff can never make everything transparent).
+pub fn decode_rgba_native_with_cutoff(
+    bytes: &[u8],
+    limits: &BakeLimits,
+    cutoff: u8,
+) -> Result<(BakedTexture, Vec<u8>), BakeError> {
+    let cutoff = cutoff.max(1);
     let (baked, alpha8) = decode_rgba8_native(bytes, limits)?;
     let mut mask = vec![0u8; alpha8.len().div_ceil(8)];
     for (index, alpha) in alpha8.iter().enumerate() {
-        if *alpha >= 128 {
+        if *alpha >= cutoff {
             mask[index / 8] |= 1 << (index % 8);
         }
     }
@@ -577,6 +591,8 @@ pub fn bake_sprites(
             looping: motion.looping,
             fade_in_ms: (motion.fade_in_sec.max(0.0) * 1000.0) as u32,
             fade_out_ms: (motion.fade_out_sec.max(0.0) * 1000.0) as u32,
+            mode: None,
+            speed_permille: None,
         })
         .collect();
     let mut atlas = atlas;
@@ -594,7 +610,17 @@ pub fn bake_texture_blob(
     bytes: &[u8],
     limits: &BakeLimits,
 ) -> Result<mdc_model::TextureBlob, BakeError> {
-    let (baked, alpha) = decode_rgba_native(bytes, limits)?;
+    bake_texture_blob_with_cutoff(bytes, limits, 128)
+}
+
+/// N731: bake a texture with a per-material MASK cutoff (the mask is thresholded
+/// at decode time, so host and device see the same 1-bit cutout).
+pub fn bake_texture_blob_with_cutoff(
+    bytes: &[u8],
+    limits: &BakeLimits,
+    cutoff: u8,
+) -> Result<mdc_model::TextureBlob, BakeError> {
+    let (baked, alpha) = decode_rgba_native_with_cutoff(bytes, limits, cutoff)?;
     let has_transparency = alpha.iter().any(|byte| *byte != 0xff);
     Ok(mdc_model::TextureBlob {
         width: baked.width,
@@ -635,7 +661,11 @@ pub fn auto_texture_blob(
 ) -> Result<Option<mdc_model::TextureBlob>, BakeError> {
     for material in 0..model.materials.len() {
         if let Some(bytes) = model.material_texture(material) {
-            return Ok(Some(bake_texture_blob(bytes, limits)?));
+            let cutoff = match model.materials[material].cutoff_u8() {
+                0 => 128,
+                cutoff => cutoff,
+            };
+            return Ok(Some(bake_texture_blob_with_cutoff(bytes, limits, cutoff)?));
         }
     }
     Ok(None)
@@ -675,11 +705,21 @@ pub fn attach_model_textures(
     limits: &BakeLimits,
 ) -> Vec<mdc_model::TextureBlob> {
     (0..model.textures.len())
-        .map(|index| match model.embedded_texture(index) {
-            Some(bytes) => {
-                bake_texture_blob(bytes, limits).unwrap_or_else(|_| empty_texture_blob())
+        .map(|index| {
+            // N731: use the cutoff of the first material that references this
+            // texture (a shared texture with different cutoffs keeps the first).
+            let cutoff = model
+                .materials
+                .iter()
+                .find(|material| material.texture == Some(index))
+                .map(|material| material.cutoff_u8())
+                .filter(|cutoff| *cutoff > 0)
+                .unwrap_or(128);
+            match model.embedded_texture(index) {
+                Some(bytes) => bake_texture_blob_with_cutoff(bytes, limits, cutoff)
+                    .unwrap_or_else(|_| empty_texture_blob()),
+                None => empty_texture_blob(),
             }
-            None => empty_texture_blob(),
         })
         .collect()
 }
@@ -1565,7 +1605,7 @@ pub fn bake_to_package(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{Rgb, RgbImage};
+    use image::{Rgb, RgbImage, RgbaImage};
 
     fn png_of(width: u32, height: u32, color: [u8; 3]) -> Vec<u8> {
         let image = RgbImage::from_pixel(width, height, Rgb(color));
@@ -1574,6 +1614,89 @@ mod tests {
             .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
             .unwrap();
         out
+    }
+
+    fn png_rgba_of(width: u32, height: u32, pixels: Vec<u8>) -> Vec<u8> {
+        let image = RgbaImage::from_raw(width, height, pixels).unwrap();
+        let mut out = Vec::new();
+        image
+            .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    }
+
+    #[test]
+    fn material_cutoff_changes_the_mask_threshold() {
+        // N731: the same alpha ramp yields different 1-bit masks at 32/128/200.
+        let png = png_rgba_of(
+            1,
+            4,
+            vec![255, 0, 0, 0, 255, 0, 0, 100, 255, 0, 0, 150, 255, 0, 0, 255],
+        );
+        let limits = BakeLimits::default();
+        let bit = |mask: &[u8], index: usize| mask[index / 8] & (1 << (index % 8)) != 0;
+        let mask = |cutoff: u8| {
+            decode_rgba_native_with_cutoff(&png, &limits, cutoff)
+                .unwrap()
+                .1
+        };
+        let low = mask(32);
+        assert!(!bit(&low, 0), "alpha 0 is transparent");
+        assert!(bit(&low, 1) && bit(&low, 2) && bit(&low, 3));
+        let mid = mask(128);
+        assert!(!bit(&mid, 0) && !bit(&mid, 1));
+        assert!(bit(&mid, 2) && bit(&mid, 3));
+        let high = mask(200);
+        assert!(!bit(&high, 0) && !bit(&high, 1) && !bit(&high, 2));
+        assert!(bit(&high, 3));
+
+        // The blob path carries the same mask and strips it when fully opaque.
+        let blob = bake_texture_blob_with_cutoff(&png, &limits, 200).unwrap();
+        assert_eq!(blob.alpha, high);
+        let opaque = png_of(8, 1, [255, 0, 0]);
+        let blob = bake_texture_blob_with_cutoff(&opaque, &limits, 200).unwrap();
+        assert!(blob.alpha.is_empty());
+    }
+
+    #[test]
+    fn attach_model_textures_uses_each_material_cutoff() {
+        // N731: two materials with different cutoffs over the same alpha ramp
+        // produce distinct masks in the package.
+        let png = png_rgba_of(
+            1,
+            4,
+            vec![255, 0, 0, 0, 255, 0, 0, 100, 255, 0, 0, 150, 255, 0, 0, 255],
+        );
+        let texture = || mdc_model::Texture {
+            name: "alpha".into(),
+            width: 1,
+            height: 4,
+            format: "image/png".into(),
+            bytes: png.len() as u32,
+            data: Some(png.clone()),
+            wrap: None,
+        };
+        let material = |cutoff: f32, texture: usize| mdc_model::Material {
+            name: format!("m{cutoff}"),
+            texture: Some(texture),
+            alpha_mode: Some("MASK".into()),
+            alpha_cutoff: Some(cutoff),
+            ..Default::default()
+        };
+        let model = mdc_model::Model {
+            textures: vec![texture(), texture()],
+            materials: vec![material(0.25, 0), material(0.8, 1)],
+            ..Default::default()
+        };
+        let blobs = attach_model_textures(&model, &BakeLimits::default());
+        assert_eq!(blobs.len(), 2);
+        assert_ne!(blobs[0].alpha, blobs[1].alpha);
+        let bit = |blob: &mdc_model::TextureBlob, index: usize| {
+            blob.alpha[index / 8] & (1 << (index % 8)) != 0
+        };
+        assert!(bit(&blobs[0], 1), "0.25 cutoff keeps alpha 100");
+        assert!(!bit(&blobs[1], 1), "0.8 cutoff drops alpha 100");
+        assert!(bit(&blobs[1], 3), "alpha 255 passes both");
     }
 
     #[test]

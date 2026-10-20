@@ -16,6 +16,8 @@ pub struct RendererCapability {
     pub sprite: bool,
     pub mesh2d: bool,
     pub skeleton: bool,
+    /// N726: dual-quaternion skinning is available on this target.
+    pub dqs: bool,
     pub max_texture: u32,
     pub max_vertices: u32,
 }
@@ -26,6 +28,7 @@ impl RendererCapability {
             sprite: true,
             mesh2d: false,
             skeleton: false,
+            dqs: false,
             max_texture: 512,
             max_vertices: 0,
         }
@@ -36,6 +39,7 @@ impl RendererCapability {
             sprite: true,
             mesh2d: true,
             skeleton: true,
+            dqs: false,
             max_texture: 2048,
             max_vertices: 200_000,
         }
@@ -49,6 +53,7 @@ impl RendererCapability {
                 sprite: caps.sprite_2d,
                 mesh2d: caps.mesh2d,
                 skeleton: caps.skeleton,
+                dqs: caps.dqs,
                 max_texture: caps.max_texture,
                 max_vertices: caps.max_vertices,
             },
@@ -103,6 +108,12 @@ pub struct AtlasClip {
     pub looping: bool,
     pub fade_in_ms: u32,
     pub fade_out_ms: u32,
+    /// N730: `loop` (default), `once`, or `ping-pong`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// N730: playback speed in permille (1000 = authored `fps`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_permille: Option<u16>,
 }
 
 impl AtlasBlob {

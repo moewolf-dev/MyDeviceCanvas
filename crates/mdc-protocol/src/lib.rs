@@ -367,6 +367,9 @@ pub struct RendererCapability {
     pub mesh2d: bool,
     pub mesh3d: bool,
     pub skeleton: bool,
+    /// N726: the device can skin with dual quaternions (host may select DQS).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dqs: bool,
     pub max_texture: u32,
     pub max_vertices: u32,
 }
@@ -378,6 +381,7 @@ impl RendererCapability {
             mesh2d: false,
             mesh3d: false,
             skeleton: false,
+            dqs: false,
             max_texture,
             max_vertices: 0,
         }
@@ -389,6 +393,7 @@ impl RendererCapability {
             mesh2d: true,
             mesh3d: true,
             skeleton: true,
+            dqs: false,
             max_texture,
             max_vertices,
         }
@@ -520,8 +525,50 @@ pub struct SceneNode {
     pub focus: Option<String>,
 }
 
+/// N724: segment interpolation curve for a scene animation. `linear` is the
+/// default; the eased variants keep both endpoints unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Easing {
+    #[default]
+    Linear,
+    EaseIn,
+    EaseOut,
+    EaseInOut,
+}
+
+impl Easing {
+    /// Parse a wire name; unknown/absent values fall back to linear.
+    pub fn parse(name: Option<&str>) -> Self {
+        match name.map(str::trim) {
+            Some("ease-in") => Self::EaseIn,
+            Some("ease-out") => Self::EaseOut,
+            Some("ease-in-out") => Self::EaseInOut,
+            _ => Self::Linear,
+        }
+    }
+
+    /// Shape a normalized segment fraction in `0..=1`.
+    pub fn apply(self, t: f32) -> f32 {
+        let t = t.clamp(0.0, 1.0);
+        match self {
+            Self::Linear => t,
+            // Slow start, fast end.
+            Self::EaseIn => t * t,
+            // Fast start, slow end.
+            Self::EaseOut => 1.0 - (1.0 - t) * (1.0 - t),
+            Self::EaseInOut => {
+                if t < 0.5 {
+                    2.0 * t * t
+                } else {
+                    1.0 - 2.0 * (1.0 - t) * (1.0 - t)
+                }
+            }
+        }
+    }
+}
+
 /// N463: a keyframed scene animation. Keyframes are `[time_ms, value]` and are
-/// linearly interpolated; `duration_ms` bounds the clip.
+/// interpolated; `duration_ms` bounds the clip.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SceneAnim {
     /// Clip length in milliseconds (0 is treated as 1).
@@ -540,9 +587,18 @@ pub struct SceneAnim {
     /// rect, matching the `focus` field's `"cx%,cy%"` form).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub focus: Vec<[u16; 3]>,
+    /// N724: segment easing (`linear` default, `ease-in`, `ease-out`,
+    /// `ease-in-out`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub easing: Option<String>,
 }
 
 impl SceneAnim {
+    /// N724: the parsed segment easing.
+    pub fn easing(&self) -> Easing {
+        Easing::parse(self.easing.as_deref())
+    }
+
     /// The clip-local time for `time_ms`.
     pub fn local_time(&self, time_ms: u64) -> u32 {
         let duration = u64::from(self.duration_ms.max(1));
@@ -557,9 +613,12 @@ impl SceneAnim {
     /// The sampled opacity at `time_ms`, or `None` when there are no keyframes.
     pub fn opacity_at(&self, time_ms: u64) -> Option<u8> {
         let t = self.local_time(time_ms);
-        sample_keys(&self.opacity, t, |k, value| {
-            (u32::from(k), u32::from(value))
-        })
+        sample_keys(
+            &self.opacity,
+            t,
+            |k, value| (u32::from(k), u32::from(value)),
+            self.easing(),
+        )
         .map(|value| value.min(255) as u8)
     }
 
@@ -569,10 +628,16 @@ impl SceneAnim {
             return None;
         }
         let t = self.local_time(time_ms);
+        let easing = self.easing();
         let channel = |k: usize| -> Option<u16> {
             let keys: Vec<[u16; 2]> = self.rect.iter().map(|frame| [frame[0], frame[k]]).collect();
-            sample_keys(&keys, t, |k, value| (u32::from(k), u32::from(value)))
-                .map(|value| value.min(u16::MAX as u32) as u16)
+            sample_keys(
+                &keys,
+                t,
+                |k, value| (u32::from(k), u32::from(value)),
+                easing,
+            )
+            .map(|value| value.min(u16::MAX as u32) as u16)
         };
         Some([channel(1)?, channel(2)?, channel(3)?, channel(4)?])
     }
@@ -584,21 +649,27 @@ impl SceneAnim {
             return None;
         }
         let t = self.local_time(time_ms);
+        let easing = self.easing();
         let channel = |k: usize| -> Option<u16> {
             let keys: Vec<[u16; 2]> = self
                 .focus
                 .iter()
                 .map(|frame| [frame[0], frame[k]])
                 .collect();
-            sample_keys(&keys, t, |k, value| (u32::from(k), u32::from(value)))
-                .map(|value| value.min(100) as u16)
+            sample_keys(
+                &keys,
+                t,
+                |k, value| (u32::from(k), u32::from(value)),
+                easing,
+            )
+            .map(|value| value.min(100) as u16)
         };
         Some([channel(1)?, channel(2)?])
     }
 }
 
 /// Interpolate `[time, value]` keyframes at `t`; returns the last value past the end.
-fn sample_keys<F>(keys: &[[u16; 2]], t: u32, map: F) -> Option<u32>
+fn sample_keys<F>(keys: &[[u16; 2]], t: u32, map: F, easing: Easing) -> Option<u32>
 where
     F: Fn(u16, u16) -> (u32, u32),
 {
@@ -615,7 +686,7 @@ where
         let (t1, v1) = pair[1];
         if t <= t1 && t1 > t0 {
             let span = f32::from((t1 - t0) as u16);
-            let f = f32::from((t - t0) as u16) / span;
+            let f = easing.apply(f32::from((t - t0) as u16) / span);
             return Some(
                 (f32::from(v0 as u16) + (f32::from(v1 as u16) - f32::from(v0 as u16)) * f).round()
                     as u32,
@@ -705,7 +776,7 @@ impl SceneNode {
     }
 
     fn lint_into(&self, report: &mut SceneLint, names: &mut std::collections::BTreeSet<String>) {
-        const KINDS: [&str; 10] = [
+        const KINDS: [&str; 12] = [
             "group",
             "rect",
             "text",
@@ -716,6 +787,8 @@ impl SceneNode {
             "gradient",
             "rounded-rect",
             "clip",
+            "polygon",
+            "polyline",
         ];
         let drawable = !matches!(self.kind.as_str(), "group" | "clip");
         if !KINDS.contains(&self.kind.as_str()) {
@@ -740,6 +813,10 @@ impl SceneNode {
             "text" | "sprite" | "image" if self.value.is_none() => report
                 .problems
                 .push(format!("node '{}' ({}) has no value", self.name, self.kind)),
+            "polygon" | "polyline" if self.points().is_none() => report.problems.push(format!(
+                "node '{}' ({}) has no valid points",
+                self.name, self.kind
+            )),
             _ => {}
         }
         if !self.name.is_empty() && !names.insert(self.name.clone()) {
@@ -779,6 +856,25 @@ impl SceneNode {
             .unwrap_or(0)
             + 1
     }
+    /// N723: the most vertices a `polygon`/`polyline` node may carry.
+    pub const MAX_POINTS: usize = 64;
+
+    /// N723: parse a `polygon`/`polyline` vertex list from `value2`
+    /// (`"x,y;x,y;..."`; spaces may separate points). Returns `None` for a
+    /// malformed list, fewer than two points, or more than [`Self::MAX_POINTS`].
+    pub fn points(&self) -> Option<Vec<[i32; 2]>> {
+        let spec = self.value2.as_deref()?;
+        let mut points = Vec::new();
+        for token in spec.split([';', ' ', '\n', '\t']).filter(|t| !t.is_empty()) {
+            let (x, y) = token.split_once(',')?;
+            points.push([x.trim().parse().ok()?, y.trim().parse().ok()?]);
+            if points.len() > Self::MAX_POINTS {
+                return None;
+            }
+        }
+        (points.len() >= 2).then_some(points)
+    }
+
     /// N79/N136: the fill colour for a `rect`, parsed from `value` as
     /// `#RRGGBB`, `#RGB`, or a named colour. Missing or malformed values use
     /// opaque white.
@@ -2615,6 +2711,7 @@ mod tests {
             opacity: Vec::new(),
             rect: Vec::new(),
             focus: vec![[0, 0, 100], [100, 100, 0]],
+            easing: None,
         };
         assert_eq!(anim.focus_at(0), Some([0, 100]));
         assert_eq!(anim.focus_at(50), Some([50, 50]));
@@ -2636,9 +2733,49 @@ mod tests {
             opacity: vec![[0, 128]],
             rect: Vec::new(),
             focus: Vec::new(),
+            easing: None,
         });
         apply_scene_animation(&mut untouched, 5);
         assert_eq!(untouched.focus.as_deref(), Some("10,20"));
+    }
+
+    #[test]
+    fn scene_animation_easing_shapes_segments_without_moving_endpoints() {
+        // N724: ease-in/out/in-out change the midpoint shape but keep t=0/1 exact.
+        let anim = |easing: &str| SceneAnim {
+            duration_ms: 1000,
+            looping: false,
+            opacity: vec![[0, 0], [1000, 255]],
+            rect: vec![[0, 0, 0, 10, 10], [1000, 100, 10, 10, 10]],
+            focus: vec![[0, 0, 100], [1000, 100, 0]],
+            easing: Some(easing.into()),
+        };
+        let linear = anim("linear");
+        assert_eq!(linear.opacity_at(0), Some(0));
+        assert_eq!(linear.opacity_at(1000), Some(255));
+        assert_eq!(linear.opacity_at(250), Some(64));
+        let ease_in = anim("ease-in");
+        assert_eq!(ease_in.opacity_at(0), Some(0));
+        assert_eq!(ease_in.opacity_at(1000), Some(255));
+        assert!(
+            ease_in.opacity_at(250).unwrap() < 64,
+            "ease-in is slower at the start"
+        );
+        let ease_out = anim("ease-out");
+        assert!(ease_out.opacity_at(250).unwrap() > 64);
+        let ease_in_out = anim("ease-in-out");
+        assert!(ease_in_out.opacity_at(250).unwrap() < 64);
+        assert_eq!(ease_in_out.opacity_at(500), Some(128));
+        // Rect and focus use the same curve.
+        assert!(ease_in.rect_at(250).unwrap()[0] < linear.rect_at(250).unwrap()[0]);
+        assert!(ease_in.focus_at(250).unwrap()[0] < 50);
+        // An unknown name falls back to linear.
+        assert_eq!(anim("bogus").opacity_at(250), linear.opacity_at(250));
+        // Applying the animation writes the eased opacity onto the node.
+        let mut node = plain_node("n", "rect");
+        node.anim = Some(ease_in);
+        apply_scene_animation(&mut node, 250);
+        assert_eq!(node.opacity, Some(16));
     }
 
     fn config_command_vector() -> Capabilities {
