@@ -488,6 +488,7 @@ fn blit_sprite(
     h: u16,
     alpha: u8,
     mode: ImageMode,
+    rotate: u16,
     align: &str,
 ) -> bool {
     let Some(offset) = atlas.frame_offset(index) else {
@@ -499,7 +500,7 @@ fn blit_sprite(
     // N685: sprites share the image's fit/pad/align box.
     let src_w = atlas.sprite_width.min(u32::from(u16::MAX)) as u16;
     let src_h = atlas.sprite_height.min(u32::from(u16::MAX)) as u16;
-    let (draw_w, draw_h, off_x, off_y) = fit_box(w, h, src_w, src_h, 0, mode, align);
+    let (draw_w, draw_h, off_x, off_y) = fit_box(w, h, src_w, src_h, rotate, mode, align);
     let sprite_w = atlas.sprite_width as usize;
     let atlas_row = (atlas.columns as usize) * sprite_w * 2;
     let mut drew = false;
@@ -510,8 +511,34 @@ fn blit_sprite(
             if px >= width || py >= height {
                 continue;
             }
-            let sx = (col * atlas.sprite_width / u32::from(draw_w)) as usize;
-            let sy = (row * atlas.sprite_height / u32::from(draw_h)) as usize;
+            // N695: sample sprite flips/quarter-turns the same way as image.
+            let mut fx = (col as f32 + 0.5) / f32::from(draw_w);
+            let mut fy = (row as f32 + 0.5) / f32::from(draw_h);
+            if mode.flip_h {
+                fx = 1.0 - fx;
+            }
+            if mode.flip_v {
+                fy = 1.0 - fy;
+            }
+            match rotate {
+                90 => {
+                    let t = fx;
+                    fx = fy;
+                    fy = 1.0 - t;
+                }
+                180 => {
+                    fx = 1.0 - fx;
+                    fy = 1.0 - fy;
+                }
+                270 => {
+                    let t = fx;
+                    fx = 1.0 - fy;
+                    fy = t;
+                }
+                _ => {}
+            }
+            let sx = (fx * atlas.sprite_width as f32) as usize;
+            let sy = (fy * atlas.sprite_height as f32) as usize;
             let src = offset + sy * atlas_row + sx * 2;
             let dst = ((py * width + px) * 2) as usize;
             if src + 1 >= atlas.rgb565.len() || dst + 1 >= pixels.len() {
@@ -1388,6 +1415,7 @@ fn fill_scene(
                 h,
                 alpha,
                 mode,
+                node.rotate.unwrap_or(0),
                 node.align.as_deref().unwrap_or("center"),
             ) {
                 *drew = true;
@@ -6413,6 +6441,85 @@ mod tests {
         assert!(padded
             .iter()
             .all(|(x, y)| (1..=2).contains(x) && (1..=2).contains(y)));
+    }
+
+    #[test]
+    fn sprite_flip_and_rotate_match_image_sampling() {
+        // N695: sprite sampling applies the same flip/quarter-turn transforms.
+        use mdc_protocol::SceneNode;
+        let render = |mode: Option<&str>, rotate: Option<u16>| {
+            let (host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 2,
+                height: 1,
+                ..BoardProfile::default()
+            });
+            let mut session = Session::new(host);
+            session.connect().unwrap();
+            device.poll().unwrap();
+            session.poll().unwrap();
+            let package = mdc_model::DevicePackage {
+                target: "esp32-plane".into(),
+                mode: mdc_model::PackageMode::BakedSprites,
+                nodes: Vec::new(),
+                meshes: Vec::new(),
+                textures: Vec::new(),
+                materials: Vec::new(),
+                lights: Vec::new(),
+                skeletons: Vec::new(),
+                animations: Vec::new(),
+                sprites: Vec::new(),
+                layers: Vec::new(),
+                estimated_bytes: 8,
+                atlas: Some(mdc_model::AtlasBlob {
+                    sprite_width: 2,
+                    sprite_height: 1,
+                    frames: 1,
+                    columns: 1,
+                    rows: 1,
+                    rgb565: vec![0x00, 0xF8, 0x1F, 0x00],
+                    clips: Vec::new(),
+                    mips: Vec::new(),
+                }),
+                texture: None,
+                texture_blobs: Vec::new(),
+            };
+            let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+            session
+                .install_package(&sealed.to_bytes().unwrap())
+                .unwrap();
+            device.poll().unwrap();
+            session.poll().unwrap();
+            session
+                .set_scene(SceneNode {
+                    name: "icon".into(),
+                    kind: "sprite".into(),
+                    rect: Some([0, 0, 2, 1]),
+                    children: Vec::new(),
+                    value: Some("0".into()),
+                    value2: None,
+                    opacity: None,
+                    visible: None,
+                    anim: None,
+                    rotate,
+                    blend: None,
+                    align: None,
+                    z: None,
+                    wrap: None,
+                    mode: mode.map(str::to_string),
+                    focus: None,
+                })
+                .unwrap();
+            device.poll().unwrap();
+            session.poll().unwrap();
+            assert!(device.render_scene());
+            (
+                device.pixel_rgb565(0, 0).unwrap(),
+                device.pixel_rgb565(1, 0).unwrap(),
+            )
+        };
+        assert_eq!(render(None, None), (0xF800, 0x001F));
+        assert_eq!(render(Some("flip-h"), None), (0x001F, 0xF800));
+        assert_eq!(render(None, Some(180)), (0x001F, 0xF800));
     }
 
     #[test]
