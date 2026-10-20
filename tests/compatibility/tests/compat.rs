@@ -3,6 +3,7 @@ use mdc_core::{ConnectionState, CoreError, Frame, Session, MAX_FRAME_BYTES};
 use mdc_protocol::{encode_control, Capabilities, MessageType, Packet, Surface, VERSION};
 use mdc_simulator::{BoardProfile, FakeDevice};
 use mdc_transport::MemoryLink;
+use std::io::{Read, Write};
 
 #[test]
 fn major_version_mismatch_is_rejected_at_decode() {
@@ -5991,4 +5992,47 @@ fn package_order_summary_survives_a_round_trip() {
     assert_eq!(report.manifest_cache_misses_saved, 9);
     assert_eq!(back.package.ktx2_summary().textures, 0);
     assert_eq!(back.package.ktx2_summary().slices, 0);
+}
+
+#[test]
+fn health_kind_filter_reaches_an_http_client() {
+    // N717/N721: `/health?kind=` narrows the structured entries while the
+    // counters stay global; an unknown kind returns an empty entry list.
+    let fetch = |kind: &str| {
+        let mut server = mdc_mirror::HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        server.note_ws("reserved", "r1");
+        server.note_ws("extension", "e1");
+        let addr = server.local_addr().unwrap();
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_millis(20)))
+            .unwrap();
+        client
+            .write_all(format!("GET /health?kind={kind} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes())
+            .unwrap();
+        let mut seen = Vec::new();
+        for _ in 0..100 {
+            let _ = server.pump();
+            let mut buffer = [0u8; 4096];
+            match client.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => seen.extend_from_slice(&buffer[..n]),
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(2)),
+            }
+            if seen.windows(4).any(|w| w == b"\r\n\r\n") && seen.len() > 200 {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&seen).into_owned()
+    };
+    let reserved = fetch("reserved");
+    assert!(
+        reserved.contains("\"ws_log_entries\":[{\"kind\":\"reserved\",\"detail\":\"r1\"}]"),
+        "{reserved}"
+    );
+    assert!(!reserved.contains("\"kind\":\"extension\""), "{reserved}");
+    assert!(reserved.contains("\"ws_log\":2"), "{reserved}");
+    let missing = fetch("no-such-kind");
+    assert!(missing.contains("\"ws_log_entries\":[]"), "{missing}");
+    assert!(missing.contains("\"ws_log\":2"), "{missing}");
 }
