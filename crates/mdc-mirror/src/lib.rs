@@ -1618,6 +1618,8 @@ impl HttpMirrorServer {
                     client.request.extend_from_slice(&buffer[..read]);
                     if let Some(end) = find_header_end(&client.request) {
                         let (path, query) = request_target(&client.request[..end]);
+                        let head =
+                            request_method(&client.request[..end]).eq_ignore_ascii_case("HEAD");
                         if path == "/health" {
                             // N717: `?kind=` narrows the structured entry list;
                             // an unknown kind yields an empty list, not everything.
@@ -1637,7 +1639,11 @@ impl HttpMirrorServer {
                             } else {
                                 response
                             };
-                            client.response = Some(response);
+                            client.response = Some(if head {
+                                without_body(response)
+                            } else {
+                                response
+                            });
                         } else if path == "/ws" {
                             // N500: upgrade to a WebSocket that pushes one binary
                             // JPEG message per published frame.
@@ -1702,7 +1708,8 @@ impl HttpMirrorServer {
                                     } else {
                                         bytes
                                     };
-                                    client.response = Some(bytes);
+                                    client.response =
+                                        Some(if head { without_body(bytes) } else { bytes });
                                 }
                                 Served::Multipart { format, scale } => {
                                     begin_stream(client, last, format, scale)
@@ -2124,6 +2131,21 @@ fn find_header_end(request: &[u8]) -> Option<usize> {
 
 /// The path of the first request line (`GET /x HTTP/1.1`), defaults to `/`.
 /// N346: the request target split into `(path, query)`.
+/// N742: the request method (uppercase-insensitive), defaulting to GET.
+fn request_method(request: &[u8]) -> &str {
+    let line = request.split(|b| *b == b'\n').next().unwrap_or(&[]);
+    let line = std::str::from_utf8(line).unwrap_or("");
+    line.split_whitespace().next().unwrap_or("GET")
+}
+
+/// N742: keep the status line/headers (including Content-Length) and drop body.
+fn without_body(response: Vec<u8>) -> Vec<u8> {
+    match response.windows(4).position(|w| w == b"\r\n\r\n") {
+        Some(position) => response[..position + 4].to_vec(),
+        None => response,
+    }
+}
+
 fn request_target(request: &[u8]) -> (String, String) {
     let line = request.split(|b| *b == b'\n').next().unwrap_or(&[]);
     let line = String::from_utf8_lossy(line);
@@ -4173,6 +4195,16 @@ mod tests {
         assert!(frame_ok.starts_with("HTTP/1.1 200"), "{frame_ok}");
         assert!(frame_ok.contains("Last-Modified: "), "{frame_ok}");
         let frame_tag = etag_of(&frame_ok);
+        // N742: HEAD returns the same headers (Content-Length) with no body.
+        let head = fetch(
+            &mut server,
+            "HEAD /frame.png HTTP/1.1\r\nHost: x\r\n\r\n".into(),
+        );
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert!(head.contains("Content-Length: "), "{head}");
+        let body = head.split("\r\n\r\n").nth(1).unwrap_or("");
+        assert!(body.is_empty(), "HEAD has no body");
+        assert!(head.contains(&format!("ETag: {frame_tag}")));
         let frame_304 = fetch(
             &mut server,
             format!("GET /frame.png HTTP/1.1\r\nHost: x\r\nIf-None-Match: {frame_tag}\r\n\r\n"),
@@ -4186,6 +4218,20 @@ mod tests {
             "GET /health HTTP/1.1\r\nHost: x\r\n\r\n".into(),
         );
         let health_tag = etag_of(&health_ok);
+        let health_head = fetch(
+            &mut server,
+            "HEAD /health HTTP/1.1\r\nHost: x\r\n\r\n".into(),
+        );
+        assert!(health_head.starts_with("HTTP/1.1 200"), "{health_head}");
+        assert!(health_head.contains("Content-Length: "), "{health_head}");
+        assert!(
+            health_head
+                .split("\r\n\r\n")
+                .nth(1)
+                .unwrap_or("")
+                .is_empty(),
+            "health HEAD has no body"
+        );
         let health_304 = fetch(
             &mut server,
             format!("GET /health HTTP/1.1\r\nHost: x\r\nIf-None-Match: {health_tag}\r\n\r\n"),
