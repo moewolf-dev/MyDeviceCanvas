@@ -1718,15 +1718,15 @@ mod tests {
         encode_vertex_buffer_modes_bits(values, stride, modes, 4)
     }
 
-    /// N643: like [`encode_vertex_buffer_modes`], with the sentinel width used for
-    /// control-mode-1 lanes (1, 2 or 4 bits per delta).
+    /// N643/N663: like [`encode_vertex_buffer_modes`], with the sentinel width used
+    /// for control-mode 0/1 lanes (1, 2 or 4 bits per delta, or 8 = verbatim group).
     fn encode_vertex_buffer_modes_bits(
         values: &[Vec<u8>],
         stride: usize,
         modes: &[u8],
         group_bits: u8,
     ) -> Vec<u8> {
-        assert!(matches!(group_bits, 1 | 2 | 4));
+        assert!(matches!(group_bits, 1 | 2 | 4 | 8));
         assert_eq!(modes.len(), stride);
         let count = values.len();
         let max_block = ((0x2000 / stride) & !0x0f).min(0x100);
@@ -1763,7 +1763,12 @@ mod tests {
                         // writer; only the group-mode code differs because the
                         // header table differs (`header_modes[1]` = [0,1,2,4],
                         // `header_modes[2]` = [1,2,4,8]).
-                        let group_mode = if mode == 0 {
+                        let group_mode = if group_bits == 8 {
+                            // N663: only control mode 1's header table maps group
+                            // mode 3 to the 8-bit verbatim block.
+                            assert_eq!(mode, 1, "verbatim groups need control mode 1");
+                            3u8
+                        } else if mode == 0 {
                             match group_bits {
                                 1 => 1u8,
                                 2 => 2u8,
@@ -1781,13 +1786,39 @@ mod tests {
                             header[group >> 2] |= group_mode << ((group & 3) << 1);
                         }
                         out.extend_from_slice(&header);
-                        let sentinel = (1u8 << group_bits) - 1;
+                        // N663: the verbatim group (8) has no sentinel.
+                        let sentinel = if group_bits >= 8 {
+                            0
+                        } else {
+                            (1u8 << group_bits) - 1
+                        };
                         let packed_bytes = match group_bits {
                             1 => 2,
                             2 => 4,
                             _ => 8,
                         };
                         for group in 0..group_count {
+                            // N663: the 8-bit verbatim group copies 16 raw delta
+                            // bytes (zigzag) with no packing or escapes.
+                            if group_bits == 8 {
+                                for m in 0..16usize {
+                                    let element = group * 16 + m;
+                                    let delta = if element < block {
+                                        let value = values[offset + element][byte];
+                                        let diff = value as i32 - temp[byte] as i32;
+                                        temp[byte] = value;
+                                        (((diff + 128).rem_euclid(256)) - 128) as i8
+                                    } else {
+                                        0i8
+                                    };
+                                    out.push(
+                                        ((((delta as u8 as u32) << 1)
+                                            ^ ((delta as i32 >> 7) as u32))
+                                            & 0xff) as u8,
+                                    );
+                                }
+                                continue;
+                            }
                             let mut packed = vec![0u8; packed_bytes];
                             let mut escapes: Vec<u8> = Vec::new();
                             for m in 0..16usize {
@@ -1862,6 +1893,32 @@ mod tests {
             })
             .collect();
         let encoded = encode_vertex_buffer_modes(&values, stride, &modes);
+        let decoded = unwrap_decode(decode_vertex_buffer(
+            count,
+            stride,
+            &encoded,
+            MeshoptFilter::None,
+        ));
+        let flat: Vec<u8> = values.iter().flatten().copied().collect();
+        assert_eq!(decoded, flat);
+    }
+
+    #[test]
+    fn vertex_buffer_verbatim_group_round_trips() {
+        // N663: control modes 0/1 with the 8-bit verbatim group (group mode 3)
+        // carry arbitrary deltas, so every lane can hold arbitrary values.
+        let stride = 8usize;
+        // 8-bit verbatim is reachable only through control mode 1.
+        let modes = [1u8; 8];
+        let count = 20usize; // >16 exercises a second (partial) group.
+        let values: Vec<Vec<u8>> = (0..count)
+            .map(|element| {
+                (0..stride)
+                    .map(|byte| ((element * 37 + byte * 11 + 9) % 256) as u8)
+                    .collect()
+            })
+            .collect();
+        let encoded = encode_vertex_buffer_modes_bits(&values, stride, &modes, 8);
         let decoded = unwrap_decode(decode_vertex_buffer(
             count,
             stride,
