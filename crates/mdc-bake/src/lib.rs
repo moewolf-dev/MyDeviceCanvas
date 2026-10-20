@@ -1927,6 +1927,57 @@ mod tests {
     }
 
     #[test]
+    fn package_order_report_reconciles_with_the_sealed_manifest() {
+        // N714: the report's before/after misses and the manifest's persisted
+        // summary describe the same pass (same cache size, same package).
+        let mut package = mdc_model::DevicePackage {
+            target: "esp32-plane".into(),
+            mode: mdc_model::PackageMode::Mesh,
+            nodes: Vec::new(),
+            meshes: vec![mdc_model::Mesh {
+                vertices: 6,
+                indices: 12,
+                geometry: Some(mdc_model::MeshGeometry {
+                    positions: (0..6).map(|i| [i as f32, 0.0, 0.0]).collect(),
+                    indices: vec![2, 3, 4, 0, 1, 2, 4, 3, 5, 2, 1, 3],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            textures: Vec::new(),
+            materials: Vec::new(),
+            lights: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 0,
+            atlas: None,
+            texture: None,
+            texture_blobs: Vec::new(),
+        };
+        let cache = usize::from(mdc_model::CACHE_REPORT_SIZE);
+        let report = optimize_package_index_order(&mut package, cache);
+        let mut sealed = mdc_model::MdcPackage::seal(package).unwrap();
+        assert_eq!(sealed.manifest.cache_misses, report.misses_after);
+        assert_eq!(sealed.manifest.cache_size, mdc_model::CACHE_REPORT_SIZE);
+        sealed.set_cache_report(report.misses_before);
+        assert_eq!(sealed.manifest.cache_misses_saved, report.saved());
+
+        let verification = sealed.verify();
+        assert!(verification.cache_misses_ok);
+        assert_eq!(
+            verification.manifest_cache_misses_before,
+            report.misses_before
+        );
+        assert_eq!(verification.manifest_cache_misses_saved, report.saved());
+
+        let back = mdc_model::MdcPackage::from_bytes(&sealed.to_bytes().unwrap()).unwrap();
+        assert_eq!(back.manifest.cache_misses_before, report.misses_before);
+        assert_eq!(back.manifest.cache_misses_saved, report.saved());
+    }
+
+    #[test]
     fn geometry_optimization_reports_hits_and_savings() {
         // N674: the combined pass reports hit/miss counters and the saving.
         // Positions are unique, so compaction is a no-op and the counters compare
