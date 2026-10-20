@@ -1062,6 +1062,8 @@ pub struct HttpMirrorServer {
     ws_offered: u64,
     /// N567: close (1002) on a reserved-bit frame instead of ignoring it.
     ws_reject_reserved: bool,
+    /// N687: how many distinct kinds the `/health` summary reports.
+    ws_kind_limit: usize,
     /// N577: bounded log of why a WebSocket connection was declined/failed.
     ws_log: Vec<WebSocketNote>,
 }
@@ -1235,6 +1237,7 @@ impl HttpMirrorServer {
             ws_reserved: 0,
             ws_offered: 0,
             ws_reject_reserved: false,
+            ws_kind_limit: WS_LOG_KINDS_MAX,
             ws_log: Vec::new(),
         })
     }
@@ -1302,6 +1305,13 @@ impl HttpMirrorServer {
         self
     }
 
+    /// N687: cap how many distinct kinds the `/health` summary lists
+    /// (clamped to `1..=WS_LOG_KINDS_MAX`).
+    pub fn with_ws_kind_limit(mut self, limit: usize) -> Self {
+        self.ws_kind_limit = limit.clamp(1, WS_LOG_KINDS_MAX);
+        self
+    }
+
     /// N577/N607: the bounded log of WebSocket declines/failures (oldest first),
     /// each an entry with a `kind` and a redacted `detail`.
     pub fn ws_log(&self) -> &[WebSocketNote] {
@@ -1325,7 +1335,11 @@ impl HttpMirrorServer {
         let counts = self.ws_log_counts();
         let mut out = String::from("{");
         // N677: a sorted, capped kind list keeps the health body bounded/stable.
-        for (index, (kind, count)) in counts.iter().take(WS_LOG_KINDS_MAX).enumerate() {
+        for (index, (kind, count)) in counts
+            .iter()
+            .take(self.ws_kind_limit.min(WS_LOG_KINDS_MAX))
+            .enumerate()
+        {
             if index > 0 {
                 out.push(',');
             }
@@ -3775,6 +3789,28 @@ mod tests {
         let text = String::from_utf8_lossy(&body);
         assert!(text.contains("\"ws_log_last\""), "{text}");
         assert!(text.contains("1002"), "{text}");
+    }
+
+    #[test]
+    fn ws_log_kind_limit_is_configurable() {
+        // N687: the /health kind summary can be narrowed.
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0")
+            .unwrap()
+            .with_ws_kind_limit(2);
+        for kind in ["a", "b", "c"] {
+            server.note_ws(kind, "x");
+        }
+        let json = server.ws_log_kinds_json();
+        assert_eq!(json.matches(':').count(), 2, "{json}");
+        // The clamp keeps it at least one and at most the hard cap.
+        let server = HttpMirrorServer::bind("127.0.0.1:0")
+            .unwrap()
+            .with_ws_kind_limit(0);
+        assert_eq!(server.ws_kind_limit, 1);
+        let server = HttpMirrorServer::bind("127.0.0.1:0")
+            .unwrap()
+            .with_ws_kind_limit(usize::MAX);
+        assert_eq!(server.ws_kind_limit, WS_LOG_KINDS_MAX);
     }
 
     #[test]
