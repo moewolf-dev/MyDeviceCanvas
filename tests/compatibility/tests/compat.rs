@@ -431,6 +431,8 @@ fn animation_requires_a_baked_atlas_and_a_known_clip() {
             looping: true,
             fade_in_ms: 0,
             fade_out_ms: 0,
+            mode: None,
+            speed_permille: None,
         }],
 
         mips: Vec::new(),
@@ -637,12 +639,13 @@ fn textured_skinned_bake_reaches_a_sim_device() {
         .accepted_by(&mdc_model::RendererCapability::sprite_only())
         .is_ok());
 
-    let (host, mut device) = FakeDevice::pair(BoardProfile {
+    let (link, mut device) = FakeDevice::pair(BoardProfile {
         width: 8,
         height: 8,
+        renderer_mesh2d: true,
         ..BoardProfile::default()
     });
-    let mut session = Session::new(host);
+    let mut session = Session::new(link);
     session.connect().unwrap();
     device.poll().unwrap();
     assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
@@ -2938,6 +2941,7 @@ fn animated_scene_reaches_the_mirror() {
                 opacity: vec![[0, 0], [100, 255]],
                 rect: Vec::new(),
                 focus: Vec::new(),
+                easing: None,
             }),
             rotate: None,
             blend: None,
@@ -3796,12 +3800,13 @@ fn scene_circle_and_line_edge_cases_do_not_panic() {
     use mdc_protocol::SceneNode;
     use mdc_simulator::{BoardProfile, FakeDevice};
 
-    let (host, mut device) = FakeDevice::pair(BoardProfile {
+    let (link, mut device) = FakeDevice::pair(BoardProfile {
         width: 8,
         height: 8,
+        renderer_mesh2d: true,
         ..BoardProfile::default()
     });
-    let mut session = Session::new(host);
+    let mut session = Session::new(link);
     session.connect().unwrap();
     device.poll().unwrap();
     assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
@@ -4850,6 +4855,7 @@ fn focus_animation_changes_the_device_frame() {
             opacity: Vec::new(),
             rect: Vec::new(),
             focus: vec![[0, 0, 0], [100, 100, 100]],
+            easing: None,
         }),
         rotate: None,
         blend: None,
@@ -6035,4 +6041,170 @@ fn health_kind_filter_reaches_an_http_client() {
     let missing = fetch("no-such-kind");
     assert!(missing.contains("\"ws_log_entries\":[]"), "{missing}");
     assert!(missing.contains("\"ws_log\":2"), "{missing}");
+}
+
+#[test]
+fn dual_quaternion_skinning_changes_the_package_frame() {
+    // N726: DQS and LBS are both available; opposing joint rotations make their
+    // output visibly different, while the default mode stays LBS.
+    use mdc_bake::{SceneClip, ShadeMode, SkinMode};
+    let identity = mdc_bake::mat4_identity();
+    let quarter = std::f32::consts::FRAC_1_SQRT_2;
+    // The nodes below carry +90/-90 degrees: LBS averages the rotations to a
+    // zero matrix, while DQS blends them back to identity (the triangle survives).
+    let geometry = mdc_model::MeshGeometry {
+        positions: vec![[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+        indices: vec![0, 1, 2],
+        skin_joints: vec![[1, 2, 0, 0]; 3],
+        skin_weights: vec![[0.5, 0.5, 0.0, 0.0]; 3],
+        ..Default::default()
+    };
+    let package = mdc_model::DevicePackage {
+        target: "linux-mesh".into(),
+        mode: mdc_model::PackageMode::Mesh,
+        nodes: vec![
+            mdc_model::Node {
+                name: "root".into(),
+                mesh: Some(0),
+                ..Default::default()
+            },
+            mdc_model::Node {
+                name: "plus".into(),
+                rotation: [0.0, 0.0, quarter, quarter],
+                ..Default::default()
+            },
+            mdc_model::Node {
+                name: "minus".into(),
+                rotation: [0.0, 0.0, -quarter, quarter],
+                ..Default::default()
+            },
+        ],
+        meshes: vec![mdc_model::Mesh {
+            name: "tri".into(),
+            vertices: 3,
+            indices: 3,
+            geometry: Some(geometry),
+            ..Default::default()
+        }],
+        textures: Vec::new(),
+        materials: Vec::new(),
+        lights: Vec::new(),
+        skeletons: vec![mdc_model::Skeleton {
+            joint_nodes: vec![0, 1, 2],
+            inverse_bind: vec![identity, identity, identity],
+            ..Default::default()
+        }],
+        animations: Vec::new(),
+        sprites: Vec::new(),
+        layers: Vec::new(),
+        estimated_bytes: 0,
+        atlas: None,
+        texture: None,
+        texture_blobs: Vec::new(),
+    };
+    let render = |mode| {
+        mdc_bake::render_package_scene_clip_skinned(
+            &package,
+            SceneClip::Static,
+            0.0,
+            (16, 16),
+            mdc_bake::Filter::Nearest,
+            ShadeMode::Flat,
+            mode,
+        )
+        .unwrap()
+        .rgb565
+    };
+    let lbs = render(SkinMode::Lbs);
+    let dqs = render(SkinMode::Dqs);
+    assert_ne!(lbs, dqs, "DQS and LBS must not collapse to the same frame");
+    assert!(dqs.iter().any(|byte| *byte != 0), "DQS produced pixels");
+    assert_eq!(SkinMode::default(), SkinMode::Lbs);
+}
+
+#[test]
+fn per_material_alpha_cutoff_matches_on_the_device() {
+    // N731: the material cutoff thresholds the texture at bake time; the host
+    // package renderer and the device double see the same cutout.
+    use image::RgbaImage;
+    let image = RgbaImage::from_raw(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 100]).unwrap();
+    let mut png = Vec::new();
+    image
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let limits = mdc_bake::BakeLimits::default();
+    let blob = mdc_bake::bake_texture_blob_with_cutoff(&png, &limits, 200).unwrap();
+    let geometry = mdc_model::MeshGeometry {
+        positions: vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        ..Default::default()
+    };
+    let model = mdc_model::Model {
+        nodes: vec![mdc_model::Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Default::default()
+        }],
+        meshes: vec![mdc_model::Mesh {
+            name: "quad".into(),
+            vertices: 4,
+            indices: 6,
+            material: Some(0),
+            geometry: Some(geometry),
+            ..Default::default()
+        }],
+        materials: vec![mdc_model::Material {
+            name: "cutout".into(),
+            alpha_mode: Some("MASK".into()),
+            alpha_cutoff: Some(0.8),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let package = mdc_bake::mesh_package_with_texture(
+        &model,
+        &mdc_model::RendererCapability::full_3d(),
+        Some(blob),
+    )
+    .unwrap();
+    let frame = mdc_bake::render_package_scene_clip_skinned(
+        &package.package,
+        mdc_bake::SceneClip::Static,
+        0.0,
+        (8, 8),
+        mdc_bake::Filter::Nearest,
+        mdc_bake::ShadeMode::Flat,
+        mdc_bake::SkinMode::Lbs,
+    )
+    .unwrap();
+    let (link, mut device) = FakeDevice::pair(BoardProfile {
+        width: 8,
+        height: 8,
+        renderer_mesh2d: true,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(link);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    session
+        .install_package(&package.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.render_preview());
+    assert_eq!(device.pixels(), frame.rgb565.as_slice());
+    // Left texel (alpha 255) survives; right texel (alpha 100 < 200) is cut.
+    let pixel = |frame: &[u8], x: usize, y: usize| {
+        let index = (y * 8 + x) * 2;
+        u16::from_le_bytes([frame[index], frame[index + 1]])
+    };
+    assert_ne!(pixel(&frame.rgb565, 1, 4), 0, "left half is opaque");
+    assert_eq!(pixel(&frame.rgb565, 6, 4), 0, "right half is cut out");
 }

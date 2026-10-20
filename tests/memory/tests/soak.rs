@@ -1157,6 +1157,8 @@ fn atlas_animation_soak_is_bounded() {
             looping: true,
             fade_in_ms: 0,
             fade_out_ms: 0,
+            mode: None,
+            speed_permille: None,
         }],
 
         mips: Vec::new(),
@@ -1564,6 +1566,7 @@ fn animated_scene_rendering_stays_bounded() {
                     opacity: vec![[0, 0], [50, 255], [100, 0]],
                     rect: Vec::new(),
                     focus: Vec::new(),
+                    easing: None,
                 }),
                 rotate: Some(90),
                 blend: Some("additive".to_string()),
@@ -2471,6 +2474,7 @@ fn focus_animation_render_soak_is_bounded() {
                 opacity: Vec::new(),
                 rect: Vec::new(),
                 focus: vec![[0, 0, 0], [100, 100, 100]],
+                easing: None,
             }),
             rotate: None,
             blend: None,
@@ -2695,4 +2699,28 @@ fn package_order_summary_soak_is_bounded() {
         assert_eq!(back.manifest.cache_misses_saved, 5);
         assert!(back.verify().valid);
     }
+}
+
+#[test]
+fn chunk_store_dedup_stays_bounded() {
+    // N729: thousands of overlapping blobs never exceed the byte quota, and the
+    // reference counts return the store to empty.
+    let mut store = mdc_assets::ChunkStore::new(16, 65_536);
+    let mut live = Vec::new();
+    for index in 0..2000u32 {
+        let mut bytes = vec![0xAAu8; 64];
+        bytes[0..4].copy_from_slice(&index.to_le_bytes());
+        let blob = store.insert(&bytes).unwrap();
+        live.push(blob);
+        if live.len() > 8 {
+            store.release(&live.remove(0));
+        }
+        assert!(store.total_bytes() <= 65_536);
+        assert!(store.unique_chunks() <= 65_536 / 16);
+    }
+    for blob in live {
+        store.release(&blob);
+    }
+    assert_eq!(store.total_bytes(), 0);
+    assert_eq!(store.unique_chunks(), 0);
 }
