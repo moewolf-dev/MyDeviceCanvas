@@ -1751,6 +1751,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn vertex_buffer_v0_verbatim_partial_group_regression() {
+        // N693: explicit v0 group-mode-3 cases where the final group is 1/15
+        // elements beyond a complete 16-element group.
+        for count in [17usize, 31, 47] {
+            let stride = 8usize;
+            let values: Vec<Vec<u8>> = (0..count)
+                .map(|element| {
+                    (0..stride)
+                        .map(|byte| ((element * 17 + byte * 29 + 5) % 256) as u8)
+                        .collect()
+                })
+                .collect();
+            let encoded = encode_vertex_buffer_v0(&values, stride);
+            let decoded = unwrap_decode(decode_vertex_buffer(
+                count,
+                stride,
+                &encoded,
+                MeshoptFilter::None,
+            ));
+            assert_eq!(
+                decoded,
+                values.iter().flatten().copied().collect::<Vec<_>>()
+            );
+        }
+    }
+
     /// N623/N653: a v1 encoder with an explicit control mode per byte lane. Mode 3
     /// carries raw deltas, modes 0/1 carry sentinel-group deltas (the group width
     /// is chosen by the caller) and mode 2 carries zero deltas.
