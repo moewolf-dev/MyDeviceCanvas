@@ -1066,6 +1066,8 @@ pub struct HttpMirrorServer {
     ws_kind_limit: usize,
     /// N577: bounded log of why a WebSocket connection was declined/failed.
     ws_log: Vec<WebSocketNote>,
+    /// N727: unix seconds of the last published frame, for `Last-Modified`.
+    last_publish: u64,
 }
 
 /// N607: a structured WebSocket log entry (`kind` + `detail`), so a consumer can
@@ -1239,6 +1241,7 @@ impl HttpMirrorServer {
             ws_reject_reserved: false,
             ws_kind_limit: WS_LOG_KINDS_MAX,
             ws_log: Vec::new(),
+            last_publish: 0,
         })
     }
 
@@ -1427,7 +1430,28 @@ impl HttpMirrorServer {
             last,
             self.ws_log_entries_json_for(kind)
         );
-        simple_response(200, "application/json", body.as_bytes())
+        let response = simple_response(200, "application/json", body.as_bytes());
+        let response = add_header(response, "ETag", &self.health_etag(kind));
+        add_header(response, "Last-Modified", &http_date(self.last_publish))
+    }
+
+    /// N727: the validator for a health representation (the `kind` filter is part
+    /// of it, so a filtered body never aliases the unfiltered one).
+    fn health_etag(&self, kind: Option<&str>) -> String {
+        let text = format!(
+            "health:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            self.frames,
+            self.ws_pings,
+            self.ws_closes,
+            self.ws_timeouts,
+            self.ws_pings_sent,
+            self.ws_messages,
+            self.ws_reserved,
+            self.ws_offered,
+            self.ws_log.len(),
+            kind.unwrap_or("")
+        );
+        format!("\"h{:016x}\"", etag_hash(&text))
     }
 
     /// N637: record a note in the bounded WebSocket log (the detail is clamped to
@@ -1458,6 +1482,7 @@ impl HttpMirrorServer {
             });
         }
         self.frames = self.frames.saturating_add(1);
+        self.last_publish = unix_now();
         let heartbeat = self.ws_heartbeat > 0 && self.frames.is_multiple_of(self.ws_heartbeat);
         let mut pings_sent = 0u64;
         if let Some(frame) = self.last.as_ref() {
@@ -1558,12 +1583,22 @@ impl HttpMirrorServer {
         // so a `?kind=` request can select a bounded variant without borrowing
         // `self` inside the mutable client loop.
         let health = self.health_response(None);
+        let health_etag = self.health_etag(None);
         let health_empty = self.health_response(Some(""));
-        let health_by_kind: Vec<(String, Vec<u8>)> = self
+        let health_empty_etag = self.health_etag(Some(""));
+        let health_by_kind: Vec<(String, String, Vec<u8>)> = self
             .ws_log_counts()
             .keys()
-            .map(|kind| (kind.clone(), self.health_response(Some(kind))))
+            .map(|kind| {
+                (
+                    kind.clone(),
+                    self.health_etag(Some(kind)),
+                    self.health_response(Some(kind)),
+                )
+            })
             .collect();
+        // N727: the frame validators share this timestamp.
+        let last_publish = self.last_publish;
         // N567: extension offers counted in this pass. N577: reasons logged.
         let mut offered = 0u64;
         let mut notes: Vec<WebSocketNote> = Vec::new();
@@ -1586,13 +1621,21 @@ impl HttpMirrorServer {
                         if path == "/health" {
                             // N717: `?kind=` narrows the structured entry list;
                             // an unknown kind yields an empty list, not everything.
-                            let response = match query_param(&query, "kind") {
+                            // N727: a matching If-None-Match returns 304.
+                            let (etag, response) = match query_param(&query, "kind") {
                                 Some(kind) => health_by_kind
                                     .iter()
-                                    .find(|(name, _)| name == kind)
-                                    .map(|(_, body)| body.clone())
-                                    .unwrap_or_else(|| health_empty.clone()),
-                                None => health.clone(),
+                                    .find(|(name, _, _)| name == kind)
+                                    .map(|(_, etag, body)| (etag.clone(), body.clone()))
+                                    .unwrap_or_else(|| {
+                                        (health_empty_etag.clone(), health_empty.clone())
+                                    }),
+                                None => (health_etag.clone(), health.clone()),
+                            };
+                            let response = if if_none_match(&client.request[..end], &etag) {
+                                not_modified(&etag, last_publish)
+                            } else {
+                                response
                             };
                             client.response = Some(response);
                         } else if path == "/ws" {
@@ -1643,8 +1686,24 @@ impl HttpMirrorServer {
                                 }
                             }
                         } else {
+                            // N727: `/frame.*` responses carry an ETag and honor
+                            // If-None-Match; streams are not conditional.
+                            let conditional = path.starts_with("/frame.");
+                            let etag = frame_etag(&path, &query, self.frames);
+                            if conditional && if_none_match(&client.request[..end], &etag) {
+                                client.response = Some(not_modified(&etag, last_publish));
+                                continue;
+                            }
                             match respond(last, &path, &query) {
-                                Served::Bytes(bytes) => client.response = Some(bytes),
+                                Served::Bytes(bytes) => {
+                                    let bytes = if conditional {
+                                        let bytes = add_header(bytes, "ETag", &etag);
+                                        add_header(bytes, "Last-Modified", &http_date(last_publish))
+                                    } else {
+                                        bytes
+                                    };
+                                    client.response = Some(bytes);
+                                }
                                 Served::Multipart { format, scale } => {
                                     begin_stream(client, last, format, scale)
                                 }
@@ -2482,6 +2541,91 @@ fn respond(last: Option<&ServedFrame>, path: &str, query: &str) -> Served {
         },
         _ => simple_response(404, "text/plain", b"not found"),
     })
+}
+
+/// N727: seconds since the Unix epoch (0 before the clock is available).
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// N727: an IMF-fixdate for `Last-Modified` (e.g. `Thu, 01 Jan 1970 00:00:00 GMT`).
+fn http_date(seconds: u64) -> String {
+    let days = (seconds / 86_400) as i64;
+    let secs = seconds % 86_400;
+    let (hour, minute, second) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    // Howard Hinnant's civil-from-days algorithm.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
+    let weekday = ((days + 4) % 7 + 7) % 7;
+    const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    format!(
+        "{}, {day:02} {} {year:04} {hour:02}:{minute:02}:{second:02} GMT",
+        WEEKDAYS[weekday as usize],
+        MONTHS[(month - 1) as usize]
+    )
+}
+
+/// N727: insert one header before the response's blank line.
+fn add_header(response: Vec<u8>, name: &str, value: &str) -> Vec<u8> {
+    let Some(position) = response.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return response;
+    };
+    let header = format!("\r\n{name}: {value}");
+    let mut out = Vec::with_capacity(response.len() + header.len());
+    out.extend_from_slice(&response[..position]);
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(&response[position..]);
+    out
+}
+
+/// N727: a compact FNV-1a hash for ETags (stable within a process and across
+/// platforms, unlike `DefaultHasher`).
+fn etag_hash(text: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// N727: a strong validator for one frame representation (query included).
+fn frame_etag(path: &str, query: &str, frames: u64) -> String {
+    format!(
+        "\"f{frames}-{:016x}\"",
+        etag_hash(&format!("{path}?{query}:{frames}"))
+    )
+}
+
+/// N727: parse `If-None-Match` (exact token, comma list, or `*`).
+fn if_none_match(request: &[u8], etag: &str) -> bool {
+    header_value(request, "if-none-match").is_some_and(|value| {
+        value.trim() == "*" || value.split(',').any(|candidate| candidate.trim() == etag)
+    })
+}
+
+/// N727: a `304 Not Modified` response carrying the validators.
+fn not_modified(etag: &str, last_modified: u64) -> Vec<u8> {
+    format!(
+        "HTTP/1.1 304 Not Modified\r\nETag: {etag}\r\nLast-Modified: {}\r\n\
+         Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+        http_date(last_modified)
+    )
+    .into_bytes()
 }
 
 fn simple_response(status: u16, content_type: &str, body: &[u8]) -> Vec<u8> {
@@ -3980,6 +4124,82 @@ mod tests {
         let missing = body(server.health_response(Some("nope")));
         assert!(missing["ws_log_entries"].as_array().unwrap().is_empty());
         assert_eq!(missing["ws_log"], 3);
+    }
+
+    #[test]
+    fn frame_and_health_honor_if_none_match() {
+        // N727: both `/frame.png` and `/health` emit validators and reply 304
+        // when the client presents the current ETag.
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        let frame = ShadowFrame {
+            width: 1,
+            height: 1,
+            generation: 1,
+            frame_id: 1,
+            pixels: &[0, 0, 255, 255],
+        };
+        server.publish(&frame);
+        server.note_ws("reserved", "probe");
+        let addr = server.local_addr().unwrap();
+        let fetch = |server: &mut HttpMirrorServer, request: String| {
+            let mut client = std::net::TcpStream::connect(addr).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_millis(20)))
+                .unwrap();
+            client.write_all(request.as_bytes()).unwrap();
+            let mut seen = Vec::new();
+            for _ in 0..100 {
+                let _ = server.pump();
+                let mut buffer = [0u8; 4096];
+                match client.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(n) => seen.extend_from_slice(&buffer[..n]),
+                    Err(_) => std::thread::sleep(Duration::from_millis(2)),
+                }
+            }
+            String::from_utf8_lossy(&seen).into_owned()
+        };
+        let etag_of = |response: &str| {
+            response
+                .lines()
+                .find_map(|line| line.strip_prefix("ETag: "))
+                .map(str::to_string)
+                .expect("ETag header")
+        };
+        let frame_ok = fetch(
+            &mut server,
+            "GET /frame.png HTTP/1.1\r\nHost: x\r\n\r\n".into(),
+        );
+        assert!(frame_ok.starts_with("HTTP/1.1 200"), "{frame_ok}");
+        assert!(frame_ok.contains("Last-Modified: "), "{frame_ok}");
+        let frame_tag = etag_of(&frame_ok);
+        let frame_304 = fetch(
+            &mut server,
+            format!("GET /frame.png HTTP/1.1\r\nHost: x\r\nIf-None-Match: {frame_tag}\r\n\r\n"),
+        );
+        assert!(frame_304.starts_with("HTTP/1.1 304"), "{frame_304}");
+        assert!(!frame_304.contains("PNG"), "no body on 304");
+        assert!(frame_304.contains(&format!("ETag: {frame_tag}")));
+
+        let health_ok = fetch(
+            &mut server,
+            "GET /health HTTP/1.1\r\nHost: x\r\n\r\n".into(),
+        );
+        let health_tag = etag_of(&health_ok);
+        let health_304 = fetch(
+            &mut server,
+            format!("GET /health HTTP/1.1\r\nHost: x\r\nIf-None-Match: {health_tag}\r\n\r\n"),
+        );
+        assert!(health_304.starts_with("HTTP/1.1 304"), "{health_304}");
+
+        // A new frame invalidates the old validator.
+        server.publish(&frame);
+        let frame_new = fetch(
+            &mut server,
+            format!("GET /frame.png HTTP/1.1\r\nHost: x\r\nIf-None-Match: {frame_tag}\r\n\r\n"),
+        );
+        assert!(frame_new.starts_with("HTTP/1.1 200"), "{frame_new}");
+        assert_ne!(etag_of(&frame_new), frame_tag);
     }
 
     #[test]
