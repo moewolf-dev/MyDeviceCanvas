@@ -816,6 +816,40 @@ mod tests {
     }
 
     #[test]
+    fn archive_report_top_level_keys_are_stable() {
+        // N679: the `--check-archive --json` contract is a fixed top-level shape.
+        let dir = std::env::temp_dir().join(format!("mdc-archive-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            let mut out = jsonl_sink(Some(dir.to_str().unwrap()), false, 0, 1).unwrap();
+            let summary = watch(1, 1, "default", 0, &mut out).unwrap();
+            write_verdict(&mut out, &summary, &[]).unwrap();
+            out.flush().unwrap();
+        }
+        write_archive_manifest(dir.to_str().unwrap(), 1, 0).unwrap();
+        let report = verify_archive(dir.to_str().unwrap(), 0).unwrap();
+        let keys: Vec<&String> = report.as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys,
+            vec![
+                "declared",
+                "dir",
+                "empty",
+                "files",
+                "kinds",
+                "largest",
+                "maxBytes",
+                "missing",
+                "ok",
+                "oversized",
+                "totalBytes"
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn archive_report_compact_is_one_line() {
         // N668: compact output is a single JSON line; pretty is multi-line.
         let report = serde_json::json!({ "ok": true, "declared": 2, "files": [] });

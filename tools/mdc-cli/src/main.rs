@@ -48,6 +48,9 @@ struct DeviceDto {
     /// N64: configuration keys and scene limits.
     #[serde(rename = "configKeys")]
     config_keys: Vec<String>,
+    /// N676: the device-advertised factory defaults (`Capabilities.config.defaults`).
+    #[serde(rename = "configDefaults")]
+    config_defaults: std::collections::BTreeMap<String, String>,
     scene: SceneDto,
 }
 
@@ -204,6 +207,7 @@ fn devices_json(manager: &DeviceManager) -> String {
                 max_vertices: r.max_vertices,
             }),
             config_keys: d.capabilities.config.keys.clone(),
+            config_defaults: d.capabilities.config.defaults.clone(),
             scene: SceneDto {
                 supported: !d.capabilities.scene.is_disabled(),
                 max_nodes: d.capabilities.scene.max_nodes,
@@ -265,6 +269,7 @@ fn inspect_json(manager: &DeviceManager, metrics: Option<&SimMetrics>) -> String
                 max_vertices: r.max_vertices,
             }),
             config_keys: d.capabilities.config.keys.clone(),
+            config_defaults: d.capabilities.config.defaults.clone(),
             scene: SceneDto {
                 supported: !d.capabilities.scene.is_disabled(),
                 max_nodes: d.capabilities.scene.max_nodes,
@@ -486,6 +491,12 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
                 // N606: the board's own managed-config defaults.
                 "board_config_defaults": board_config_defaults(&opts.board),
             });
+            // N676: profile defaults merged with the device-advertised defaults.
+            let advertised: Vec<_> = mgr
+                .devices()
+                .map(|d| d.capabilities.config.defaults.clone())
+                .collect();
+            value["config_defaults"] = merge_default_maps(&opts.board, &advertised);
             if rss {
                 value["host_rss_bytes"] = serde_json::json!(host_rss_bytes());
             }
@@ -501,6 +512,12 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
         let mut value: serde_json::Value = serde_json::from_str(&json)?;
         // N606: expose the board's managed-config defaults.
         value["board_config_defaults"] = board_config_defaults(&opts.board);
+        // N676: profile defaults merged with the device-advertised defaults.
+        let advertised: Vec<_> = mgr
+            .devices()
+            .map(|d| d.capabilities.config.defaults.clone())
+            .collect();
+        value["config_defaults"] = merge_default_maps(&opts.board, &advertised);
         if rss {
             value["host_rss_bytes"] = serde_json::json!(host_rss_bytes());
         }
@@ -538,6 +555,24 @@ fn filter_config_defaults(all: &serde_json::Value, key: Option<&str>) -> serde_j
         },
         None => all.clone(),
     }
+}
+
+/// N676: merge the board profile's defaults with the device-advertised defaults
+/// (the device wins on a conflict). Returns a JSON object.
+fn merge_default_maps(
+    board: &str,
+    advertised: &[std::collections::BTreeMap<String, String>],
+) -> serde_json::Value {
+    let mut merged = match board_config_defaults(board) {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    for map in advertised {
+        for (key, value) in map {
+            merged.insert(key.clone(), serde_json::json!(value));
+        }
+    }
+    serde_json::Value::Object(merged)
 }
 
 /// N606: the board's own `config_defaults` as a JSON object (empty when none).
@@ -4170,6 +4205,14 @@ fn cmd_diff(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         serde_json::to_string_pretty(&serde_json::json!({
             "identical": identical,
             "fields": fields,
+            // N680: how many fewer misses the second package has than the first
+            // (positive = `b` is more cache-friendly).
+            "index_cache_saved": pa.manifest.cache_misses as i64
+                - pb.manifest.cache_misses as i64,
+            "cache_misses": {
+                "a": pa.manifest.cache_misses,
+                "b": pb.manifest.cache_misses,
+            },
         }))?
     );
     Ok(())
@@ -4948,6 +4991,20 @@ mod tests {
         });
         assert!(config_line.get("board_config_defaults").is_some());
         assert!(config_line.get("defaults").is_none(), "one key only");
+    }
+
+    #[test]
+    fn merged_config_defaults_overlay_the_device_values() {
+        // N676: `inspect` merges the profile table with the device-advertised one.
+        use std::collections::BTreeMap;
+        let only_profile = merge_default_maps("linux-virt", &[]);
+        assert_eq!(only_profile["tile_missing_threshold"], "2");
+        let mut advertised = BTreeMap::new();
+        advertised.insert("tile_missing_threshold".to_string(), "9".to_string());
+        advertised.insert("extra".to_string(), "x".to_string());
+        let merged = merge_default_maps("linux-virt", &[advertised]);
+        assert_eq!(merged["tile_missing_threshold"], "9", "device wins");
+        assert_eq!(merged["extra"], "x");
     }
 
     #[test]
