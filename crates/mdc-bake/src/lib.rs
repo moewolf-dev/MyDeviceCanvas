@@ -1203,8 +1203,31 @@ pub struct GeometryOptimization {
     pub compacted: usize,
     /// Meshes whose index order improved cache locality.
     pub reordered: usize,
-    /// Cache misses across the optimized meshes.
+    /// Vertex-cache hits before the reorder (after compaction).
+    pub hits_before: u64,
+    /// Vertex-cache misses before the reorder (after compaction).
+    pub misses_before: u64,
+    /// Vertex-cache hits after the reorder.
+    pub hits: u64,
+    /// Vertex-cache misses after the reorder (also kept as `cache_misses`).
     pub cache_misses: u64,
+}
+
+impl GeometryOptimization {
+    /// N674: misses removed by the reorder.
+    pub fn saved(&self) -> u64 {
+        self.misses_before.saturating_sub(self.cache_misses)
+    }
+
+    /// N674: the hit rate after the reorder (`0.0` for an empty index list).
+    pub fn hit_rate(&self) -> f64 {
+        let total = self.hits.saturating_add(self.cache_misses);
+        if total == 0 {
+            0.0
+        } else {
+            self.hits as f64 / total as f64
+        }
+    }
 }
 
 /// N574: a vertex-cache size scaled to the mesh, so a small mesh does not pay
@@ -1241,12 +1264,16 @@ pub fn optimize_geometry(
     cache_size: usize,
 ) -> GeometryOptimization {
     let compacted = compact_geometry(geometry);
-    let before = index_cache_misses(geometry, cache_size);
+    let (hits_before, misses_before) = index_cache_stats(geometry, cache_size);
     let after = optimize_index_order(geometry, cache_size);
+    let (hits, misses) = index_cache_stats(geometry, cache_size);
     GeometryOptimization {
         compacted,
-        reordered: usize::from(after < before),
-        cache_misses: after,
+        reordered: usize::from(after < misses_before),
+        hits_before,
+        misses_before,
+        hits,
+        cache_misses: misses,
     }
 }
 
@@ -1261,6 +1288,9 @@ pub fn optimize_package_geometry(
             let result = optimize_geometry(geometry, cache_size);
             total.compacted += result.compacted;
             total.reordered += result.reordered;
+            total.hits_before += result.hits_before;
+            total.misses_before += result.misses_before;
+            total.hits += result.hits;
             total.cache_misses += result.cache_misses;
             if result.compacted > 0 || result.reordered > 0 {
                 mesh.vertices = geometry.positions.len() as u32;
@@ -1894,6 +1924,26 @@ mod tests {
         assert!(report.misses_after <= report.misses_before);
         assert_eq!(report.saved(), report.misses_before - report.misses_after);
         assert_eq!(report.reordered, 1, "only the scrambled mesh improves");
+    }
+
+    #[test]
+    fn geometry_optimization_reports_hits_and_savings() {
+        // N674: the combined pass reports hit/miss counters and the saving.
+        // Positions are unique, so compaction is a no-op and the counters compare
+        // like for like.
+        let mut geometry = mdc_model::MeshGeometry {
+            positions: (0..6).map(|i| [i as f32, 0.0, 0.0]).collect(),
+            indices: vec![2, 3, 4, 0, 1, 2, 4, 3, 5, 2, 1, 3],
+            ..Default::default()
+        };
+        let (_, misses_before) = index_cache_stats(&geometry, 4);
+        let result = optimize_geometry(&mut geometry, 4);
+        assert_eq!(result.compacted, 0);
+        assert_eq!(result.misses_before, misses_before);
+        assert_eq!(result.cache_misses, index_cache_stats(&geometry, 4).1);
+        assert_eq!(result.saved(), result.misses_before - result.cache_misses);
+        assert!(result.hits > 0);
+        assert!((0.0..=1.0).contains(&result.hit_rate()));
     }
 
     #[test]
