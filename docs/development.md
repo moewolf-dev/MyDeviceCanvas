@@ -80,6 +80,9 @@ cargo run -p mdc-inspector -- --check-archive archive --compact       # one-line
 cargo run -p mdc -- package model.gltf --optimize-geometry --report   # index_cache_saved (N669)
 cargo run -p mdc -- --board linux-virt inspect                        # config_defaults merged (N676)
 cargo run -p mdc -- diff a.mdcpkg b.mdcpkg                            # index_cache_saved (N680)
+cargo run -p mdc -- --board linux-virt inspect --defaults              # alias of --defaults-only (N686)
+cargo run -p mdc-inspector -- --check-archive archive --json          # pretty alias (N689)
+cargo run -p mdc -- verify out.mdcpkg                                 # manifest_cache_misses (N690)
 cargo run -p mdc -- --board linux-virt inspect --watch --count 3 --rss
 cargo run -p mdc -- --board linux-virt diag --metric fps --value 29.5 --unit fps
 ```

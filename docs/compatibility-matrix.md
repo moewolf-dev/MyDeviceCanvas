@@ -391,6 +391,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | SDK reconciliation invariants (N678) | sim-verified (three ends) | n/a |
 | Archive key snapshot (N679) | sim-verified | n/a |
 | Diff cache savings (N680) | sim-verified (`index_cache_saved`) | n/a |
+| Verbatim tail groups (N683) | sim-verified (partial groups) | n/a |
+| package_order report (N684) | sim-verified | n/a |
+| Sprite fit/pad (N685) | sim-verified (device render) | physical: pending |
+| inspect --defaults alias (N686) | sim-verified (same table) | n/a |
+| WS kind limit (N687) | sim-verified (clamped) | n/a |
+| C tile parity (N688) | sim-verified (already N638) | n/a |
+| Archive --json alias (N689) | sim-verified (pretty/compact) | n/a |
+| Verify manifest locality (N690) | sim-verified | n/a |
 
 ## G03 sim exit
 

@@ -98,6 +98,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 84 | N653–N662: meshopt width matrix, reorder hit rate, per-side image padding, defaults key, note kinds in health, Swift invariants, archive kinds, validate snapshot | sim-verified |
 | 85 | N663–N672: meshopt 8-bit verbatim group, package order report, pad+rotate composition, defaults key filter, health escaping, compact archive report, report cache savings | sim-verified |
 | 86 | N673–N682: meshopt v0 group widths, optimization hit/miss + saved, pad+align composition, merged config defaults, bounded WS log kinds, SDK reconciliation invariants, archive key snapshot, diff cache savings | sim-verified |
+| 87 | N683–N692: verbatim partial-group cases, sprite fit/pad on a shared fit box, package_order report, inspect --defaults alias, configurable WS kind limit, archive --json alias, verify manifest locality | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
 

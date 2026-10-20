@@ -2,6 +2,27 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.81] — meshopt verbatim tail cases, sprite fit/pad, shared fit box, configurable kind limit, defaults alias, report/verify detail (N683–N692)
+
+### Added
+
+- verbatim-group round-trips for partial trailing groups (counts 17/20/31/33)
+  (N683)
+- `mdc package --report` `package_order` (meshes/reordered/misses/saved) (N684)
+- `sprite` nodes share the image's `fit`/`pad`/`align` box (built on a shared
+  `fit_box` helper) (N685)
+- `mdc inspect --defaults` is an alias of `--defaults-only` (N686)
+- `with_ws_kind_limit` / `WS_LOG_KINDS_MAX` for the `/health` kind summary (N687)
+- `mdc-inspector --check-archive --json` is the explicit pretty alias
+  (`--compact` still wins) (N689)
+- `mdc verify` exposes `manifest_cache_misses`/`cache_misses_ok` explicitly (N690)
+
+### Notes
+
+- N688 (C tile-reconciliation `bytes_sent`/`consistent`) was already delivered by
+  N638 (`mdc_session_tile_reconciliation_ex`); this batch verified it rather than
+  duplicating it. Physical verification (D05/G03/H06) is still pending.
+
 ## [0.1.80] — meshopt v0 group widths, optimization savings, pad+align, merged defaults, bounded log kinds, SDK invariants, diff savings (N673–N682)
 
 ### Added

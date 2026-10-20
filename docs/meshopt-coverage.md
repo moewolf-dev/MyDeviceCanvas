@@ -74,6 +74,9 @@ checked against expected output, not a self-consistent pair:
   8-bit verbatim group (group mode 3) carries arbitrary deltas. Note only
   `header_modes[2]` (control mode 1) maps group mode 3 to 8 bits; control mode 0's
   group mode 3 is the 4-bit mode.
+- `vertex_buffer_verbatim_group_round_trips` (N663/N683): also covers partial
+  trailing verbatim groups (16 + 1/4/15 elements), the boundary where a raw group
+  writes past the last valid element.
 - `malformed_leb128_and_half_packets_are_errors` (N573): directed LEB128 overflow,
   a never-terminating LEB128 run, a value truncated mid-field, a short aux table,
   and a stream shorter than its vertex tail.

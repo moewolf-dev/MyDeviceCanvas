@@ -116,7 +116,8 @@ A device that accepts a scene rasterizes it locally:
   `bottom`) then positions the fitted image inside the padded box. A short or
   malformed string draws nothing.
 - `sprite` blits atlas frame `value` (a decimal index) into `rect`, nearest-neighbour.
-  A missing atlas or index draws nothing.
+  N685: it shares the image's `fit`/`pad`/`align` box (aspect-preserving
+  letterbox and padding). A missing atlas or index draws nothing.
 - `circle` fills the ellipse inscribed in `rect` with the `value` colour; a  zero width or height draws nothing.
 - `line` draws a Bresenham segment from `rect[0..2]` to `rect[2..4]`. A degenerate
   segment draws a single pixel; endpoints outside the framebuffer are clipped.
