@@ -822,6 +822,14 @@ impl SceneTransform {
         ]
     }
 
+    /// N723: transform an absolute scene point through group offset/scale.
+    fn point(&self, point: [i32; 2]) -> (i32, i32) {
+        (
+            self.ox + point[0] * self.sx / 1000,
+            self.oy + point[1] * self.sy / 1000,
+        )
+    }
+
     /// N138: a `group` node's rect is a child offset + scale. A zero width or
     /// height means "do not scale that axis".
     fn child(self, rect: [u16; 4]) -> Self {
@@ -1058,6 +1066,65 @@ fn put_pixel(pixels: &mut [u8], index: usize, value: u16, alpha: u8) {
     pixels[index + 1] = bytes[1];
 }
 
+/// N723: fill a closed polygon (even-odd scanline) with `color`. Points are in
+/// surface pixels and may be negative/out of bounds; fill and clip are bounded.
+#[allow(clippy::too_many_arguments)]
+fn fill_polygon(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    points: &[(i32, i32)],
+    color: u16,
+    alpha: u8,
+    additive: bool,
+) -> bool {
+    if width == 0 || height == 0 || points.len() < 3 {
+        return false;
+    }
+    let min_y = points.iter().map(|p| p.1).min().unwrap_or(0).max(0);
+    let max_y = points
+        .iter()
+        .map(|p| p.1)
+        .max()
+        .unwrap_or(-1)
+        .min(height as i32 - 1);
+    if max_y < min_y {
+        return false;
+    }
+    let mut drew = false;
+    let mut crossings: Vec<f32> = Vec::with_capacity(points.len());
+    for y in min_y..=max_y {
+        let scan = y as f32 + 0.5;
+        crossings.clear();
+        for index in 0..points.len() {
+            let (x0, y0) = points[index];
+            let (x1, y1) = points[(index + 1) % points.len()];
+            let (y0f, y1f) = (y0 as f32, y1 as f32);
+            // Skip horizontal edges and edges entirely on one side.
+            if (y0f <= scan) == (y1f <= scan) {
+                continue;
+            }
+            let t = (scan - y0f) / (y1f - y0f);
+            crossings.push(x0 as f32 + (x1 - x0) as f32 * t);
+        }
+        crossings.sort_by(|a, b| a.total_cmp(b));
+        for pair in crossings.chunks_exact(2) {
+            let x0 = pair[0].ceil().max(0.0) as i32;
+            let x1 = pair[1].floor().min(width as f32 - 1.0) as i32;
+            for x in x0..=x1 {
+                let index = ((y as u32 * width + x as u32) * 2) as usize;
+                if additive {
+                    add_pixel(pixels, index, color, alpha);
+                } else {
+                    put_pixel(pixels, index, color, alpha);
+                }
+                drew = true;
+            }
+        }
+    }
+    drew
+}
+
 /// N156: fill the ellipse inscribed in `rect` with `color`.
 fn fill_circle(pixels: &mut [u8], width: u32, height: u32, rect: [u16; 4], color: u16, alpha: u8) {
     let [x, y, w, h] = rect;
@@ -1261,7 +1328,16 @@ fn fill_scene(
     }
     let drawable = matches!(
         node.kind.as_str(),
-        "rect" | "text" | "image" | "sprite" | "circle" | "line" | "gradient" | "rounded-rect"
+        "rect"
+            | "text"
+            | "image"
+            | "sprite"
+            | "circle"
+            | "line"
+            | "gradient"
+            | "rounded-rect"
+            | "polygon"
+            | "polyline"
     );
     // N338: source alpha for every rasterised kind.
     let alpha = node.opacity_u8();
@@ -1470,6 +1546,54 @@ fn fill_scene(
                 dash,
             );
             *drew = true;
+        }
+    } else if node.kind == "polygon" || node.kind == "polyline" {
+        // N723: absolute scene points from `value2`, transformed by groups.
+        if let Some(points) = node.points() {
+            let transformed: Vec<(i32, i32)> =
+                points.iter().map(|point| transform.point(*point)).collect();
+            let color = node.color_rgb565();
+            if node.kind == "polygon" {
+                if fill_polygon(
+                    pixels,
+                    width,
+                    height,
+                    &transformed,
+                    color,
+                    alpha,
+                    node.is_additive(),
+                ) {
+                    *drew = true;
+                }
+            } else {
+                let closed = node
+                    .mode
+                    .as_deref()
+                    .is_some_and(|mode| mode.split(',').any(|t| t.trim() == "closed"));
+                let mut edge = |a: (i32, i32), b: (i32, i32)| {
+                    draw_line(
+                        pixels,
+                        width,
+                        height,
+                        [
+                            a.0.clamp(0, i32::from(u16::MAX)) as u16,
+                            a.1.clamp(0, i32::from(u16::MAX)) as u16,
+                            b.0.clamp(0, i32::from(u16::MAX)) as u16,
+                            b.1.clamp(0, i32::from(u16::MAX)) as u16,
+                        ],
+                        color,
+                        alpha,
+                        0,
+                    );
+                };
+                for pair in transformed.windows(2) {
+                    edge(pair[0], pair[1]);
+                }
+                if closed && transformed.len() > 2 {
+                    edge(transformed[transformed.len() - 1], transformed[0]);
+                }
+                *drew = true;
+            }
         }
     } else if node.kind == "rounded-rect" {
         // N355: a rect with rounded corners; `value2` is the corner radius.
@@ -1734,6 +1858,8 @@ pub struct BoardProfile {
     pub renderer_mesh2d: bool,
     pub renderer_mesh3d: bool,
     pub renderer_skeleton: bool,
+    /// N726: advertise dual-quaternion skinning support.
+    pub renderer_dqs: bool,
     pub renderer_max_texture: u32,
     pub renderer_max_vertices: u32,
     /// N41: configuration keys this board accepts.
@@ -1772,6 +1898,7 @@ impl Default for BoardProfile {
             renderer_mesh2d: false,
             renderer_mesh3d: false,
             renderer_skeleton: false,
+            renderer_dqs: false,
             renderer_max_texture: 512,
             renderer_max_vertices: 0,
             // N41: a baseline board accepts a few managed settings.
@@ -1957,6 +2084,8 @@ pub struct FakeDevice {
     mesh_clip: mdc_bake::SceneClip,
     /// N347: texture sampling filter for package scenes (device config).
     texture_filter: mdc_bake::Filter,
+    /// N726: skinning mode advertised by this board (`renderer_dqs`).
+    skin_mode: mdc_bake::SkinMode,
     /// N330: the frame frozen at the last mesh-clip change, blended out.
     mesh_prev_pixels: Vec<u8>,
     mesh_crossfade_ms: u32,
@@ -1991,6 +2120,11 @@ impl FakeDevice {
         };
         let device_id = profile.device_id.clone();
         let config = board_config(&profile);
+        let skin_mode = if profile.renderer_dqs {
+            mdc_bake::SkinMode::Dqs
+        } else {
+            mdc_bake::SkinMode::Lbs
+        };
         Self {
             link,
             profile,
@@ -2033,6 +2167,7 @@ impl FakeDevice {
             mesh_scene: None,
             mesh_clip: mdc_bake::SceneClip::First,
             texture_filter: mdc_bake::Filter::Nearest,
+            skin_mode,
             mesh_prev_pixels: Vec::new(),
             mesh_crossfade_ms: 0,
             mesh_blend_start: 0,
@@ -2427,6 +2562,7 @@ impl FakeDevice {
                 mesh2d: self.profile.renderer_mesh2d,
                 mesh3d: self.profile.renderer_mesh3d,
                 skeleton: self.profile.renderer_skeleton,
+                dqs: self.profile.renderer_dqs,
                 max_texture: self.profile.renderer_max_texture,
                 max_vertices: self.profile.renderer_max_vertices,
             }),
@@ -2797,7 +2933,12 @@ impl FakeDevice {
     pub fn atlas_sprite(&self) -> (u32, u32) {
         self.atlas_sprite
     }
+    /// N726: the skinning mode the device advertises (LBS by default).
+    pub fn skin_mode(&self) -> mdc_bake::SkinMode {
+        self.skin_mode
+    }
     /// N71: the atlas frame currently selected by the running clip, if any.
+    /// N730: `mode` selects loop/once/ping-pong and `speed_permille` scales fps.
     pub fn current_atlas_frame(&self) -> Option<u32> {
         let atlas = self.atlas.as_ref()?;
         let clip = atlas.clip(self.anim_clip.as_deref()?)?;
@@ -2805,11 +2946,28 @@ impl FakeDevice {
             return Some(clip.start);
         }
         let elapsed_ms = self.clock.tick.saturating_sub(self.anim_start_tick);
-        let local = (elapsed_ms.saturating_mul(u64::from(clip.fps)) / 1000) as u32;
-        let within = if clip.looping {
-            local % clip.frames
-        } else {
-            local.min(clip.frames - 1)
+        let speed = u64::from(clip.speed_permille.unwrap_or(1000));
+        let local = elapsed_ms
+            .saturating_mul(u64::from(clip.fps))
+            .saturating_mul(speed)
+            / 1_000_000;
+        let frames = clip.frames;
+        let mode = clip
+            .mode
+            .as_deref()
+            .unwrap_or(if clip.looping { "loop" } else { "once" });
+        let within = match mode {
+            "once" => local.min(u64::from(frames - 1)) as u32,
+            "ping-pong" if frames > 1 => {
+                let period = u64::from(frames) * 2 - 2;
+                let phase = local % period;
+                if phase < u64::from(frames) {
+                    phase as u32
+                } else {
+                    (period - phase) as u32
+                }
+            }
+            _ => (local % u64::from(frames)) as u32,
         };
         Some(clip.start + within)
     }
@@ -2824,12 +2982,28 @@ impl FakeDevice {
         let Some(clip) = atlas.clip(self.anim_clip.as_deref().unwrap_or("")) else {
             return 0;
         };
-        if !clip.looping || clip.frames == 0 || clip.fps == 0 {
+        if clip.frames == 0 || clip.fps == 0 {
+            return 0;
+        }
+        let mode = clip
+            .mode
+            .as_deref()
+            .unwrap_or(if clip.looping { "loop" } else { "once" });
+        if mode == "once" {
             return 0;
         }
         let elapsed_ms = self.clock.tick.saturating_sub(self.anim_start_tick);
-        let local = elapsed_ms.saturating_mul(u64::from(clip.fps)) / 1000;
-        (local / u64::from(clip.frames)) as u32
+        let speed = u64::from(clip.speed_permille.unwrap_or(1000));
+        let local = elapsed_ms
+            .saturating_mul(u64::from(clip.fps))
+            .saturating_mul(speed)
+            / 1_000_000;
+        let period = if mode == "ping-pong" && clip.frames > 1 {
+            u64::from(clip.frames) * 2 - 2
+        } else {
+            u64::from(clip.frames)
+        };
+        (local / period) as u32
     }
     /// N80: rasterize the accepted scene into the local framebuffer (rect fills,
     /// parent then children so children draw on top; bounds clipped). N137: the
@@ -2865,12 +3039,14 @@ impl FakeDevice {
         if let Some(scene) = self.mesh_scene.clone() {
             if scene.meshes.iter().any(|m| m.geometry.is_some()) {
                 let seconds = self.clock.tick as f32 / 1000.0;
-                if let Ok(frame) = mdc_bake::render_package_scene_clip_filtered(
+                if let Ok(frame) = mdc_bake::render_package_scene_clip_skinned(
                     &scene,
                     self.mesh_clip,
                     seconds,
                     (width, height),
                     self.texture_filter,
+                    mdc_bake::ShadeMode::Flat,
+                    self.skin_mode,
                 ) {
                     let len = frame.rgb565.len().min(self.pixels.len());
                     self.pixels[..len].copy_from_slice(&frame.rgb565[..len]);
@@ -3728,6 +3904,8 @@ mod tests {
                 looping: true,
                 fade_in_ms: 0,
                 fade_out_ms: 0,
+                mode: None,
+                speed_permille: None,
             }],
 
             mips: Vec::new(),
@@ -3807,6 +3985,8 @@ mod tests {
                     looping: true,
                     fade_in_ms: 0,
                     fade_out_ms: 0,
+                    mode: None,
+                    speed_permille: None,
                 },
                 mdc_model::AtlasClip {
                     name: "wave".into(),
@@ -3816,6 +3996,8 @@ mod tests {
                     looping: true,
                     fade_in_ms: 1000,
                     fade_out_ms: 0,
+                    mode: None,
+                    speed_permille: None,
                 },
             ],
 
@@ -3907,6 +4089,8 @@ mod tests {
                 looping: false,
                 fade_in_ms: 0,
                 fade_out_ms: 0,
+                mode: None,
+                speed_permille: None,
             }],
 
             mips: Vec::new(),
@@ -5186,6 +5370,7 @@ mod tests {
                 rect: Vec::new(),
                 // Bright focus starts top-left, ends bottom-right.
                 focus: vec![[0, 0, 0], [100, 100, 100]],
+                easing: None,
             }),
             rotate: None,
             blend: None,
@@ -5709,6 +5894,7 @@ mod tests {
                 opacity: vec![[0, 0], [100, 255]],
                 rect: Vec::new(),
                 focus: Vec::new(),
+                easing: None,
             }),
             rotate: None,
             blend: None,
@@ -5980,6 +6166,76 @@ mod tests {
     }
 
     #[test]
+    fn scene_draws_polygons_and_polylines() {
+        // N723: a filled triangle and a stroked polyline rasterize at their
+        // absolute points; pixels outside the triangle stay clear.
+        use mdc_protocol::SceneNode;
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 8,
+            height: 8,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        let node = |name: &str, kind: &str, value: &str, points: &str| SceneNode {
+            name: name.into(),
+            kind: kind.into(),
+            rect: Some([0, 0, 8, 8]),
+            children: Vec::new(),
+            value: Some(value.into()),
+            value2: Some(points.into()),
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: None,
+            focus: None,
+        };
+        let root = SceneNode {
+            name: "root".into(),
+            kind: "group".into(),
+            rect: None,
+            children: vec![
+                node("tri", "polygon", "#FF0000", "1,1;6,1;1,6"),
+                node("score", "polyline", "#00FF00", "0,7;7,7"),
+            ],
+            value: None,
+            value2: None,
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: None,
+            focus: None,
+        };
+        session.set_scene(root).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(2, 2), Some(0xF800));
+        assert_eq!(device.pixel_rgb565(5, 5), Some(0));
+        assert_eq!(device.pixel_rgb565(3, 7), Some(0x07E0));
+        assert_eq!(device.pixel_rgb565(3, 6), Some(0));
+        // A 65-point polygon is over the protocol bound and is not parsed.
+        let many = (0..65)
+            .map(|i| format!("{},{}", i % 8, i / 8))
+            .collect::<Vec<_>>()
+            .join(";");
+        let too_many = node("many", "polygon", "#FFFFFF", &many);
+        assert!(too_many.points().is_none());
+    }
+
+    #[test]
     fn mesh_clip_cross_fade_blends_and_expires() {
         let (_host, mut device) = FakeDevice::pair(BoardProfile {
             width: 4,
@@ -6154,6 +6410,8 @@ mod tests {
                 looping: true,
                 fade_in_ms: 0,
                 fade_out_ms: 0,
+                mode: None,
+                speed_permille: None,
             }],
 
             mips: Vec::new(),
@@ -6710,6 +6968,72 @@ mod tests {
     }
 
     #[test]
+    fn atlas_clip_playback_modes_and_speed() {
+        // N730: ping-pong reverses at the ends; speed scales the frame clock;
+        // `once` holds the last frame and reports no loops.
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 1,
+            height: 1,
+            ..BoardProfile::default()
+        });
+        let clip = |mode: &str, speed: u16| mdc_model::AtlasClip {
+            name: "walk".into(),
+            start: 0,
+            frames: 4,
+            fps: 1,
+            looping: true,
+            fade_in_ms: 0,
+            fade_out_ms: 0,
+            mode: Some(mode.into()),
+            speed_permille: Some(speed),
+        };
+        device.atlas = Some(mdc_model::AtlasBlob {
+            sprite_width: 1,
+            sprite_height: 1,
+            frames: 4,
+            columns: 4,
+            rows: 1,
+            rgb565: vec![0; 8],
+            clips: vec![clip("ping-pong", 2000)],
+            mips: Vec::new(),
+        });
+        device.anim_clip = Some("walk".into());
+        device.anim_start_tick = 0;
+        for (tick, expected) in [
+            (0u64, 0u32),
+            (500, 1),
+            (1000, 2),
+            (1500, 3),
+            (2000, 2),
+            (2500, 1),
+            (3000, 0),
+        ] {
+            device.clock.tick = tick;
+            assert_eq!(device.current_atlas_frame(), Some(expected), "tick {tick}");
+        }
+        device.clock.tick = 6000;
+        assert_eq!(device.animation_loops(), 2, "two ping-pong cycles");
+
+        // Once mode holds the last frame; speed is ignored past the end.
+        if let Some(atlas) = device.atlas.as_mut() {
+            atlas.clips = vec![clip("once", 1000)];
+        }
+        device.clock.tick = 10_000;
+        assert_eq!(device.current_atlas_frame(), Some(3));
+        assert_eq!(device.animation_loops(), 0);
+
+        // A 2x loop reaches the same frame in half the time.
+        if let Some(atlas) = device.atlas.as_mut() {
+            atlas.clips = vec![clip("loop", 2000)];
+        }
+        device.anim_start_tick = 0;
+        device.clock.tick = 500;
+        assert_eq!(device.current_atlas_frame(), Some(1));
+        device.clock.tick = 1000;
+        assert_eq!(device.current_atlas_frame(), Some(2));
+    }
+
+    #[test]
     fn atlas_fade_in_darkens_the_first_frame() {
         let (host, mut device) = FakeDevice::pair(BoardProfile {
             width: 1,
@@ -6748,6 +7072,8 @@ mod tests {
                     looping: true,
                     fade_in_ms: 100,
                     fade_out_ms: 0,
+                    mode: None,
+                    speed_permille: None,
                 }],
 
                 mips: Vec::new(),
@@ -6810,6 +7136,8 @@ mod tests {
                     looping: false,
                     fade_in_ms: 0,
                     fade_out_ms: 400,
+                    mode: None,
+                    speed_permille: None,
                 }],
 
                 mips: Vec::new(),
@@ -6886,6 +7214,17 @@ mod tests {
         assert!(renderer.mesh2d && renderer.mesh3d && renderer.skeleton);
         assert_eq!(renderer.max_texture, 2048);
         assert_eq!(renderer.max_vertices, 200_000);
+
+        // N726: DQS is opt-in per board and selects the device render mode.
+        let (_, dqs) = FakeDevice::pair(BoardProfile {
+            renderer_dqs: true,
+            ..BoardProfile::default()
+        });
+        assert!(dqs.capabilities().renderer.unwrap().dqs);
+        assert_eq!(dqs.skin_mode(), mdc_bake::SkinMode::Dqs);
+        let (_, lbs) = FakeDevice::with_default_profile();
+        assert!(!lbs.capabilities().renderer.unwrap().dqs);
+        assert_eq!(lbs.skin_mode(), mdc_bake::SkinMode::Lbs);
     }
 
     #[test]
@@ -7641,6 +7980,49 @@ mod tests {
             false,
         );
         assert_eq!(device.firmware(), "2.0.0");
+    }
+
+    #[test]
+    fn ota_resume_plan_skips_acknowledged_phases() {
+        // N728: after begin+chunk the driver only confirms; a confirmed update
+        // needs no further commands.
+        let profile = BoardProfile {
+            width: 2,
+            height: 2,
+            ota: true,
+            ..BoardProfile::default()
+        };
+        let (host, mut device) = FakeDevice::pair(profile);
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        ota(
+            &mut session,
+            &mut device,
+            "begin",
+            Some("2.0.0"),
+            Some(32),
+            None,
+            false,
+        );
+        ota(&mut session, &mut device, "chunk", None, None, None, false);
+        assert_eq!(session.ota_phase(), 2);
+        let plan = session.ota_resume_commands("2.0.0", Some(32), None);
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].action, "confirm");
+        session.send_ota(plan[0].clone()).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.firmware(), "2.0.0");
+        assert_eq!(session.ota_phase(), 3);
+        assert!(session
+            .ota_resume_commands("2.0.0", Some(32), None)
+            .is_empty());
+        // A fresh session still starts from begin.
+        let (host, _device) = FakeDevice::pair(BoardProfile::default());
+        let fresh = Session::new(host);
+        assert_eq!(fresh.ota_resume_commands("3.0.0", None, None).len(), 3);
     }
 
     #[test]
