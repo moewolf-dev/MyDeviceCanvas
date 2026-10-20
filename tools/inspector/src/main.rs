@@ -244,14 +244,43 @@ fn prune_archive(dir: &str, keep: usize) -> std::io::Result<serde_json::Value> {
     }
     kept.sort();
     removed.sort();
+    // N719: refresh the archive manifest (when present) so it describes the
+    // remaining files and carries a new `generatedAt`.
+    let mut manifest_updated = false;
+    if manifest.is_file() {
+        if let Ok(text) = std::fs::read_to_string(&manifest) {
+            if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(map) = value.as_object_mut() {
+                    map.insert("files".into(), serde_json::json!(kept));
+                    map.insert(
+                        "rotated".into(),
+                        serde_json::json!(kept.len().saturating_sub(1)),
+                    );
+                    map.insert("keep".into(), serde_json::json!(keep));
+                    map.insert("generatedAt".into(), serde_json::json!(unix_seconds()));
+                    std::fs::write(&manifest, serde_json::to_string_pretty(&value)?)?;
+                    manifest_updated = true;
+                }
+            }
+        }
+    }
     Ok(serde_json::json!({
         "dir": dir,
         "live": live,
         "keep": keep,
         "kept": kept,
         "removed": removed,
+        "manifestUpdated": manifest_updated,
         "ok": true,
     }))
+}
+
+/// N719: the archive manifest's `generatedAt` (seconds since the Unix epoch).
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 /// N689: the archive output style. `--json` is an explicit alias for the default
@@ -773,6 +802,50 @@ mod tests {
         assert!(dir.join("mdc-history.jsonl.2").exists());
         assert!(!dir.join("mdc-history.jsonl.3").exists());
         assert!(dir.join("other.txt").exists(), "unrelated files stay");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_archive_refreshes_the_manifest() {
+        // N719: pruning rewrites the manifest's file list, rotation count and
+        // `generatedAt`, so a later `--check-archive` sees the new state.
+        let dir = std::env::temp_dir().join(format!("mdc-prune-manifest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in [
+            "mdc-history.jsonl",
+            "mdc-history.jsonl.1",
+            "mdc-history.jsonl.2",
+            "mdc-history.jsonl.3",
+        ] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        let stale = serde_json::json!({
+            "live": "mdc-history.jsonl",
+            "files": [
+                "mdc-history.jsonl",
+                "mdc-history.jsonl.1",
+                "mdc-history.jsonl.2",
+                "mdc-history.jsonl.3"
+            ],
+            "rotated": 3,
+            "keep": 3,
+            "maxBytes": 0,
+            "generatedAt": 1,
+        });
+        std::fs::write(dir.join("manifest.json"), stale.to_string()).unwrap();
+        let report = prune_archive(dir.to_str().unwrap(), 1).unwrap();
+        assert_eq!(report["manifestUpdated"], true);
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            manifest["files"],
+            serde_json::json!(["mdc-history.jsonl", "mdc-history.jsonl.1"])
+        );
+        assert_eq!(manifest["rotated"], 1);
+        assert_eq!(manifest["keep"], 1);
+        assert!(manifest["generatedAt"].as_u64().unwrap() > 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
