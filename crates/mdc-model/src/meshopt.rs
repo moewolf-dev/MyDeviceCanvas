@@ -1647,10 +1647,28 @@ mod tests {
     /// N613: a test-only v0 vertex-buffer encoder. Every group uses mode 3 (raw
     /// 16-byte deltas), the only v0 mode that can carry arbitrary byte deltas.
     fn encode_vertex_buffer_v0(values: &[Vec<u8>], stride: usize) -> Vec<u8> {
+        encode_vertex_buffer_v0_bits(values, stride, 8)
+    }
+
+    /// N673: a v0 encoder with a chosen group width. v0's header table is
+    /// `[0, 2, 4, 8]`, so the group mode is `1`/`2`/`3` for 2/4/8 bits; there is
+    /// no 1-bit mode. Deltas ≥ the sentinel escape to a full byte.
+    fn encode_vertex_buffer_v0_bits(values: &[Vec<u8>], stride: usize, group_bits: u8) -> Vec<u8> {
+        assert!(matches!(group_bits, 2 | 4 | 8));
         assert!(
             stride.is_multiple_of(4) && stride > 0 && stride <= 256,
             "stride"
         );
+        let group_mode = match group_bits {
+            2 => 1u8,
+            4 => 2u8,
+            _ => 3u8,
+        };
+        let sentinel = if group_bits == 8 {
+            0
+        } else {
+            (1u8 << group_bits) - 1
+        };
         let count = values.len();
         let max_block = ((0x2000 / stride) & !0x0f).min(0x100);
         let mut out = vec![0xa0u8];
@@ -1663,21 +1681,43 @@ mod tests {
             for byte in 0..stride {
                 let mut header = vec![0u8; header_bytes];
                 for group in 0..group_count {
-                    header[group >> 2] |= 0b11 << ((group & 3) << 1);
+                    header[group >> 2] |= group_mode << ((group & 3) << 1);
                 }
                 out.extend_from_slice(&header);
                 for group in 0..group_count {
-                    for m in 0..0x10 {
+                    let mut packed = vec![0u8; (usize::from(group_bits) * 16 / 8).max(1)];
+                    let mut escapes: Vec<u8> = Vec::new();
+                    for m in 0..0x10usize {
                         let element = group * 0x10 + m;
-                        let value = if element < block {
-                            values[offset + element][byte]
+                        let delta = if element < block {
+                            let value = values[offset + element][byte];
+                            let diff = value as i32 - temp[byte] as i32;
+                            temp[byte] = value;
+                            (((diff + 128).rem_euclid(256)) - 128) as i8
                         } else {
-                            temp[byte]
+                            0i8
                         };
-                        let delta =
-                            (((value as i32 - temp[byte] as i32) + 128).rem_euclid(256)) - 128;
-                        out.push(((delta << 1) ^ (delta >> 7)) as u8);
-                        temp[byte] = value;
+                        let zigzag =
+                            (((delta as u8 as u32) << 1) ^ ((delta as i32 >> 7) as u32)) as u8;
+                        if group_bits == 8 {
+                            out.push(zigzag);
+                            continue;
+                        }
+                        let literal = if zigzag < sentinel {
+                            zigzag
+                        } else {
+                            escapes.push(zigzag);
+                            sentinel
+                        };
+                        let (slot, shift) = match group_bits {
+                            2 => (m >> 2, 6 - (((m & 3) << 1) as u8)),
+                            _ => (m >> 1, 4 - (((m & 1) << 2) as u8)),
+                        };
+                        packed[slot] |= literal << shift;
+                    }
+                    if group_bits != 8 {
+                        out.extend_from_slice(&packed);
+                        out.extend_from_slice(&escapes);
                     }
                 }
             }
@@ -1927,6 +1967,39 @@ mod tests {
         ));
         let flat: Vec<u8> = values.iter().flatten().copied().collect();
         assert_eq!(decoded, flat);
+    }
+
+    #[test]
+    fn vertex_buffer_v0_group_widths_round_trip() {
+        // N673: v0 supports 2-bit and 4-bit sentinel groups (plus raw), all with
+        // escape bytes for large deltas.
+        let stride = 4usize;
+        let count = 20usize;
+        let values: Vec<Vec<u8>> = (0..count)
+            .map(|element| {
+                (0..stride)
+                    .map(|byte| {
+                        // Small steps for most elements, a large jump every 5.
+                        if element % 5 == 0 {
+                            ((element * 53 + byte * 97 + 200) % 256) as u8
+                        } else {
+                            (element * 2 + byte) as u8
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        for group_bits in [2u8, 4] {
+            let encoded = encode_vertex_buffer_v0_bits(&values, stride, group_bits);
+            let decoded = unwrap_decode(decode_vertex_buffer(
+                count,
+                stride,
+                &encoded,
+                MeshoptFilter::None,
+            ));
+            let flat: Vec<u8> = values.iter().flatten().copied().collect();
+            assert_eq!(decoded, flat, "v0 group_bits {group_bits}");
+        }
     }
 
     #[test]
