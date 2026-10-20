@@ -4190,6 +4190,15 @@ fn cmd_diff(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         pa.manifest.cache_size.into(),
         pb.manifest.cache_size.into(),
     );
+    // N694: the package-order locality summary as an explicit diff line.
+    let order = |package: &mdc_model::MdcPackage| {
+        serde_json::json!({
+            "meshes": package.package.meshes.iter().filter(|mesh| mesh.geometry.is_some()).count(),
+            "cache_size": package.manifest.cache_size,
+            "misses": package.manifest.cache_misses,
+        })
+    };
+    compare("package_order", order(&pa), order(&pb));
     let counts = |p: &mdc_model::DevicePackage| {
         serde_json::json!({
             "nodes": p.nodes.len(),
@@ -4289,17 +4298,29 @@ fn validation_json(report: &mdc_model::ValidationReport, strict: bool) -> serde_
 /// N408: verify a sealed package's manifest against its body; exit non-zero when
 /// the checksum or sizes do not match.
 fn cmd_verify(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let path = args.first().cloned().unwrap_or_default();
+    // N700: strict verification also fails on a manifest locality mismatch.
+    let strict = args.iter().any(|arg| arg == "--strict");
+    let path = args
+        .iter()
+        .find(|arg| !arg.starts_with("--"))
+        .cloned()
+        .unwrap_or_default();
     if path.is_empty() {
-        return Err("verify <file.mdcpkg>".into());
+        return Err("verify <file.mdcpkg> [--strict]".into());
     }
     let package = mdc_model::MdcPackage::from_bytes(&std::fs::read(&path)?)?;
     let (report, valid) = verify_report(&package);
     println!("{}", serde_json::to_string_pretty(&report)?);
-    if !valid {
+    if verification_failed(&report, valid, strict) {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// N700: ordinary verification preserves old-package validity; strict mode also
+/// requires the manifest's locality metric to match the recomputation.
+fn verification_failed(report: &serde_json::Value, valid: bool, strict: bool) -> bool {
+    !valid || (strict && report["cache_misses_ok"] == serde_json::json!(false))
 }
 
 /// N690: the verification report, including the manifest locality fields.
@@ -4368,7 +4389,7 @@ motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] [--clip NAME] [--time T] [--mip N] [--smooth] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> [--time MS] --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss] [--defaults|--defaults-only [--key K]]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|asset verify <dir>|\
-model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg>|diff <a.mdcpkg> <b.mdcpkg>"
+model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg> [--strict]|diff <a.mdcpkg> <b.mdcpkg>"
     );
 }
 
@@ -4968,6 +4989,8 @@ mod tests {
             port: None,
         };
         cmd_inspect(&opts, &["--defaults-only".into()]).unwrap();
+        // N696: the shorter `--defaults` spelling is the same table.
+        cmd_inspect(&opts, &["--defaults".into()]).unwrap();
         let body = defaults_json("linux-virt");
         assert_eq!(body["board"], "linux-virt");
         assert!(body["board_config_defaults"].is_object());
@@ -5033,6 +5056,20 @@ mod tests {
         let merged = merge_default_maps("linux-virt", &[advertised]);
         assert_eq!(merged["tile_missing_threshold"], "9", "device wins");
         assert_eq!(merged["extra"], "x");
+    }
+
+    #[test]
+    fn verify_strict_flags_cache_mismatch() {
+        // N700: ordinary verify can preserve compatibility; --strict rejects a
+        // locality mismatch.
+        let report = serde_json::json!({ "cache_misses_ok": false });
+        assert!(!verification_failed(&report, true, false));
+        assert!(verification_failed(&report, true, true));
+        assert!(verification_failed(
+            &serde_json::json!({ "cache_misses_ok": true }),
+            false,
+            false
+        ));
     }
 
     #[test]
