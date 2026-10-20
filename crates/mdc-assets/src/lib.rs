@@ -99,6 +99,117 @@ impl AssetCache {
     }
 }
 
+/// N729: a content-addressed blob assembled from fixed-size chunks. `chunks`
+/// are the hashes needed to reconstruct it in order; `len` checks the result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredBlob {
+    pub chunks: Vec<AssetKey>,
+    pub len: usize,
+}
+
+/// N729: a bounded chunk store that keeps one copy of each unique chunk and
+/// reference-counts blobs. `insert` is atomic: a quota failure leaves the store
+/// unchanged. Chunks are content-addressed by SHA-256 (chunk boundaries are
+/// fixed, so identical byte ranges dedupe across blobs).
+pub struct ChunkStore {
+    chunk_size: usize,
+    max_total: usize,
+    total: usize,
+    chunks: HashMap<String, Vec<u8>>,
+    refs: HashMap<String, usize>,
+}
+
+impl ChunkStore {
+    pub fn new(chunk_size: usize, max_total: usize) -> Self {
+        Self {
+            chunk_size: chunk_size.clamp(1, 1024 * 1024),
+            max_total,
+            total: 0,
+            chunks: HashMap::new(),
+            refs: HashMap::new(),
+        }
+    }
+
+    pub fn chunk_size(&self) -> usize {
+        self.chunk_size
+    }
+
+    pub fn unique_chunks(&self) -> usize {
+        self.chunks.len()
+    }
+
+    pub fn total_bytes(&self) -> usize {
+        self.total
+    }
+
+    pub fn ref_count(&self, chunk: &AssetKey) -> usize {
+        self.refs.get(&chunk.0).copied().unwrap_or(0)
+    }
+
+    pub fn insert(&mut self, bytes: &[u8]) -> Result<StoredBlob, AssetError> {
+        // Plan first: reject a quota overflow before mutating anything. A repeated
+        // chunk inside this blob is only charged once.
+        let mut keys = Vec::with_capacity(bytes.len().div_ceil(self.chunk_size));
+        let mut planned_new = std::collections::BTreeSet::new();
+        let mut new_bytes = 0usize;
+        for chunk in bytes.chunks(self.chunk_size) {
+            let key = AssetKey::from_bytes(chunk);
+            if !self.chunks.contains_key(&key.0) && planned_new.insert(key.0.clone()) {
+                new_bytes = new_bytes
+                    .checked_add(chunk.len())
+                    .ok_or(AssetError::QuotaExceeded)?;
+            }
+            keys.push(key);
+        }
+        if self
+            .total
+            .checked_add(new_bytes)
+            .ok_or(AssetError::QuotaExceeded)?
+            > self.max_total
+        {
+            return Err(AssetError::QuotaExceeded);
+        }
+        // Commit: store the new chunks, then add one reference per occurrence.
+        for (key, chunk) in keys.iter().zip(bytes.chunks(self.chunk_size)) {
+            if !self.chunks.contains_key(&key.0) {
+                self.chunks.insert(key.0.clone(), chunk.to_vec());
+                self.total = self.total.saturating_add(chunk.len());
+            }
+            *self.refs.entry(key.0.clone()).or_insert(0) += 1;
+        }
+        Ok(StoredBlob {
+            chunks: keys,
+            len: bytes.len(),
+        })
+    }
+
+    /// Rebuild the original bytes, or `None` when a chunk is missing.
+    pub fn get(&self, blob: &StoredBlob) -> Option<Vec<u8>> {
+        let mut out = Vec::with_capacity(blob.len);
+        for key in &blob.chunks {
+            out.extend_from_slice(self.chunks.get(&key.0)?);
+        }
+        (out.len() == blob.len).then_some(out)
+    }
+
+    /// Drop one reference per chunk, freeing a chunk when its count reaches 0.
+    pub fn release(&mut self, blob: &StoredBlob) {
+        for key in &blob.chunks {
+            let Some(count) = self.refs.get_mut(&key.0) else {
+                continue;
+            };
+            if *count <= 1 {
+                self.refs.remove(&key.0);
+                if let Some(bytes) = self.chunks.remove(&key.0) {
+                    self.total = self.total.saturating_sub(bytes.len());
+                }
+            } else {
+                *count -= 1;
+            }
+        }
+    }
+}
+
 /// N467: a chunked upload that spools to a temp file, so a large asset never sits
 /// in memory. `finish` hashes what was written and renames the temp file into the
 /// cache; dropping without finishing removes it.
@@ -561,6 +672,54 @@ mod tests {
         assert_eq!(key, AssetKey::from_bytes(&[1, 2, 3, 4, 5, 6, 7, 8]));
         assert!(dir.join(&key.0).is_file());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn chunk_store_dedupes_across_blobs_and_releases() {
+        // N729: shared chunks are stored once; the index rebuilds both blobs.
+        let mut store = ChunkStore::new(4, 64);
+        let a = store.insert(b"AAAABBBBCCCC").unwrap();
+        let b = store.insert(b"AAAABBBBXXXX").unwrap();
+        assert_eq!(a.len, 12);
+        assert_eq!(b.len, 12);
+        assert_eq!(store.unique_chunks(), 4, "two shared + two unique chunks");
+        assert_eq!(store.total_bytes(), 16);
+        assert_eq!(store.get(&a).as_deref(), Some(&b"AAAABBBBCCCC"[..]));
+        assert_eq!(store.get(&b).as_deref(), Some(&b"AAAABBBBXXXX"[..]));
+        let shared = AssetKey::from_bytes(b"AAAA");
+        assert_eq!(store.ref_count(&shared), 2);
+
+        store.release(&a);
+        assert_eq!(store.ref_count(&shared), 1, "B still references the chunk");
+        assert_eq!(store.total_bytes(), 12, "CCCC was freed");
+        assert!(store.get(&a).is_none(), "released blob is incomplete");
+        assert_eq!(store.get(&b).as_deref(), Some(&b"AAAABBBBXXXX"[..]));
+
+        store.release(&b);
+        assert_eq!(store.unique_chunks(), 0);
+        assert_eq!(store.total_bytes(), 0);
+        assert!(store.get(&b).is_none());
+    }
+
+    #[test]
+    fn chunk_store_rejects_quota_before_mutating() {
+        // N729: a blob larger than the quota is refused atomically.
+        let mut store = ChunkStore::new(4, 8);
+        assert_eq!(
+            store.insert(b"AAAABBBBCCCC"),
+            Err(AssetError::QuotaExceeded)
+        );
+        assert_eq!(store.unique_chunks(), 0);
+        assert_eq!(store.total_bytes(), 0);
+        // Empty blobs are valid and consume nothing.
+        let empty = store.insert(b"").unwrap();
+        assert_eq!(store.get(&empty), Some(Vec::new()));
+
+        // A repeated chunk inside one blob is stored (and charged) once.
+        let repeated = store.insert(b"AAAA".repeat(3).as_slice()).unwrap();
+        assert_eq!(store.unique_chunks(), 1);
+        assert_eq!(store.total_bytes(), 4);
+        assert_eq!(store.get(&repeated), Some(b"AAAAAAAAAAAA".to_vec()));
     }
 
     #[test]
