@@ -1945,28 +1945,28 @@ mod tests {
 
     #[test]
     fn vertex_buffer_verbatim_group_round_trips() {
-        // N663: control modes 0/1 with the 8-bit verbatim group (group mode 3)
-        // carry arbitrary deltas, so every lane can hold arbitrary values.
-        let stride = 8usize;
-        // 8-bit verbatim is reachable only through control mode 1.
-        let modes = [1u8; 8];
-        let count = 20usize; // >16 exercises a second (partial) group.
-        let values: Vec<Vec<u8>> = (0..count)
-            .map(|element| {
-                (0..stride)
-                    .map(|byte| ((element * 37 + byte * 11 + 9) % 256) as u8)
-                    .collect()
-            })
-            .collect();
-        let encoded = encode_vertex_buffer_modes_bits(&values, stride, &modes, 8);
-        let decoded = unwrap_decode(decode_vertex_buffer(
-            count,
-            stride,
-            &encoded,
-            MeshoptFilter::None,
-        ));
-        let flat: Vec<u8> = values.iter().flatten().copied().collect();
-        assert_eq!(decoded, flat);
+        // N663/N683: control mode 1 with the 8-bit verbatim group (group mode 3)
+        // carries arbitrary deltas. Counts 17/20/31 exercise a partial trailing
+        // group (16 + 1/4/15), which is the boundary the raw group can overrun.
+        for (stride, count) in [(8usize, 20usize), (4, 17), (8, 31), (4, 33)] {
+            let modes = vec![1u8; stride];
+            let values: Vec<Vec<u8>> = (0..count)
+                .map(|element| {
+                    (0..stride)
+                        .map(|byte| ((element * 37 + byte * 11 + 9) % 256) as u8)
+                        .collect()
+                })
+                .collect();
+            let encoded = encode_vertex_buffer_modes_bits(&values, stride, &modes, 8);
+            let decoded = unwrap_decode(decode_vertex_buffer(
+                count,
+                stride,
+                &encoded,
+                MeshoptFilter::None,
+            ));
+            let flat: Vec<u8> = values.iter().flatten().copied().collect();
+            assert_eq!(decoded, flat, "stride {stride}, count {count}");
+        }
     }
 
     #[test]
