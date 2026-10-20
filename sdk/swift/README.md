@@ -107,5 +107,14 @@ queueing them, and `mirrorStats().dropped` reports how many were skipped.
 `mdc_mirror_mode` and the Node SDK), and `mirrorSkips()` /
 `takeMirrorFrameWithSurface()` expose the buffered-frame skip counter and the
 per-frame surface id (the smoke test exercises both — N578). `tileReconciliation()`
-(N618) returns the partial-update `sent`/`received`/`missing` counters, matching
-the C ABI and Node SDK.
+(N618/N698) returns the partial-update `sent`/`received`/`missing` counters plus
+`bytesSent`/`consistent`, matching the C ABI and Node SDK.
+
+## Partial updates (N708)
+
+`currentFrameId()` returns the peer frame id a tile's base should carry.
+`sendTile(baseFrameId:x:y:width:height:pixels:)` sends one RGB565 tile to
+surface "main" and returns `0`, `-4` (a full frame is required) or another
+negative error. The smoke test sends a tile after a full frame and asserts the
+reconciliation fields (`sent == 1`, `bytesSent == 2`, `missing == sent - received`,
+`consistent == (sent == received)`).

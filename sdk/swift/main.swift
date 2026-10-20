@@ -38,6 +38,35 @@ struct MdcSwiftHello {
         let pixels = [UInt8](repeating: 0x11, count: Int(width) * Int(height) * 2)
         try! session.sendFrame(pixels)
 
+        // N708: the tile reconciliation over the C ABI reports every field after a
+        // real partial update (base frame id, bytes, missing, consistency).
+        let tile = [UInt8](arrayLiteral: 0x00, 0xF8)
+        let base = session.currentFrameId()
+        if base == 0 {
+            fputs("no peer frame id after a full frame\n", stderr)
+            exit(1)
+        }
+        if session.sendTile(
+            baseFrameId: base, x: 0, y: 0, width: 1, height: 1, pixels: tile) != 0
+        {
+            fputs("tile send failed\n", stderr)
+            exit(1)
+        }
+        let tileReport = session.tileReconciliation()
+        if tileReport.sent != 1 || tileReport.bytesSent != 2 {
+            fputs("tile counters not reported (\(tileReport))\n", stderr)
+            exit(1)
+        }
+        // The simulator only reports applied tiles on its diagnostics channel, so
+        // the host sees the tile as missing until it polls that metric.
+        if tileReport.received != 0
+            || tileReport.missing != tileReport.sent &- tileReport.received
+            || tileReport.consistent != (tileReport.sent == tileReport.received)
+        {
+            fputs("tile reconciliation fields are inconsistent\n", stderr)
+            exit(1)
+        }
+
         let stream = session.events()
         let task = Task {
             var saw = false

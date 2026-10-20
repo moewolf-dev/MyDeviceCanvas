@@ -194,6 +194,26 @@ public final class MdcSession {
         guard rc == 0 else { throw MdcError.sendFailed(rc) }
     }
 
+    /// N708: send an RGB565 tile to surface "main". Returns 0 on success, -4
+    /// when the host must first send a full frame (after reconnect/switch).
+    public func sendTile(
+        baseFrameId: UInt64, x: UInt16, y: UInt16, width: UInt16, height: UInt16,
+        pixels: [UInt8]
+    ) -> Int32 {
+        guard let raw else { return -1 }
+        return pixels.withUnsafeBufferPointer { buffer in
+            mdc_session_send_tile(
+                raw, baseFrameId, x, y, width, height, buffer.baseAddress, buffer.count)
+        }
+    }
+
+    /// N708: the peer frame id a tile's `baseFrameId` should carry (0 before a
+    /// frame has been displayed).
+    public func currentFrameId() -> UInt64 {
+        guard let raw else { return 0 }
+        return mdc_session_current_frame_id(raw)
+    }
+
     /// v1 always rejects Scene. A return of -5 is the expected result.
     public func sendScene() -> Int32 {
         guard let raw else { return -1 }
