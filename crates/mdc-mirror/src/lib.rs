@@ -1358,11 +1358,26 @@ impl HttpMirrorServer {
     /// a count. The log is capped at [`WS_LOG_MAX`] entries and every string is
     /// escaped.
     pub fn ws_log_entries_json(&self) -> String {
+        self.ws_log_entries_json_for(None)
+    }
+
+    /// N717: the same array filtered to one note `kind` (an unknown kind yields
+    /// an empty array, never the whole log).
+    pub fn ws_log_entries_json_of_kind(&self, kind: &str) -> String {
+        self.ws_log_entries_json_for(Some(kind))
+    }
+
+    fn ws_log_entries_json_for(&self, kind: Option<&str>) -> String {
         let mut out = String::from("[");
-        for (index, note) in self.ws_log.iter().enumerate() {
-            if index > 0 {
+        let mut first = true;
+        for note in &self.ws_log {
+            if kind.is_some_and(|wanted| wanted != note.kind) {
+                continue;
+            }
+            if !first {
                 out.push(',');
             }
+            first = false;
             out.push_str(&format!(
                 "{{\"kind\":\"{}\",\"detail\":\"{}\"}}",
                 escape_json(&note.kind),
@@ -1371,6 +1386,48 @@ impl HttpMirrorServer {
         }
         out.push(']');
         out
+    }
+
+    /// N361/N707/N717: the `/health` body. `kind` narrows only `ws_log_entries`;
+    /// the counters and the last-note summary stay global.
+    fn health_response(&self, kind: Option<&str>) -> Vec<u8> {
+        // N587: a short, escaped summary of the most recent WS note.
+        let last = self
+            .ws_log
+            .last()
+            .map(|note| {
+                let rendered = format!("{}: {}", note.kind, note.detail);
+                let truncated: String = rendered.chars().take(48).collect();
+                let ellipsis = if rendered.chars().count() > 48 {
+                    "…"
+                } else {
+                    ""
+                };
+                format!("{}{}", escape_json(&truncated), ellipsis)
+            })
+            .unwrap_or_default();
+        let body = format!(
+            "{{\"frames\":{},\"clients\":{},\"streaming\":{},\"clipped\":{},\"ws\":{},\
+              \"ws_pings\":{},\"ws_closes\":{},\"ws_timeouts\":{},\"ws_messages\":{},\
+              \"ws_reserved\":{},\"ws_offered\":{},\"ws_log\":{},\
+              \"ws_log_kinds\":{},\"ws_log_last\":\"{}\",\"ws_log_entries\":{}}}",
+            self.frames,
+            self.clients.len(),
+            self.streaming_clients(),
+            self.clipped_frames(),
+            self.ws_clients(),
+            self.ws_pings,
+            self.ws_closes,
+            self.ws_timeouts,
+            self.ws_messages,
+            self.ws_reserved,
+            self.ws_offered,
+            self.ws_log.len(),
+            self.ws_log_kinds_json(),
+            last,
+            self.ws_log_entries_json_for(kind)
+        );
+        simple_response(200, "application/json", body.as_bytes())
     }
 
     /// N637: record a note in the bounded WebSocket log (the detail is clamped to
@@ -1497,45 +1554,16 @@ impl HttpMirrorServer {
         self.accept_pending()?;
         let last = self.last.as_ref();
         // N361: a bounded health snapshot for a monitoring consumer.
-        let health = {
-            // N587: a short, escaped summary of the most recent WS note.
-            let last = self
-                .ws_log
-                .last()
-                .map(|note| {
-                    let rendered = format!("{}: {}", note.kind, note.detail);
-                    let truncated: String = rendered.chars().take(48).collect();
-                    let ellipsis = if rendered.chars().count() > 48 {
-                        "…"
-                    } else {
-                        ""
-                    };
-                    format!("{}{}", escape_json(&truncated), ellipsis)
-                })
-                .unwrap_or_default();
-            let body = format!(
-                "{{\"frames\":{},\"clients\":{},\"streaming\":{},\"clipped\":{},\"ws\":{},\
-                  \"ws_pings\":{},\"ws_closes\":{},\"ws_timeouts\":{},\"ws_messages\":{},\
-                  \"ws_reserved\":{},\"ws_offered\":{},\"ws_log\":{},\
-                  \"ws_log_kinds\":{},\"ws_log_last\":\"{}\",\"ws_log_entries\":{}}}",
-                self.frames,
-                self.clients.len(),
-                self.streaming_clients(),
-                self.clipped_frames(),
-                self.ws_clients(),
-                self.ws_pings,
-                self.ws_closes,
-                self.ws_timeouts,
-                self.ws_messages,
-                self.ws_reserved,
-                self.ws_offered,
-                self.ws_log.len(),
-                self.ws_log_kinds_json(),
-                last,
-                self.ws_log_entries_json()
-            );
-            simple_response(200, "application/json", body.as_bytes())
-        };
+        // N717: precompute the unfiltered health body plus one per retained kind,
+        // so a `?kind=` request can select a bounded variant without borrowing
+        // `self` inside the mutable client loop.
+        let health = self.health_response(None);
+        let health_empty = self.health_response(Some(""));
+        let health_by_kind: Vec<(String, Vec<u8>)> = self
+            .ws_log_counts()
+            .keys()
+            .map(|kind| (kind.clone(), self.health_response(Some(kind))))
+            .collect();
         // N567: extension offers counted in this pass. N577: reasons logged.
         let mut offered = 0u64;
         let mut notes: Vec<WebSocketNote> = Vec::new();
@@ -1556,7 +1584,17 @@ impl HttpMirrorServer {
                     if let Some(end) = find_header_end(&client.request) {
                         let (path, query) = request_target(&client.request[..end]);
                         if path == "/health" {
-                            client.response = Some(health.clone());
+                            // N717: `?kind=` narrows the structured entry list;
+                            // an unknown kind yields an empty list, not everything.
+                            let response = match query_param(&query, "kind") {
+                                Some(kind) => health_by_kind
+                                    .iter()
+                                    .find(|(name, _)| name == kind)
+                                    .map(|(_, body)| body.clone())
+                                    .unwrap_or_else(|| health_empty.clone()),
+                                None => health.clone(),
+                            };
+                            client.response = Some(response);
                         } else if path == "/ws" {
                             // N500: upgrade to a WebSocket that pushes one binary
                             // JPEG message per published frame.
@@ -3917,6 +3955,31 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["kind"], "custom");
         assert_eq!(entries[0]["detail"], "a\"b\\c\nd");
+    }
+
+    #[test]
+    fn health_filters_entries_by_kind() {
+        // N717: `?kind=` narrows only the structured entries; an unknown kind
+        // yields an empty array and the counters stay global.
+        let mut server = HttpMirrorServer::bind("127.0.0.1:0").unwrap();
+        server.note_ws("reserved", "r1");
+        server.note_ws("extension", "e1");
+        server.note_ws("reserved", "r2");
+        let body = |response: Vec<u8>| {
+            let text = String::from_utf8(response).unwrap();
+            let json = text.split("\r\n\r\n").nth(1).unwrap();
+            serde_json::from_str::<serde_json::Value>(json).unwrap()
+        };
+        let all = body(server.health_response(None));
+        assert_eq!(all["ws_log_entries"].as_array().unwrap().len(), 3);
+        let reserved = body(server.health_response(Some("reserved")));
+        let entries = reserved["ws_log_entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|entry| entry["kind"] == "reserved"));
+        assert_eq!(reserved["ws_log"], 3, "counters remain global");
+        let missing = body(server.health_response(Some("nope")));
+        assert!(missing["ws_log_entries"].as_array().unwrap().is_empty());
+        assert_eq!(missing["ws_log"], 3);
     }
 
     #[test]
