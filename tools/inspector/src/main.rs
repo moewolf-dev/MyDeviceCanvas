@@ -202,6 +202,12 @@ fn write_archive_manifest(dir: &str, keep: usize, max_bytes: u64) -> std::io::Re
     )
 }
 
+/// N689: the archive output style. `--json` is an explicit alias for the default
+/// pretty JSON; `--compact` (even alongside `--json`) selects the one-line form.
+fn archive_compact(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--compact")
+}
+
 /// N668: render an archive report as pretty JSON (default) or one line.
 fn format_archive_report(report: &serde_json::Value, compact: bool) -> String {
     if compact {
@@ -461,8 +467,8 @@ fn main() {
             .unwrap_or(0);
         match verify_archive(&dir, max_bytes) {
             Ok(report) => {
-                // N668: `--compact` keeps the report to one line for a log.
-                let compact = args.iter().any(|a| a == "--compact");
+                // N668/N689: `--json` is the pretty default; `--compact` wins.
+                let compact = archive_compact(&args);
                 println!("{}", format_archive_report(&report, compact));
                 // N649: the exit code follows this contract.
                 std::process::exit(archive_exit_code(&report));
@@ -847,6 +853,15 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn archive_json_is_the_pretty_default() {
+        // N689: `--json` alone is pretty; `--compact` (with or without it) wins.
+        assert!(!archive_compact(&["--json".into()]));
+        assert!(archive_compact(&["--compact".into()]));
+        assert!(archive_compact(&["--json".into(), "--compact".into()]));
+        assert!(!archive_compact(&[]));
     }
 
     #[test]

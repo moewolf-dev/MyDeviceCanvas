@@ -439,7 +439,9 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "--watch" => watch = true,
-            "--defaults-only" => defaults_only = true,
+            // N686: `--defaults` is an alias of `--defaults-only` (same table as
+            // `mdc config --defaults`).
+            "--defaults-only" | "--defaults" => defaults_only = true,
             "--key" => defaults_key = iter.next().cloned(),
             // N370: add the host process memory reading to each snapshot.
             "--rss" => rss = true,
@@ -711,6 +713,8 @@ fn cmd_package(
     // N669: the miss count before the pass, so the report can show the saving.
     let mut index_cache_before: u64 = 0;
     let mut reordered_meshes: usize = 0;
+    // N684: how many meshes the order pass looked at.
+    let mut ordered_meshes: usize = 0;
     // N644: aggregate hit/miss counters over the reordered meshes.
     let mut cache_hits: u64 = 0;
     let mut cache_lookups: u64 = 0;
@@ -720,6 +724,7 @@ fn cmd_package(
     if optimize_geometry || optimize_index > 0 {
         for mesh in &mut model.meshes {
             if let Some(geometry) = mesh.geometry.as_mut() {
+                ordered_meshes += 1;
                 let cache = if optimize_index == 0 {
                     mdc_bake::adaptive_cache_size(geometry)
                 } else {
@@ -907,6 +912,14 @@ fn cmd_package(
                 // N669: misses removed by the reorder.
                 "index_cache_saved": index_cache_before.saturating_sub(index_cache_misses),
                 "reordered_meshes": reordered_meshes,
+                // N684: the package-order summary (same shape as the library report).
+                "package_order": {
+                    "meshes": ordered_meshes,
+                    "reordered": reordered_meshes,
+                    "misses_before": index_cache_before,
+                    "misses_after": index_cache_misses,
+                    "saved": index_cache_before.saturating_sub(index_cache_misses),
+                },
                 // N594: which vertex-cache policy ran (off | adaptive | fixed).
                 "cache_mode": cache_mode(optimize_geometry, optimize_index),
                 "cache_size": optimize_index,
@@ -4281,21 +4294,36 @@ fn cmd_verify(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         return Err("verify <file.mdcpkg>".into());
     }
     let package = mdc_model::MdcPackage::from_bytes(&std::fs::read(&path)?)?;
+    let (report, valid) = verify_report(&package);
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    if !valid {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// N690: the verification report, including the manifest locality fields.
+fn verify_report(package: &mdc_model::MdcPackage) -> (serde_json::Value, bool) {
     let verification = package.verify();
     // N604: report the vertex-cache locality of the stored geometry too.
-    let mut report = serde_json::to_value(&verification)?;
+    let mut report = serde_json::to_value(&verification).unwrap_or_else(|_| serde_json::json!({}));
     if let Some(map) = report.as_object_mut() {
         map.insert("cache_size".into(), serde_json::json!(CACHE_REPORT_SIZE));
         map.insert(
             "cache_misses".into(),
             serde_json::json!(package_cache_misses(&package.package, CACHE_REPORT_SIZE)),
         );
+        // N690: make the manifest-vs-recomputed locality explicit.
+        map.insert(
+            "manifest_cache_misses".into(),
+            serde_json::json!(verification.manifest_cache_misses),
+        );
+        map.insert(
+            "cache_misses_ok".into(),
+            serde_json::json!(verification.cache_misses_ok),
+        );
     }
-    println!("{}", serde_json::to_string_pretty(&report)?);
-    if !verification.valid {
-        std::process::exit(1);
-    }
-    Ok(())
+    (report, verification.valid)
 }
 
 /// N604/N614: the vertex-cache size used for the locality report (shared with
@@ -4338,7 +4366,7 @@ bake-mesh <model.gltf> [--frames N] [--sprite N] [--animation N] [--all-animatio
 render-mesh <model.gltf> [--texture tex.png] [--animation N] [--time T] [--sprite N] [--single] [--filter nearest|linear] [--wrap repeat|clamp] [--srgb] --out f.ppm|\
 motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] [--clip NAME] [--time T] [--mip N] [--smooth] --out f.ppm|\
-scene <file.json>|scene clear|scene-render <file.json> [--time MS] --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss] [--defaults-only [--key K]]|\
+scene <file.json>|scene clear|scene-render <file.json> [--time MS] --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss] [--defaults|--defaults-only [--key K]]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|asset verify <dir>|\
 model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg>|diff <a.mdcpkg> <b.mdcpkg>"
     );
@@ -5005,6 +5033,27 @@ mod tests {
         let merged = merge_default_maps("linux-virt", &[advertised]);
         assert_eq!(merged["tile_missing_threshold"], "9", "device wins");
         assert_eq!(merged["extra"], "x");
+    }
+
+    #[test]
+    fn verify_report_carries_the_manifest_locality() {
+        // N690: the verify report exposes both the manifest value and whether it
+        // matches a fresh recomputation.
+        let model = mdc_model::GltfImporter
+            .import(
+                br#"{"asset":{"version":"2.0"},"nodes":[{"name":"r","mesh":0}],
+                    "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],
+                    "accessors":[{"count":4,"type":"VEC3"}]}"#,
+                &mdc_model::ImportLimits::default(),
+            )
+            .unwrap();
+        let package =
+            mdc_model::compile_to_package(&model, &mdc_model::RendererCapability::full_3d())
+                .unwrap();
+        let (report, valid) = verify_report(&package);
+        assert!(valid);
+        assert!(report.get("manifest_cache_misses").is_some());
+        assert_eq!(report["cache_misses_ok"], true);
     }
 
     #[test]
