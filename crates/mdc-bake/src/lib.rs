@@ -26,9 +26,9 @@ pub use skin::{
     render_package_scene_clip_mode, render_package_scene_clip_named,
     render_package_scene_clip_skinned, render_scene_at, render_scene_at_mode, sample_channel,
     sample_channel_looped, skin_arrays, skin_arrays_multi, skin_arrays_multi_with_mode,
-    skin_normals, skin_normals_multi, skin_points, skin_points_with_mode, skin_preview,
-    skin_tangents_multi, transform_direction, transform_point, Mat4, SceneClip, ShadeMode,
-    SkinMode,
+    skin_normals, skin_normals_multi, skin_normals_multi_with_mode, skin_points,
+    skin_points_with_mode, skin_preview, skin_tangents_multi, skin_tangents_multi_with_mode,
+    transform_direction, transform_point, Mat4, SceneClip, ShadeMode, SkinMode,
 };
 pub use texture::{Filter, TextureMap, Wrap};
 
@@ -695,6 +695,112 @@ pub fn empty_texture_blob() -> mdc_model::TextureBlob {
         indices: Vec::new(),
         mips: Vec::new(),
     }
+}
+
+/// N739: crop fully transparent margins from a texture blob. Returns the blob
+/// (unchanged when there is nothing to trim) and the UV rectangle of the kept
+/// pixels in the original image. Indexed blobs and mip chains are left alone.
+pub fn trim_texture_blob(blob: &mdc_model::TextureBlob) -> (mdc_model::TextureBlob, [f32; 4]) {
+    let full = [0.0, 0.0, 1.0, 1.0];
+    let width = blob.width as usize;
+    let height = blob.height as usize;
+    if width == 0 || height == 0 || blob.alpha.is_empty() || blob.is_indexed() {
+        return (blob.clone(), full);
+    }
+    let opaque = |x: usize, y: usize| {
+        let index = y * width + x;
+        blob.alpha
+            .get(index / 8)
+            .is_some_and(|byte| byte & (1 << (index % 8)) != 0)
+    };
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (width, height, 0usize, 0usize);
+    let mut any = false;
+    for y in 0..height {
+        for x in 0..width {
+            if opaque(x, y) {
+                any = true;
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+    if !any || (min_x == 0 && min_y == 0 && max_x + 1 == width && max_y + 1 == height) {
+        return (blob.clone(), full);
+    }
+    let new_w = max_x - min_x + 1;
+    let new_h = max_y - min_y + 1;
+    let mut rgb565 = Vec::with_capacity(new_w * new_h * 2);
+    let mut alpha = vec![0u8; new_w * new_h];
+    for y in min_y..=max_y {
+        let row = y * width * 2;
+        let start = row + min_x * 2;
+        rgb565.extend_from_slice(&blob.rgb565[start..start + new_w * 2]);
+        for x in min_x..=max_x {
+            alpha[(y - min_y) * new_w + (x - min_x)] = u8::from(opaque(x, y));
+        }
+    }
+    let mut mask = vec![0u8; alpha.len().div_ceil(8)];
+    for (index, value) in alpha.iter().enumerate() {
+        if *value != 0 {
+            mask[index / 8] |= 1 << (index % 8);
+        }
+    }
+    (
+        mdc_model::TextureBlob {
+            width: new_w as u32,
+            height: new_h as u32,
+            rgb565,
+            alpha: mask,
+            palette: Vec::new(),
+            indices: Vec::new(),
+            mips: Vec::new(),
+        },
+        [
+            min_x as f32 / width as f32,
+            min_y as f32 / height as f32,
+            (max_x + 1) as f32 / width as f32,
+            (max_y + 1) as f32 / height as f32,
+        ],
+    )
+}
+
+/// N739: trim every material texture in a package and rewrite the UVs of the
+/// meshes that use it. The single fallback `texture` is intentionally not
+/// trimmed (it has no per-mesh material mapping). Returns the number trimmed.
+pub fn trim_package_textures(package: &mut mdc_model::DevicePackage) -> usize {
+    let mut trimmed = 0;
+    for index in 0..package.texture_blobs.len() {
+        let (blob, uv_rect) = trim_texture_blob(&package.texture_blobs[index]);
+        if uv_rect == [0.0, 0.0, 1.0, 1.0] {
+            continue;
+        }
+        let [u0, v0, u1, v1] = uv_rect;
+        let (du, dv) = ((u1 - u0).max(1e-6), (v1 - v0).max(1e-6));
+        let remap = |uv: &mut [f32; 2]| {
+            uv[0] = (uv[0] - u0) / du;
+            uv[1] = (uv[1] - v0) / dv;
+        };
+        for mesh in &mut package.meshes {
+            let uses = mesh
+                .material
+                .and_then(|material| package.materials.get(material))
+                .and_then(|material| material.texture)
+                == Some(index);
+            if !uses {
+                continue;
+            }
+            mesh.preview_uv.iter_mut().for_each(remap);
+            if let Some(geometry) = mesh.geometry.as_mut() {
+                geometry.uv.iter_mut().for_each(remap);
+                geometry.uv2.iter_mut().for_each(remap);
+            }
+        }
+        package.texture_blobs[index] = blob;
+        trimmed += 1;
+    }
+    trimmed
 }
 
 /// N353: decode every embedded model texture into a blob aligned to the IR
@@ -1697,6 +1803,88 @@ mod tests {
         assert!(bit(&blobs[0], 1), "0.25 cutoff keeps alpha 100");
         assert!(!bit(&blobs[1], 1), "0.8 cutoff drops alpha 100");
         assert!(bit(&blobs[1], 3), "alpha 255 passes both");
+    }
+
+    #[test]
+    fn trimming_a_texture_keeps_the_rendered_pixels() {
+        // N739: crop a 4x4 blob to its 2x2 opaque centre and remap UVs; the
+        // package render is unchanged.
+        let mut alpha = vec![0u8; 2];
+        for (x, y) in [(1usize, 1usize), (2, 1), (1, 2), (2, 2)] {
+            let index = y * 4 + x;
+            alpha[index / 8] |= 1 << (index % 8);
+        }
+        let blob = mdc_model::TextureBlob {
+            width: 4,
+            height: 4,
+            rgb565: 0xF800u16.to_le_bytes().repeat(16),
+            alpha,
+            palette: Vec::new(),
+            indices: Vec::new(),
+            mips: Vec::new(),
+        };
+        let (trimmed, uv) = trim_texture_blob(&blob);
+        assert_eq!((trimmed.width, trimmed.height), (2, 2));
+        assert_eq!(uv, [0.25, 0.25, 0.75, 0.75]);
+        // A fully opaque blob is left alone.
+        let opaque = mdc_model::TextureBlob {
+            alpha: Vec::new(),
+            ..blob.clone()
+        };
+        assert_eq!(trim_texture_blob(&opaque).1, [0.0, 0.0, 1.0, 1.0]);
+
+        let geometry = mdc_model::MeshGeometry {
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            ..Default::default()
+        };
+        let mut package = mdc_model::DevicePackage {
+            target: "linux-mesh".into(),
+            mode: mdc_model::PackageMode::Mesh,
+            nodes: vec![mdc_model::Node {
+                name: "root".into(),
+                mesh: Some(0),
+                ..Default::default()
+            }],
+            meshes: vec![mdc_model::Mesh {
+                name: "quad".into(),
+                vertices: 4,
+                indices: 6,
+                material: Some(0),
+                geometry: Some(geometry),
+                ..Default::default()
+            }],
+            textures: Vec::new(),
+            materials: vec![mdc_model::Material {
+                name: "m".into(),
+                texture: Some(0),
+                ..Default::default()
+            }],
+            lights: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 0,
+            atlas: None,
+            texture: None,
+            texture_blobs: vec![blob],
+        };
+        let render = |package: &mdc_model::DevicePackage| {
+            crate::render_package_scene_clip(package, crate::SceneClip::Static, 0.0, (8, 8))
+                .unwrap()
+                .rgb565
+        };
+        let before = render(&package);
+        assert_eq!(trim_package_textures(&mut package), 1);
+        let after = render(&package);
+        assert_eq!(before, after);
     }
 
     #[test]

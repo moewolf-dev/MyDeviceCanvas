@@ -105,6 +105,67 @@ pub fn skin_tangents_multi(
     skeleton: &Skeleton,
     worlds: &[Mat4],
 ) -> Vec<[f32; 4]> {
+    skin_tangents_multi_with_mode(
+        joints,
+        weights,
+        joints2,
+        weights2,
+        tangents,
+        skeleton,
+        worlds,
+        SkinMode::Lbs,
+    )
+}
+
+/// N736: skin tangents with an explicit blend mode (DQS rotates the xyz by the
+/// blended joint quaternion and preserves `w`).
+#[allow(clippy::too_many_arguments)]
+pub fn skin_tangents_multi_with_mode(
+    joints: &[[u16; 4]],
+    weights: &[[f32; 4]],
+    joints2: &[[u16; 4]],
+    weights2: &[[f32; 4]],
+    tangents: &[[f32; 4]],
+    skeleton: &Skeleton,
+    worlds: &[Mat4],
+    mode: SkinMode,
+) -> Vec<[f32; 4]> {
+    if mode == SkinMode::Lbs {
+        return skin_tangents_multi_lbs(
+            joints, weights, joints2, weights2, tangents, skeleton, worlds,
+        );
+    }
+    let mut out = Vec::with_capacity(tangents.len());
+    for (i, tangent) in tangents.iter().enumerate() {
+        let xyz = match blended_quat(joints, weights, joints2, weights2, i, skeleton, worlds) {
+            Some(q) => {
+                let rotated = rotate_quat(&q, [tangent[0], tangent[1], tangent[2]]);
+                let len =
+                    (rotated[0] * rotated[0] + rotated[1] * rotated[1] + rotated[2] * rotated[2])
+                        .sqrt();
+                if len > 1e-6 {
+                    [rotated[0] / len, rotated[1] / len, rotated[2] / len]
+                } else {
+                    [tangent[0], tangent[1], tangent[2]]
+                }
+            }
+            None => [tangent[0], tangent[1], tangent[2]],
+        };
+        out.push([xyz[0], xyz[1], xyz[2], tangent[3]]);
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn skin_tangents_multi_lbs(
+    joints: &[[u16; 4]],
+    weights: &[[f32; 4]],
+    joints2: &[[u16; 4]],
+    weights2: &[[f32; 4]],
+    tangents: &[[f32; 4]],
+    skeleton: &Skeleton,
+    worlds: &[Mat4],
+) -> Vec<[f32; 4]> {
     let mut out = Vec::with_capacity(tangents.len());
     for (i, tangent) in tangents.iter().enumerate() {
         let mut acc = [0.0f32; 3];
@@ -178,6 +239,66 @@ pub fn skin_normals_multi(
     skeleton: &Skeleton,
     worlds: &[Mat4],
 ) -> Vec<[f32; 3]> {
+    skin_normals_multi_with_mode(
+        joints,
+        weights,
+        joints2,
+        weights2,
+        normals,
+        skeleton,
+        worlds,
+        SkinMode::Lbs,
+    )
+}
+
+/// N736: skin normals with an explicit blend mode. DQS rotates by the blended
+/// joint quaternion instead of averaging the transformed normals.
+#[allow(clippy::too_many_arguments)]
+pub fn skin_normals_multi_with_mode(
+    joints: &[[u16; 4]],
+    weights: &[[f32; 4]],
+    joints2: &[[u16; 4]],
+    weights2: &[[f32; 4]],
+    normals: &[[f32; 3]],
+    skeleton: &Skeleton,
+    worlds: &[Mat4],
+    mode: SkinMode,
+) -> Vec<[f32; 3]> {
+    if mode == SkinMode::Lbs {
+        return skin_normals_multi_lbs(
+            joints, weights, joints2, weights2, normals, skeleton, worlds,
+        );
+    }
+    let mut out = Vec::with_capacity(normals.len());
+    for (i, normal) in normals.iter().enumerate() {
+        match blended_quat(joints, weights, joints2, weights2, i, skeleton, worlds) {
+            Some(q) => {
+                let rotated = rotate_quat(&q, *normal);
+                let len =
+                    (rotated[0] * rotated[0] + rotated[1] * rotated[1] + rotated[2] * rotated[2])
+                        .sqrt();
+                out.push(if len > 1e-6 {
+                    [rotated[0] / len, rotated[1] / len, rotated[2] / len]
+                } else {
+                    *normal
+                });
+            }
+            None => out.push(*normal),
+        }
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn skin_normals_multi_lbs(
+    joints: &[[u16; 4]],
+    weights: &[[f32; 4]],
+    joints2: &[[u16; 4]],
+    weights2: &[[f32; 4]],
+    normals: &[[f32; 3]],
+    skeleton: &Skeleton,
+    worlds: &[Mat4],
+) -> Vec<[f32; 3]> {
     let mut out = Vec::with_capacity(normals.len());
     for (i, normal) in normals.iter().enumerate() {
         let mut acc = [0.0f32; 3];
@@ -222,6 +343,85 @@ pub fn skin_normals_multi(
         }
     }
     out
+}
+
+/// N736: the blended unit quaternion of one vertex's joint influences.
+fn blended_quat(
+    joints: &[[u16; 4]],
+    weights: &[[f32; 4]],
+    joints2: &[[u16; 4]],
+    weights2: &[[f32; 4]],
+    index: usize,
+    skeleton: &Skeleton,
+    worlds: &[Mat4],
+) -> Option<[f32; 4]> {
+    let mut real = [0.0f32; 4];
+    let mut total = 0.0f32;
+    for (set_joints, set_weights) in [(joints, weights), (joints2, weights2)] {
+        let (Some(vertex_joints), Some(vertex_weights)) =
+            (set_joints.get(index), set_weights.get(index))
+        else {
+            continue;
+        };
+        for k in 0..4 {
+            let weight = vertex_weights[k];
+            if weight == 0.0 {
+                continue;
+            }
+            let joint = vertex_joints[k] as usize;
+            let (Some(&node), Some(bind)) = (
+                skeleton.joint_nodes.get(joint),
+                skeleton.inverse_bind.get(joint),
+            ) else {
+                continue;
+            };
+            let Some(world) = worlds.get(node) else {
+                continue;
+            };
+            let Some(dq) = dual_quat_from_matrix(&mat4_mul(world, bind)) else {
+                continue;
+            };
+            for (slot, value) in real.iter_mut().zip(dq.real.iter()) {
+                *slot += value * weight;
+            }
+            total += weight;
+        }
+    }
+    if total <= 0.0 {
+        return None;
+    }
+    let norm =
+        (real[0] * real[0] + real[1] * real[1] + real[2] * real[2] + real[3] * real[3]).sqrt();
+    if norm <= 1e-6 {
+        return None;
+    }
+    Some([
+        real[0] / norm,
+        real[1] / norm,
+        real[2] / norm,
+        real[3] / norm,
+    ])
+}
+
+/// N736: rotate a vector by a unit quaternion (w,x,y,z).
+fn rotate_quat(q: &[f32; 4], v: [f32; 3]) -> [f32; 3] {
+    let [w, x, y, z] = *q;
+    let qv = [x, y, z];
+    let cross = |a: [f32; 3], b: [f32; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let t = cross(qv, v);
+    let t = [2.0 * t[0], 2.0 * t[1], 2.0 * t[2]];
+    let c = cross(qv, t);
+    [
+        v[0] + w * t[0] + c[0],
+        v[1] + w * t[1] + c[1],
+        v[2] + w * t[2] + c[2],
+    ]
 }
 
 /// World matrices from each node's own local transform.
@@ -1697,7 +1897,7 @@ pub fn render_scene_at_mode(
                 if !geometry.skin_joints.is_empty()
                     && geometry.normals.len() >= geometry.positions.len() =>
             {
-                skin_normals_multi(
+                skin_normals_multi_with_mode(
                     &geometry.skin_joints,
                     &geometry.skin_weights,
                     &geometry.skin_joints2,
@@ -1705,6 +1905,7 @@ pub fn render_scene_at_mode(
                     &geometry.normals,
                     skeleton,
                     &worlds,
+                    skin,
                 )
             }
             _ => geometry.normals.clone(),
@@ -2415,7 +2616,7 @@ pub fn render_package_scene_clip_skinned(
                 if !geometry.skin_joints.is_empty()
                     && geometry.normals.len() >= geometry.positions.len() =>
             {
-                skin_normals_multi(
+                skin_normals_multi_with_mode(
                     &geometry.skin_joints,
                     &geometry.skin_weights,
                     &geometry.skin_joints2,
@@ -2423,6 +2624,7 @@ pub fn render_package_scene_clip_skinned(
                     &geometry.normals,
                     skeleton,
                     &worlds,
+                    skin,
                 )
             }
             _ => geometry.normals.clone(),
@@ -2647,15 +2849,18 @@ pub fn render_package_scene_clip_skinned(
                     generate_tangents(geometry)
                 };
                 Some(match skeleton {
-                    Some(skeleton) if !geometry.skin_joints.is_empty() => skin_tangents_multi(
-                        &geometry.skin_joints,
-                        &geometry.skin_weights,
-                        &geometry.skin_joints2,
-                        &geometry.skin_weights2,
-                        &base,
-                        skeleton,
-                        &worlds,
-                    ),
+                    Some(skeleton) if !geometry.skin_joints.is_empty() => {
+                        skin_tangents_multi_with_mode(
+                            &geometry.skin_joints,
+                            &geometry.skin_weights,
+                            &geometry.skin_joints2,
+                            &geometry.skin_weights2,
+                            &base,
+                            skeleton,
+                            &worlds,
+                            skin,
+                        )
+                    }
                     _ => base,
                 })
             } else {
@@ -4503,6 +4708,58 @@ mod tests {
             sample_channel_looped(&track, 1, 2.5, 0.0, 1.0, false),
             vec![10.0]
         );
+    }
+
+    #[test]
+    fn dqs_normals_and_tangents_use_the_blended_rotation() {
+        // N736: the same ±180-degree joints that collapse LBS positions rotate
+        // normals/tangents by the blended 90-degree quaternion.
+        let identity = mat4_identity();
+        let half_turn = mat4_from_trs([0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [1.0, 1.0, 1.0]);
+        let skeleton = mdc_model::Skeleton {
+            joint_nodes: vec![0, 1],
+            inverse_bind: vec![identity, identity],
+            ..Default::default()
+        };
+        let joints = [[0u16, 1, 0, 0]];
+        let weights = [[0.5f32, 0.5, 0.0, 0.0]];
+        let normal = [[1.0f32, 0.0, 0.0]];
+        let tangent = [[1.0f32, 0.0, 0.0, -1.0]];
+        let worlds = [identity, half_turn];
+        let lbs = skin_normals_multi_with_mode(
+            &joints,
+            &weights,
+            &[],
+            &[],
+            &normal,
+            &skeleton,
+            &worlds,
+            SkinMode::Lbs,
+        );
+        assert!((lbs[0][0] - 1.0).abs() < 1e-3, "{lbs:?}");
+        let dqs = skin_normals_multi_with_mode(
+            &joints,
+            &weights,
+            &[],
+            &[],
+            &normal,
+            &skeleton,
+            &worlds,
+            SkinMode::Dqs,
+        );
+        assert!(dqs[0][1].abs() > 0.9, "{dqs:?}");
+        let tangent_out = skin_tangents_multi_with_mode(
+            &joints,
+            &weights,
+            &[],
+            &[],
+            &tangent,
+            &skeleton,
+            &worlds,
+            SkinMode::Dqs,
+        );
+        assert!(tangent_out[0][1].abs() > 0.9, "{tangent_out:?}");
+        assert_eq!(tangent_out[0][3], -1.0, "handedness is preserved");
     }
 
     #[test]

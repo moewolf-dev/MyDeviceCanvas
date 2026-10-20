@@ -727,6 +727,8 @@ fn cmd_package(
     let mut optimize_index: usize = 0;
     // N574: combined compaction + reordering (`--optimize-geometry`).
     let mut optimize_geometry = false;
+    // N739: crop fully transparent material-texture margins before packing.
+    let mut trim_textures = false;
     let mut iter = extra.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -742,6 +744,8 @@ fn cmd_package(
             "--dither" => dither = iter.next().and_then(|v| v.parse().ok()).unwrap_or(4),
             // N428: derive tangents for meshes that omit them.
             "--tangents" => tangents = true,
+            // N739: crop transparent texture margins and remap UVs.
+            "--trim-textures" => trim_textures = true,
             // N433: pick a KHR_materials_variants set by name.
             "--variant" => variant = iter.next().cloned(),
             // N458: print an extended compile report.
@@ -886,6 +890,14 @@ fn cmd_package(
         }
     };
     let texture_error: Option<String> = None;
+    // N739: trim material textures before mips/atlas packing.
+    let (package, trimmed_textures) = if trim_textures {
+        let mut inner = package.package.clone();
+        let trimmed = mdc_bake::trim_package_textures(&mut inner);
+        (mdc_model::MdcPackage::seal(inner)?, trimmed)
+    } else {
+        (package, 0usize)
+    };
     // N490: optionally attach a mip chain to the textures.
     let package = if texture_mips >= 2 {
         let mut inner = package.package.clone();
@@ -1018,6 +1030,8 @@ fn cmd_package(
                 "trimmed_meshes": trimmed_meshes,
                 // N545: vertices removed by lossless geometry compaction.
                 "compacted_vertices": compacted_vertices,
+                // N739: material textures cropped to their opaque bounds.
+                "trimmed_textures": trimmed_textures,
                 // N555: cache misses after reordering and meshes that improved.
                 "index_cache_misses": index_cache_misses,
                 // N669: misses removed by the reorder.
@@ -3250,6 +3264,8 @@ fn cmd_h06_demo(opts: &GlobalOpts) -> Result<(), Box<dyn std::error::Error>> {
             version: Some("0.1.0-sim".into()),
             size: Some(6),
             sha256: Some("0".repeat(64)),
+            offset: None,
+            len: None,
         })?;
         pump_sim(&mut session, &mut device)?;
         println!("[ok] ota");
@@ -3652,6 +3668,8 @@ fn accept_on(
         version: Some("2.0.0".into()),
         size: Some(64),
         sha256: Some("0".repeat(64)),
+        offset: None,
+        len: None,
     })?;
     pump_until_idle(&mut session)?;
     let (ota_failed, firmware_after) = match goal {
@@ -3661,6 +3679,8 @@ fn accept_on(
                 version: None,
                 size: None,
                 sha256: Some("bad".into()),
+                offset: None,
+                len: None,
             })?;
             let ota_error = pump_until_protocol_error(&mut session)?;
             if !ota_error.contains("E_OTA") {
@@ -3686,6 +3706,8 @@ fn accept_on(
                 version: None,
                 size: None,
                 sha256: Some("a".repeat(64)),
+                offset: None,
+                len: None,
             })?;
             pump_until_idle(&mut session)?;
             session.send_ota(OtaCommand {
@@ -3693,6 +3715,8 @@ fn accept_on(
                 version: Some("2.0.0".into()),
                 size: None,
                 sha256: None,
+                offset: None,
+                len: None,
             })?;
             pump_until_idle(&mut session)?;
             session.refresh_capabilities()?;
