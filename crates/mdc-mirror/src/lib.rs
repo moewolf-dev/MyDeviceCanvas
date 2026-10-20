@@ -1353,6 +1353,26 @@ impl HttpMirrorServer {
         self.ws_log.iter().filter(move |note| note.kind == kind)
     }
 
+    /// N707: the retained notes as a bounded JSON array (oldest first), so a
+    /// monitoring consumer sees why connections were declined instead of only
+    /// a count. The log is capped at [`WS_LOG_MAX`] entries and every string is
+    /// escaped.
+    pub fn ws_log_entries_json(&self) -> String {
+        let mut out = String::from("[");
+        for (index, note) in self.ws_log.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!(
+                "{{\"kind\":\"{}\",\"detail\":\"{}\"}}",
+                escape_json(&note.kind),
+                escape_json(&note.detail)
+            ));
+        }
+        out.push(']');
+        out
+    }
+
     /// N637: record a note in the bounded WebSocket log (the detail is clamped to
     /// [`WS_NOTE_DETAIL_MAX`]). Public so an embedding host can log its own notes.
     pub fn note_ws(&mut self, kind: impl Into<String>, detail: impl Into<String>) {
@@ -1497,7 +1517,7 @@ impl HttpMirrorServer {
                 "{{\"frames\":{},\"clients\":{},\"streaming\":{},\"clipped\":{},\"ws\":{},\
                   \"ws_pings\":{},\"ws_closes\":{},\"ws_timeouts\":{},\"ws_messages\":{},\
                   \"ws_reserved\":{},\"ws_offered\":{},\"ws_log\":{},\
-                  \"ws_log_kinds\":{},\"ws_log_last\":\"{}\"}}",
+                  \"ws_log_kinds\":{},\"ws_log_last\":\"{}\",\"ws_log_entries\":{}}}",
                 self.frames,
                 self.clients.len(),
                 self.streaming_clients(),
@@ -1511,7 +1531,8 @@ impl HttpMirrorServer {
                 self.ws_offered,
                 self.ws_log.len(),
                 self.ws_log_kinds_json(),
-                last
+                last,
+                self.ws_log_entries_json()
             );
             simple_response(200, "application/json", body.as_bytes())
         };
@@ -3891,6 +3912,11 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(json)
             .unwrap_or_else(|error| panic!("health is not valid JSON: {error}: {json}"));
         assert_eq!(parsed["ws_log_last"], "custom: a\"b\\c\nd");
+        // N707: the structured, bounded entries carry the same escaped note.
+        let entries = parsed["ws_log_entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["kind"], "custom");
+        assert_eq!(entries[0]["detail"], "a\"b\\c\nd");
     }
 
     #[test]
