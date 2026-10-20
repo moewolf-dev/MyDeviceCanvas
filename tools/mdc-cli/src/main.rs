@@ -499,6 +499,10 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
                 .map(|d| d.capabilities.config.defaults.clone())
                 .collect();
             value["config_defaults"] = merge_default_maps(&opts.board, &advertised);
+            // N706: where each default came from, and whether the device won.
+            let sources = merge_default_sources(&opts.board, &advertised);
+            value["config_default_conflicts"] = serde_json::json!(default_conflicts(&sources));
+            value["config_default_sources"] = sources;
             if rss {
                 value["host_rss_bytes"] = serde_json::json!(host_rss_bytes());
             }
@@ -520,6 +524,10 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
             .map(|d| d.capabilities.config.defaults.clone())
             .collect();
         value["config_defaults"] = merge_default_maps(&opts.board, &advertised);
+        // N706: provenance and conflicts for the same table.
+        let sources = merge_default_sources(&opts.board, &advertised);
+        value["config_default_conflicts"] = serde_json::json!(default_conflicts(&sources));
+        value["config_default_sources"] = sources;
         if rss {
             value["host_rss_bytes"] = serde_json::json!(host_rss_bytes());
         }
@@ -575,6 +583,52 @@ fn merge_default_maps(
         }
     }
     serde_json::Value::Object(merged)
+}
+
+/// N706: per-key provenance for the merged defaults table. Each entry reports
+/// the effective value, whether it came from the board profile or the device,
+/// and whether the device overrode a different profile default.
+fn merge_default_sources(
+    board: &str,
+    advertised: &[std::collections::BTreeMap<String, String>],
+) -> serde_json::Value {
+    let profile = match board_config_defaults(board) {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    let mut sources = serde_json::Map::new();
+    for (key, value) in &profile {
+        sources.insert(
+            key.clone(),
+            serde_json::json!({ "value": value, "source": "profile", "conflict": false }),
+        );
+    }
+    for map in advertised {
+        for (key, value) in map {
+            let value = serde_json::json!(value);
+            let conflict = profile.get(key).is_some_and(|known| known != &value);
+            sources.insert(
+                key.clone(),
+                serde_json::json!({ "value": value, "source": "device", "conflict": conflict }),
+            );
+        }
+    }
+    serde_json::Value::Object(sources)
+}
+
+/// N706: the keys a device overrode with a different value than the profile
+/// default (sorted, so the output is stable).
+fn default_conflicts(sources: &serde_json::Value) -> Vec<String> {
+    sources
+        .as_object()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|(_, entry)| entry["conflict"] == serde_json::json!(true))
+                .map(|(key, _)| key.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// N606: the board's own `config_defaults` as a JSON object (empty when none).
@@ -857,7 +911,9 @@ fn cmd_package(
     } else {
         (package, 0usize)
     };
-    let (package, trimmed_meshes) = trimmed;
+    let (mut package, trimmed_meshes) = trimmed;
+    // N704: persist the before/after package-order metric in the manifest.
+    package.set_cache_report(index_cache_before);
     let bytes = package.to_bytes()?;
     let out = out.unwrap_or_else(|| format!("{model_path}.mdcpkg"));
     std::fs::write(&out, &bytes)?;
@@ -911,6 +967,8 @@ fn cmd_package(
                 "index_cache_misses": index_cache_misses,
                 // N669: misses removed by the reorder.
                 "index_cache_saved": index_cache_before.saturating_sub(index_cache_misses),
+                "manifest_cache_misses_before": package.manifest.cache_misses_before,
+                "manifest_cache_misses_saved": package.manifest.cache_misses_saved,
                 "reordered_meshes": reordered_meshes,
                 // N684: the package-order summary (same shape as the library report).
                 "package_order": {
@@ -4125,6 +4183,13 @@ fn cmd_model_info(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             })
             .collect();
         map.insert("textures".into(), serde_json::json!(textures));
+        // N710: the same KTX2 summary `verify`/`diff` print (`ktx2_textures`/
+        // `ktx2_slices` already come from `ModelSummary`).
+        let ktx2 = model.ktx2_summary();
+        map.insert(
+            "ktx2_size_mismatches".into(),
+            serde_json::json!(ktx2.size_mismatches),
+        );
         // N610: surface the model's validation problems (e.g. a KTX2 mismatch).
         let report = model.validate();
         map.insert(
@@ -4196,6 +4261,8 @@ fn cmd_diff(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "meshes": package.package.meshes.iter().filter(|mesh| mesh.geometry.is_some()).count(),
             "cache_size": package.manifest.cache_size,
             "misses": package.manifest.cache_misses,
+            "misses_before": package.manifest.cache_misses_before,
+            "saved": package.manifest.cache_misses_saved,
         })
     };
     compare("package_order", order(&pa), order(&pb));
@@ -4211,14 +4278,26 @@ fn cmd_diff(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "sprites": p.sprites.len(),
             "lights": p.lights.len(),
             "estimated_bytes": p.estimated_bytes,
-            // N590: KTX2 metadata consistency between two packages.
-            "ktx2_textures": p.textures.iter().filter(|t| t.is_ktx2()).count(),
-            "ktx2_slices": p.textures.iter().filter_map(|t| t.ktx2_header()).map(|h| h.slices() as u64).sum::<u64>(),
+            // N590/N710: KTX2 metadata consistency between two packages (the
+            // same summary `verify` and `model-info` print).
+            "ktx2_textures": p.ktx2_summary().textures,
+            "ktx2_slices": p.ktx2_summary().slices,
+            "ktx2_size_mismatches": p.ktx2_summary().size_mismatches,
             // N604: vertex-cache locality of the stored geometry.
             "cache_misses": package_cache_misses(p, CACHE_REPORT_SIZE),
         })
     };
     compare("structure", counts(&pa.package), counts(&pb.package));
+    // N710: one KTX2 summary line shared with `verify`/`model-info`.
+    let ktx2 = |p: &mdc_model::DevicePackage| {
+        let summary = p.ktx2_summary();
+        serde_json::json!({
+            "textures": summary.textures,
+            "slices": summary.slices,
+            "size_mismatches": summary.size_mismatches,
+        })
+    };
+    compare("ktx2", ktx2(&pa.package), ktx2(&pb.package));
     let identical = fields
         .values()
         .all(|entry| entry.get("same").and_then(serde_json::Value::as_bool) == Some(true));
@@ -4342,6 +4421,14 @@ fn verify_report(package: &mdc_model::MdcPackage) -> (serde_json::Value, bool) {
         map.insert(
             "cache_misses_ok".into(),
             serde_json::json!(verification.cache_misses_ok),
+        );
+        // N710: the same KTX2 summary `model-info` and `diff` report.
+        let ktx2 = package.package.ktx2_summary();
+        map.insert("ktx2_textures".into(), serde_json::json!(ktx2.textures));
+        map.insert("ktx2_slices".into(), serde_json::json!(ktx2.slices));
+        map.insert(
+            "ktx2_size_mismatches".into(),
+            serde_json::json!(ktx2.size_mismatches),
         );
     }
     (report, verification.valid)
@@ -4952,6 +5039,46 @@ mod tests {
         std::fs::write(&path, package.to_bytes().unwrap()).unwrap();
         cmd_verify(&[path.to_string_lossy().into_owned()]).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn default_sources_mark_profile_and_device_conflicts() {
+        // N706: the provenance table names the winner and flags an override.
+        let mut advertised = std::collections::BTreeMap::new();
+        advertised.insert("filtering".to_string(), "linear".to_string());
+        let sources = merge_default_sources("linux-virt", &[advertised]);
+        // A profile default that the device did not mention.
+        assert_eq!(sources["tile_missing_threshold"]["source"], "profile");
+        assert_eq!(sources["tile_missing_threshold"]["conflict"], false);
+        assert_eq!(sources["tile_missing_threshold"]["value"], "2");
+        // A device-only key has no profile default to conflict with.
+        assert_eq!(sources["filtering"]["source"], "device");
+        assert_eq!(sources["filtering"]["conflict"], false);
+        assert!(default_conflicts(&sources).is_empty());
+
+        // An override of a different profile value is marked as a conflict, and
+        // the merged table follows the device (N676).
+        let overrides = sources_device_map();
+        let sources = merge_default_sources("linux-virt", std::slice::from_ref(&overrides));
+        assert_eq!(sources["tile_missing_threshold"]["value"], "5");
+        assert_eq!(sources["tile_missing_threshold"]["source"], "device");
+        assert_eq!(sources["tile_missing_threshold"]["conflict"], true);
+        assert_eq!(
+            default_conflicts(&sources),
+            vec!["tile_missing_threshold".to_string()]
+        );
+        assert_eq!(
+            merge_default_maps("linux-virt", std::slice::from_ref(&overrides))
+                ["tile_missing_threshold"],
+            "5"
+        );
+    }
+
+    /// N706: a small advertised map used by the provenance test.
+    fn sources_device_map() -> std::collections::BTreeMap<String, String> {
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("tile_missing_threshold".to_string(), "5".to_string());
+        map
     }
 
     #[test]
