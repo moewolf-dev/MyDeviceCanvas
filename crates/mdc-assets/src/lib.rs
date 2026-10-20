@@ -1,6 +1,7 @@
 //! Simple LRU asset cache: hash key, size quota, reject oversized before alloc.
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use thiserror::Error;
@@ -19,7 +20,7 @@ pub enum AssetError {
     Io(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssetKey(pub String);
 
 impl AssetKey {
@@ -101,8 +102,10 @@ impl AssetCache {
 
 /// N729: a content-addressed blob assembled from fixed-size chunks. `chunks`
 /// are the hashes needed to reconstruct it in order; `len` checks the result.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredBlob {
+    /// SHA-256 of the full blob (its identity across reopens).
+    pub key: AssetKey,
     pub chunks: Vec<AssetKey>,
     pub len: usize,
 }
@@ -178,6 +181,7 @@ impl ChunkStore {
             *self.refs.entry(key.0.clone()).or_insert(0) += 1;
         }
         Ok(StoredBlob {
+            key: AssetKey::from_bytes(bytes),
             chunks: keys,
             len: bytes.len(),
         })
@@ -208,6 +212,240 @@ impl ChunkStore {
             }
         }
     }
+}
+
+/// N738: the on-disk chunk index. Chunks are content-addressed files under
+/// `chunks/`; the index records each blob's chunk list and reference count.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DiskBlob {
+    blob: StoredBlob,
+    refs: usize,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct DiskIndex {
+    chunk_size: usize,
+    max_total: usize,
+    blobs: BTreeMap<String, DiskBlob>,
+}
+
+/// N738: a persistent `ChunkStore`. Identical chunks are written once, a blob
+/// inserted twice gains a reference rather than new bytes, and reopening the
+/// directory restores the index so dedup survives a restart. The quota is
+/// checked before any file is written; `release` deletes chunks whose last
+/// reference is gone.
+pub struct DiskChunkStore {
+    dir: PathBuf,
+    chunk_size: usize,
+    max_total: usize,
+    total: usize,
+    blobs: BTreeMap<String, DiskBlob>,
+}
+
+/// N738: the most blobs the on-disk index retains.
+pub const MAX_DISK_BLOBS: usize = 4096;
+
+impl DiskChunkStore {
+    pub fn open(
+        dir: impl Into<PathBuf>,
+        chunk_size: usize,
+        max_total: usize,
+    ) -> Result<Self, AssetError> {
+        let dir = dir.into();
+        let chunks = dir.join("chunks");
+        std::fs::create_dir_all(&chunks).map_err(io_err)?;
+        let chunk_size = chunk_size.clamp(1, 1024 * 1024);
+        let mut store = Self {
+            dir,
+            chunk_size,
+            max_total,
+            total: 0,
+            blobs: BTreeMap::new(),
+        };
+        let index_path = store.index_path();
+        if let Ok(text) = std::fs::read_to_string(&index_path) {
+            if let Ok(index) = serde_json::from_str::<DiskIndex>(&text) {
+                if index.chunk_size == store.chunk_size {
+                    store.blobs = index.blobs;
+                }
+            }
+        }
+        // Drop entries whose chunk files vanished, then remove orphan files.
+        let entries: Vec<(String, DiskBlob)> = store.blobs.clone().into_iter().collect();
+        for (key, entry) in entries {
+            if entry
+                .blob
+                .chunks
+                .iter()
+                .any(|chunk| !store.chunk_path(chunk).is_file())
+            {
+                store.blobs.remove(&key);
+            }
+        }
+        let referenced: BTreeSet<String> = store
+            .blobs
+            .values()
+            .flat_map(|entry| entry.blob.chunks.iter().map(|chunk| chunk.0.clone()))
+            .collect();
+        let mut total = 0usize;
+        for entry in std::fs::read_dir(&chunks).map_err(io_err)? {
+            let entry = entry.map_err(io_err)?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                let _ = std::fs::remove_file(entry.path());
+                continue;
+            }
+            if !referenced.contains(&name) {
+                let _ = std::fs::remove_file(entry.path());
+                continue;
+            }
+            total = total.saturating_add(entry.metadata().map_err(io_err)?.len() as usize);
+        }
+        store.total = total;
+        store.save_index()?;
+        Ok(store)
+    }
+
+    fn index_path(&self) -> PathBuf {
+        self.dir.join("index.json")
+    }
+
+    fn chunk_path(&self, key: &AssetKey) -> PathBuf {
+        self.dir.join("chunks").join(&key.0)
+    }
+
+    fn save_index(&self) -> Result<(), AssetError> {
+        let index = DiskIndex {
+            chunk_size: self.chunk_size,
+            max_total: self.max_total,
+            blobs: self.blobs.clone(),
+        };
+        let text = serde_json::to_string(&index).map_err(|e| AssetError::Io(e.to_string()))?;
+        let path = self.index_path();
+        let temp = self.dir.join(".index.tmp");
+        std::fs::write(&temp, text).map_err(io_err)?;
+        std::fs::rename(temp, path).map_err(io_err)
+    }
+
+    pub fn chunk_size(&self) -> usize {
+        self.chunk_size
+    }
+
+    pub fn total_bytes(&self) -> usize {
+        self.total
+    }
+
+    pub fn unique_chunks(&self) -> usize {
+        self.blobs
+            .values()
+            .flat_map(|entry| entry.blob.chunks.iter().map(|chunk| chunk.0.clone()))
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
+
+    pub fn ref_count(&self, blob: &StoredBlob) -> usize {
+        self.blobs
+            .get(&blob.key.0)
+            .map(|entry| entry.refs)
+            .unwrap_or(0)
+    }
+
+    pub fn insert(&mut self, bytes: &[u8]) -> Result<StoredBlob, AssetError> {
+        let blob = StoredBlob {
+            key: AssetKey::from_bytes(bytes),
+            chunks: bytes
+                .chunks(self.chunk_size)
+                .map(AssetKey::from_bytes)
+                .collect(),
+            len: bytes.len(),
+        };
+        // Plan the new files before writing any of them.
+        let mut planned = BTreeSet::new();
+        let mut new_bytes = 0usize;
+        for (key, chunk) in blob.chunks.iter().zip(bytes.chunks(self.chunk_size)) {
+            if !self.chunk_path(key).is_file() && planned.insert(key.0.clone()) {
+                new_bytes = new_bytes
+                    .checked_add(chunk.len())
+                    .ok_or(AssetError::QuotaExceeded)?;
+            }
+        }
+        if self
+            .total
+            .checked_add(new_bytes)
+            .ok_or(AssetError::QuotaExceeded)?
+            > self.max_total
+        {
+            return Err(AssetError::QuotaExceeded);
+        }
+        if !self.blobs.contains_key(&blob.key.0) && self.blobs.len() >= MAX_DISK_BLOBS {
+            return Err(AssetError::TooLarge);
+        }
+        for (key, chunk) in blob.chunks.iter().zip(bytes.chunks(self.chunk_size)) {
+            let path = self.chunk_path(key);
+            if path.is_file() {
+                continue;
+            }
+            let temp = self.dir.join(format!(".chunk-{}", key.0));
+            std::fs::write(&temp, chunk).map_err(io_err)?;
+            std::fs::rename(temp, path).map_err(io_err)?;
+            self.total = self.total.saturating_add(chunk.len());
+        }
+        let entry = self
+            .blobs
+            .entry(blob.key.0.clone())
+            .or_insert_with(|| DiskBlob {
+                blob: blob.clone(),
+                refs: 0,
+            });
+        entry.refs = entry.refs.saturating_add(1);
+        self.save_index()?;
+        Ok(blob)
+    }
+
+    pub fn get(&self, blob: &StoredBlob) -> Option<Vec<u8>> {
+        let mut out = Vec::with_capacity(blob.len);
+        for key in &blob.chunks {
+            out.extend_from_slice(&std::fs::read(self.chunk_path(key)).ok()?);
+        }
+        (out.len() == blob.len).then_some(out)
+    }
+
+    pub fn release(&mut self, blob: &StoredBlob) -> Result<(), AssetError> {
+        let remove = match self.blobs.get_mut(&blob.key.0) {
+            Some(entry) => {
+                entry.refs = entry.refs.saturating_sub(1);
+                entry.refs == 0
+            }
+            None => false,
+        };
+        if remove {
+            self.blobs.remove(&blob.key.0);
+        }
+        let referenced: BTreeSet<String> = self
+            .blobs
+            .values()
+            .flat_map(|entry| entry.blob.chunks.iter().map(|chunk| chunk.0.clone()))
+            .collect();
+        let mut total = 0usize;
+        for entry in std::fs::read_dir(self.dir.join("chunks")).map_err(io_err)? {
+            let entry = entry.map_err(io_err)?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            if !referenced.contains(&name) {
+                std::fs::remove_file(entry.path()).map_err(io_err)?;
+                continue;
+            }
+            total = total.saturating_add(entry.metadata().map_err(io_err)?.len() as usize);
+        }
+        self.total = total;
+        self.save_index()
+    }
+}
+
+fn io_err(error: std::io::Error) -> AssetError {
+    AssetError::Io(error.to_string())
 }
 
 /// N467: a chunked upload that spools to a temp file, so a large asset never sits
@@ -720,6 +958,57 @@ mod tests {
         assert_eq!(store.unique_chunks(), 1);
         assert_eq!(store.total_bytes(), 4);
         assert_eq!(store.get(&repeated), Some(b"AAAAAAAAAAAA".to_vec()));
+    }
+
+    #[test]
+    fn disk_chunk_store_persists_dedupes_and_cleans_up() {
+        // N738: dedup survives reopen; references keep shared chunks alive and
+        // the last release removes them from disk.
+        let dir = std::env::temp_dir().join(format!("mdc-disk-chunks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut store = DiskChunkStore::open(&dir, 4, 64).unwrap();
+        let a = store.insert(b"AAAABBBB").unwrap();
+        let b = store.insert(b"AAAACCCC").unwrap();
+        assert_eq!(store.unique_chunks(), 3);
+        assert_eq!(store.total_bytes(), 12);
+        drop(store);
+
+        let mut store = DiskChunkStore::open(&dir, 4, 64).unwrap();
+        assert_eq!(store.unique_chunks(), 3, "index restored");
+        assert_eq!(store.total_bytes(), 12);
+        assert_eq!(store.get(&a).as_deref(), Some(&b"AAAABBBB"[..]));
+        let a2 = store.insert(b"AAAABBBB").unwrap();
+        assert_eq!(store.ref_count(&a2), 2);
+        assert_eq!(store.total_bytes(), 12, "no new chunks for the same blob");
+        store.release(&a).unwrap();
+        assert_eq!(store.ref_count(&a2), 1);
+        assert_eq!(store.get(&a2).as_deref(), Some(&b"AAAABBBB"[..]));
+        store.release(&a2).unwrap();
+        assert_eq!(store.total_bytes(), 8, "AAAA/CCCC remain for b");
+        store.release(&b).unwrap();
+        assert_eq!(store.total_bytes(), 0);
+        assert_eq!(store.unique_chunks(), 0);
+        drop(store);
+
+        let store = DiskChunkStore::open(&dir, 4, 64).unwrap();
+        assert_eq!(store.unique_chunks(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disk_chunk_store_rejects_quota_without_writing() {
+        // N738: a quota failure leaves the directory empty.
+        let dir = std::env::temp_dir().join(format!("mdc-disk-quota-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut store = DiskChunkStore::open(&dir, 4, 8).unwrap();
+        assert_eq!(
+            store.insert(b"AAAABBBBCCCC"),
+            Err(AssetError::QuotaExceeded)
+        );
+        assert_eq!(store.total_bytes(), 0);
+        assert_eq!(store.unique_chunks(), 0);
+        assert_eq!(std::fs::read_dir(dir.join("chunks")).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
