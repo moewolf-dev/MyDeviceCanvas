@@ -1212,6 +1212,45 @@ fn draw_arc(
     }
 }
 
+/// N744: a per-pixel mask for a closed polygon (even-odd scanline).
+fn polygon_mask(width: u32, height: u32, points: &[(i32, i32)]) -> Vec<bool> {
+    let mut mask = vec![false; width as usize * height as usize];
+    if width == 0 || height == 0 || points.len() < 3 {
+        return mask;
+    }
+    let min_y = points.iter().map(|p| p.1).min().unwrap_or(0).max(0);
+    let max_y = points
+        .iter()
+        .map(|p| p.1)
+        .max()
+        .unwrap_or(-1)
+        .min(height as i32 - 1);
+    let mut crossings: Vec<f32> = Vec::with_capacity(points.len());
+    for y in min_y..=max_y {
+        let scan = y as f32 + 0.5;
+        crossings.clear();
+        for index in 0..points.len() {
+            let (x0, y0) = points[index];
+            let (x1, y1) = points[(index + 1) % points.len()];
+            let (y0f, y1f) = (y0 as f32, y1 as f32);
+            if (y0f <= scan) == (y1f <= scan) {
+                continue;
+            }
+            let t = (scan - y0f) / (y1f - y0f);
+            crossings.push(x0 as f32 + (x1 - x0) as f32 * t);
+        }
+        crossings.sort_by(|a, b| a.total_cmp(b));
+        for pair in crossings.chunks_exact(2) {
+            let x0 = pair[0].ceil().max(0.0) as i32;
+            let x1 = pair[1].floor().min(width as f32 - 1.0) as i32;
+            for x in x0..=x1 {
+                mask[y as usize * width as usize + x as usize] = true;
+            }
+        }
+    }
+    mask
+}
+
 /// N156: fill the ellipse inscribed in `rect` with `color`.
 fn fill_circle(pixels: &mut [u8], width: u32, height: u32, rect: [u16; 4], color: u16, alpha: u8) {
     let [x, y, w, h] = rect;
@@ -1406,18 +1445,34 @@ enum TextVAlign {
     Bottom,
 }
 
-fn parse_text_mode(mode: Option<&str>) -> (bool, TextVAlign) {
-    let mut ellipsis = false;
-    let mut valign = TextVAlign::Top;
+struct TextMode {
+    ellipsis: bool,
+    valign: TextVAlign,
+    bg: Option<u16>,
+    underline: bool,
+}
+
+fn parse_text_mode(mode: Option<&str>) -> TextMode {
+    let mut parsed = TextMode {
+        ellipsis: false,
+        valign: TextVAlign::Top,
+        bg: None,
+        underline: false,
+    };
     for token in mode.unwrap_or("").split(',').map(str::trim) {
         match token {
-            "ellipsis" => ellipsis = true,
-            "valign=middle" | "valign=center" => valign = TextVAlign::Middle,
-            "valign=bottom" => valign = TextVAlign::Bottom,
-            _ => {}
+            "ellipsis" => parsed.ellipsis = true,
+            "underline" => parsed.underline = true,
+            "valign=middle" | "valign=center" => parsed.valign = TextVAlign::Middle,
+            "valign=bottom" => parsed.valign = TextVAlign::Bottom,
+            other => {
+                if let Some(color) = other.strip_prefix("bg=") {
+                    parsed.bg = Some(mdc_protocol::parse_color(color.trim()));
+                }
+            }
         }
     }
-    (ellipsis, valign)
+    parsed
 }
 
 /// N740: truncate a line to `max_cols` glyph cells, using `...` when cut.
@@ -1473,6 +1528,38 @@ fn fill_scene(
         90 | 270 => [x, y, h, w],
         _ => [x, y, w, h],
     });
+    // N744: a `mask` node composites its children only inside a polygon.
+    if node.kind == "mask" {
+        if let Some(points) = node.points() {
+            let transformed: Vec<(i32, i32)> =
+                points.iter().map(|point| transform.point(*point)).collect();
+            let mask = polygon_mask(width, height, &transformed);
+            let mut scratch = pixels.to_vec();
+            let mut child_drew = false;
+            for child in &node.children {
+                fill_scene(
+                    child,
+                    &mut scratch,
+                    width,
+                    height,
+                    atlas,
+                    transform,
+                    &mut child_drew,
+                );
+            }
+            if child_drew {
+                for (index, keep) in mask.iter().enumerate() {
+                    if *keep {
+                        let offset = index * 2;
+                        pixels[offset] = scratch[offset];
+                        pixels[offset + 1] = scratch[offset + 1];
+                    }
+                }
+                *drew = true;
+            }
+        }
+        return;
+    }
     // N368: a `clip` node bounds its children to its rect. Children draw into a
     // copy of the target, then only the clip rect is composited back.
     if node.kind == "clip" {
@@ -1557,8 +1644,8 @@ fn fill_scene(
                 _ => wrap_text(text, max_cols),
             };
             // N740: `ellipsis` and vertical alignment are `mode` tokens.
-            let (ellipsis, valign) = parse_text_mode(node.mode.as_deref());
-            if ellipsis {
+            let text_mode = parse_text_mode(node.mode.as_deref());
+            if text_mode.ellipsis {
                 lines = lines
                     .into_iter()
                     .map(|line| truncate_ellipsis(&line, max_cols))
@@ -1567,7 +1654,7 @@ fn fill_scene(
             let line_height = (8 * scale_y).max(1);
             // The glyph block is 7 rows per line (the 8th row is leading).
             let block_height = lines.len() as u32 * 7 * scale_y;
-            let offset_y = match valign {
+            let offset_y = match text_mode.valign {
                 TextVAlign::Top => 0,
                 TextVAlign::Middle => u32::from(h).saturating_sub(block_height) / 2,
                 TextVAlign::Bottom => u32::from(h).saturating_sub(block_height),
@@ -1585,6 +1672,40 @@ fn fill_scene(
                     Some("right") => u32::from(w).saturating_sub(line_width),
                     _ => 0,
                 };
+                // N751: optional line background and underline.
+                if let Some(bg) = text_mode.bg {
+                    for bg_y in ly..ly.saturating_add(line_height) {
+                        if bg_y >= height {
+                            break;
+                        }
+                        for bg_x in x..x.saturating_add(w) {
+                            if u32::from(bg_x) >= width {
+                                break;
+                            }
+                            let index = ((bg_y * width + u32::from(bg_x)) * 2) as usize;
+                            put_pixel(pixels, index, bg, alpha);
+                        }
+                    }
+                }
+                if text_mode.underline {
+                    let underline_y = ly.saturating_add(7 * scale_y);
+                    let start = x.saturating_add(offset.min(u32::from(u16::MAX)) as u16);
+                    let end = start.saturating_add(line_width.min(u32::from(u16::MAX)) as u16);
+                    draw_line(
+                        pixels,
+                        width,
+                        height,
+                        [
+                            start,
+                            underline_y.min(u32::from(u16::MAX)) as u16,
+                            end,
+                            underline_y.min(u32::from(u16::MAX)) as u16,
+                        ],
+                        color,
+                        alpha,
+                        0,
+                    );
+                }
                 draw_text(
                     pixels,
                     width,
@@ -1768,15 +1889,110 @@ fn fill_scene(
             *drew = true;
         }
     } else if node.kind == "path" {
-        // N734: 3 points -> quadratic, 4 -> cubic; flatten into bounded lines.
-        if let Some(points) = node.bezier() {
-            let transformed: Vec<(f32, f32)> = points
-                .iter()
-                .map(|point| {
-                    let (x, y) = transform.point(*point);
-                    (x as f32, y as f32)
-                })
-                .collect();
+        // N734/N743: command stream first, else the legacy 3/4-point bezier.
+        let map = |point: [i32; 2]| {
+            let (x, y) = transform.point(point);
+            (x as f32, y as f32)
+        };
+        let color = node.color_rgb565();
+        if let Some(commands) = node.path_commands() {
+            let mut current: Option<(f32, f32)> = None;
+            let mut start_point: Option<(f32, f32)> = None;
+            let mut line = |from: (f32, f32), to: (f32, f32)| {
+                draw_line(
+                    pixels,
+                    width,
+                    height,
+                    [
+                        from.0.round().clamp(0.0, f32::from(u16::MAX)) as u16,
+                        from.1.round().clamp(0.0, f32::from(u16::MAX)) as u16,
+                        to.0.round().clamp(0.0, f32::from(u16::MAX)) as u16,
+                        to.1.round().clamp(0.0, f32::from(u16::MAX)) as u16,
+                    ],
+                    color,
+                    alpha,
+                    0,
+                );
+            };
+            for command in commands {
+                match command {
+                    mdc_protocol::PathCommand::Move(point) => {
+                        let point = map(point);
+                        current = Some(point);
+                        start_point = Some(point);
+                    }
+                    mdc_protocol::PathCommand::Line(point) => {
+                        let point = map(point);
+                        if let Some(previous) = current {
+                            line(previous, point);
+                        }
+                        current = Some(point);
+                    }
+                    mdc_protocol::PathCommand::Quad(control, point) => {
+                        let control = map(control);
+                        let point = map(point);
+                        if let Some(previous) = current {
+                            for step in 1..=16 {
+                                let t = step as f32 / 16.0;
+                                let u = 1.0 - t;
+                                let at = (
+                                    u * u * previous.0 + 2.0 * u * t * control.0 + t * t * point.0,
+                                    u * u * previous.1 + 2.0 * u * t * control.1 + t * t * point.1,
+                                );
+                                let from = if step == 1 {
+                                    previous
+                                } else {
+                                    let back = (step - 1) as f32 / 16.0;
+                                    let bu = 1.0 - back;
+                                    (
+                                        bu * bu * previous.0
+                                            + 2.0 * bu * back * control.0
+                                            + back * back * point.0,
+                                        bu * bu * previous.1
+                                            + 2.0 * bu * back * control.1
+                                            + back * back * point.1,
+                                    )
+                                };
+                                line(from, at);
+                            }
+                        }
+                        current = Some(point);
+                    }
+                    mdc_protocol::PathCommand::Cubic(control1, control2, point) => {
+                        let control1 = map(control1);
+                        let control2 = map(control2);
+                        let point = map(point);
+                        if let Some(previous) = current {
+                            let at = |t: f32| {
+                                let u = 1.0 - t;
+                                (
+                                    u * u * u * previous.0
+                                        + 3.0 * u * u * t * control1.0
+                                        + 3.0 * u * t * t * control2.0
+                                        + t * t * t * point.0,
+                                    u * u * u * previous.1
+                                        + 3.0 * u * u * t * control1.1
+                                        + 3.0 * u * t * t * control2.1
+                                        + t * t * t * point.1,
+                                )
+                            };
+                            for step in 1..=24 {
+                                line(at((step - 1) as f32 / 24.0), at(step as f32 / 24.0));
+                            }
+                        }
+                        current = Some(point);
+                    }
+                    mdc_protocol::PathCommand::Close => {
+                        if let (Some(previous), Some(first)) = (current, start_point) {
+                            line(previous, first);
+                        }
+                        current = start_point;
+                    }
+                }
+            }
+            *drew = true;
+        } else if let Some(points) = node.bezier() {
+            let transformed: Vec<(f32, f32)> = points.iter().map(|point| map(*point)).collect();
             let steps = 32u32;
             let at = |t: f32| -> (f32, f32) {
                 if transformed.len() == 4 {
@@ -1806,7 +2022,6 @@ fn fill_scene(
                     )
                 }
             };
-            let color = node.color_rgb565();
             let mut previous = at(0.0);
             for step in 1..=steps {
                 let current = at(step as f32 / steps as f32);
@@ -6035,6 +6250,134 @@ mod tests {
         assert_eq!(top.first(), Some(&0));
         assert_eq!(bottom.first(), Some(&6), "block height 14 in a 20px rect");
         assert!(bottom.iter().all(|y| *y >= 6));
+    }
+
+    #[test]
+    fn scene_draws_path_command_streams() {
+        // N743: M/L/Z draws a closed triangle; Q bends between its endpoints.
+        use mdc_protocol::SceneNode;
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 24,
+            height: 24,
+            ..BoardProfile::default()
+        });
+        let node = |value2: &str| SceneNode {
+            name: "path".into(),
+            kind: "path".into(),
+            rect: Some([0, 0, 24, 24]),
+            children: Vec::new(),
+            value: Some("#0000FF".into()),
+            value2: Some(value2.into()),
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: None,
+            focus: None,
+        };
+        device.scene = Some(node("M2,20;L8,20;L8,14;Z"));
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(2, 20), Some(0x001F));
+        assert_eq!(device.pixel_rgb565(8, 20), Some(0x001F));
+        assert_eq!(device.pixel_rgb565(8, 14), Some(0x001F));
+        assert_eq!(device.pixel_rgb565(5, 10), Some(0));
+
+        device.scene = Some(node("M2,2;Q12,2 12,12"));
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(12, 12), Some(0x001F));
+        assert_eq!(device.pixel_rgb565(10, 5), Some(0x001F));
+    }
+
+    #[test]
+    fn scene_mask_clips_children_to_a_polygon() {
+        // N744: the child fills the whole rect but only the mask triangle shows.
+        use mdc_protocol::SceneNode;
+        let child = SceneNode {
+            name: "fill".into(),
+            kind: "rect".into(),
+            rect: Some([0, 0, 16, 16]),
+            children: Vec::new(),
+            value: Some("#FF0000".into()),
+            value2: None,
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: None,
+            focus: None,
+        };
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 16,
+            height: 16,
+            ..BoardProfile::default()
+        });
+        device.scene = Some(SceneNode {
+            name: "mask".into(),
+            kind: "mask".into(),
+            rect: Some([0, 0, 16, 16]),
+            children: vec![child],
+            value: None,
+            value2: Some("1,1;14,1;1,14".into()),
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: None,
+            focus: None,
+        });
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(2, 2), Some(0xF800));
+        assert_eq!(device.pixel_rgb565(12, 12), Some(0));
+        // An out-of-bounds polygon is clipped, not a panic.
+        if let Some(scene) = device.scene.as_mut() {
+            scene.value2 = Some("-5,-5;20,-5;-5,20".into());
+        }
+        assert!(device.render_scene());
+    }
+
+    #[test]
+    fn text_background_and_underline_draw_bands() {
+        // N751: `bg=` fills the line box and `underline` strokes below the glyphs.
+        use mdc_protocol::SceneNode;
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 32,
+            height: 20,
+            ..BoardProfile::default()
+        });
+        device.scene = Some(SceneNode {
+            name: "label".into(),
+            kind: "text".into(),
+            rect: Some([0, 0, 32, 20]),
+            value: Some("I".into()),
+            value2: None,
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: Some("bg=#FF0000,underline".into()),
+            focus: None,
+            children: Vec::new(),
+        });
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(20, 0), Some(0xF800), "line background");
+        assert_eq!(device.pixel_rgb565(20, 10), Some(0xF800));
+        assert_eq!(device.pixel_rgb565(5, 14), Some(0xFFFF), "underline");
     }
 
     #[test]
