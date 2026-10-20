@@ -859,6 +859,7 @@ fn cmd_package(
         sprite: profile.renderer_sprite,
         mesh2d: profile.renderer_mesh2d,
         skeleton: profile.renderer_skeleton,
+        dqs: profile.renderer_dqs,
         max_texture: profile.renderer_max_texture,
         max_vertices: profile.renderer_max_vertices,
     };
@@ -1245,37 +1246,13 @@ fn cmd_ota(
         device.poll().map_err(|e| e.to_string())?;
         session.poll().map_err(|e| e.to_string()).map(|_| ())
     };
+    // N728: resume from the checkpoint instead of resending acknowledged phases.
+    let commands = session.ota_resume_commands(version, size, sha256.clone());
     let result = (|| -> Result<(), String> {
-        step(
-            &mut session,
-            &mut device,
-            mdc_protocol::OtaCommand {
-                action: "begin".into(),
-                version: Some(version.to_string()),
-                size,
-                sha256: None,
-            },
-        )?;
-        step(
-            &mut session,
-            &mut device,
-            mdc_protocol::OtaCommand {
-                action: "chunk".into(),
-                version: None,
-                size: None,
-                sha256: sha256.clone(),
-            },
-        )?;
-        step(
-            &mut session,
-            &mut device,
-            mdc_protocol::OtaCommand {
-                action: "confirm".into(),
-                version: None,
-                size: None,
-                sha256: None,
-            },
-        )
+        for command in commands {
+            step(&mut session, &mut device, command)?;
+        }
+        Ok(())
     })();
     // Version readback (also refreshes Capabilities after the install).
     session.refresh_capabilities()?;
@@ -1784,6 +1761,8 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut time: f32 = 0.0;
     let mut sprite: u32 = 64;
     let mut single = false;
+    // N726: explicit cap for dual-quaternion skinning (default stays LBS).
+    let mut dqs = false;
     let mut filter = mdc_bake::Filter::Nearest;
     let mut wrap_arg: Option<mdc_bake::Wrap> = None;
     let mut iter = args.iter();
@@ -1800,6 +1779,7 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "--time" => time = iter.next().and_then(|v| v.parse().ok()).unwrap_or(time),
             "--sprite" => sprite = iter.next().and_then(|v| v.parse().ok()).unwrap_or(sprite),
             "--single" => single = true,
+            "--dqs" => dqs = true,
             "--filter" => {
                 filter = match iter.next().map(String::as_str) {
                     Some("linear") => mdc_bake::Filter::Linear,
@@ -1862,23 +1842,30 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let primitives = model.meshes.iter().map(|m| m.primitives).max().unwrap_or(0);
     let texture_arg = if textured { texture.as_ref() } else { None };
     // N186: render every mesh node of the model, or a single mesh with --single.
+    let skin = if dqs {
+        mdc_bake::SkinMode::Dqs
+    } else {
+        mdc_bake::SkinMode::Lbs
+    };
     let frame = if single {
-        mdc_bake::render_geometry_at(
+        mdc_bake::render_geometry_at_mode(
             &model,
             animation,
             time,
             (sprite, sprite),
             texture_arg,
             0xF800,
+            skin,
         )?
     } else {
-        mdc_bake::render_scene_at(
+        mdc_bake::render_scene_at_mode(
             &model,
             animation,
             time,
             (sprite, sprite),
             texture_arg,
             0xF800,
+            skin,
         )?
     };
     std::fs::write(
@@ -1893,6 +1880,7 @@ fn cmd_render_mesh(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "time": time,
             "sprite": format!("{sprite}x{sprite}"),
             "single": single,
+            "skinning": if dqs { "dqs" } else { "lbs" },
             "textured": textured,
             "geometry": has_geometry,
             "morphTargets": morph_targets,
@@ -3487,26 +3475,8 @@ fn drive_ota_tcp(
     size: Option<u64>,
     sha256: Option<String>,
 ) -> Result<(), String> {
-    let commands = [
-        mdc_protocol::OtaCommand {
-            action: "begin".into(),
-            version: Some(version.to_string()),
-            size,
-            sha256: None,
-        },
-        mdc_protocol::OtaCommand {
-            action: "chunk".into(),
-            version: None,
-            size: None,
-            sha256: sha256.clone(),
-        },
-        mdc_protocol::OtaCommand {
-            action: "confirm".into(),
-            version: None,
-            size: None,
-            sha256: None,
-        },
-    ];
+    // N728: skip phases already acknowledged before the reconnect.
+    let commands = session.ota_resume_commands(version, size, sha256);
     for command in commands {
         session.send_ota(command).map_err(|e| e.to_string())?;
         for _ in 0..80 {
