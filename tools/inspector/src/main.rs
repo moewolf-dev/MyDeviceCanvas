@@ -202,6 +202,58 @@ fn write_archive_manifest(dir: &str, keep: usize, max_bytes: u64) -> std::io::Re
     )
 }
 
+/// N709: prune an archive directory down to the live JSONL plus `keep` rotated
+/// copies (`.1..keep`). Higher-numbered rotations are deleted; unrelated files
+/// are left alone. Returns a small report for the CLI.
+fn prune_archive(dir: &str, keep: usize) -> std::io::Result<serde_json::Value> {
+    let manifest = std::path::Path::new(dir).join("manifest.json");
+    let live = std::fs::read_to_string(&manifest)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value["live"].as_str().map(str::to_string))
+        .unwrap_or_else(|| "mdc-history.jsonl".to_string());
+    let mut kept = Vec::new();
+    let mut removed = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let Some(name) = entry.file_name().into_string().ok() else {
+            continue;
+        };
+        if name == live {
+            kept.push(name);
+            continue;
+        }
+        let Some(suffix) = name
+            .strip_prefix(&live)
+            .and_then(|rest| rest.strip_prefix('.'))
+        else {
+            continue;
+        };
+        if suffix.is_empty() || !suffix.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(index) = suffix.parse::<usize>() else {
+            continue;
+        };
+        if index <= keep {
+            kept.push(name);
+        } else {
+            std::fs::remove_file(entry.path())?;
+            removed.push(name);
+        }
+    }
+    kept.sort();
+    removed.sort();
+    Ok(serde_json::json!({
+        "dir": dir,
+        "live": live,
+        "keep": keep,
+        "kept": kept,
+        "removed": removed,
+        "ok": true,
+    }))
+}
+
 /// N689: the archive output style. `--json` is an explicit alias for the default
 /// pretty JSON; `--compact` (even alongside `--json`) selects the one-line form.
 fn archive_compact(args: &[String]) -> bool {
@@ -459,6 +511,27 @@ fn main() {
         println!("{}", rss_delta(count, interval));
         return;
     }
+    // N709: prune rotated archive copies beyond `--keep`.
+    if args.iter().any(|a| a == "--prune-archive") {
+        let dir = flag_value("--prune-archive").unwrap_or_default();
+        let keep = flag_value("--keep")
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(1);
+        match prune_archive(&dir, keep) {
+            Ok(report) => match serde_json::to_string_pretty(&report) {
+                Ok(text) => println!("{text}"),
+                Err(error) => {
+                    eprintln!("inspector error: {error}");
+                    std::process::exit(1);
+                }
+            },
+            Err(error) => {
+                eprintln!("inspector error: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     // N619: validate an archive's manifest against the files on disk.
     if args.iter().any(|a| a == "--check-archive") {
         let dir = flag_value("--check-archive").unwrap_or_default();
@@ -672,6 +745,35 @@ mod tests {
         assert_eq!(kind("h.jsonl", "h.jsonl."), "other");
         assert_eq!(kind("h.jsonl", "other.jsonl"), "other");
         assert_eq!(kind("", "h.jsonl"), "other", "no live name");
+    }
+
+    #[test]
+    fn prune_archive_keeps_the_requested_copies() {
+        // N709: the live log and `.1..keep` stay; higher rotations are removed.
+        let dir = std::env::temp_dir().join(format!("mdc-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in [
+            "mdc-history.jsonl",
+            "mdc-history.jsonl.1",
+            "mdc-history.jsonl.2",
+            "mdc-history.jsonl.3",
+            "other.txt",
+        ] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        let report = prune_archive(dir.to_str().unwrap(), 2).unwrap();
+        assert_eq!(report["keep"], 2);
+        assert_eq!(
+            report["removed"],
+            serde_json::json!(["mdc-history.jsonl.3"])
+        );
+        assert!(dir.join("mdc-history.jsonl").exists());
+        assert!(dir.join("mdc-history.jsonl.1").exists());
+        assert!(dir.join("mdc-history.jsonl.2").exists());
+        assert!(!dir.join("mdc-history.jsonl.3").exists());
+        assert!(dir.join("other.txt").exists(), "unrelated files stay");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
