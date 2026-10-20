@@ -1125,6 +1125,93 @@ fn fill_polygon(
     drew
 }
 
+/// N733: fill the sector of the ellipse inscribed in `rect`, from `start`
+/// degrees clockwise through `sweep` degrees.
+#[allow(clippy::too_many_arguments)]
+fn fill_sector(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    rect: [u16; 4],
+    start: f32,
+    sweep: f32,
+    color: u16,
+    alpha: u8,
+    additive: bool,
+) {
+    let [x, y, w, h] = rect;
+    if w == 0 || h == 0 {
+        return;
+    }
+    let cx = f32::from(x) + (f32::from(w) - 1.0) / 2.0;
+    let cy = f32::from(y) + (f32::from(h) - 1.0) / 2.0;
+    let rx = (f32::from(w) / 2.0).max(0.5);
+    let ry = (f32::from(h) / 2.0).max(0.5);
+    for yy in y..y.saturating_add(h) {
+        if u32::from(yy) >= height {
+            break;
+        }
+        for xx in x..x.saturating_add(w) {
+            if u32::from(xx) >= width {
+                break;
+            }
+            let dx = (f32::from(xx) - cx) / rx;
+            let dy = (f32::from(yy) - cy) / ry;
+            if dx * dx + dy * dy > 1.0 {
+                continue;
+            }
+            let angle = dy.atan2(dx).to_degrees().rem_euclid(360.0);
+            if (angle - start).rem_euclid(360.0) > sweep {
+                continue;
+            }
+            let index = ((u32::from(yy) * width + u32::from(xx)) * 2) as usize;
+            if additive {
+                add_pixel(pixels, index, color, alpha);
+            } else {
+                put_pixel(pixels, index, color, alpha);
+            }
+        }
+    }
+}
+
+/// N733: stroke the ellipse inscribed in `rect` along the same angle range.
+#[allow(clippy::too_many_arguments)]
+fn draw_arc(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    rect: [u16; 4],
+    start: f32,
+    sweep: f32,
+    color: u16,
+    alpha: u8,
+    additive: bool,
+) {
+    let [x, y, w, h] = rect;
+    if w == 0 || h == 0 {
+        return;
+    }
+    let cx = f32::from(x) + (f32::from(w) - 1.0) / 2.0;
+    let cy = f32::from(y) + (f32::from(h) - 1.0) / 2.0;
+    let rx = f32::from(w) / 2.0;
+    let ry = f32::from(h) / 2.0;
+    let steps = ((sweep * 2.0) as u32).clamp(8, 720);
+    for step in 0..=steps {
+        let angle = (start + sweep * step as f32 / steps as f32).to_radians();
+        let xx = (cx + rx * angle.cos()).round() as i32;
+        let yy = (cy + ry * angle.sin()).round() as i32;
+        if xx < 0 || yy < 0 || xx >= width as i32 || yy >= height as i32 {
+            continue;
+        }
+        let index = ((yy as u32 * width + xx as u32) * 2) as usize;
+        if additive {
+            add_pixel(pixels, index, color, alpha);
+        } else {
+            put_pixel(pixels, index, color, alpha);
+        }
+    }
+}
+
 /// N156: fill the ellipse inscribed in `rect` with `color`.
 fn fill_circle(pixels: &mut [u8], width: u32, height: u32, rect: [u16; 4], color: u16, alpha: u8) {
     let [x, y, w, h] = rect;
@@ -1311,6 +1398,42 @@ fn hit_test_node(
     None
 }
 
+/// N740: `text` `mode` tokens: `ellipsis` and `valign=top|middle|bottom`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextVAlign {
+    Top,
+    Middle,
+    Bottom,
+}
+
+fn parse_text_mode(mode: Option<&str>) -> (bool, TextVAlign) {
+    let mut ellipsis = false;
+    let mut valign = TextVAlign::Top;
+    for token in mode.unwrap_or("").split(',').map(str::trim) {
+        match token {
+            "ellipsis" => ellipsis = true,
+            "valign=middle" | "valign=center" => valign = TextVAlign::Middle,
+            "valign=bottom" => valign = TextVAlign::Bottom,
+            _ => {}
+        }
+    }
+    (ellipsis, valign)
+}
+
+/// N740: truncate a line to `max_cols` glyph cells, using `...` when cut.
+fn truncate_ellipsis(line: &str, max_cols: usize) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    if chars.len() <= max_cols {
+        return line.to_string();
+    }
+    if max_cols <= 3 {
+        return chars[..max_cols].iter().collect();
+    }
+    let mut out: String = chars[..max_cols - 3].iter().collect();
+    out.push_str("...");
+    out
+}
+
 /// N80/N138: depth-first scene rasterizer; `rect` nodes fill from their colour,
 /// `group` (or unknown) nodes transform their children.
 fn fill_scene(
@@ -1338,6 +1461,9 @@ fn fill_scene(
             | "rounded-rect"
             | "polygon"
             | "polyline"
+            | "arc"
+            | "pie"
+            | "path"
     );
     // N338: source alpha for every rasterised kind.
     let alpha = node.opacity_u8();
@@ -1417,7 +1543,7 @@ fn fill_scene(
             // and lines are clipped by the framebuffer (not the rect height).
             let max_cols = (u32::from(w) / (6 * scale_x)).max(1) as usize;
             // N495: `wrap` selects word/char/none line breaking.
-            let lines = match node.wrap.as_deref() {
+            let mut lines = match node.wrap.as_deref() {
                 Some("none") => text.split('\n').map(str::to_string).collect::<Vec<_>>(),
                 Some("char") => text
                     .split('\n')
@@ -1430,10 +1556,25 @@ fn fill_scene(
                     .collect::<Vec<_>>(),
                 _ => wrap_text(text, max_cols),
             };
+            // N740: `ellipsis` and vertical alignment are `mode` tokens.
+            let (ellipsis, valign) = parse_text_mode(node.mode.as_deref());
+            if ellipsis {
+                lines = lines
+                    .into_iter()
+                    .map(|line| truncate_ellipsis(&line, max_cols))
+                    .collect();
+            }
             let line_height = (8 * scale_y).max(1);
+            // The glyph block is 7 rows per line (the 8th row is leading).
+            let block_height = lines.len() as u32 * 7 * scale_y;
+            let offset_y = match valign {
+                TextVAlign::Top => 0,
+                TextVAlign::Middle => u32::from(h).saturating_sub(block_height) / 2,
+                TextVAlign::Bottom => u32::from(h).saturating_sub(block_height),
+            };
             let color = node.color_rgb565();
             for (line_index, line) in lines.iter().enumerate() {
-                let ly = u32::from(y) + line_index as u32 * line_height;
+                let ly = u32::from(y) + offset_y + line_index as u32 * line_height;
                 if ly >= height {
                     break;
                 }
@@ -1594,6 +1735,98 @@ fn fill_scene(
                 }
                 *drew = true;
             }
+        }
+    } else if node.kind == "arc" || node.kind == "pie" {
+        // N733: `value2` carries `start,end` degrees; `rect` is the ellipse box.
+        if let (Some(rect), Some((start, sweep))) = (rect, node.arc_angles()) {
+            let rect = transform.apply(rect);
+            if node.kind == "pie" {
+                fill_sector(
+                    pixels,
+                    width,
+                    height,
+                    rect,
+                    start,
+                    sweep,
+                    node.color_rgb565(),
+                    alpha,
+                    node.is_additive(),
+                );
+            } else {
+                draw_arc(
+                    pixels,
+                    width,
+                    height,
+                    rect,
+                    start,
+                    sweep,
+                    node.color_rgb565(),
+                    alpha,
+                    node.is_additive(),
+                );
+            }
+            *drew = true;
+        }
+    } else if node.kind == "path" {
+        // N734: 3 points -> quadratic, 4 -> cubic; flatten into bounded lines.
+        if let Some(points) = node.bezier() {
+            let transformed: Vec<(f32, f32)> = points
+                .iter()
+                .map(|point| {
+                    let (x, y) = transform.point(*point);
+                    (x as f32, y as f32)
+                })
+                .collect();
+            let steps = 32u32;
+            let at = |t: f32| -> (f32, f32) {
+                if transformed.len() == 4 {
+                    let u = 1.0 - t;
+                    let [p0, p1, p2, p3] = [
+                        transformed[0],
+                        transformed[1],
+                        transformed[2],
+                        transformed[3],
+                    ];
+                    (
+                        u * u * u * p0.0
+                            + 3.0 * u * u * t * p1.0
+                            + 3.0 * u * t * t * p2.0
+                            + t * t * t * p3.0,
+                        u * u * u * p0.1
+                            + 3.0 * u * u * t * p1.1
+                            + 3.0 * u * t * t * p2.1
+                            + t * t * t * p3.1,
+                    )
+                } else {
+                    let u = 1.0 - t;
+                    let [p0, p1, p2] = [transformed[0], transformed[1], transformed[2]];
+                    (
+                        u * u * p0.0 + 2.0 * u * t * p1.0 + t * t * p2.0,
+                        u * u * p0.1 + 2.0 * u * t * p1.1 + t * t * p2.1,
+                    )
+                }
+            };
+            let color = node.color_rgb565();
+            let mut previous = at(0.0);
+            for step in 1..=steps {
+                let current = at(step as f32 / steps as f32);
+                draw_line(
+                    pixels,
+                    width,
+                    height,
+                    [
+                        previous.0.round().clamp(0.0, f32::from(u16::MAX)) as u16,
+                        previous.1.round().clamp(0.0, f32::from(u16::MAX)) as u16,
+                        current.0.round().clamp(0.0, f32::from(u16::MAX)) as u16,
+                        current.1.round().clamp(0.0, f32::from(u16::MAX)) as u16,
+                    ],
+                    color,
+                    alpha,
+                    0,
+                );
+                previous = current;
+            }
+            *drew = true;
         }
     } else if node.kind == "rounded-rect" {
         // N355: a rect with rounded corners; `value2` is the corner radius.
@@ -2045,6 +2278,9 @@ pub struct FakeDevice {
     ota_active: bool,
     /// begin 之后若虚拟时钟越过这个 tick 还没有 chunk，就回滚并解除冻结。
     ota_deadline: Option<u64>,
+    /// N737: image size from `begin` and the byte ranges received since.
+    ota_size: u64,
+    ota_received: Vec<(u32, u32)>,
     firmware: String,
     pending_version: Option<String>,
     /// Emitted once after the next displayed full frame. TCP peers use this
@@ -2146,6 +2382,8 @@ impl FakeDevice {
             },
             ota_active: false,
             ota_deadline: None,
+            ota_size: 0,
+            ota_received: Vec::new(),
             firmware: "1.0.0".into(),
             pending_version: None,
             input_after_frame: None,
@@ -2369,6 +2607,39 @@ impl FakeDevice {
         };
         self.write_control(MessageType::Metric, 0, &report)
     }
+    /// N737: merge received OTA ranges (sorted, overlapping/adjacent merged,
+    /// bounded to 256 entries).
+    fn record_ota_chunk(&mut self, offset: u32, len: u32) {
+        self.ota_received.push((offset, len));
+        self.ota_received.sort_unstable();
+        let mut merged: Vec<(u32, u32)> = Vec::with_capacity(self.ota_received.len());
+        for (start, length) in self.ota_received.drain(..) {
+            let end = start.saturating_add(length);
+            if let Some((last_start, last_len)) = merged.last_mut() {
+                let last_end = last_start.saturating_add(*last_len);
+                if start <= last_end {
+                    *last_len = last_end.max(end).saturating_sub(*last_start);
+                    continue;
+                }
+            }
+            merged.push((start, length));
+        }
+        if merged.len() > 256 {
+            let start = merged.first().map(|r| r.0).unwrap_or(0);
+            let end = merged
+                .last()
+                .map(|(s, l)| s.saturating_add(*l))
+                .unwrap_or(start);
+            merged = vec![(start, end.saturating_sub(start))];
+        }
+        self.ota_received = merged;
+    }
+
+    /// N737: the received OTA byte ranges (oldest start first).
+    pub fn ota_received_ranges(&self) -> &[(u32, u32)] {
+        &self.ota_received
+    }
+
     /// N547: report the applied-tile counter on the diagnostics channel so the
     /// host can reconcile it against its own `tiles_sent`.
     pub fn emit_tiles_received(&mut self) -> Result<(), SimError> {
@@ -2631,6 +2902,7 @@ impl FakeDevice {
         self.pending_version = None;
         self.ota_active = false;
         self.ota_deadline = None;
+        self.ota_received.clear();
         self.metrics.ota_rollbacks = self.metrics.ota_rollbacks.saturating_add(1);
     }
     pub fn advance(&mut self, ticks: u64) -> Result<(), SimError> {
@@ -2733,6 +3005,7 @@ impl FakeDevice {
             device.pending_version = None;
             device.ota_active = false;
             device.ota_deadline = None;
+            device.ota_received.clear();
             device.metrics.ota_rollbacks = device.metrics.ota_rollbacks.saturating_add(1);
         };
         match cmd.action.as_str() {
@@ -2742,6 +3015,8 @@ impl FakeDevice {
                 }
                 self.pending_version = Some(cmd.version.unwrap_or_else(|| "pending".into()));
                 self.ota_active = true;
+                self.ota_size = cmd.size.unwrap_or(0);
+                self.ota_received.clear();
                 self.ota_deadline = Some(self.clock.tick.saturating_add(OTA_CHUNK_TIMEOUT_TICKS));
                 self.ack(packet.request_id, self.current_frame_id, true, false)
             }
@@ -2749,6 +3024,15 @@ impl FakeDevice {
                 if cmd.sha256.as_deref() == Some("bad") {
                     rollback(self);
                     return self.reply_error(packet.request_id, "E_OTA", "bad image");
+                }
+                // N737: an explicit range must stay inside the declared image.
+                if let (Some(offset), Some(len)) = (cmd.offset, cmd.len) {
+                    let end = u64::from(offset) + u64::from(len);
+                    if len == 0 || (self.ota_size > 0 && end > self.ota_size) {
+                        rollback(self);
+                        return self.reply_error(packet.request_id, "E_OTA", "chunk outside image");
+                    }
+                    self.record_ota_chunk(offset, len);
                 }
                 self.ota_deadline = Some(self.clock.tick.saturating_add(OTA_CHUNK_TIMEOUT_TICKS));
                 self.ack(packet.request_id, self.current_frame_id, true, false)
@@ -5709,6 +5993,51 @@ mod tests {
     }
 
     #[test]
+    fn text_ellipsis_and_vertical_alignment() {
+        // N740: over-long lines get `...`; `valign=bottom` moves the glyph block
+        // down inside a taller rect.
+        assert_eq!(truncate_ellipsis("abcdefgh", 8), "abcdefgh");
+        assert_eq!(truncate_ellipsis("abcdefghij", 8), "abcde...");
+        assert_eq!(truncate_ellipsis("abcdefghij", 2), "ab");
+
+        use mdc_protocol::SceneNode;
+        let lit_rows = |mode: Option<&str>| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 32,
+                height: 20,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "label".into(),
+                kind: "text".into(),
+                rect: Some([0, 0, 32, 20]),
+                value: Some("I".into()),
+                value2: None,
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: mode.map(str::to_string),
+                focus: None,
+                children: Vec::new(),
+            });
+            assert!(device.render_scene());
+            (0..20u16)
+                .filter(|y| (0..32u16).any(|x| device.pixel_rgb565(x, *y).unwrap() != 0))
+                .collect::<Vec<_>>()
+        };
+        let top = lit_rows(Some("valign=top"));
+        let bottom = lit_rows(Some("valign=bottom"));
+        assert_eq!(top.first(), Some(&0));
+        assert_eq!(bottom.first(), Some(&6), "block height 14 in a 20px rect");
+        assert!(bottom.iter().all(|y| *y >= 6));
+    }
+
+    #[test]
     fn additive_blend_brightens_an_overlap() {
         // N480: an additive overlay adds to the base instead of covering it.
         use mdc_protocol::SceneNode;
@@ -6233,6 +6562,79 @@ mod tests {
             .join(";");
         let too_many = node("many", "polygon", "#FFFFFF", &many);
         assert!(too_many.points().is_none());
+    }
+
+    #[test]
+    fn scene_draws_sectors_arcs_and_bezier_paths() {
+        // N733/N734: pie fills an angle range, arc strokes the ellipse, and a
+        // quadratic path bends away from the straight chord.
+        use mdc_protocol::SceneNode;
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 24,
+            height: 24,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        let node = |name: &str, kind: &str, rect: [u16; 4], value: &str, value2: &str| SceneNode {
+            name: name.into(),
+            kind: kind.into(),
+            rect: Some(rect),
+            children: Vec::new(),
+            value: Some(value.into()),
+            value2: Some(value2.into()),
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: None,
+            focus: None,
+        };
+        let root = SceneNode {
+            name: "root".into(),
+            kind: "group".into(),
+            rect: None,
+            children: vec![
+                node("sector", "pie", [0, 0, 12, 12], "#FF0000", "0,90"),
+                node("ring", "arc", [12, 1, 12, 14], "#00FF00", "0,360"),
+                node(
+                    "curve",
+                    "path",
+                    [0, 0, 24, 24],
+                    "#0000FF",
+                    "2,22;12,10;22,22",
+                ),
+            ],
+            value: None,
+            value2: None,
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: None,
+            focus: None,
+        };
+        session.set_scene(root).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(9, 9), Some(0xF800), "0..90 sector");
+        assert_eq!(device.pixel_rgb565(2, 9), Some(0), "outside the sector");
+        assert_eq!(device.pixel_rgb565(9, 2), Some(0), "outside the sector");
+        assert_eq!(device.pixel_rgb565(18, 1), Some(0x07E0), "arc top");
+        assert_eq!(device.pixel_rgb565(18, 8), Some(0), "arc interior");
+        assert_eq!(device.pixel_rgb565(12, 16), Some(0x001F), "curve apex");
+        assert_eq!(device.pixel_rgb565(12, 21), Some(0), "chord midpoint");
     }
 
     #[test]
@@ -7834,6 +8236,8 @@ mod tests {
                 version: None,
                 size: None,
                 sha256: None,
+                offset: None,
+                len: None,
             }),
             Err(mdc_core::CoreError::Unsupported)
         );
@@ -7855,6 +8259,8 @@ mod tests {
                 version: Some("1.0.0".into()),
                 size: Some(10),
                 sha256: None,
+                offset: None,
+                len: None,
             })
             .unwrap();
         device.poll().unwrap();
@@ -7877,6 +8283,8 @@ mod tests {
                 version: version.map(str::to_string),
                 size,
                 sha256: sha.map(str::to_string),
+                offset: None,
+                len: None,
             })
             .unwrap();
         device.poll().unwrap();
@@ -8026,6 +8434,57 @@ mod tests {
     }
 
     #[test]
+    fn ota_chunk_ranges_are_recorded_and_drive_resume() {
+        // N737: a ranged chunk is recorded/merged; an out-of-image chunk rolls
+        // the update back and clears the ranges.
+        let profile = BoardProfile {
+            width: 2,
+            height: 2,
+            ota: true,
+            ..BoardProfile::default()
+        };
+        let (host, mut device) = FakeDevice::pair(profile);
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        ota(
+            &mut session,
+            &mut device,
+            "begin",
+            Some("2.0.0"),
+            Some(12),
+            None,
+            false,
+        );
+        let chunk = |offset: u32, len: u32| mdc_protocol::OtaCommand {
+            action: "chunk".into(),
+            version: None,
+            size: None,
+            sha256: None,
+            offset: Some(offset),
+            len: Some(len),
+        };
+        session.send_ota(chunk(0, 4)).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.ota_received_ranges(), &[(0, 4)]);
+        session.send_ota(chunk(4, 4)).unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.ota_received_ranges(), &[(0, 8)]);
+        assert_eq!(
+            Session::<MemoryLink>::ota_missing_chunks(12, 4, device.ota_received_ranges()),
+            vec![(8, 4)]
+        );
+        session.send_ota(chunk(12, 4)).unwrap();
+        device.poll().unwrap();
+        assert!(session.poll().is_err());
+        assert!(device.ota_received_ranges().is_empty());
+        assert_eq!(device.firmware(), "1.0.0");
+    }
+
+    #[test]
     fn ota_begin_freezes_pixels_until_abort() {
         use mdc_core::{Frame, Session};
         use mdc_protocol::OtaCommand;
@@ -8059,6 +8518,8 @@ mod tests {
                 version: Some("2.0.0".into()),
                 size: Some(32),
                 sha256: Some("0".repeat(64)),
+                offset: None,
+                len: None,
             })
             .unwrap();
         device.poll().unwrap();
@@ -8080,6 +8541,8 @@ mod tests {
                 version: None,
                 size: None,
                 sha256: None,
+                offset: None,
+                len: None,
             })
             .unwrap();
         device.poll().unwrap();
@@ -8587,6 +9050,8 @@ mod tests {
                 version: Some("2.0.0".into()),
                 size: Some(32),
                 sha256: Some("0".repeat(64)),
+                offset: None,
+                len: None,
             })
             .unwrap();
         device.poll().unwrap();
