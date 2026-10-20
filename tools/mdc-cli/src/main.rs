@@ -433,6 +433,8 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
     let mut defaults_only = false;
     // N656: restrict the defaults table to one key.
     let mut defaults_key: Option<String> = None;
+    // N716: restrict the provenance table (and effective defaults) to one source.
+    let mut source_filter: Option<String> = None;
     let mut count: u32 = 3;
     let mut interval_ms: u64 = 200;
     let mut iter = extra.iter();
@@ -443,6 +445,11 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
             // `mdc config --defaults`).
             "--defaults-only" | "--defaults" => defaults_only = true,
             "--key" => defaults_key = iter.next().cloned(),
+            // N716: `--source profile|device` filters the provenance table.
+            "--source" => match iter.next().map(String::as_str) {
+                Some(source @ ("profile" | "device")) => source_filter = Some(source.to_string()),
+                _ => return Err("inspect --source must be profile or device".into()),
+            },
             // N370: add the host process memory reading to each snapshot.
             "--rss" => rss = true,
             "--count" => count = iter.next().and_then(|v| v.parse().ok()).unwrap_or(count),
@@ -499,10 +506,13 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
                 .map(|d| d.capabilities.config.defaults.clone())
                 .collect();
             value["config_defaults"] = merge_default_maps(&opts.board, &advertised);
-            // N706: where each default came from, and whether the device won.
-            let sources = merge_default_sources(&opts.board, &advertised);
-            value["config_default_conflicts"] = serde_json::json!(default_conflicts(&sources));
-            value["config_default_sources"] = sources;
+            // N706/N716: provenance, conflicts and optional source filtering.
+            apply_default_provenance(
+                &mut value,
+                &opts.board,
+                &advertised,
+                source_filter.as_deref(),
+            );
             if rss {
                 value["host_rss_bytes"] = serde_json::json!(host_rss_bytes());
             }
@@ -524,10 +534,13 @@ fn cmd_inspect(opts: &GlobalOpts, extra: &[String]) -> Result<(), Box<dyn std::e
             .map(|d| d.capabilities.config.defaults.clone())
             .collect();
         value["config_defaults"] = merge_default_maps(&opts.board, &advertised);
-        // N706: provenance and conflicts for the same table.
-        let sources = merge_default_sources(&opts.board, &advertised);
-        value["config_default_conflicts"] = serde_json::json!(default_conflicts(&sources));
-        value["config_default_sources"] = sources;
+        // N706/N716: provenance, conflicts and optional source filtering.
+        apply_default_provenance(
+            &mut value,
+            &opts.board,
+            &advertised,
+            source_filter.as_deref(),
+        );
         if rss {
             value["host_rss_bytes"] = serde_json::json!(host_rss_bytes());
         }
@@ -629,6 +642,47 @@ fn default_conflicts(sources: &serde_json::Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// N716: keep only the provenance entries whose `source` matches.
+fn filter_default_sources(sources: &serde_json::Value, source: &str) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    if let Some(entries) = sources.as_object() {
+        for (key, entry) in entries {
+            if entry["source"] == serde_json::json!(source) {
+                out.insert(key.clone(), entry.clone());
+            }
+        }
+    }
+    serde_json::Value::Object(out)
+}
+
+/// N706/N716: write the provenance table (and conflicts) into an inspect
+/// snapshot. With a source filter, the effective `config_defaults` map is
+/// narrowed to the same keys so the two views cannot disagree.
+fn apply_default_provenance(
+    value: &mut serde_json::Value,
+    board: &str,
+    advertised: &[std::collections::BTreeMap<String, String>],
+    source_filter: Option<&str>,
+) {
+    let sources = merge_default_sources(board, advertised);
+    let sources = match source_filter {
+        Some(source) => {
+            let filtered = filter_default_sources(&sources, source);
+            if let Some(entries) = filtered.as_object() {
+                let mut defaults = serde_json::Map::new();
+                for (key, entry) in entries {
+                    defaults.insert(key.clone(), entry["value"].clone());
+                }
+                value["config_defaults"] = serde_json::Value::Object(defaults);
+            }
+            filtered
+        }
+        None => sources,
+    };
+    value["config_default_conflicts"] = serde_json::json!(default_conflicts(&sources));
+    value["config_default_sources"] = sources;
 }
 
 /// N606: the board's own `config_defaults` as a JSON object (empty when none).
@@ -4402,6 +4456,15 @@ fn verification_failed(report: &serde_json::Value, valid: bool, strict: bool) ->
     !valid || (strict && report["cache_misses_ok"] == serde_json::json!(false))
 }
 
+/// N720: a ready-to-paste compatibility-matrix row generated from the same KTX2
+/// summary `verify`/`diff`/`model-info` report.
+fn ktx2_compatibility_row(summary: &mdc_model::Ktx2Summary) -> String {
+    format!(
+        "| KTX2 summary (N710) | sim-verified ({} textures, {} slices, {} size mismatches) | n/a |",
+        summary.textures, summary.slices, summary.size_mismatches
+    )
+}
+
 /// N690: the verification report, including the manifest locality fields.
 fn verify_report(package: &mdc_model::MdcPackage) -> (serde_json::Value, bool) {
     let verification = package.verify();
@@ -4429,6 +4492,11 @@ fn verify_report(package: &mdc_model::MdcPackage) -> (serde_json::Value, bool) {
         map.insert(
             "ktx2_size_mismatches".into(),
             serde_json::json!(ktx2.size_mismatches),
+        );
+        // N720: the same summary rendered as a compatibility-matrix row.
+        map.insert(
+            "compatibility_row".into(),
+            serde_json::json!(ktx2_compatibility_row(&ktx2)),
         );
     }
     (report, verification.valid)
@@ -5079,6 +5147,75 @@ mod tests {
         let mut map = std::collections::BTreeMap::new();
         map.insert("tile_missing_threshold".to_string(), "5".to_string());
         map
+    }
+
+    #[test]
+    fn inspect_source_filter_narrows_defaults_and_provenance() {
+        // N716: `--source device|profile` keeps the effective table and the
+        // provenance view on the same key set.
+        let mut advertised = std::collections::BTreeMap::new();
+        advertised.insert("filtering".to_string(), "linear".to_string());
+        let mut value = serde_json::json!({ "config_defaults": {} });
+        apply_default_provenance(
+            &mut value,
+            "linux-virt",
+            std::slice::from_ref(&advertised),
+            Some("device"),
+        );
+        assert_eq!(
+            value["config_defaults"],
+            serde_json::json!({ "filtering": "linear" })
+        );
+        assert_eq!(
+            value["config_default_sources"]["filtering"]["source"],
+            "device"
+        );
+        assert!(value["config_default_sources"]
+            .get("tile_missing_threshold")
+            .is_none());
+
+        let mut value = serde_json::json!({});
+        apply_default_provenance(
+            &mut value,
+            "linux-virt",
+            std::slice::from_ref(&advertised),
+            Some("profile"),
+        );
+        assert_eq!(value["config_defaults"]["tile_missing_threshold"], "2");
+        assert!(value["config_defaults"].get("filtering").is_none());
+        assert_eq!(
+            value["config_default_sources"]["tile_missing_threshold"]["source"],
+            "profile"
+        );
+    }
+
+    #[test]
+    fn inspect_rejects_an_unknown_source_filter() {
+        // N716: an invalid source fails before a session is opened.
+        let opts = GlobalOpts {
+            sim: true,
+            board: "default".into(),
+            address: None,
+            port: None,
+        };
+        assert!(cmd_inspect(&opts, &["--source".into(), "bogus".into()]).is_err());
+    }
+
+    #[test]
+    fn ktx2_summary_generates_a_compatibility_row() {
+        // N720: one summary feeds the table row, so counts cannot drift.
+        let summary = mdc_model::Ktx2Summary {
+            textures: 2,
+            slices: 3,
+            size_mismatches: 1,
+        };
+        let row = ktx2_compatibility_row(&summary);
+        assert!(row.starts_with("| KTX2 summary (N710) |"), "{row}");
+        assert!(
+            row.contains("2 textures, 3 slices, 1 size mismatches"),
+            "{row}"
+        );
+        assert!(row.ends_with("| n/a |"), "{row}");
     }
 
     #[test]
