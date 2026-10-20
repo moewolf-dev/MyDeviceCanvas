@@ -157,7 +157,14 @@ test("tile reconciliation goes through the public SDK", async () => {
   assert.equal(report.received, 2);
   assert.equal(report.missing, 1);
   assert.equal(report.consistent, false);
+  // N678: the invariant shared with the C/Swift SDKs.
+  assert.equal(report.missing, Math.max(0, report.sent - report.received));
+  assert.equal(report.consistent, report.missing === 0);
   mdc.dispose();
+  // Without a native binding the report is null (no fabricated numbers).
+  const bare = new MyDeviceCanvas({});
+  assert.equal(await bare.tileReconciliation(), null);
+  bare.dispose();
 });
 
 test("config get/set go through the public SDK", async () => {

@@ -100,6 +100,10 @@ test("native mirror mode and tile reconciliation are exposed", { skip: !native }
   assert.equal(report.missing, 0);
   assert.equal(report.bytesSent, 0);
   assert.equal(report.consistent, true);
+  // N678: the same invariants the C/Swift SDKs promise.
+  assert.equal(report.missing, Math.max(0, report.sent - report.received));
+  assert.equal(report.consistent, report.missing === 0);
+  assert.ok(report.bytesSent >= 0);
   await mdc.stopMirror("main");
   assert.equal(await mdc.mirrorMode(), "");
   mdc.dispose();
