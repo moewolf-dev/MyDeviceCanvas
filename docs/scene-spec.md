@@ -22,7 +22,7 @@ SceneCommand:
 
 SceneNode:
   name:     string
-  kind:     "group" | "rect" | "text" | "sprite" | "image" | "circle" | "line" | "polygon" | "polyline" | "gradient" | "rounded-rect" | "clip"
+  kind:     "group" | "rect" | "text" | "sprite" | "image" | "circle" | "line" | "polygon" | "polyline" | "arc" | "pie" | "path" | "gradient" | "rounded-rect" | "clip"
   rect:     [x, y, w, h]?     # geometry for kinds that rasterize (N79); a group's transform (N138)
   children: [SceneNode]?      # optional, ordered back-to-front
   value:    string?           # rect/circle/line: "#RRGGBB"/"#RGB"/name; text: glyphs; image: packed RGB565 hex
@@ -130,6 +130,15 @@ A device that accepts a scene rasterizes it locally:
   even-odd rule and clips to the framebuffer; `polyline` joins the points with
   Bresenham segments and `mode: "closed"` also draws the last-to-first edge.
   Malformed/over-limit point lists draw nothing.
+- N733: `pie` fills the ellipse sector inscribed in `rect`; `arc` strokes that
+  ellipse. `value2` is `"start,end"` in degrees (clockwise, 0 = +x); a
+  non-positive sweep wraps to the full circle. `value` is the colour.
+- N734: `path` strokes a bezier curve from `value2` (`"x0,y0;cx,cy;x1,y1"` for
+  quadratic or one more control point for cubic), flattened into 32 segments.
+  Three/four points only; other counts draw nothing.
+- N740: `text` `mode` accepts `ellipsis` (cut over-long lines to the rect width
+  and append `...`) and `valign=top|middle|bottom` (place the glyph block inside
+  the rect height). Both are comma-separated with other tokens.
 - `group` (and any node whose kind does not rasterize) does not draw; its `rect`
   is a transform for its children: `x`/`y` become a pixel offset and `w`/`h` a
   scale in permille (1000 = 1×; `0` leaves an axis unscaled). Nested groups

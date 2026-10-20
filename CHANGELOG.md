@@ -2,6 +2,30 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.86] — arc/pie/path, pan+pinch, DQS normals, ranged OTA, disk chunk store, texture trim, text ellipsis, adaptive pacing, HEAD (N733–N742)
+
+### Added
+
+- scene `arc`/`pie` sectors and `path` bezier strokes (N733/N734)
+- simultaneous two-finger pan and pinch gestures (N735)
+- DQS normals/tangents blended by the joint quaternion (N736)
+- OTA chunk ranges (`offset`/`len`) with missing-range resume (N737)
+- persistent `DiskChunkStore` with dedup and reference-counted cleanup (N738)
+- transparent-margin texture trimming with UV remap + `--trim-textures` (N739)
+- text `ellipsis` and `valign=` tokens (N740)
+- bitrate-adaptive frame pacing for the scheduler (N741)
+- `HEAD` support with correct `Content-Length` on frame/health (N742)
+
+### Fixed
+
+- DQS shading follows the blended rotation instead of averaging normal
+  directions like LBS (N736).
+
+### Notes
+
+- Host/simulator only. D05, G03 and H06 remain open until physical hardware is
+  measured; no board is claimed working.
+
 ## [0.1.85] — scene polygons, eased animation, pinch gestures, DQS, conditional HTTP, OTA resume, chunk dedup, playback modes, per-material cutoff, adaptive dirty threshold (N723–N732)
 
 ### Added

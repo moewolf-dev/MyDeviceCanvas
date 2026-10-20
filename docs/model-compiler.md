@@ -459,6 +459,14 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
   renderer, and `mdc render-mesh --dqs` selects it for offline renders. DQS
   blends the rigid joint transforms (removing the LBS candy-wrapper collapse),
   while scale/shear is reduced to the nearest rotation.
+- N736: with `SkinMode::Dqs`, normals and tangents are rotated by the same
+  blended joint quaternion (the linear part is no longer averaged), so shading
+  follows the DQS pose; `w` handedness is preserved.
+- N739: `trim_texture_blob` crops fully transparent margins of an alpha-masked
+  texture; `trim_package_textures` also rewrites the UVs of meshes using that
+  texture, so the rendered pixels are unchanged while the atlas/upload shrinks.
+  `mdc package --trim-textures` applies it before packing. Indexed blobs and mip
+  chains are left alone.
 - N731: a `MASK` material's `alphaCutoff` is applied when its texture is baked:
   `bake_texture_blob_with_cutoff`/`decode_rgba_native_with_cutoff` threshold the
   1-bit mask at `material.cutoff_u8()` instead of a fixed 128. Host and device

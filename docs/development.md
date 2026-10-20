@@ -196,4 +196,21 @@ not reported as a tap/drag.
 N730: `AtlasClip.mode` (`loop`/`once`/`ping-pong`) and `speed_permille` scale
 device-side atlas playback; `animation_loops()` accounts for both.
 
+N737: `OtaCommand.offset/len` mark a chunk range; `Session::ota_chunk_ranges` and
+`ota_missing_chunks` compute the ranges still needed, and
+`ota_resume_commands_chunked` emits begin (only at phase 0), the missing chunks
+and confirm. The simulator records/merges received ranges
+(`FakeDevice::ota_received_ranges`) and rejects a range outside the image.
+
+N738: `mdc_assets::DiskChunkStore` persists content-addressed chunks and an
+`index.json`; reopening restores dedup, `release` reference-counts blobs and
+deletes chunks whose last reference is gone.
+
+N739: `mdc package --trim-textures` calls `trim_package_textures`, cropping
+transparent texture margins and remapping mesh UVs before atlas/mip work.
+
+N741: `Scheduler::adapt_to_bitrate(rate, frame_bytes)` caps FPS at the
+sustainable rate and never budgets above the measured rate;
+`Session::adapt_frame_pacing` applies it to the active scheduler.
+
 

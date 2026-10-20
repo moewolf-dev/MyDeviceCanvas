@@ -435,6 +435,15 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Clip playback modes (N730) | sim-verified (ping-pong/speed) | physical: pending |
 | Per-material cutoff (N731) | sim-verified (host == device) | physical: pending |
 | Adaptive dirty threshold (N732) | sim-verified (low/high rate) | n/a |
+| Scene arc/pie/path (N733/N734) | sim-verified (device pixels) | physical: pending |
+| Pan+pinch composition (N735) | sim-verified (two events) | physical: pending |
+| DQS normals/tangents (N736) | sim-verified (host render) | physical: pending |
+| Ranged OTA resume (N737) | sim-verified (ranges) | physical: pending |
+| Disk chunk store (N738) | sim-verified (reopen/dedup) | n/a |
+| Texture trim (N739) | sim-verified (pixels unchanged) | physical: pending |
+| Text ellipsis/valign (N740) | sim-verified (device pixels) | physical: pending |
+| Adaptive frame pacing (N741) | sim-verified (convergence) | n/a |
+| HEAD/Content-Length (N742) | sim-verified (no body) | n/a |
 
 Rows marked `sim-verified` describe host/simulator behaviour only. The KTX2 row
 is also emitted by `mdc verify` as `compatibility_row`, generated from the same
