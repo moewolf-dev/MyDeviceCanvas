@@ -237,6 +237,8 @@ pub enum GestureKind {
     Tap,
     LongPress,
     Drag,
+    /// N725: two pointers changed their distance and/or angle.
+    Pinch,
 }
 
 /// N464: a gesture derived from raw input events.
@@ -248,6 +250,10 @@ pub struct Gesture {
     pub y: u16,
     /// N493: the hit-tested scene node, when the device reported one.
     pub node: Option<String>,
+    /// N725: for `Pinch`, the distance ratio in permille (1000 = unchanged).
+    pub scale: u16,
+    /// N725: for `Pinch`, the angle change in degrees (signed).
+    pub rotation: i16,
 }
 
 /// N464: thresholds for gesture recognition.
@@ -280,13 +286,41 @@ struct PointerState {
     long_pressed: bool,
     /// N493: the node under the pointer when it went down.
     node: Option<String>,
+    /// N725: this pointer took part in a pinch, so its release is not a tap.
+    pinched: bool,
+}
+
+/// N725: the initial two-pointer geometry a pinch is measured against.
+#[derive(Debug, Clone, Copy)]
+struct PinchAnchor {
+    distance: f32,
+    angle: f32,
+    last_scale: u16,
+    last_rotation: i16,
+}
+
+/// N725: minimum change before a pinch reports another event.
+const PINCH_SCALE_STEP: u16 = 20;
+const PINCH_ROTATE_STEP: i16 = 4;
+
+/// N725: wrap an angle difference into `-180..=180` degrees.
+fn normalize_degrees(degrees: f32) -> i16 {
+    let mut value = degrees % 360.0;
+    if value > 180.0 {
+        value -= 360.0;
+    } else if value < -180.0 {
+        value += 360.0;
+    }
+    value.round() as i16
 }
 
 /// N464: derive tap/long-press/drag gestures from a pointer's input events.
+/// N725: two simultaneous pointers additionally derive pinch/rotate.
 #[derive(Debug, Clone, Default)]
 pub struct GestureTracker {
     config: GestureConfig,
     pointers: std::collections::BTreeMap<u16, PointerState>,
+    pinch: Option<PinchAnchor>,
 }
 
 impl GestureTracker {
@@ -294,6 +328,7 @@ impl GestureTracker {
         Self {
             config,
             pointers: std::collections::BTreeMap::new(),
+            pinch: None,
         }
     }
 
@@ -320,11 +355,56 @@ impl GestureTracker {
                         dragged: false,
                         long_pressed: false,
                         node: event.node.clone(),
+                        pinched: false,
                     },
                 );
+                // N725: a second pointer starts a pinch; neither finger can
+                // subsequently become a tap/long-press.
+                if self.pointers.len() == 2 {
+                    self.pinch = self.anchor();
+                    for state in self.pointers.values_mut() {
+                        state.pinched = true;
+                        state.long_pressed = true;
+                    }
+                }
                 None
             }
             "move" => {
+                if self.pointers.len() >= 2 {
+                    let state = self.pointers.get_mut(&event.pointer_id)?;
+                    state.x = event.x;
+                    state.y = event.y;
+                    state.pinched = true;
+                    let anchor = self.pinch?;
+                    let (distance, angle) = self.metrics()?;
+                    let scale = ((distance / anchor.distance) * 1000.0)
+                        .round()
+                        .clamp(0.0, f32::from(u16::MAX)) as u16;
+                    let rotation = normalize_degrees((angle - anchor.angle).to_degrees());
+                    let scale_delta =
+                        (i32::from(scale) - i32::from(anchor.last_scale)).unsigned_abs();
+                    let rotation_delta =
+                        (i32::from(rotation) - i32::from(anchor.last_rotation)).unsigned_abs();
+                    if scale_delta >= u32::from(PINCH_SCALE_STEP)
+                        || rotation_delta >= u32::from(PINCH_ROTATE_STEP.unsigned_abs())
+                    {
+                        let (x, y) = self.midpoint()?;
+                        if let Some(anchor) = self.pinch.as_mut() {
+                            anchor.last_scale = scale;
+                            anchor.last_rotation = rotation;
+                        }
+                        return Some(Gesture {
+                            kind: GestureKind::Pinch,
+                            pointer_id: event.pointer_id,
+                            x,
+                            y,
+                            node: None,
+                            scale,
+                            rotation,
+                        });
+                    }
+                    return None;
+                }
                 let state = self.pointers.get_mut(&event.pointer_id)?;
                 let dx = i32::from(event.x) - i32::from(state.x);
                 let dy = i32::from(event.y) - i32::from(state.y);
@@ -337,12 +417,23 @@ impl GestureTracker {
                         x: event.x,
                         y: event.y,
                         node: event.node.clone(),
+                        scale: 1000,
+                        rotation: 0,
                     });
                 }
                 None
             }
             "up" | "cancel" => {
                 let state = self.pointers.remove(&event.pointer_id)?;
+                // N725: ending a pinch suppresses taps for the remaining finger.
+                if self.pointers.len() < 2 && self.pinch.take().is_some() {
+                    for pointer in self.pointers.values_mut() {
+                        pointer.pinched = true;
+                    }
+                }
+                if state.pinched {
+                    return None;
+                }
                 if state.dragged {
                     return Some(Gesture {
                         kind: GestureKind::Drag,
@@ -350,6 +441,8 @@ impl GestureTracker {
                         x: event.x,
                         y: event.y,
                         node: event.node.clone(),
+                        scale: 1000,
+                        rotation: 0,
                     });
                 }
                 if state.long_pressed {
@@ -362,6 +455,8 @@ impl GestureTracker {
                         x: event.x,
                         y: event.y,
                         node: event.node.clone().or(state.node.clone()),
+                        scale: 1000,
+                        rotation: 0,
                     })
                 } else {
                     None
@@ -371,9 +466,42 @@ impl GestureTracker {
         }
     }
 
+    /// N725: the initial distance/angle between the first two pointers.
+    fn anchor(&self) -> Option<PinchAnchor> {
+        let (distance, angle) = self.metrics()?;
+        Some(PinchAnchor {
+            distance,
+            angle,
+            last_scale: 1000,
+            last_rotation: 0,
+        })
+    }
+
+    fn metrics(&self) -> Option<(f32, f32)> {
+        let mut pointers = self.pointers.values();
+        let a = pointers.next()?;
+        let b = pointers.next()?;
+        let dx = f32::from(b.x) - f32::from(a.x);
+        let dy = f32::from(b.y) - f32::from(a.y);
+        Some(((dx * dx + dy * dy).sqrt().max(0.5), dy.atan2(dx)))
+    }
+
+    fn midpoint(&self) -> Option<(u16, u16)> {
+        let mut pointers = self.pointers.values();
+        let a = pointers.next()?;
+        let b = pointers.next()?;
+        Some((
+            ((u32::from(a.x) + u32::from(b.x)) / 2) as u16,
+            ((u32::from(a.y) + u32::from(b.y)) / 2) as u16,
+        ))
+    }
+
     /// Advance held pointers; emits `LongPress` once per pointer.
     pub fn tick(&mut self, now_ms: u64) -> Option<Gesture> {
         for (pointer_id, state) in self.pointers.iter_mut() {
+            if state.pinched {
+                continue;
+            }
             if !state.long_pressed
                 && now_ms.saturating_sub(state.down_ms) >= self.config.long_press_ms
             {
@@ -384,6 +512,8 @@ impl GestureTracker {
                     x: state.x,
                     y: state.y,
                     node: state.node.clone(),
+                    scale: 1000,
+                    rotation: 0,
                 });
             }
         }
@@ -608,6 +738,36 @@ impl DirtyTracker {
 
     pub fn pending(&self) -> &[DirtyRect] {
         &self.pending
+    }
+
+    /// N732: the current full-frame threshold.
+    pub fn full_threshold(&self) -> f64 {
+        self.full_threshold
+    }
+
+    /// N732: replace the full-frame threshold (clamped to 0..=1).
+    pub fn set_full_threshold(&mut self, threshold: f64) {
+        self.full_threshold = threshold.clamp(0.0, 1.0);
+    }
+
+    /// N732: adapt the threshold to a measured byte rate. A device that cannot
+    /// sustain even one full frame per second switches to a full frame for any
+    /// meaningful dirty area (low threshold); a fast link tolerates mostly-dirty
+    /// frames as tiles (high threshold). Returns the new threshold.
+    pub fn adapt_to_bandwidth(&mut self, bytes_per_second: u64, frame_bytes: u64) -> f64 {
+        if frame_bytes == 0 {
+            return self.full_threshold;
+        }
+        let fps = bytes_per_second as f64 / frame_bytes as f64;
+        let threshold = if fps <= 1.0 {
+            0.05
+        } else if fps >= 8.0 {
+            0.9
+        } else {
+            0.05 + (fps - 1.0) / 7.0 * 0.85
+        };
+        self.full_threshold = threshold.clamp(0.05, 0.9);
+        self.full_threshold
     }
 
     /// The fraction of the surface's tiles the pending rectangles cover.
@@ -1217,6 +1377,10 @@ pub struct Session<T: Transport> {
     device_tiles_received: u64,
     /// N419: the highest OTA phase sent (0 none, 1 begin, 2 chunk, 3 confirm).
     ota_phase: u8,
+    /// N732: `(virtual_ms, bytes_sent)` baseline for the measured bitrate.
+    throughput_mark: (u64, u64),
+    /// N732: the last measured bitrate (reused when no new sample exists).
+    last_bitrate: Option<u64>,
     /// N473: derives gestures from incoming input events.
     gestures: GestureTracker,
 }
@@ -1278,6 +1442,8 @@ impl<T: Transport> Session<T> {
             stats: SessionStats::default(),
             device_tiles_received: 0,
             ota_phase: 0,
+            throughput_mark: (0, 0),
+            last_bitrate: None,
             gestures: GestureTracker::default(),
         }
     }
@@ -1404,6 +1570,34 @@ impl<T: Transport> Session<T> {
         };
         stats.tiles_missing = stats.tiles_sent.saturating_sub(stats.device_tiles_received);
         stats
+    }
+
+    /// N732: measure the outbound bitrate since the previous call using the
+    /// virtual clock. Returns `None` when no virtual time has elapsed.
+    pub fn measure_bitrate(&mut self) -> Option<u64> {
+        let now = self.virtual_ms;
+        let bytes = self.stats.bytes_sent;
+        let (last_ms, last_bytes) = self.throughput_mark;
+        self.throughput_mark = (now, bytes);
+        let elapsed = now.saturating_sub(last_ms);
+        if elapsed == 0 {
+            return None;
+        }
+        let rate = bytes.saturating_sub(last_bytes).saturating_mul(1000) / elapsed;
+        self.last_bitrate = Some(rate);
+        Some(rate)
+    }
+
+    /// N732: adapt a dirty tracker to the measured outbound bitrate. `frame_bytes`
+    /// is one full RGB565 frame; a link below ~1 FPS forces full frames for any
+    /// meaningful dirty area.
+    pub fn adapt_dirty_threshold(
+        &mut self,
+        tracker: &mut DirtyTracker,
+        frame_bytes: u64,
+    ) -> Option<f64> {
+        let rate = self.measure_bitrate().or(self.last_bitrate)?;
+        Some(tracker.adapt_to_bandwidth(rate, frame_bytes))
     }
 
     /// N547: reconcile the host's sent tiles against the device's reported count.
@@ -2052,6 +2246,42 @@ impl<T: Transport> Session<T> {
     /// N419: the highest OTA phase sent (0 none, 1 begin, 2 chunk, 3 confirm).
     pub fn ota_phase(&self) -> u8 {
         self.ota_phase
+    }
+
+    /// N728: the OTA commands still required after a reconnect, derived from the
+    /// checkpoint. The device keeps its OTA state across a transport reconnect,
+    /// so begin/chunk that already reached it are not resent; phase 3 means the
+    /// update is already confirmed and the plan is empty.
+    pub fn ota_resume_commands(
+        &self,
+        version: &str,
+        size: Option<u64>,
+        sha256: Option<String>,
+    ) -> Vec<mdc_protocol::OtaCommand> {
+        let begin = mdc_protocol::OtaCommand {
+            action: "begin".into(),
+            version: Some(version.to_string()),
+            size,
+            sha256: None,
+        };
+        let chunk = mdc_protocol::OtaCommand {
+            action: "chunk".into(),
+            version: None,
+            size: None,
+            sha256,
+        };
+        let confirm = mdc_protocol::OtaCommand {
+            action: "confirm".into(),
+            version: None,
+            size: None,
+            sha256: None,
+        };
+        match self.ota_phase {
+            0 => vec![begin, chunk, confirm],
+            1 => vec![chunk, confirm],
+            2 => vec![confirm],
+            _ => Vec::new(),
+        }
     }
 
     /// N419: clear the OTA checkpoint (a fresh update or an abort).
@@ -4468,6 +4698,58 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_dirty_threshold_follows_the_measured_link() {
+        // N732: the same dirty area is tiled on a fast link and sent whole on a
+        // link that cannot sustain even one frame per second.
+        let dirty = || {
+            let mut tracker = DirtyTracker::new((32, 32), 8, 0.5);
+            for tile in 0..4 {
+                tracker.mark((tile * 8, 0, 8, 8));
+            }
+            tracker
+        };
+        let frame_bytes = 32 * 32 * 2;
+        let mut slow = dirty();
+        assert_eq!(slow.adapt_to_bandwidth(1_000, frame_bytes), 0.05);
+        assert_eq!(slow.decide(), UpdateDecision::Full);
+        let mut fast = dirty();
+        assert_eq!(fast.adapt_to_bandwidth(1_000_000, frame_bytes), 0.9);
+        assert_eq!(fast.decide(), UpdateDecision::Partial(4));
+        // A zero-sized frame leaves the threshold untouched.
+        let mut unchanged = DirtyTracker::new((8, 8), 4, 0.4);
+        assert_eq!(unchanged.adapt_to_bandwidth(100, 0), 0.4);
+    }
+
+    #[test]
+    fn session_measures_bitrate_and_adapts() {
+        // N732: the session derives the rate from its own outbound byte counter
+        // and the virtual clock, then applies it to a tracker.
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        session.tick(0).unwrap();
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![0x11; 8],
+            })
+            .unwrap();
+        session.tick(1_000).unwrap();
+        let rate = session.measure_bitrate().expect("one second elapsed");
+        assert!(rate > 0, "the frame was written");
+        let mut tracker = DirtyTracker::new((32, 32), 8, 0.5);
+        let threshold = session
+            .adapt_dirty_threshold(&mut tracker, 32 * 32 * 2)
+            .expect("rate available");
+        assert!((0.05..=0.9).contains(&threshold));
+        // A second sample with no time elapsed has no rate.
+        assert_eq!(session.measure_bitrate(), None);
+    }
+
+    #[test]
     fn session_send_tile_writes_tile_packet() {
         let (host_link, mut device_link) = MemoryLink::pair();
         let mut session = Session::new(host_link);
@@ -5529,6 +5811,7 @@ mod tests {
                 opacity: (0..keys).map(|k| [k as u16, 128]).collect(),
                 rect: Vec::new(),
                 focus: Vec::new(),
+                easing: None,
             }),
             children: Vec::new(),
         };
@@ -5642,6 +5925,7 @@ mod tests {
                     x: 4,
                     y: 5,
                     node: Some(node),
+                    ..
                 },
                 ..
             } if node == "btn"
@@ -5687,7 +5971,9 @@ mod tests {
                 pointer_id: 1,
                 x: 10,
                 y: 10,
-                node: None
+                node: None,
+                scale: 1000,
+                rotation: 0,
             })
         );
 
@@ -5700,7 +5986,9 @@ mod tests {
                 pointer_id: 1,
                 x: 20,
                 y: 10,
-                node: None
+                node: None,
+                scale: 1000,
+                rotation: 0,
             })
         );
         assert_eq!(
@@ -5710,7 +5998,9 @@ mod tests {
                 pointer_id: 1,
                 x: 20,
                 y: 10,
-                node: None
+                node: None,
+                scale: 1000,
+                rotation: 0,
             })
         );
 
@@ -5724,11 +6014,106 @@ mod tests {
                 pointer_id: 1,
                 x: 5,
                 y: 5,
-                node: None
+                node: None,
+                scale: 1000,
+                rotation: 0,
             })
         );
         assert_eq!(tracker.tick(2000), None, "long-press emits once");
         assert_eq!(tracker.on_event(&event("up", 5, 5), 2100), None);
+    }
+
+    #[test]
+    fn gesture_tracker_recognises_a_two_pointer_pinch() {
+        // N725: two pointers derive scale/rotation from their distance/angle;
+        // the release is not a tap, and the midpoint is reported.
+        let event = |pointer_id: u16, phase: &str, x: u16, y: u16| mdc_protocol::InputEvent {
+            surface_id: "main".into(),
+            pointer_id,
+            phase: phase.into(),
+            x,
+            y,
+            node: None,
+        };
+        let mut tracker = GestureTracker::new(GestureConfig::default());
+        assert_eq!(tracker.on_event(&event(1, "down", 10, 10), 0), None);
+        assert_eq!(tracker.on_event(&event(2, "down", 20, 10), 10), None);
+        // Distance doubles: 10 -> 20 px, angle unchanged.
+        assert_eq!(
+            tracker.on_event(&event(2, "move", 30, 10), 20),
+            Some(Gesture {
+                kind: GestureKind::Pinch,
+                pointer_id: 2,
+                x: 20,
+                y: 10,
+                node: None,
+                scale: 2000,
+                rotation: 0,
+            })
+        );
+        // Diagonal: distance 10*sqrt(2), angle 45 degrees (scale ~1414).
+        let gesture = tracker.on_event(&event(2, "move", 20, 20), 30).unwrap();
+        assert_eq!(gesture.kind, GestureKind::Pinch);
+        assert_eq!(gesture.scale, 1414);
+        assert_eq!(gesture.rotation, 45);
+        assert_eq!((gesture.x, gesture.y), (15, 15));
+        // Both fingers are consumed by the pinch: no tap on release.
+        assert_eq!(tracker.on_event(&event(2, "up", 20, 20), 40), None);
+        assert_eq!(tracker.on_event(&event(1, "up", 10, 10), 50), None);
+    }
+
+    #[test]
+    fn pinch_reaches_the_manager_event_queue() {
+        // N725: the Session maps pinch into ManagerEvent::Gesture.
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        let manager = std::sync::Arc::new(std::sync::Mutex::new(DeviceManager::new()));
+        session.set_manager(manager.clone());
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        let input = |pointer_id: u16, phase: &str, x: u16, y: u16| mdc_protocol::InputEvent {
+            surface_id: "main".into(),
+            pointer_id,
+            phase: phase.into(),
+            x,
+            y,
+            node: None,
+        };
+        for (index, event) in [
+            input(1, "down", 10, 10),
+            input(2, "down", 20, 10),
+            input(2, "move", 30, 10),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            device
+                .write(
+                    &Packet {
+                        version: VERSION,
+                        kind: MessageType::Input,
+                        flags: 0,
+                        request_id: index as u32 + 1,
+                        payload: encode_control(&event).unwrap(),
+                    }
+                    .encode(4096)
+                    .unwrap(),
+                )
+                .unwrap();
+            session.poll().unwrap();
+        }
+        let events: Vec<ManagerEvent> = manager.lock().unwrap().drain_events().collect();
+        let pinch = events
+            .iter()
+            .find_map(|event| match event {
+                ManagerEvent::Gesture { gesture, .. } if gesture.kind == GestureKind::Pinch => {
+                    Some(gesture)
+                }
+                _ => None,
+            })
+            .expect("pinch reaches the manager");
+        assert_eq!(pinch.scale, 2000);
+        assert_eq!(pinch.rotation, 0);
     }
 
     #[test]
@@ -5773,8 +6158,17 @@ mod tests {
         // A reconnect edge must not clear the checkpoint.
         session.enable_reconnect(true);
         assert_eq!(session.ota_phase(), 2, "phase survives reconnect");
+        // N728: the resume plan only contains the unacknowledged confirm.
+        let plan = session.ota_resume_commands("2.0.0", None, None);
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].action, "confirm");
         session.reset_ota();
         assert_eq!(session.ota_phase(), 0);
+        assert_eq!(
+            session.ota_resume_commands("2.0.0", None, None).len(),
+            3,
+            "a reset starts from begin"
+        );
     }
 
     #[test]

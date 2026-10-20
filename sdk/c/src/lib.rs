@@ -145,6 +145,7 @@ fn gesture_kind(kind: mdc_core::GestureKind) -> &'static str {
         mdc_core::GestureKind::Tap => "tap",
         mdc_core::GestureKind::LongPress => "long-press",
         mdc_core::GestureKind::Drag => "drag",
+        mdc_core::GestureKind::Pinch => "pinch",
     }
 }
 

@@ -151,7 +151,7 @@ pub struct NativeEvent {
 /// N474: a recognised pointer gesture.
 #[napi(object)]
 pub struct GestureDto {
-    /// tap | long-press | drag
+    /// tap | long-press | drag | pinch
     pub kind: String,
     #[napi(js_name = "pointerId")]
     pub pointer_id: u16,
@@ -159,6 +159,10 @@ pub struct GestureDto {
     pub y: u16,
     /// N493: the hit-tested scene node, when reported.
     pub node: Option<String>,
+    /// N725: pinch distance ratio in permille (1000 for other gestures).
+    pub scale: u16,
+    /// N725: pinch angle change in degrees (0 for other gestures).
+    pub rotation: i16,
 }
 
 struct SimSession {
@@ -335,11 +339,14 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                         mdc_core::GestureKind::Tap => "tap".into(),
                         mdc_core::GestureKind::LongPress => "long-press".into(),
                         mdc_core::GestureKind::Drag => "drag".into(),
+                        mdc_core::GestureKind::Pinch => "pinch".into(),
                     },
                     pointer_id: gesture.pointer_id,
                     x: gesture.x,
                     y: gesture.y,
                     node: gesture.node,
+                    scale: gesture.scale,
+                    rotation: gesture.rotation,
                 }),
                 device_id: Some(device_id),
                 input: None,

@@ -24,12 +24,16 @@ export interface TileRequest {
 }
 /** N474: a recognised pointer gesture. */
 export interface GestureDto {
-  kind: "tap" | "long-press" | "drag";
+  kind: "tap" | "long-press" | "drag" | "pinch";
   pointerId: number;
   x: number;
   y: number;
   /** N493: the hit-tested scene node, when reported. */
   node?: string;
+  /** N725: pinch distance ratio in permille (1000 for other gestures). */
+  scale: number;
+  /** N725: pinch angle change in degrees (0 for other gestures). */
+  rotation: number;
 }
 
 export interface InputEventDto {
