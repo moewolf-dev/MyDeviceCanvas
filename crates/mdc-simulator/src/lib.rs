@@ -503,6 +503,21 @@ fn blit_sprite(
     let (draw_w, draw_h, off_x, off_y) = fit_box(w, h, src_w, src_h, rotate, mode, align);
     let sprite_w = atlas.sprite_width as usize;
     let atlas_row = (atlas.columns as usize) * sprite_w * 2;
+    // N705: decode one bounded frame so sprites can use the same nearest/
+    // bilinear sampler as inline images.
+    let mut source = Vec::with_capacity(usize::from(src_w) * usize::from(src_h));
+    for sy in 0..usize::from(src_h) {
+        for sx in 0..usize::from(src_w) {
+            let src = offset + sy * atlas_row + sx * 2;
+            if src + 1 >= atlas.rgb565.len() {
+                return false;
+            }
+            source.push(u16::from_le_bytes([
+                atlas.rgb565[src],
+                atlas.rgb565[src + 1],
+            ]));
+        }
+    }
     let mut drew = false;
     for row in 0..u32::from(draw_h) {
         for col in 0..u32::from(draw_w) {
@@ -537,14 +552,18 @@ fn blit_sprite(
                 }
                 _ => {}
             }
-            let sx = (fx * atlas.sprite_width as f32) as usize;
-            let sy = (fy * atlas.sprite_height as f32) as usize;
-            let src = offset + sy * atlas_row + sx * 2;
             let dst = ((py * width + px) * 2) as usize;
-            if src + 1 >= atlas.rgb565.len() || dst + 1 >= pixels.len() {
+            if dst + 1 >= pixels.len() {
                 continue;
             }
-            let value = u16::from_le_bytes([atlas.rgb565[src], atlas.rgb565[src + 1]]);
+            let value = sample_source(
+                &source,
+                u32::from(src_w),
+                u32::from(src_h),
+                fx,
+                fy,
+                mode.linear,
+            );
             put_pixel(pixels, dst, value, alpha);
             drew = true;
         }
@@ -6520,6 +6539,87 @@ mod tests {
         assert_eq!(render(None, None), (0xF800, 0x001F));
         assert_eq!(render(Some("flip-h"), None), (0x001F, 0xF800));
         assert_eq!(render(None, Some(180)), (0x001F, 0xF800));
+    }
+
+    #[test]
+    fn sprite_bilinear_filter_blends_like_an_image() {
+        // N705: a sprite honours the image `linear` token, so an upscaled atlas
+        // frame blends between texels instead of repeating the nearest one.
+        use mdc_protocol::SceneNode;
+        let render = |mode: Option<&str>| {
+            let (host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 4,
+                height: 1,
+                ..BoardProfile::default()
+            });
+            let mut session = Session::new(host);
+            session.connect().unwrap();
+            device.poll().unwrap();
+            session.poll().unwrap();
+            let package = mdc_model::DevicePackage {
+                target: "esp32-plane".into(),
+                mode: mdc_model::PackageMode::BakedSprites,
+                nodes: Vec::new(),
+                meshes: Vec::new(),
+                textures: Vec::new(),
+                materials: Vec::new(),
+                lights: Vec::new(),
+                skeletons: Vec::new(),
+                animations: Vec::new(),
+                sprites: Vec::new(),
+                layers: Vec::new(),
+                estimated_bytes: 8,
+                atlas: Some(mdc_model::AtlasBlob {
+                    sprite_width: 2,
+                    sprite_height: 1,
+                    frames: 1,
+                    columns: 1,
+                    rows: 1,
+                    rgb565: vec![0x00, 0xF8, 0x1F, 0x00],
+                    clips: Vec::new(),
+                    mips: Vec::new(),
+                }),
+                texture: None,
+                texture_blobs: Vec::new(),
+            };
+            let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+            session
+                .install_package(&sealed.to_bytes().unwrap())
+                .unwrap();
+            device.poll().unwrap();
+            session.poll().unwrap();
+            session
+                .set_scene(SceneNode {
+                    name: "icon".into(),
+                    kind: "sprite".into(),
+                    rect: Some([0, 0, 4, 1]),
+                    children: Vec::new(),
+                    value: Some("0".into()),
+                    value2: None,
+                    opacity: None,
+                    visible: None,
+                    anim: None,
+                    rotate: None,
+                    blend: None,
+                    align: None,
+                    z: None,
+                    wrap: None,
+                    mode: mode.map(str::to_string),
+                    focus: None,
+                })
+                .unwrap();
+            device.poll().unwrap();
+            session.poll().unwrap();
+            assert!(device.render_scene());
+            [0, 1, 2, 3].map(|x| device.pixel_rgb565(x, 0).unwrap())
+        };
+        let nearest = render(None);
+        assert_eq!(nearest, [0xF800, 0xF800, 0x001F, 0x001F]);
+        let linear = render(Some("linear"));
+        assert_eq!(linear[0], 0xF800, "the first texel is red");
+        assert_eq!(linear[3], 0x001F, "the last texel is blue");
+        assert_ne!(linear[1], 0xF800, "the interior blends");
+        assert_ne!(linear[1], 0x001F, "the interior blends");
     }
 
     #[test]
