@@ -1708,6 +1708,11 @@ impl HttpMirrorServer {
                                     } else {
                                         bytes
                                     };
+                                    let bytes = match header_value(&client.request[..end], "range")
+                                    {
+                                        Some(range) => apply_range(bytes, range),
+                                        None => bytes,
+                                    };
                                     client.response =
                                         Some(if head { without_body(bytes) } else { bytes });
                                 }
@@ -2136,6 +2141,92 @@ fn request_method(request: &[u8]) -> &str {
     let line = request.split(|b| *b == b'\n').next().unwrap_or(&[]);
     let line = std::str::from_utf8(line).unwrap_or("");
     line.split_whitespace().next().unwrap_or("GET")
+}
+
+/// N748: apply a single `Range: bytes=...` to a complete response. Multiple
+/// ranges are rejected with 416 (a browser source only needs one).
+fn apply_range(response: Vec<u8>, range: &str) -> Vec<u8> {
+    let Some(spec) = range.trim().strip_prefix("bytes=") else {
+        return response;
+    };
+    if spec.contains(',') {
+        return range_not_satisfiable(&response);
+    }
+    let Some(header_end) = response.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return response;
+    };
+    let body = &response[header_end + 4..];
+    let total = body.len();
+    let Some((start_spec, end_spec)) = spec.split_once('-') else {
+        return range_not_satisfiable(&response);
+    };
+    let parse = |value: &str| -> Option<usize> { value.trim().parse().ok() };
+    let (start, end) = if start_spec.trim().is_empty() {
+        let suffix = match parse(end_spec) {
+            Some(suffix) if suffix > 0 => suffix.min(total),
+            _ => return range_not_satisfiable(&response),
+        };
+        (total.saturating_sub(suffix), total.saturating_sub(1))
+    } else {
+        let start = match parse(start_spec) {
+            Some(start) => start,
+            None => return range_not_satisfiable(&response),
+        };
+        let end = if end_spec.trim().is_empty() {
+            total.saturating_sub(1)
+        } else {
+            match parse(end_spec) {
+                Some(end) => end.min(total.saturating_sub(1)),
+                None => return range_not_satisfiable(&response),
+            }
+        };
+        (start, end)
+    };
+    if total == 0 || start > end || start >= total {
+        return range_not_satisfiable(&response);
+    }
+    partial_response(&response[..header_end], body, start, end, total)
+}
+
+fn partial_response(
+    headers: &[u8],
+    body: &[u8],
+    start: usize,
+    end: usize,
+    total: usize,
+) -> Vec<u8> {
+    let text = String::from_utf8_lossy(headers);
+    let mut lines = text.split("\r\n");
+    let mut out = String::from("HTTP/1.1 206 Partial Content\r\n");
+    for line in lines.by_ref().skip(1) {
+        if line.is_empty() {
+            break;
+        }
+        if !line.to_ascii_lowercase().starts_with("content-length:") {
+            out.push_str(line);
+            out.push_str("\r\n");
+        }
+    }
+    out.push_str(&format!("Content-Length: {}\r\n", end - start + 1));
+    out.push_str(&format!(
+        "Content-Range: bytes {start}-{end}/{total}\r\n\r\n"
+    ));
+    let mut bytes = out.into_bytes();
+    bytes.extend_from_slice(&body[start..=end]);
+    bytes
+}
+
+fn range_not_satisfiable(response: &[u8]) -> Vec<u8> {
+    let total = response
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|position| response.len().saturating_sub(position + 4))
+        .unwrap_or(0);
+    format!(
+        "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{total}\r\n\
+         Content-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+    .into_bytes()
 }
 
 /// N742: keep the status line/headers (including Content-Length) and drop body.
@@ -4212,6 +4303,29 @@ mod tests {
         assert!(frame_304.starts_with("HTTP/1.1 304"), "{frame_304}");
         assert!(!frame_304.contains("PNG"), "no body on 304");
         assert!(frame_304.contains(&format!("ETag: {frame_tag}")));
+
+        // N748: a single byte range yields 206 + Content-Range; multiple ranges
+        // are rejected with 416.
+        let ranged = fetch(
+            &mut server,
+            "GET /frame.ppm HTTP/1.1\r\nHost: x\r\nRange: bytes=0-1\r\n\r\n".into(),
+        );
+        assert!(ranged.starts_with("HTTP/1.1 206"), "{ranged}");
+        assert!(ranged.contains("Content-Range: bytes 0-1/"), "{ranged}");
+        assert_eq!(ranged.split("\r\n\r\n").nth(1), Some("P6"), "{ranged}");
+        let bad_range = fetch(
+            &mut server,
+            "GET /frame.ppm HTTP/1.1\r\nHost: x\r\nRange: bytes=0-1,3-4\r\n\r\n".into(),
+        );
+        assert!(bad_range.starts_with("HTTP/1.1 416"), "{bad_range}");
+        assert!(bad_range.contains("Content-Range: bytes */"), "{bad_range}");
+        let head_range = fetch(
+            &mut server,
+            "HEAD /frame.ppm HTTP/1.1\r\nHost: x\r\nRange: bytes=0-1\r\n\r\n".into(),
+        );
+        assert!(head_range.starts_with("HTTP/1.1 206"), "{head_range}");
+        assert!(head_range.contains("Content-Length: 2"), "{head_range}");
+        assert!(head_range.split("\r\n\r\n").nth(1).unwrap_or("").is_empty());
 
         let health_ok = fetch(
             &mut server,
