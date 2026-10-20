@@ -4188,6 +4188,61 @@ mod tests {
     }
 
     #[test]
+    fn image_fit_pad_composes_with_rotate() {
+        // N665: padding insets the box and the quarter-turn then fits inside it.
+        use mdc_protocol::SceneNode;
+        let lit = |rotate: Option<u16>| {
+            let (_host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 4,
+                height: 4,
+                ..BoardProfile::default()
+            });
+            device.scene = Some(SceneNode {
+                name: "pic".into(),
+                kind: "image".into(),
+                rect: Some([0, 0, 4, 4]),
+                value: Some("f800001f".into()),
+                value2: Some("2,1".into()),
+                children: Vec::new(),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: Some("fit,pad=1".into()),
+                focus: None,
+            });
+            assert!(device.render_scene());
+            let mut pixels: Vec<(u16, u16, u16)> = Vec::new();
+            for y in 0..4u16 {
+                for x in 0..4u16 {
+                    let value = device.pixel_rgb565(x, y).unwrap();
+                    if value != 0 {
+                        pixels.push((x, y, value));
+                    }
+                }
+            }
+            pixels
+        };
+        // 2x1 source inside the 2x2 inner box: a 2x1 bar at row 1.
+        let flat = lit(None);
+        assert_eq!(flat.len(), 2);
+        assert!(flat.iter().all(|(x, y, _)| *y == 1 && (1..=2).contains(x)));
+        // Rotated 90°: a 1x2 column at column 1 (rows 1..=2).
+        let turned = lit(Some(90));
+        assert_eq!(turned.len(), 2);
+        assert!(turned
+            .iter()
+            .all(|(x, y, _)| *x == 1 && (1..=2).contains(y)));
+        // The two colours are preserved after the quarter-turn.
+        assert_ne!(flat[0].2, flat[1].2);
+        assert_ne!(turned[0].2, turned[1].2);
+    }
+
+    #[test]
     fn image_fit_padding_insets_the_letterbox() {
         // N645: `pad=N` insets the fit box on every side.
         use mdc_protocol::SceneNode;

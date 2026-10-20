@@ -5746,3 +5746,57 @@ fn image_fit_align_with_rotate90_on_the_device() {
     assert_eq!(render("center"), Some(1));
     assert_eq!(render("right"), Some(2));
 }
+
+#[test]
+fn image_fit_pad_composes_with_rotate_on_the_device() {
+    // N665/N670: padding insets the box, then the quarter-turn fits inside it.
+    let lit = |rotate: u16| {
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 4,
+            height: 4,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .set_scene(mdc_protocol::SceneNode {
+                name: "pic".into(),
+                kind: "image".into(),
+                rect: Some([0, 0, 4, 4]),
+                children: Vec::new(),
+                value: Some("f800001f".into()),
+                value2: Some("2,1".into()),
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: Some(rotate),
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: Some("fit,pad=1".into()),
+                focus: None,
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        let mut pixels = Vec::new();
+        for y in 0..4u16 {
+            for x in 0..4u16 {
+                if device.pixel_rgb565(x, y).unwrap() != 0 {
+                    pixels.push((x, y));
+                }
+            }
+        }
+        pixels
+    };
+    let flat = lit(0);
+    assert_eq!(flat.len(), 2);
+    assert!(flat.iter().all(|(_, y)| *y == 1));
+    let turned = lit(90);
+    assert_eq!(turned.len(), 2);
+    assert!(turned.iter().all(|(x, _)| *x == 1));
+}
