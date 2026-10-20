@@ -5800,3 +5800,89 @@ fn image_fit_pad_composes_with_rotate_on_the_device() {
     assert_eq!(turned.len(), 2);
     assert!(turned.iter().all(|(x, _)| *x == 1));
 }
+
+#[test]
+fn sprite_fit_and_pad_on_the_device() {
+    // N685/N691: a sprite honours fit/pad like an image.
+    let lit = |mode: &str| {
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 4,
+            height: 4,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        let package = mdc_model::DevicePackage {
+            target: "esp32-plane".into(),
+            mode: mdc_model::PackageMode::BakedSprites,
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            textures: Vec::new(),
+            materials: Vec::new(),
+            lights: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 8,
+            atlas: Some(mdc_model::AtlasBlob {
+                sprite_width: 1,
+                sprite_height: 1,
+                frames: 1,
+                columns: 1,
+                rows: 1,
+                rgb565: vec![0x00, 0xF8],
+                clips: Vec::new(),
+                mips: Vec::new(),
+            }),
+            texture: None,
+            texture_blobs: Vec::new(),
+        };
+        let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+        session
+            .install_package(&sealed.to_bytes().unwrap())
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session
+            .set_scene(mdc_protocol::SceneNode {
+                name: "icon".into(),
+                kind: "sprite".into(),
+                rect: Some([0, 0, 4, 4]),
+                children: Vec::new(),
+                value: Some("0".into()),
+                value2: None,
+                opacity: None,
+                visible: None,
+                anim: None,
+                rotate: None,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: Some(mode.into()),
+                focus: None,
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+        let mut pixels = Vec::new();
+        for y in 0..4u16 {
+            for x in 0..4u16 {
+                if device.pixel_rgb565(x, y).unwrap() != 0 {
+                    pixels.push((x, y));
+                }
+            }
+        }
+        pixels
+    };
+    assert_eq!(lit("").len(), 16);
+    let padded = lit("fit,pad=1");
+    assert_eq!(padded.len(), 4, "{padded:?}");
+    assert!(padded
+        .iter()
+        .all(|(x, y)| (1..=2).contains(x) && (1..=2).contains(y)));
+}

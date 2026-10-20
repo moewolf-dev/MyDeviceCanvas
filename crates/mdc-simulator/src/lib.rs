@@ -332,34 +332,17 @@ fn parse_image_mode(mode: Option<&str>) -> ImageMode {
     parsed
 }
 
-/// N556/N565: blit a hex RGB565 image, optionally scaling a `src_w × src_h`
-/// source grid into the `w × h` destination with nearest or bilinear sampling,
-/// a horizontal/vertical flip, and a quarter-turn rotation.
-#[allow(clippy::too_many_arguments)]
-fn blit_hex_rgb565(
-    pixels: &mut [u8],
-    width: u32,
-    height: u32,
-    x: u16,
-    y: u16,
+/// N575/N605/N645/N655/N585/N635/N685: compute the fit box for an image/sprite.
+/// Returns `(draw_w, draw_h, off_x, off_y)`. When `fit` is off it is the rect.
+fn fit_box(
     w: u16,
     h: u16,
-    hex: &str,
-    alpha: u8,
     src_w: u16,
     src_h: u16,
-    mode: ImageMode,
     rotate: u16,
+    mode: ImageMode,
     align: &str,
-) -> bool {
-    if w == 0 || h == 0 || src_w == 0 || src_h == 0 {
-        return false;
-    }
-    let Some(source) = decode_hex_words(hex, usize::from(src_w) * usize::from(src_h)) else {
-        return false;
-    };
-    // N575: `fit` preserves the source aspect ratio (letterboxed in the rect);
-    // the default stretches each axis independently.
+) -> (u16, u16, u16, u16) {
     let (draw_w, draw_h, off_x, off_y) = if mode.fit {
         // N605: a quarter-turn swaps the image's effective width/height, so the
         // fitted box keeps the rotated aspect ratio.
@@ -402,6 +385,37 @@ fn blit_hex_rgb565(
     } else {
         (w, h, 0, 0)
     };
+    (draw_w, draw_h, off_x, off_y)
+}
+
+/// N556/N565: blit a hex RGB565 image, optionally scaling a `src_w × src_h`
+/// source grid into the `w × h` destination with nearest or bilinear sampling,
+/// a horizontal/vertical flip, and a quarter-turn rotation.
+#[allow(clippy::too_many_arguments)]
+fn blit_hex_rgb565(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+    hex: &str,
+    alpha: u8,
+    src_w: u16,
+    src_h: u16,
+    mode: ImageMode,
+    rotate: u16,
+    align: &str,
+) -> bool {
+    if w == 0 || h == 0 || src_w == 0 || src_h == 0 {
+        return false;
+    }
+    let Some(source) = decode_hex_words(hex, usize::from(src_w) * usize::from(src_h)) else {
+        return false;
+    };
+    // N575/N685: the fit box (shared with sprites).
+    let (draw_w, draw_h, off_x, off_y) = fit_box(w, h, src_w, src_h, rotate, mode, align);
     let mut drew = false;
     for row in 0..u32::from(draw_h) {
         let py = u32::from(y) + u32::from(off_y) + row;
@@ -473,6 +487,8 @@ fn blit_sprite(
     w: u16,
     h: u16,
     alpha: u8,
+    mode: ImageMode,
+    align: &str,
 ) -> bool {
     let Some(offset) = atlas.frame_offset(index) else {
         return false;
@@ -480,18 +496,22 @@ fn blit_sprite(
     if w == 0 || h == 0 || atlas.sprite_width == 0 || atlas.sprite_height == 0 {
         return false;
     }
+    // N685: sprites share the image's fit/pad/align box.
+    let src_w = atlas.sprite_width.min(u32::from(u16::MAX)) as u16;
+    let src_h = atlas.sprite_height.min(u32::from(u16::MAX)) as u16;
+    let (draw_w, draw_h, off_x, off_y) = fit_box(w, h, src_w, src_h, 0, mode, align);
     let sprite_w = atlas.sprite_width as usize;
     let atlas_row = (atlas.columns as usize) * sprite_w * 2;
     let mut drew = false;
-    for row in 0..u32::from(h) {
-        for col in 0..u32::from(w) {
-            let px = u32::from(x) + col;
-            let py = u32::from(y) + row;
+    for row in 0..u32::from(draw_h) {
+        for col in 0..u32::from(draw_w) {
+            let px = u32::from(x) + u32::from(off_x) + col;
+            let py = u32::from(y) + u32::from(off_y) + row;
             if px >= width || py >= height {
                 continue;
             }
-            let sx = (col * atlas.sprite_width / u32::from(w)) as usize;
-            let sy = (row * atlas.sprite_height / u32::from(h)) as usize;
+            let sx = (col * atlas.sprite_width / u32::from(draw_w)) as usize;
+            let sy = (row * atlas.sprite_height / u32::from(draw_h)) as usize;
             let src = offset + sy * atlas_row + sx * 2;
             let dst = ((py * width + px) * 2) as usize;
             if src + 1 >= atlas.rgb565.len() || dst + 1 >= pixels.len() {
@@ -1347,13 +1367,29 @@ fn fill_scene(
             }
         }
     } else if node.kind == "sprite" {
-        if let (Some(atlas), Some(rect), Some(index)) = (
+        // N685: like an image, the sprite uses the authored rect (no axis swap)
+        // and supports `fit`/`pad`/`align`.
+        if let (Some(atlas), Some(authored), Some(index)) = (
             atlas,
-            rect,
+            node.rect,
             node.value.as_deref().and_then(|v| v.parse::<u32>().ok()),
         ) {
-            let [x, y, w, h] = transform.apply(rect);
-            if blit_sprite(pixels, width, height, atlas, index, x, y, w, h, alpha) {
+            let [x, y, w, h] = transform.apply(authored);
+            let mode = parse_image_mode(node.mode.as_deref());
+            if blit_sprite(
+                pixels,
+                width,
+                height,
+                atlas,
+                index,
+                x,
+                y,
+                w,
+                h,
+                alpha,
+                mode,
+                node.align.as_deref().unwrap_or("center"),
+            ) {
                 *drew = true;
             }
         }
@@ -6288,6 +6324,95 @@ mod tests {
         session.poll().unwrap();
         assert!(device.render_scene());
         assert_eq!(device.pixel_rgb565(0, 0), Some(0xF800));
+    }
+
+    #[test]
+    fn sprite_fit_and_pad_share_the_image_box() {
+        // N685: a sprite honours `fit`/`pad` like an image.
+        use mdc_protocol::SceneNode;
+        let lit = |mode: &str| {
+            let (host, mut device) = FakeDevice::pair(BoardProfile {
+                width: 4,
+                height: 4,
+                ..BoardProfile::default()
+            });
+            let mut session = Session::new(host);
+            session.connect().unwrap();
+            device.poll().unwrap();
+            assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+            let package = mdc_model::DevicePackage {
+                target: "esp32-plane".into(),
+                mode: mdc_model::PackageMode::BakedSprites,
+                nodes: Vec::new(),
+                meshes: Vec::new(),
+                textures: Vec::new(),
+                materials: Vec::new(),
+                lights: Vec::new(),
+                skeletons: Vec::new(),
+                animations: Vec::new(),
+                sprites: Vec::new(),
+                layers: Vec::new(),
+                estimated_bytes: 8,
+                atlas: Some(mdc_model::AtlasBlob {
+                    sprite_width: 1,
+                    sprite_height: 1,
+                    frames: 1,
+                    columns: 1,
+                    rows: 1,
+                    rgb565: vec![0x00, 0xF8],
+                    clips: Vec::new(),
+                    mips: Vec::new(),
+                }),
+                texture: None,
+                texture_blobs: Vec::new(),
+            };
+            let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+            session
+                .install_package(&sealed.to_bytes().unwrap())
+                .unwrap();
+            device.poll().unwrap();
+            session.poll().unwrap();
+            session
+                .set_scene(SceneNode {
+                    name: "icon".into(),
+                    kind: "sprite".into(),
+                    rect: Some([0, 0, 4, 4]),
+                    children: Vec::new(),
+                    value: Some("0".into()),
+                    opacity: None,
+                    visible: None,
+                    anim: None,
+                    rotate: None,
+                    blend: None,
+                    align: None,
+                    z: None,
+                    wrap: None,
+                    mode: Some(mode.into()),
+                    focus: None,
+                    value2: None,
+                })
+                .unwrap();
+            device.poll().unwrap();
+            session.poll().unwrap();
+            assert!(device.render_scene());
+            let mut pixels = Vec::new();
+            for y in 0..4u16 {
+                for x in 0..4u16 {
+                    if device.pixel_rgb565(x, y).unwrap() != 0 {
+                        pixels.push((x, y));
+                    }
+                }
+            }
+            pixels
+        };
+        // Stretch fills the 4x4 rect.
+        assert_eq!(lit("").len(), 16);
+        // fit+pad=1 leaves a 2x2 box at (1,1).
+        let padded = lit("fit,pad=1");
+        assert_eq!(padded.len(), 4, "{padded:?}");
+        assert!(padded
+            .iter()
+            .all(|(x, y)| (1..=2).contains(x) && (1..=2).contains(y)));
     }
 
     #[test]
