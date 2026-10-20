@@ -22,13 +22,14 @@ pub use skin::{
     mat4_from_trs, mat4_identity, mat4_mul, morph_weights_at, node_world_matrices,
     pack_material_atlas, pose_world_matrices, render_frame_at, render_frame_at_mode,
     render_geometry_at, render_geometry_at_mode, render_package_mesh, render_package_mesh_mode,
-    render_package_scene, render_package_scene_clip, render_package_scene_clip_filtered,
-    render_package_scene_clip_mode, render_package_scene_clip_named,
-    render_package_scene_clip_skinned, render_scene_at, render_scene_at_mode, sample_channel,
-    sample_channel_looped, skin_arrays, skin_arrays_multi, skin_arrays_multi_with_mode,
-    skin_normals, skin_normals_multi, skin_normals_multi_with_mode, skin_points,
-    skin_points_with_mode, skin_preview, skin_tangents_multi, skin_tangents_multi_with_mode,
-    transform_direction, transform_point, Mat4, SceneClip, ShadeMode, SkinMode,
+    render_package_mesh_skinned, render_package_scene, render_package_scene_clip,
+    render_package_scene_clip_filtered, render_package_scene_clip_mode,
+    render_package_scene_clip_named, render_package_scene_clip_skinned, render_scene_at,
+    render_scene_at_mode, sample_channel, sample_channel_looped, skin_arrays, skin_arrays_multi,
+    skin_arrays_multi_with_mode, skin_normals, skin_normals_multi, skin_normals_multi_with_mode,
+    skin_points, skin_points_with_mode, skin_preview, skin_tangents_multi,
+    skin_tangents_multi_with_mode, transform_direction, transform_point, Mat4, SceneClip,
+    ShadeMode, SkinMode,
 };
 pub use texture::{Filter, TextureMap, Wrap};
 
@@ -777,9 +778,14 @@ pub fn trim_texture_blob(blob: &mdc_model::TextureBlob) -> (mdc_model::TextureBl
 pub fn trim_package_textures(package: &mut mdc_model::DevicePackage) -> usize {
     let mut trimmed = 0;
     for index in 0..package.texture_blobs.len() {
-        let (blob, uv_rect) = trim_texture_blob(&package.texture_blobs[index]);
+        let levels = package.texture_blobs[index].mips.len() + 1;
+        let (mut blob, uv_rect) = trim_texture_blob(&package.texture_blobs[index]);
         if uv_rect == [0.0, 0.0, 1.0, 1.0] {
             continue;
+        }
+        // N749: preserve the mip chain length after the base texture shrank.
+        if levels > 1 {
+            blob = mip_texture_blob(&blob, levels, false);
         }
         let [u0, v0, u1, v1] = uv_rect;
         let (du, dv) = ((u1 - u0).max(1e-6), (v1 - v0).max(1e-6));
@@ -1890,6 +1896,58 @@ mod tests {
         assert_eq!(trim_package_textures(&mut package), 1);
         let after = render(&package);
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn trimming_rebuilds_the_mip_chain() {
+        // N749: the chain keeps its level count after the base shrinks, ending at 1x1.
+        let mut alpha = vec![0u8; 8];
+        for y in 2..6 {
+            for x in 2..6 {
+                let index = y * 8 + x;
+                alpha[index / 8] |= 1 << (index % 8);
+            }
+        }
+        let base = mdc_model::TextureBlob {
+            width: 8,
+            height: 8,
+            rgb565: 0xF800u16.to_le_bytes().repeat(64),
+            alpha,
+            palette: Vec::new(),
+            indices: Vec::new(),
+            mips: Vec::new(),
+        };
+        let blob = mip_texture_blob(&base, 4, false);
+        assert_eq!(blob.mips.len(), 3);
+        let mut package = mdc_model::DevicePackage {
+            target: "linux-mesh".into(),
+            mode: mdc_model::PackageMode::Mesh,
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            textures: Vec::new(),
+            materials: Vec::new(),
+            lights: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 0,
+            atlas: None,
+            texture: None,
+            texture_blobs: vec![blob],
+        };
+        assert_eq!(trim_package_textures(&mut package), 1);
+        let trimmed = &package.texture_blobs[0];
+        assert_eq!((trimmed.width, trimmed.height), (4, 4));
+        assert_eq!(trimmed.mips.len(), 2);
+        assert_eq!(
+            (
+                trimmed.mips.last().unwrap().width,
+                trimmed.mips.last().unwrap().height
+            ),
+            (1, 1)
+        );
+        assert!(trimmed.validate());
     }
 
     #[test]

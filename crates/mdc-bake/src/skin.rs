@@ -2074,6 +2074,37 @@ pub fn render_package_mesh_mode(
     size: (u32, u32),
     mode: ShadeMode,
 ) -> Result<BakedTexture, BakeError> {
+    render_package_mesh_skinned(package, size, mode, SkinMode::Lbs)
+}
+
+/// N746: mesh-package render with an explicit skin mode. Packages with a
+/// skeleton go through the scene renderer so joints/normals/tangents are skinned;
+/// skeleton-less packages keep the historical flat mesh path.
+pub fn render_package_mesh_skinned(
+    package: &mdc_model::DevicePackage,
+    size: (u32, u32),
+    mode: ShadeMode,
+    skin: SkinMode,
+) -> Result<BakedTexture, BakeError> {
+    if !package.skeletons.is_empty() {
+        return render_package_scene_clip_skinned(
+            package,
+            SceneClip::Static,
+            0.0,
+            size,
+            crate::Filter::Nearest,
+            mode,
+            skin,
+        );
+    }
+    render_package_mesh_flat(package, size, mode)
+}
+
+fn render_package_mesh_flat(
+    package: &mdc_model::DevicePackage,
+    size: (u32, u32),
+    mode: ShadeMode,
+) -> Result<BakedTexture, BakeError> {
     if size.0 == 0 || size.1 == 0 || size.0 > 1024 || size.1 > 1024 {
         return Err(BakeError::Budget(size.0, size.1));
     }

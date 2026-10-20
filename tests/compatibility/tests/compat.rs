@@ -6120,6 +6120,17 @@ fn dual_quaternion_skinning_changes_the_package_frame() {
     assert_ne!(lbs, dqs, "DQS and LBS must not collapse to the same frame");
     assert!(dqs.iter().any(|byte| *byte != 0), "DQS produced pixels");
     assert_eq!(SkinMode::default(), SkinMode::Lbs);
+
+    // N746: the mesh-package renderer honours the same mode for skinned meshes.
+    let mesh_lbs =
+        mdc_bake::render_package_mesh_skinned(&package, (16, 16), ShadeMode::Flat, SkinMode::Lbs)
+            .unwrap()
+            .rgb565;
+    let mesh_dqs =
+        mdc_bake::render_package_mesh_skinned(&package, (16, 16), ShadeMode::Flat, SkinMode::Dqs)
+            .unwrap()
+            .rgb565;
+    assert_ne!(mesh_lbs, mesh_dqs);
 }
 
 #[test]
