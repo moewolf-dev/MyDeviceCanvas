@@ -1156,21 +1156,44 @@ pub fn optimize_index_order(geometry: &mut mdc_model::MeshGeometry, cache_size: 
 }
 
 /// N555: optimize every mesh's index order, returning the meshes changed.
+/// N664: a package-level summary of an index-order pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PackageOrderReport {
+    /// Meshes that carry geometry.
+    pub meshes: usize,
+    /// Meshes whose order actually improved.
+    pub reordered: usize,
+    /// Vertex-cache misses before the pass (at the requested cache size).
+    pub misses_before: u64,
+    /// Vertex-cache misses after the pass.
+    pub misses_after: u64,
+}
+
+impl PackageOrderReport {
+    /// N669: misses removed by the pass (`before - after`).
+    pub fn saved(&self) -> u64 {
+        self.misses_before.saturating_sub(self.misses_after)
+    }
+}
+
 pub fn optimize_package_index_order(
     package: &mut mdc_model::DevicePackage,
     cache_size: usize,
-) -> usize {
-    let mut changed = 0usize;
+) -> PackageOrderReport {
+    let mut report = PackageOrderReport::default();
     for mesh in &mut package.meshes {
         if let Some(geometry) = mesh.geometry.as_mut() {
+            report.meshes += 1;
             let before = index_cache_misses(geometry, cache_size);
             let after = optimize_index_order(geometry, cache_size);
+            report.misses_before += before;
+            report.misses_after += after;
             if after < before {
-                changed += 1;
+                report.reordered += 1;
             }
         }
     }
-    changed
+    report
 }
 
 /// N564: what a combined geometry optimization did.
@@ -1831,6 +1854,46 @@ mod tests {
         // A geometry without triangles is left alone.
         let mut empty = strip(vec![]);
         assert_eq!(optimize_index_order(&mut empty, 4), 0);
+    }
+
+    #[test]
+    fn package_order_report_summarises_before_and_after() {
+        // N664/N669: the package pass reports per-mesh counts and cache savings.
+        let strip = |indices: Vec<u32>| mdc_model::Mesh {
+            vertices: 6,
+            indices: indices.len() as u32,
+            geometry: Some(mdc_model::MeshGeometry {
+                positions: (0..6).map(|i| [i as f32, 0.0, 0.0]).collect(),
+                indices,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut package = mdc_model::DevicePackage {
+            target: "esp32-plane".into(),
+            mode: mdc_model::PackageMode::Mesh,
+            nodes: Vec::new(),
+            meshes: vec![
+                strip(vec![2, 3, 4, 0, 1, 2, 4, 3, 5, 2, 1, 3]),
+                strip(vec![0, 1, 2, 2, 1, 3, 2, 3, 4, 4, 3, 5]),
+            ],
+            textures: Vec::new(),
+            materials: Vec::new(),
+            lights: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 0,
+            atlas: None,
+            texture: None,
+            texture_blobs: Vec::new(),
+        };
+        let report = optimize_package_index_order(&mut package, 4);
+        assert_eq!(report.meshes, 2);
+        assert!(report.misses_after <= report.misses_before);
+        assert_eq!(report.saved(), report.misses_before - report.misses_after);
+        assert_eq!(report.reordered, 1, "only the scrambled mesh improves");
     }
 
     #[test]
