@@ -367,6 +367,12 @@ impl GestureTracker {
         self.config
     }
 
+    /// N764: any non-tap gesture breaks the multi-tap chain.
+    fn reset_taps(&mut self) {
+        self.last_tap = None;
+        self.tap_streak = 0;
+    }
+
     /// Feed one input event; returns a gesture when it completes one.
     pub fn on_event(&mut self, event: &mdc_protocol::InputEvent, now_ms: u64) -> Option<Gesture> {
         // A two-finger move can produce a pan and a pinch in the same event;
@@ -395,6 +401,8 @@ impl GestureTracker {
                 // subsequently become a tap/long-press.
                 if self.pointers.len() == 2 {
                     self.pinch = self.anchor();
+                    // N764: a multi-touch sequence ends any tap chain.
+                    self.reset_taps();
                 }
                 if self.pointers.len() >= 2 {
                     for state in self.pointers.values_mut() {
@@ -410,6 +418,7 @@ impl GestureTracker {
             "move" => {
                 // N745: three pointers become a swipe (no pan/pinch).
                 if self.pointers.len() >= 3 {
+                    self.reset_taps();
                     let Some(state) = self.pointers.get_mut(&event.pointer_id) else {
                         return Vec::new();
                     };
@@ -441,6 +450,7 @@ impl GestureTracker {
                     }];
                 }
                 if self.pointers.len() >= 2 {
+                    self.reset_taps();
                     let Some(state) = self.pointers.get_mut(&event.pointer_id) else {
                         return Vec::new();
                     };
@@ -513,6 +523,8 @@ impl GestureTracker {
                 if !state.dragged && dx.abs().max(dy.abs()) >= i32::from(self.config.drag_threshold)
                 {
                     state.dragged = true;
+                    // N764: dragging is not part of a double/triple tap.
+                    self.reset_taps();
                     return vec![Gesture {
                         kind: GestureKind::Drag,
                         pointer_id: event.pointer_id,
@@ -528,6 +540,9 @@ impl GestureTracker {
                 Vec::new()
             }
             "up" | "cancel" => {
+                if event.phase == "cancel" {
+                    self.reset_taps();
+                }
                 let Some(state) = self.pointers.remove(&event.pointer_id) else {
                     return Vec::new();
                 };
@@ -557,6 +572,10 @@ impl GestureTracker {
                         dx: 0,
                         dy: 0,
                     }];
+                }
+                // N764: a cancelled pointer never becomes a tap.
+                if event.phase == "cancel" {
+                    return Vec::new();
                 }
                 if state.long_pressed {
                     return Vec::new();
@@ -649,6 +668,7 @@ impl GestureTracker {
 
     /// Advance held pointers; emits `LongPress` once per pointer.
     pub fn tick(&mut self, now_ms: u64) -> Option<Gesture> {
+        let mut pressed: Option<Gesture> = None;
         for (pointer_id, state) in self.pointers.iter_mut() {
             if state.pinched {
                 continue;
@@ -657,7 +677,8 @@ impl GestureTracker {
                 && now_ms.saturating_sub(state.down_ms) >= self.config.long_press_ms
             {
                 state.long_pressed = true;
-                return Some(Gesture {
+                // N764: a long press breaks the tap chain.
+                pressed = Some(Gesture {
                     kind: GestureKind::LongPress,
                     pointer_id: *pointer_id,
                     x: state.x,
@@ -668,9 +689,13 @@ impl GestureTracker {
                     dx: 0,
                     dy: 0,
                 });
+                break;
             }
         }
-        None
+        if pressed.is_some() {
+            self.reset_taps();
+        }
+        pressed
     }
 }
 
@@ -1793,6 +1818,21 @@ impl<T: Transport> Session<T> {
             .map(|scheduler| scheduler.budget_bytes())
             .unwrap_or(0);
         Some(device.plan_shared_tiles(budget))
+    }
+
+    /// N767: plan with per-surface weights (missing entries mean 1). The first
+    /// tile of every surface is still served when the budget allows.
+    pub fn plan_shared_surface_tiles_weighted(
+        &self,
+        weights: &[u16],
+    ) -> Option<mdc_schedule::SharedDecision> {
+        let device = self.device.as_ref()?;
+        let budget = self
+            .pacing
+            .as_ref()
+            .map(|scheduler| scheduler.budget_bytes())
+            .unwrap_or(0);
+        Some(device.plan_shared_tiles_weighted(budget, weights))
     }
 
     /// N741: adapt an active frame-pacing scheduler to the measured outbound
@@ -3303,6 +3343,17 @@ impl Device {
     /// N758: cut every surface into tiles and plan them against one shared byte
     /// budget. Surfaces are equal priority; the caller can reorder the result.
     pub fn plan_shared_tiles(&self, budget: u64) -> mdc_schedule::SharedDecision {
+        self.plan_shared_tiles_weighted(budget, &[])
+    }
+
+    /// N767: like [`plan_shared_tiles`](Self::plan_shared_tiles) with a relative
+    /// weight per surface (missing entries mean 1). The fair pass always serves
+    /// each surface once; weights only share the extra budget.
+    pub fn plan_shared_tiles_weighted(
+        &self,
+        budget: u64,
+        weights: &[u16],
+    ) -> mdc_schedule::SharedDecision {
         let demands: Vec<mdc_schedule::SurfaceDemand> = self
             .capabilities
             .surfaces
@@ -3311,6 +3362,7 @@ impl Device {
             .map(|(index, surface)| mdc_schedule::SurfaceDemand {
                 surface: index as u32,
                 priority: 0,
+                weight: weights.get(index).copied().unwrap_or(1),
                 tiles: plan_tiles(surface.width, surface.height, surface.preferred_tile_size)
                     .into_iter()
                     .enumerate()
@@ -3485,6 +3537,11 @@ mod tests {
         let roomy = device.plan_shared_tiles(2048);
         assert_eq!(roomy.surfaces[0].selected, vec![0]);
         assert_eq!(roomy.surfaces[1].selected, vec![0]);
+        // N767: weights share only the extra budget; both surfaces move first.
+        let weighted = device.plan_shared_tiles_weighted(3072, &[2, 1]);
+        assert_eq!(weighted.surfaces[0].selected, vec![0, 1]);
+        assert_eq!(weighted.surfaces[1].selected, vec![0]);
+        assert_eq!(weighted.spent, 3072);
     }
 
     #[test]
@@ -6622,6 +6679,47 @@ mod tests {
         assert_eq!(tap(&mut tracker, 2_000), Some(GestureKind::Tap));
         // The next tap inside the window is a double again.
         assert_eq!(tap(&mut tracker, 2_200), Some(GestureKind::DoubleTap));
+    }
+
+    #[test]
+    fn drag_and_long_press_break_the_tap_chain() {
+        // N764: only uninterrupted taps escalate; a drag, long press, cancel or
+        // multi-touch sequence starts a fresh chain.
+        let event = |phase: &str, x: u16, y: u16| mdc_protocol::InputEvent {
+            surface_id: "main".into(),
+            pointer_id: 1,
+            phase: phase.into(),
+            x,
+            y,
+            node: None,
+        };
+        let mut tracker = GestureTracker::new(GestureConfig::default());
+        let tap = |tracker: &mut GestureTracker, at: u64| {
+            tracker.on_event(&event("down", 5, 5), at);
+            tracker
+                .on_event(&event("up", 5, 5), at + 40)
+                .map(|g| g.kind)
+        };
+        assert_eq!(tap(&mut tracker, 0), Some(GestureKind::Tap));
+        assert_eq!(tap(&mut tracker, 80), Some(GestureKind::DoubleTap));
+        // A drag between taps must not turn the next tap into a triple.
+        tracker.on_event(&event("down", 5, 5), 160);
+        tracker.on_event(&event("move", 20, 5), 170);
+        tracker.on_event(&event("up", 20, 5), 180);
+        assert_eq!(tap(&mut tracker, 240), Some(GestureKind::Tap));
+
+        // A long press resets too.
+        assert_eq!(tap(&mut tracker, 320), Some(GestureKind::DoubleTap));
+        tracker.on_event(&event("down", 5, 5), 400);
+        assert!(tracker.tick(1_100).is_some(), "long press emitted");
+        tracker.on_event(&event("up", 5, 5), 1_150);
+        assert_eq!(tap(&mut tracker, 1_250), Some(GestureKind::Tap));
+
+        // A cancel resets even if the release would have been a tap.
+        assert_eq!(tap(&mut tracker, 1_330), Some(GestureKind::DoubleTap));
+        tracker.on_event(&event("down", 5, 5), 1_400);
+        tracker.on_event(&event("cancel", 5, 5), 1_410);
+        assert_eq!(tap(&mut tracker, 1_450), Some(GestureKind::Tap));
     }
 
     #[test]

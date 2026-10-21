@@ -204,6 +204,10 @@ pub struct SurfaceDemand {
     pub surface: u32,
     /// Higher priorities are served first each round (ties by `surface`).
     pub priority: u8,
+    /// N767: relative share of the *extra* budget above one tile per surface
+    /// per tick (0 and 1 are the same). Every surface still gets the first tile
+    /// when the budget permits, so weights cannot starve a display.
+    pub weight: u16,
     pub tiles: Vec<TileCost>,
 }
 
@@ -228,14 +232,18 @@ impl SharedDecision {
     }
 }
 
-/// N758: plan several surfaces against one shared byte budget. Surfaces take
-/// turns one tile at a time (priority first, then a stable round-robin), so a
-/// low-bandwidth link still advances every surface and the picture converges
-/// instead of starving one display. A tile larger than the whole budget is still
+/// N758: plan several surfaces against one shared byte budget. Every surface
+/// gets one tile first (priority order, so none starves); remaining budget is
+/// shared by `weight` in rounds. A tile larger than the whole budget is still
 /// admitted when nothing has been spent yet, matching [`Scheduler::plan`].
+/// N767: weights only govern the extra budget beyond the first tile.
 pub fn plan_shared(budget: u64, demands: &[SurfaceDemand]) -> SharedDecision {
     let mut order: Vec<usize> = (0..demands.len()).collect();
     order.sort_by_key(|&i| (std::cmp::Reverse(demands[i].priority), demands[i].surface));
+    let weights: Vec<u32> = demands
+        .iter()
+        .map(|demand| u32::from(demand.weight.max(1)))
+        .collect();
     let mut cursors = vec![0usize; demands.len()];
     let mut selections: Vec<SurfaceSelection> = demands
         .iter()
@@ -246,19 +254,39 @@ pub fn plan_shared(budget: u64, demands: &[SurfaceDemand]) -> SharedDecision {
         })
         .collect();
     let mut spent = 0u64;
+    let take = |i: usize,
+                spent: &mut u64,
+                cursors: &mut Vec<usize>,
+                selections: &mut Vec<SurfaceSelection>|
+     -> bool {
+        if cursors[i] >= demands[i].tiles.len() {
+            return false;
+        }
+        let cost = u64::from(demands[i].tiles[cursors[i]].bytes);
+        if budget != 0 && *spent != 0 && spent.saturating_add(cost) > budget {
+            return false;
+        }
+        *spent = spent.saturating_add(cost);
+        selections[i]
+            .selected
+            .push(demands[i].tiles[cursors[i]].index);
+        cursors[i] += 1;
+        true
+    };
+    // Fair pass: at most one tile per surface.
+    for &i in &order {
+        take(i, &mut spent, &mut cursors, &mut selections);
+    }
+    // Weighted extras: high-weight surfaces may take more of the remainder.
+    let mut extras = vec![0u32; demands.len()];
     loop {
         let mut progressed = false;
         for &i in &order {
-            if cursors[i] >= demands[i].tiles.len() {
+            if extras[i] + 1 >= weights[i] {
                 continue;
             }
-            let tile = demands[i].tiles[cursors[i]];
-            let cost = u64::from(tile.bytes);
-            let fits = budget == 0 || spent == 0 || spent.saturating_add(cost) <= budget;
-            if fits {
-                spent = spent.saturating_add(cost);
-                selections[i].selected.push(tile.index);
-                cursors[i] += 1;
+            if take(i, &mut spent, &mut cursors, &mut selections) {
+                extras[i] += 1;
                 progressed = true;
             }
         }
@@ -397,11 +425,13 @@ mod tests {
             SurfaceDemand {
                 surface: 1,
                 priority: 5,
+                weight: 1,
                 tiles: (0..4).map(|i| TileCost::new(i, 10, false)).collect(),
             },
             SurfaceDemand {
                 surface: 2,
                 priority: 1,
+                weight: 1,
                 tiles: (0..4).map(|i| TileCost::new(i, 10, false)).collect(),
             },
         ];
@@ -422,6 +452,7 @@ mod tests {
                 SurfaceDemand {
                     surface: demand.surface,
                     priority: demand.priority,
+                    weight: 1,
                     tiles: demand
                         .tiles
                         .iter()
@@ -461,11 +492,13 @@ mod tests {
             SurfaceDemand {
                 surface: 7,
                 priority: 9,
+                weight: 1,
                 tiles: vec![TileCost::new(0, 10, false)],
             },
             SurfaceDemand {
                 surface: 3,
                 priority: 1,
+                weight: 1,
                 tiles: vec![TileCost::new(0, 10, false)],
             },
         ];
@@ -481,6 +514,35 @@ mod tests {
         assert!(plan_shared(0, &[]).surfaces.is_empty());
         let unlimited = plan_shared(0, &[demands[0].clone()]);
         assert_eq!(unlimited.selection(7).unwrap().selected, vec![0]);
+    }
+
+    #[test]
+    fn weights_share_extra_budget_without_starving() {
+        // N767: the fair pass gives each surface one tile; weights then split
+        // the remaining budget (3:1 here), and a tiny budget still moves both.
+        let demand = |surface: u32, weight: u16| SurfaceDemand {
+            surface,
+            priority: 0,
+            weight,
+            tiles: (0..8).map(|i| TileCost::new(i, 10, false)).collect(),
+        };
+        let demands = vec![demand(1, 3), demand(2, 1)];
+        let decision = plan_shared(80, &demands);
+        assert_eq!(decision.selection(1).unwrap().selected, vec![0, 1, 2]);
+        assert_eq!(decision.selection(2).unwrap().selected, vec![0]);
+        assert_eq!(decision.spent, 40);
+
+        // Over many calls a two-tile budget still serves every surface once;
+        // weights never cause a starved display.
+        for _ in 0..100 {
+            let decision = plan_shared(20, &demands);
+            assert_eq!(decision.selection(1).unwrap().selected, vec![0]);
+            assert_eq!(decision.selection(2).unwrap().selected, vec![0]);
+        }
+        // Zero weight is treated as one (never zero service).
+        let zero = plan_shared(10, &[demand(3, 0), demand(4, 0)]);
+        assert_eq!(zero.selection(3).unwrap().selected, vec![0]);
+        assert!(zero.selection(4).unwrap().selected.is_empty());
     }
 
     #[test]
