@@ -17,4 +17,5 @@ mdc-assets = { path = "../../crates/mdc-assets" }
 mdc-mirror = { path = "../../crates/mdc-mirror" }
 mdc-simulator = { path = "../../crates/mdc-simulator" }
 mdc-bake = { path = "../../crates/mdc-bake" }
+mdc-schedule = { path = "../../crates/mdc-schedule" }
 image = { version = "=0.24.9", default-features = false, features = ["png"] }

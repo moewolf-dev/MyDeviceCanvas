@@ -2724,3 +2724,58 @@ fn chunk_store_dedup_stays_bounded() {
     assert_eq!(store.total_bytes(), 0);
     assert_eq!(store.unique_chunks(), 0);
 }
+
+#[test]
+fn rle_chunk_store_soak_stays_under_its_compressed_quota() {
+    // N757: repetitive chunks compress, so thousands of inserts stay under a
+    // quota that is far smaller than the raw byte total.
+    let mut store = mdc_assets::ChunkStore::new(4096, 4096);
+    let mut live = Vec::new();
+    for index in 0..500u32 {
+        let mut bytes = vec![0x5Au8; 4096];
+        bytes[0..4].copy_from_slice(&index.to_le_bytes());
+        let blob = store.insert(&bytes).unwrap();
+        live.push(blob);
+        if live.len() > 4 {
+            store.release(&live.remove(0));
+        }
+        assert!(store.total_bytes() <= 4096, "{}", store.total_bytes());
+    }
+    for blob in live {
+        store.release(&blob);
+    }
+    assert_eq!(store.total_bytes(), 0);
+    assert_eq!(store.unique_chunks(), 0);
+}
+
+#[test]
+fn shared_surface_plan_converges_under_a_low_budget() {
+    // N758: 4 tiles per surface at 8 bytes each, one 8-byte slice per tick, so
+    // each round only one surface moves but both finish within 8 rounds.
+    let mut remaining: Vec<Vec<u32>> = vec![(0..4).collect(), (0..4).collect()];
+    for round in 0..8 {
+        let demands: Vec<mdc_schedule::SurfaceDemand> = remaining
+            .iter()
+            .enumerate()
+            .map(|(index, tiles)| mdc_schedule::SurfaceDemand {
+                surface: index as u32,
+                priority: 0,
+                tiles: tiles
+                    .iter()
+                    .map(|tile| mdc_schedule::TileCost::new(*tile, 8, false))
+                    .collect(),
+            })
+            .collect();
+        let decision = mdc_schedule::plan_shared(8, &demands);
+        for (index, tiles) in remaining.iter_mut().enumerate() {
+            if let Some(selection) = decision.selection(index as u32) {
+                tiles.retain(|tile| !selection.selected.contains(tile));
+            }
+        }
+        if remaining.iter().all(Vec::is_empty) {
+            assert!(round < 8, "converged in {round} rounds");
+            return;
+        }
+    }
+    panic!("the shared plan did not converge: {remaining:?}");
+}

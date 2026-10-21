@@ -6219,3 +6219,141 @@ fn per_material_alpha_cutoff_matches_on_the_device() {
     assert_ne!(pixel(&frame.rgb565, 1, 4), 0, "left half is opaque");
     assert_eq!(pixel(&frame.rgb565, 6, 4), 0, "right half is cut out");
 }
+
+#[test]
+fn scene_arc_mask_and_group_skew_reach_the_device() {
+    // N753/N754/N759: arc/smooth paths, mask invert+feather and group shear all
+    // rasterize on the device double (not just in the protocol parser).
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 24,
+        height: 16,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    let show = |session: &mut Session<_>, device: &mut FakeDevice, scene: &str| {
+        session
+            .set_scene(serde_json::from_str(scene).unwrap())
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.render_scene());
+    };
+    show(
+        &mut session,
+        &mut device,
+        r##"{"name":"root","kind":"path",
+             "value2":"M2,12;A6,6,0,0,1,14,12;T22,12","value":"#FFFFFF"}"##,
+    );
+    assert_ne!(device.pixel_rgb565(8, 6), Some(0), "arc top");
+    assert_ne!(device.pixel_rgb565(22, 12), Some(0), "smooth quad end");
+
+    show(
+        &mut session,
+        &mut device,
+        r##"{"name":"m","kind":"mask","value2":"0,0;8,0;8,8;0,8","mode":"invert",
+             "children":[{"name":"fill","kind":"rect","rect":[0,0,16,8],"value":"#FF0000"}]}"##,
+    );
+    assert_eq!(
+        device.pixel_rgb565(2, 4),
+        Some(0),
+        "inverted mask hides left"
+    );
+    assert_eq!(device.pixel_rgb565(12, 4), Some(0xF800), "right shown");
+
+    show(
+        &mut session,
+        &mut device,
+        r##"{"name":"g","kind":"group","value2":"500,0","children":[
+             {"name":"bar","kind":"rect","rect":[0,0,4,12],"value":"#FFFFFF"}]}"##,
+    );
+    assert_ne!(device.pixel_rgb565(6, 10), Some(0), "sheared right");
+    assert_eq!(device.hit_test(6, 10).as_deref(), Some("bar"));
+}
+
+#[test]
+fn material_atlas_trims_transparent_margins() {
+    // N760: both textures have a 2×2 opaque island in an 8×8 transparent field.
+    // Packing trims each first, so the page is 16×2 rather than 16×8, and the
+    // remapped UV still reaches the original colour.
+    let mask = |x0: usize, y0: usize| {
+        let mut bytes = vec![0u8; 8];
+        for y in y0..y0 + 2 {
+            for x in x0..x0 + 2 {
+                let index = y * 8 + x;
+                bytes[index / 8] |= 1 << (index % 8);
+            }
+        }
+        bytes
+    };
+    let blob = |color: u16, x0: usize, y0: usize| mdc_model::TextureBlob {
+        width: 8,
+        height: 8,
+        rgb565: color.to_le_bytes().repeat(64),
+        alpha: mask(x0, y0),
+        palette: Vec::new(),
+        indices: Vec::new(),
+        mips: Vec::new(),
+    };
+    let mesh = |material: usize, uv: [f32; 2]| mdc_model::Mesh {
+        name: format!("quad-{material}"),
+        vertices: 1,
+        indices: 0,
+        material: Some(material),
+        geometry: Some(mdc_model::MeshGeometry {
+            positions: vec![[0.0, 0.0, 0.0]],
+            indices: vec![0],
+            uv: vec![uv],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut package = mdc_model::DevicePackage {
+        target: "esp32-plane".into(),
+        mode: mdc_model::PackageMode::Mesh,
+        nodes: vec![mdc_model::Node {
+            name: "root".into(),
+            mesh: Some(0),
+            ..Default::default()
+        }],
+        meshes: vec![mesh(0, [0.625, 0.625]), mesh(1, [0.125, 0.125])],
+        textures: Vec::new(),
+        materials: vec![
+            mdc_model::Material {
+                name: "red".into(),
+                texture: Some(0),
+                ..Default::default()
+            },
+            mdc_model::Material {
+                name: "green".into(),
+                texture: Some(1),
+                ..Default::default()
+            },
+        ],
+        lights: Vec::new(),
+        skeletons: Vec::new(),
+        animations: Vec::new(),
+        sprites: Vec::new(),
+        layers: Vec::new(),
+        estimated_bytes: 512,
+        atlas: None,
+        texture: None,
+        texture_blobs: vec![blob(0xF800, 4, 4), blob(0x07E0, 0, 0)],
+    };
+    assert!(mdc_bake::pack_material_atlas(&mut package, 16));
+    assert_eq!(package.texture_blobs.len(), 1);
+    let page = &package.texture_blobs[0];
+    assert_eq!((page.width, page.height), (16, 2), "trimmed page height");
+    assert_eq!(page.alpha.len(), 4, "alpha mask follows the trimmed page");
+    let sample = |mesh: &mdc_model::Mesh| {
+        let [u, v] = mesh.geometry.as_ref().unwrap().uv[0];
+        let x = ((u * page.width as f32).floor() as usize).min(page.width as usize - 1);
+        let y = ((v * page.height as f32).floor() as usize).min(page.height as usize - 1);
+        let index = (y * page.width as usize + x) * 2;
+        u16::from_le_bytes([page.rgb565[index], page.rgb565[index + 1]])
+    };
+    assert_eq!(sample(&package.meshes[0]), 0xF800, "red UV still red");
+    assert_eq!(sample(&package.meshes[1]), 0x07E0, "green UV still green");
+}
