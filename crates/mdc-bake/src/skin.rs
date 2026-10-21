@@ -846,9 +846,20 @@ pub fn skin_arrays_multi_with_mode(
                 total += weight;
             }
         }
+        if total <= 0.0 {
+            out.push(*position);
+            continue;
+        }
+        // N756: normalise the weighted blend by the actual influence sum (LBS
+        // does the same), then re-normalise the quaternion part. Weights that do
+        // not add up to 1 no longer scale the translation.
+        for c in 0..4 {
+            real[c] /= total;
+            dual[c] /= total;
+        }
         let norm =
             (real[0] * real[0] + real[1] * real[1] + real[2] * real[2] + real[3] * real[3]).sqrt();
-        if total <= 0.0 || norm <= 1e-6 {
+        if norm <= 1e-6 {
             out.push(*position);
             continue;
         }
@@ -2279,17 +2290,28 @@ fn render_package_mesh_flat(
 
 /// N380: pack a package's per-material textures into one bounded atlas page,
 /// remapping each packed material's texture index and the UVs of the meshes that
-/// use it. Returns `false` (leaving the package untouched) when the blobs do not
-/// fit in `max_page`, when there are fewer than two, or when any carries an alpha
-/// mask.
+/// use it. N760: transparent margins are trimmed first (and the UVs remapped),
+/// so the page can be smaller while rendering stays identical. Returns `false`
+/// (leaving the package untouched) when the blobs do not fit in `max_page` or
+/// when there are fewer than two.
 pub fn pack_material_atlas(package: &mut mdc_model::DevicePackage, max_page: u32) -> bool {
-    // Only fully valid, opaque blobs are packed.
+    // Only fully valid blobs are packed; each is trimmed to its opaque bounds.
+    let mut trimmed: Vec<Option<(mdc_model::TextureBlob, [f32; 4])>> =
+        vec![None; package.texture_blobs.len()];
     let mut parts: Vec<(usize, u32, u32)> = Vec::new();
     for (index, blob) in package.texture_blobs.iter().enumerate() {
-        if !blob.validate() || blob.width > max_page || blob.height > max_page {
+        if !blob.validate() {
+            continue;
+        }
+        let (blob, uv_rect) = crate::trim_texture_blob(blob);
+        if blob.width == 0 || blob.height == 0 {
+            continue;
+        }
+        if blob.width > max_page || blob.height > max_page {
             continue;
         }
         parts.push((index, blob.width, blob.height));
+        trimmed[index] = Some((blob, uv_rect));
     }
     if parts.len() < 2 {
         return false;
@@ -2315,18 +2337,17 @@ pub fn pack_material_atlas(package: &mut mdc_model::DevicePackage, max_page: u32
     if page_h == 0 {
         return false;
     }
-    // Blit each blob into the page, carrying any 1-bit alpha mask across.
+    // Blit each trimmed blob into the page, carrying any 1-bit alpha mask across.
     let mut page = vec![0u8; (max_page as usize) * (page_h as usize) * 2];
     let has_alpha = placements.iter().any(|(index, _, _, _, _)| {
-        package
-            .texture_blobs
-            .get(*index)
-            .is_some_and(|blob| !blob.alpha.is_empty())
+        trimmed[*index]
+            .as_ref()
+            .is_some_and(|(blob, _)| !blob.alpha.is_empty())
     });
     let page_pixels = (max_page as usize) * (page_h as usize);
     let mut page_alpha = vec![0xFFu8; page_pixels.div_ceil(8)];
     for (index, px, py, w, h) in &placements {
-        let Some(blob) = package.texture_blobs.get(*index) else {
+        let Some((blob, _)) = trimmed[*index].as_ref() else {
             return false;
         };
         for row in 0..*h {
@@ -2365,6 +2386,18 @@ pub fn pack_material_atlas(package: &mut mdc_model::DevicePackage, max_page: u32
         .iter()
         .map(|material| material.texture.and_then(rect_of))
         .collect();
+    // N760: each material's trim rectangle in its original texture's UV space.
+    let trim_rects: Vec<Option<[f32; 4]>> = package
+        .materials
+        .iter()
+        .map(|material| {
+            material
+                .texture
+                .and_then(|index| trimmed.get(index))
+                .and_then(|entry| entry.as_ref())
+                .map(|(_, rect)| *rect)
+        })
+        .collect();
     for material in &mut package.materials {
         if material.texture.and_then(rect_of).is_some() {
             material.texture = Some(0);
@@ -2385,9 +2418,19 @@ pub fn pack_material_atlas(package: &mut mdc_model::DevicePackage, max_page: u32
         if geometry.uv.len() < geometry.positions.len() || geometry.uv.is_empty() {
             continue;
         }
+        // Trim first (original UV -> kept pixels), then place those pixels on
+        // the page (kept pixels -> page UV).
+        let [u0, v0, u1, v1] = trim_rects
+            .get(material_index)
+            .copied()
+            .flatten()
+            .unwrap_or([0.0, 0.0, 1.0, 1.0]);
+        let (du, dv) = ((u1 - u0).max(1e-6), (v1 - v0).max(1e-6));
         for uv in &mut geometry.uv {
-            uv[0] = (px as f32 + uv[0] * w as f32) / page_w;
-            uv[1] = (py as f32 + uv[1] * h as f32) / page_hf;
+            let u = ((uv[0] - u0) / du).clamp(0.0, 1.0);
+            let v = ((uv[1] - v0) / dv).clamp(0.0, 1.0);
+            uv[0] = (px as f32 + u * w as f32) / page_w;
+            uv[1] = (py as f32 + v * h as f32) / page_hf;
         }
     }
     package.texture_blobs = vec![mdc_model::TextureBlob {
@@ -4845,5 +4888,90 @@ mod tests {
             SkinMode::Dqs,
         );
         assert!((dqs[0][0] - 2.0).abs() < 1e-3, "{dqs:?}");
+    }
+
+    #[test]
+    fn dqs_normalises_weights_and_handles_eight_influences() {
+        // N756: JOINTS_1/WEIGHTS_1 contribute, weights need not sum to 1, and
+        // zero weights or out-of-range joints fall back instead of panicking.
+        let identity = mat4_identity();
+        let moved = mat4_from_trs([4.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0]);
+        let skeleton = mdc_model::Skeleton {
+            joint_nodes: vec![0, 1, 0, 0, 0, 0, 0, 0],
+            inverse_bind: vec![identity; 8],
+            ..Default::default()
+        };
+        let worlds = [identity, moved];
+        let position = [[1.0f32, 0.0, 0.0]];
+        // Identity contributes x=1 and the moved joint x=5, so the weighting is
+        // (1 + 5) / 2 = 3 for a half/half blend.
+        let joints = [[0u16, 1, 0, 0]];
+        let weights = [[0.5f32, 0.5, 0.0, 0.0]];
+        let dqs = skin_arrays_multi_with_mode(
+            &joints,
+            &weights,
+            &[],
+            &[],
+            &position,
+            &skeleton,
+            &worlds,
+            SkinMode::Dqs,
+        );
+        assert!((dqs[0][0] - 3.0).abs() < 1e-3, "{dqs:?}");
+
+        // Unnormalised weights: 0.25/0.75 blend toward the moved joint: 4.
+        let weights = [[0.25f32, 0.75, 0.0, 0.0]];
+        let scaled = skin_arrays_multi_with_mode(
+            &joints,
+            &weights,
+            &[],
+            &[],
+            &position,
+            &skeleton,
+            &worlds,
+            SkinMode::Dqs,
+        );
+        assert!((scaled[0][0] - 4.0).abs() < 1e-3, "{scaled:?}");
+
+        // Eight influences: four at each joint, so the half/half blend is 3.
+        let joints2 = [[1u16, 1, 1, 1]];
+        let weights2 = [[0.25f32; 4]];
+        let joints = [[0u16, 0, 0, 0]];
+        let weights = [[0.25f32; 4]];
+        let eight = skin_arrays_multi_with_mode(
+            &joints,
+            &weights,
+            &joints2,
+            &weights2,
+            &position,
+            &skeleton,
+            &worlds,
+            SkinMode::Dqs,
+        );
+        assert!((eight[0][0] - 3.0).abs() < 1e-3, "{eight:?}");
+
+        // Zero weights and joints beyond the skeleton leave the vertex alone.
+        let zero = skin_arrays_multi_with_mode(
+            &[[9u16, 9, 9, 9]],
+            &[[0.0f32; 4]],
+            &[],
+            &[],
+            &position,
+            &skeleton,
+            &worlds,
+            SkinMode::Dqs,
+        );
+        assert_eq!(zero, position);
+        let missing = skin_arrays_multi_with_mode(
+            &[[7u16, 0, 0, 0]],
+            &[[1.0f32, 0.0, 0.0, 0.0]],
+            &[],
+            &[],
+            &position,
+            &skeleton,
+            &worlds,
+            SkinMode::Dqs,
+        );
+        assert_eq!(missing, position);
     }
 }
