@@ -789,74 +789,127 @@ fn fan_edge(a: (i16, i16), b: (i16, i16), p: (i16, i16)) -> i32 {
         - (i32::from(p.1) - i32::from(a.1)) * (i32::from(b.0) - i32::from(a.0))
 }
 
-/// N138: an accumulated scene transform. Offsets are pixels; scales are
-/// permille (1000 = 1×).
+/// N138: an accumulated scene transform. Offsets are pixels; the 2×2 matrix
+/// entries are permille (identity `[1000, 0, 0, 1000]`). N759 adds shear and
+/// composes it with group scale, so nested groups stay affine.
 #[derive(Clone, Copy)]
 struct SceneTransform {
     ox: i32,
     oy: i32,
-    sx: i32,
-    sy: i32,
+    /// Row-major `[a, b, c, d]`: `x' = a·x + b·y`, `y' = c·x + d·y` (permille).
+    m: [i32; 4],
 }
 
 impl SceneTransform {
+    const IDENTITY_M: [i32; 4] = [1000, 0, 0, 1000];
+
     fn identity() -> Self {
         Self {
             ox: 0,
             oy: 0,
-            sx: 1000,
-            sy: 1000,
+            m: Self::IDENTITY_M,
         }
     }
 
-    /// Apply the transform to a geometry rect (clamped to `u16`).
+    /// N759: whether the accumulated transform shears (a rect is no longer an
+    /// axis-aligned box).
+    fn has_skew(&self) -> bool {
+        self.m[1] != 0 || self.m[2] != 0
+    }
+
+    fn map(&self, x: i32, y: i32) -> (i32, i32) {
+        (
+            self.ox + (self.m[0] * x + self.m[1] * y) / 1000,
+            self.oy + (self.m[2] * x + self.m[3] * y) / 1000,
+        )
+    }
+
+    /// Apply the transform to a geometry rect. With shear the result is the
+    /// axis-aligned bounding box of the four transformed corners; callers that
+    /// need the exact parallelogram use [`Self::corners`].
     fn apply(&self, rect: [u16; 4]) -> [u16; 4] {
-        let scale = |value: u16, permille: i32| {
-            (i32::from(value) * permille / 1000).clamp(0, i32::from(u16::MAX)) as u16
-        };
+        let clamp = |value: i32| value.clamp(0, i32::from(u16::MAX)) as u16;
+        if self.has_skew() {
+            let corners = self.corners(rect);
+            let min_x = corners.iter().map(|p| p.0).min().unwrap_or(0);
+            let min_y = corners.iter().map(|p| p.1).min().unwrap_or(0);
+            let max_x = corners.iter().map(|p| p.0).max().unwrap_or(0);
+            let max_y = corners.iter().map(|p| p.1).max().unwrap_or(0);
+            return [
+                clamp(min_x),
+                clamp(min_y),
+                clamp(max_x.saturating_sub(min_x)),
+                clamp(max_y.saturating_sub(min_y)),
+            ];
+        }
         [
-            (self.ox + i32::from(rect[0]) * self.sx / 1000).clamp(0, i32::from(u16::MAX)) as u16,
-            (self.oy + i32::from(rect[1]) * self.sy / 1000).clamp(0, i32::from(u16::MAX)) as u16,
-            scale(rect[2], self.sx),
-            scale(rect[3], self.sy),
+            clamp(self.ox + i32::from(rect[0]) * self.m[0] / 1000),
+            clamp(self.oy + i32::from(rect[1]) * self.m[3] / 1000),
+            clamp(i32::from(rect[2]) * self.m[0] / 1000),
+            clamp(i32::from(rect[3]) * self.m[3] / 1000),
         ]
     }
 
-    /// N723: transform an absolute scene point through group offset/scale.
+    /// N759: the four transformed corners of a rect (top-left, top-right,
+    /// bottom-right, bottom-left).
+    fn corners(&self, rect: [u16; 4]) -> [(i32, i32); 4] {
+        let [x, y, w, h] = rect;
+        let (x, y, w, h) = (i32::from(x), i32::from(y), i32::from(w), i32::from(h));
+        [
+            self.map(x, y),
+            self.map(x + w, y),
+            self.map(x + w, y + h),
+            self.map(x, y + h),
+        ]
+    }
+
+    /// N723: transform an absolute scene point through group offset/scale/shear.
     fn point(&self, point: [i32; 2]) -> (i32, i32) {
-        (
-            self.ox + point[0] * self.sx / 1000,
-            self.oy + point[1] * self.sy / 1000,
-        )
+        self.map(point[0], point[1])
     }
 
     /// N138: a `group` node's rect is a child offset + scale. A zero width or
     /// height means "do not scale that axis".
     fn child(self, rect: [u16; 4]) -> Self {
-        let scale = |value: u16, permille: i32| {
+        // A zero width or height means "do not scale that axis".
+        let axis = |value: u16| {
             if value == 0 {
-                permille
+                1000
             } else {
-                permille * i32::from(value) / 1000
+                i32::from(value)
             }
         };
+        let sw = axis(rect[2]);
+        let sh = axis(rect[3]);
+        let [a, b, c, d] = self.m;
+        let (ox, oy) = self.map(i32::from(rect[0]), i32::from(rect[1]));
         Self {
-            ox: self.ox + i32::from(rect[0]) * self.sx / 1000,
-            oy: self.oy + i32::from(rect[1]) * self.sy / 1000,
-            sx: scale(rect[2], self.sx),
-            sy: scale(rect[3], self.sy),
+            ox,
+            oy,
+            m: [a * sw / 1000, b * sh / 1000, c * sw / 1000, d * sh / 1000],
+        }
+    }
+
+    /// N759: apply a group shear (`kx`,`ky` permille) to its children. The
+    /// existing matrix is post-multiplied by `[[1000,kx],[ky,1000]]`.
+    fn skewed(self, kx: i32, ky: i32) -> Self {
+        let [a, b, c, d] = self.m;
+        Self {
+            m: [
+                (a * 1000 + b * ky) / 1000,
+                (a * kx + b * 1000) / 1000,
+                (c * 1000 + d * ky) / 1000,
+                (c * kx + d * 1000) / 1000,
+            ],
+            ..self
         }
     }
 
     /// N368: a `clip` node's rect offsets its children without scaling them; the
     /// rect only bounds what is composited back.
     fn offset(self, rect: [u16; 4]) -> Self {
-        Self {
-            ox: self.ox + i32::from(rect[0]) * self.sx / 1000,
-            oy: self.oy + i32::from(rect[1]) * self.sy / 1000,
-            sx: self.sx,
-            sy: self.sy,
-        }
+        let (ox, oy) = self.map(i32::from(rect[0]), i32::from(rect[1]));
+        Self { ox, oy, m: self.m }
     }
 }
 
@@ -1251,6 +1304,74 @@ fn polygon_mask(width: u32, height: u32, points: &[(i32, i32)]) -> Vec<bool> {
     mask
 }
 
+/// N754: per-pixel mask coverage for a closed polygon. `invert` keeps pixels
+/// outside the polygon; `feather` (0..=8) box-blurs the edge so it fades instead
+/// of cutting hard. The result is 0 (hidden) ..= 255 (shown).
+fn polygon_mask_alpha(
+    width: u32,
+    height: u32,
+    points: &[(i32, i32)],
+    invert: bool,
+    feather: u32,
+) -> Vec<u8> {
+    let inside = polygon_mask(width, height, points);
+    let alpha: Vec<u8> = inside
+        .into_iter()
+        .map(|value| if value != invert { 255 } else { 0 })
+        .collect();
+    let radius = feather.min(8);
+    if radius == 0 || width == 0 || height == 0 {
+        return alpha;
+    }
+    let w = width as usize;
+    let h = height as usize;
+    let r = radius as usize;
+    // Separable box blur with a clamped border (O(radius) per pixel; radius ≤ 8).
+    let mut temp = vec![0u16; w * h];
+    for y in 0..h {
+        let row = y * w;
+        for x in 0..w {
+            let left = x.saturating_sub(r);
+            let right = (x + r).min(w - 1);
+            let mut sum = 0u32;
+            for xx in left..=right {
+                sum += u32::from(alpha[row + xx]);
+            }
+            temp[row + x] = (sum / (right - left + 1) as u32) as u16;
+        }
+    }
+    let mut out = vec![0u8; w * h];
+    for x in 0..w {
+        for y in 0..h {
+            let top = y.saturating_sub(r);
+            let bottom = (y + r).min(h - 1);
+            let mut sum = 0u32;
+            for yy in top..=bottom {
+                sum += u32::from(temp[yy * w + x]);
+            }
+            out[y * w + x] = (sum / (bottom - top + 1) as u32) as u8;
+        }
+    }
+    out
+}
+
+/// N754: parse `mask` `mode` tokens (`invert`, `feather=N`).
+fn parse_mask_mode(mode: Option<&str>) -> (bool, u32) {
+    let mut invert = false;
+    let mut feather = 0;
+    for token in mode.unwrap_or("").split(',').map(str::trim) {
+        match token {
+            "invert" => invert = true,
+            other => {
+                if let Some(value) = other.strip_prefix("feather=") {
+                    feather = value.trim().parse::<u32>().unwrap_or(0).min(8);
+                }
+            }
+        }
+    }
+    (invert, feather)
+}
+
 /// N156: fill the ellipse inscribed in `rect` with `color`.
 fn fill_circle(pixels: &mut [u8], width: u32, height: u32, rect: [u16; 4], color: u16, alpha: u8) {
     let [x, y, w, h] = rect;
@@ -1277,6 +1398,75 @@ fn fill_circle(pixels: &mut [u8], width: u32, height: u32, rect: [u16; 4], color
             }
         }
     }
+}
+
+/// N753: flatten an SVG-style elliptical arc from `from` to `end` into line
+/// points (excluding `from`). Endpoint-to-centre parameterisation per the SVG
+/// spec; radii are scaled up when they cannot span the endpoints, and the step
+/// count is bounded.
+#[allow(clippy::too_many_arguments)]
+fn flatten_arc(
+    from: (f32, f32),
+    rx: f32,
+    ry: f32,
+    rotation_deg: f32,
+    large_arc: bool,
+    sweep: bool,
+    end: (f32, f32),
+) -> Vec<(f32, f32)> {
+    let (x1, y1) = (from.0, from.1);
+    let (x2, y2) = (end.0, end.1);
+    if (x1 - x2).abs() < 1e-6 && (y1 - y2).abs() < 1e-6 {
+        return Vec::new();
+    }
+    let mut rx = rx.abs().max(1e-6);
+    let mut ry = ry.abs().max(1e-6);
+    let phi = rotation_deg.to_radians();
+    let (sin_phi, cos_phi) = phi.sin_cos();
+    let dx = (x1 - x2) / 2.0;
+    let dy = (y1 - y2) / 2.0;
+    let x1p = cos_phi * dx + sin_phi * dy;
+    let y1p = -sin_phi * dx + cos_phi * dy;
+    let lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+    if lambda > 1.0 {
+        let scale = lambda.sqrt();
+        rx *= scale;
+        ry *= scale;
+    }
+    let num = (rx * rx * ry * ry) - (rx * rx * y1p * y1p) - (ry * ry * x1p * x1p);
+    let den = (rx * rx * y1p * y1p) + (ry * ry * x1p * x1p);
+    let factor = if den <= 1e-9 {
+        0.0
+    } else {
+        let sign = if large_arc == sweep { -1.0 } else { 1.0 };
+        sign * (num.max(0.0) / den).sqrt()
+    };
+    let cxp = factor * (rx * y1p / ry);
+    let cyp = factor * (-ry * x1p / rx);
+    let cx = cos_phi * cxp - sin_phi * cyp + (x1 + x2) / 2.0;
+    let cy = sin_phi * cxp + cos_phi * cyp + (y1 + y2) / 2.0;
+    let angle = |ux: f32, uy: f32, vx: f32, vy: f32| (ux * vy - uy * vx).atan2(ux * vx + uy * vy);
+    let ux = (x1p - cxp) / rx;
+    let uy = (y1p - cyp) / ry;
+    let vx = (-x1p - cxp) / rx;
+    let vy = (-y1p - cyp) / ry;
+    let theta1 = angle(1.0, 0.0, ux, uy);
+    let mut delta = angle(ux, uy, vx, vy);
+    if !sweep && delta > 0.0 {
+        delta -= std::f32::consts::TAU;
+    } else if sweep && delta < 0.0 {
+        delta += std::f32::consts::TAU;
+    }
+    let steps = ((delta.abs() / (std::f32::consts::PI / 24.0)).ceil() as u32).clamp(4, 96);
+    let mut out = Vec::with_capacity(steps as usize);
+    for step in 1..=steps {
+        let theta = theta1 + delta * step as f32 / steps as f32;
+        let (sin_t, cos_t) = theta.sin_cos();
+        let x = cx + rx * cos_t * cos_phi - ry * sin_t * sin_phi;
+        let y = cy + rx * cos_t * sin_phi + ry * sin_t * cos_phi;
+        out.push((x, y));
+    }
+    out
 }
 
 /// N157: Bresenham line from `rect[0..2]` to `rect[2..4]`, clipped to bounds.
@@ -1405,9 +1595,13 @@ fn hit_test_node(
             None => transform,
         }
     } else {
-        match node.rect {
+        let base = match node.rect {
             Some(rect) => transform.child(rect),
             None => transform,
+        };
+        match node.skew() {
+            Some((kx, ky)) => base.skewed(kx, ky),
+            None => base,
         }
     };
     // N485: the highest `z` (then the last in document order) is on top.
@@ -1529,11 +1723,13 @@ fn fill_scene(
         _ => [x, y, w, h],
     });
     // N744: a `mask` node composites its children only inside a polygon.
+    // N754: `mode` may add `invert` and `feather=N` for a soft or inverted edge.
     if node.kind == "mask" {
         if let Some(points) = node.points() {
             let transformed: Vec<(i32, i32)> =
                 points.iter().map(|point| transform.point(*point)).collect();
-            let mask = polygon_mask(width, height, &transformed);
+            let (invert, feather) = parse_mask_mode(node.mode.as_deref());
+            let mask = polygon_mask_alpha(width, height, &transformed, invert, feather);
             let mut scratch = pixels.to_vec();
             let mut child_drew = false;
             for child in &node.children {
@@ -1548,11 +1744,27 @@ fn fill_scene(
                 );
             }
             if child_drew {
-                for (index, keep) in mask.iter().enumerate() {
-                    if *keep {
-                        let offset = index * 2;
+                let soft = feather > 0;
+                for (index, coverage) in mask.iter().enumerate() {
+                    let offset = index * 2;
+                    if *coverage == 0 {
+                        continue;
+                    }
+                    if *coverage == 255 {
                         pixels[offset] = scratch[offset];
                         pixels[offset + 1] = scratch[offset + 1];
+                    } else if soft {
+                        // Blend the child result over the untouched target.
+                        let alpha = *coverage;
+                        let dst = u16::from_le_bytes([pixels[offset], pixels[offset + 1]]);
+                        let src = u16::from_le_bytes([scratch[offset], scratch[offset + 1]]);
+                        let mix = |shift: u32, channel_mask: u16| -> u16 {
+                            let d = u32::from((dst >> shift) & channel_mask);
+                            let s = u32::from((src >> shift) & channel_mask);
+                            ((d * (255 - u32::from(alpha)) + s * u32::from(alpha)) / 255) as u16
+                        };
+                        let out = (mix(11, 0x1f) << 11) | (mix(5, 0x3f) << 5) | mix(0, 0x1f);
+                        pixels[offset..offset + 2].copy_from_slice(&out.to_le_bytes());
                     }
                 }
                 *drew = true;
@@ -1597,26 +1809,43 @@ fn fill_scene(
     }
     if node.kind == "rect" {
         if let Some(rect) = rect {
-            let [x, y, w, h] = transform.apply(rect);
             let color = node.color_rgb565();
-            for yy in y..y.saturating_add(h) {
-                if u32::from(yy) >= height {
-                    break;
+            if transform.has_skew() {
+                // N759: a sheared rect is a parallelogram, not its bounding box.
+                let corners: Vec<(i32, i32)> = transform.corners(rect).to_vec();
+                if fill_polygon(
+                    pixels,
+                    width,
+                    height,
+                    &corners,
+                    color,
+                    alpha,
+                    node.is_additive(),
+                ) {
+                    *drew = true;
                 }
-                for xx in x..x.saturating_add(w) {
-                    if u32::from(xx) >= width {
+                // Children still use the group transform below.
+            } else {
+                let [x, y, w, h] = transform.apply(rect);
+                for yy in y..y.saturating_add(h) {
+                    if u32::from(yy) >= height {
                         break;
                     }
-                    let index = ((u32::from(yy) * width + u32::from(xx)) * 2) as usize;
-                    // N480: additive blending for glow overlays.
-                    if node.is_additive() {
-                        add_pixel(pixels, index, color, alpha);
-                    } else {
-                        put_pixel(pixels, index, color, alpha);
+                    for xx in x..x.saturating_add(w) {
+                        if u32::from(xx) >= width {
+                            break;
+                        }
+                        let index = ((u32::from(yy) * width + u32::from(xx)) * 2) as usize;
+                        // N480: additive blending for glow overlays.
+                        if node.is_additive() {
+                            add_pixel(pixels, index, color, alpha);
+                        } else {
+                            put_pixel(pixels, index, color, alpha);
+                        }
                     }
                 }
+                *drew = true;
             }
-            *drew = true;
         }
     } else if node.kind == "text" {
         if let (Some(rect), Some(text)) = (rect, node.value.as_deref()) {
@@ -1898,6 +2127,8 @@ fn fill_scene(
         if let Some(commands) = node.path_commands() {
             let mut current: Option<(f32, f32)> = None;
             let mut start_point: Option<(f32, f32)> = None;
+            // N753: the previous quadratic control point, reflected by `T`.
+            let mut last_control: Option<(f32, f32)> = None;
             let mut line = |from: (f32, f32), to: (f32, f32)| {
                 draw_line(
                     pixels,
@@ -1920,6 +2151,7 @@ fn fill_scene(
                         let point = map(point);
                         current = Some(point);
                         start_point = Some(point);
+                        last_control = None;
                     }
                     mdc_protocol::PathCommand::Line(point) => {
                         let point = map(point);
@@ -1927,6 +2159,7 @@ fn fill_scene(
                             line(previous, point);
                         }
                         current = Some(point);
+                        last_control = None;
                     }
                     mdc_protocol::PathCommand::Quad(control, point) => {
                         let control = map(control);
@@ -1957,6 +2190,63 @@ fn fill_scene(
                             }
                         }
                         current = Some(point);
+                        last_control = Some(control);
+                    }
+                    mdc_protocol::PathCommand::SmoothQuad(point) => {
+                        // N753: reflect the previous quadratic control; without
+                        // one the current point is the control (a straight line).
+                        let point = map(point);
+                        if let Some(previous) = current {
+                            let control = last_control
+                                .map(|c| (2.0 * previous.0 - c.0, 2.0 * previous.1 - c.1))
+                                .unwrap_or(previous);
+                            let at = |t: f32| {
+                                let u = 1.0 - t;
+                                (
+                                    u * u * previous.0 + 2.0 * u * t * control.0 + t * t * point.0,
+                                    u * u * previous.1 + 2.0 * u * t * control.1 + t * t * point.1,
+                                )
+                            };
+                            for step in 1..=16 {
+                                line(at((step - 1) as f32 / 16.0), at(step as f32 / 16.0));
+                            }
+                            last_control = Some(control);
+                        } else {
+                            last_control = None;
+                        }
+                        current = Some(point);
+                    }
+                    mdc_protocol::PathCommand::Arc {
+                        rx,
+                        ry,
+                        rotation,
+                        large_arc,
+                        sweep,
+                        end,
+                    } => {
+                        let point = map(end);
+                        if let Some(previous) = current {
+                            let points = flatten_arc(
+                                previous,
+                                rx as f32,
+                                ry as f32,
+                                rotation as f32,
+                                large_arc,
+                                sweep,
+                                point,
+                            );
+                            let mut from = previous;
+                            for to in points {
+                                line(from, to);
+                                from = to;
+                            }
+                            // Guarantee a visible segment for a degenerate arc.
+                            if from != previous {
+                                line(from, point);
+                            }
+                        }
+                        current = Some(point);
+                        last_control = None;
                     }
                     mdc_protocol::PathCommand::Cubic(control1, control2, point) => {
                         let control1 = map(control1);
@@ -1981,12 +2271,14 @@ fn fill_scene(
                             }
                         }
                         current = Some(point);
+                        last_control = None;
                     }
                     mdc_protocol::PathCommand::Close => {
                         if let (Some(previous), Some(first)) = (current, start_point) {
                             line(previous, first);
                         }
                         current = start_point;
+                        last_control = None;
                     }
                 }
             }
@@ -2148,13 +2440,18 @@ fn fill_scene(
             *drew = true;
         }
     }
-    // A non-drawable node (group) offsets and scales its children.
-    let child_transform = if drawable {
+    // A non-drawable node (group) offsets and scales its children; N759 adds an
+    // optional shear from `value2` (`"kx,ky"` permille).
+    let child_transform = if drawable || node.kind == "mask" {
         transform
     } else {
-        match node.rect {
+        let base = match node.rect {
             Some(rect) => transform.child(rect),
             None => transform,
+        };
+        match node.skew() {
+            Some((kx, ky)) => base.skewed(kx, ky),
+            None => base,
         }
     };
     // N485: draw siblings in ascending `z` (stable, so ties keep document order).
@@ -6660,6 +6957,109 @@ mod tests {
         assert_eq!(device.pixel_rgb565(7, 7), Some(0), "hidden rect skipped");
         assert_eq!(device.hit_test(7, 7), None, "hidden node not hit");
         assert_eq!(device.hit_test(1, 1).as_deref(), Some("shown"));
+    }
+
+    #[test]
+    fn path_arc_and_smooth_quad_render() {
+        // N753: `A` flattens an elliptical arc and `T` reflects the previous
+        // quadratic control; both reach the framebuffer.
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 24,
+            height: 16,
+            ..BoardProfile::default()
+        });
+        device.scene = Some(
+            serde_json::from_str(
+                r##"{"name":"root","kind":"path",
+                    "value2":"M2,12;A6,6,0,0,1,14,12;T22,12",
+                    "value":"#FFFFFF"}"##,
+            )
+            .unwrap(),
+        );
+        assert!(device.render_scene());
+        // The upper half of the arc passes through the top of the box.
+        assert_ne!(device.pixel_rgb565(8, 6), Some(0), "arc top drawn");
+        assert_ne!(device.pixel_rgb565(2, 12), Some(0), "arc start drawn");
+        assert_ne!(device.pixel_rgb565(22, 12), Some(0), "smooth end drawn");
+        assert_eq!(
+            device.pixel_rgb565(8, 15),
+            Some(0),
+            "lower half is not part of the arc"
+        );
+    }
+
+    #[test]
+    fn mask_invert_and_feather_soften_the_edge() {
+        // N754: `invert` keeps the outside of the polygon; `feather=N` fades the
+        // boundary instead of cutting it.
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 16,
+            height: 8,
+            ..BoardProfile::default()
+        });
+        let scene = |mode: &str| {
+            serde_json::from_str::<mdc_protocol::SceneNode>(&format!(
+                r##"{{"name":"root","kind":"mask","value2":"0,0;8,0;8,8;0,8",
+                     "mode":"{mode}","children":[
+                       {{"name":"fill","kind":"rect","rect":[0,0,16,8],"value":"#FF0000"}}]}}"##
+            ))
+            .unwrap()
+        };
+        device.scene = Some(scene("invert"));
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(2, 4), Some(0), "left half masked out");
+        assert_eq!(device.pixel_rgb565(12, 4), Some(0xF800), "right half drawn");
+
+        device.scene = Some(scene("feather=3"));
+        assert!(device.render_scene());
+        assert_eq!(
+            device.pixel_rgb565(2, 4),
+            Some(0xF800),
+            "inside stays opaque"
+        );
+        let edge = device.pixel_rgb565(9, 4).unwrap();
+        assert!(
+            edge != 0 && edge != 0xF800,
+            "the feathered edge blends toward the background: {edge:#06x}"
+        );
+        assert_eq!(device.pixel_rgb565(15, 4), Some(0), "far outside is hidden");
+    }
+
+    #[test]
+    fn group_skew_shears_children() {
+        // N759: a group's `value2` shear offsets x by ky·y (permille), so a
+        // vertical rect leans right and hit-testing follows the shear.
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 16,
+            height: 16,
+            ..BoardProfile::default()
+        });
+        device.scene = Some(
+            serde_json::from_str(
+                r##"{"name":"root","kind":"group","value2":"500,0","children":[
+                     {"name":"bar","kind":"rect","rect":[0,0,4,12],"value":"#FFFFFF"}]}"##,
+            )
+            .unwrap(),
+        );
+        assert!(device.render_scene());
+        assert_ne!(device.pixel_rgb565(1, 1), Some(0), "top is at x=0");
+        assert_ne!(device.pixel_rgb565(6, 10), Some(0), "bottom shifted right");
+        assert_eq!(
+            device.pixel_rgb565(1, 10),
+            Some(0),
+            "left of the lean is empty"
+        );
+        assert_eq!(device.hit_test(5, 10).as_deref(), Some("bar"));
+        // A malformed shear leaves the transform unchanged.
+        device.scene = Some(
+            serde_json::from_str(
+                r##"{"name":"root","kind":"group","value2":"nope","children":[
+                     {"name":"bar","kind":"rect","rect":[0,0,4,12],"value":"#FFFFFF"}]}"##,
+            )
+            .unwrap(),
+        );
+        assert!(device.render_scene());
+        assert_ne!(device.pixel_rgb565(1, 10), Some(0), "unskewed");
     }
 
     #[test]

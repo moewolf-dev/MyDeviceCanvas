@@ -13,3 +13,6 @@ mdc-model = { path = "../mdc-model" }
 mdc-bake = { path = "../mdc-bake" }
 thiserror.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

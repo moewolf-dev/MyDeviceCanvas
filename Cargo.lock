@@ -390,6 +390,7 @@ dependencies = [
  "mdc-schedule",
  "mdc-simulator",
  "mdc-transport",
+ "serde_json",
 ]
 
 [[package]]
@@ -442,6 +443,7 @@ dependencies = [
  "mdc-mirror",
  "mdc-model",
  "mdc-protocol",
+ "mdc-schedule",
  "mdc-simulator",
 ]
 
@@ -529,6 +531,7 @@ dependencies = [
  "mdc-protocol",
  "mdc-transport",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 

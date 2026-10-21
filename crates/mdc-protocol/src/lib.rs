@@ -481,6 +481,19 @@ pub enum PathCommand {
     Line([i32; 2]),
     Quad([i32; 2], [i32; 2]),
     Cubic([i32; 2], [i32; 2], [i32; 2]),
+    /// N753: an SVG-style elliptical arc. `rx`/`ry` are the radii, `rotation`
+    /// the x-axis rotation in degrees, and `end` the absolute end point.
+    Arc {
+        rx: i32,
+        ry: i32,
+        rotation: i32,
+        large_arc: bool,
+        sweep: bool,
+        end: [i32; 2],
+    },
+    /// N753: a smooth quadratic segment; the control point is reflected from the
+    /// previous quadratic control (or the current point after another command).
+    SmoothQuad([i32; 2]),
     Close,
 }
 
@@ -937,6 +950,22 @@ impl SceneNode {
                 ('L', 2) => out.push(PathCommand::Line(point(0))),
                 ('Q', 4) => out.push(PathCommand::Quad(point(0), point(2))),
                 ('C', 6) => out.push(PathCommand::Cubic(point(0), point(2), point(4))),
+                // N753: A rx,ry,rotation,large-arc,sweep,x,y
+                ('A', 7) => {
+                    if !matches!(numbers[3], 0 | 1) || !matches!(numbers[4], 0 | 1) {
+                        return None;
+                    }
+                    out.push(PathCommand::Arc {
+                        rx: numbers[0].saturating_abs(),
+                        ry: numbers[1].saturating_abs(),
+                        rotation: numbers[2],
+                        large_arc: numbers[3] == 1,
+                        sweep: numbers[4] == 1,
+                        end: point(5),
+                    });
+                }
+                // N753: T x,y (smooth quadratic end point)
+                ('T', 2) => out.push(PathCommand::SmoothQuad(point(0))),
                 ('Z', 0) => out.push(PathCommand::Close),
                 _ => return None,
             }
@@ -965,6 +994,16 @@ impl SceneNode {
             sweep += 360.0;
         }
         Some((start, sweep.min(360.0)))
+    }
+
+    /// N759: a `group` node's shear from `value2` (`"kx,ky"` permille, where
+    /// 1000 shifts a child by its other coordinate). Returns `None` when absent;
+    /// malformed or extreme values are clamped to ±2000.
+    pub fn skew(&self) -> Option<(i32, i32)> {
+        let (kx, ky) = self.value2.as_deref()?.split_once(',')?;
+        let kx: i32 = kx.trim().parse().ok()?;
+        let ky: i32 = ky.trim().parse().ok()?;
+        Some((kx.clamp(-2000, 2000), ky.clamp(-2000, 2000)))
     }
 
     /// N79/N136: the fill colour for a `rect`, parsed from `value` as
@@ -2934,6 +2973,45 @@ mod tests {
                 .join(";"),
         );
         assert!(path.path_commands().is_none(), "over 64 commands");
+
+        // N753: elliptical arcs and smooth quadratics parse into commands.
+        path.value2 = Some("M0,0;A4,2,0,0,1,8,0;T12,4;Z".into());
+        let commands = path.path_commands().unwrap();
+        assert_eq!(commands.len(), 4);
+        assert_eq!(
+            commands[1],
+            PathCommand::Arc {
+                rx: 4,
+                ry: 2,
+                rotation: 0,
+                large_arc: false,
+                sweep: true,
+                end: [8, 0],
+            }
+        );
+        assert_eq!(commands[2], PathCommand::SmoothQuad([12, 4]));
+        // Arc flags are strict and the radius is non-negative.
+        path.value2 = Some("M0,0;A4,2,0,2,1,8,0".into());
+        assert!(path.path_commands().is_none(), "large-arc must be 0/1");
+        path.value2 = Some("M0,0;A-4,-2,0,0,1,8,0".into());
+        assert!(matches!(
+            path.path_commands().unwrap()[1],
+            PathCommand::Arc { rx: 4, ry: 2, .. }
+        ));
+    }
+
+    #[test]
+    fn group_skew_parses_milliunits_and_clamps() {
+        // N759: `group` shear travels in `value2` (permille), so no new field is
+        // needed and old scenes decode unchanged.
+        let mut group = plain_node("g", "group");
+        assert_eq!(group.skew(), None);
+        group.value2 = Some("500,-250".into());
+        assert_eq!(group.skew(), Some((500, -250)));
+        group.value2 = Some("9999,-9999".into());
+        assert_eq!(group.skew(), Some((2000, -2000)));
+        group.value2 = Some("nope".into());
+        assert_eq!(group.skew(), None);
     }
 
     fn config_command_vector() -> Capabilities {
