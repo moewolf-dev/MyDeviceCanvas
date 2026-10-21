@@ -1409,6 +1409,62 @@ mod tests {
     }
 
     #[test]
+    fn lz_decoder_survives_a_mutation_corpus() {
+        // N776: truncations and single-byte mutations of valid streams must be
+        // rejected or decoded, never panic.
+        let mut binary = Vec::with_capacity(256);
+        let mut state = 0x1234_5678u32;
+        for _ in 0..256 {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            binary.push((state >> 16) as u8);
+        }
+        let samples: [Vec<u8>; 4] = [
+            b"the quick brown fox jumps over the lazy dog. ".repeat(6),
+            binary,
+            vec![0xA5; 512],
+            Vec::new(),
+        ];
+        for sample in samples {
+            let encoded = lz_encode(&sample);
+            for cut in 0..=encoded.len() {
+                let _ = lz_decode(&encoded[..cut]);
+            }
+            for index in 0..encoded.len() {
+                for mask in [0x01u8, 0x80, 0xFF] {
+                    let mut mutated = encoded.clone();
+                    mutated[index] ^= mask;
+                    let _ = lz_decode(&mutated);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lz_compression_ratios_are_documented() {
+        // N776: text and repeated data shrink; incompressible bytes cost only
+        // the container/control overhead.
+        let text = b"the quick brown fox jumps over the lazy dog. ".repeat(64);
+        let repeated = vec![0x5Au8; 4096];
+        let mut binary = Vec::with_capacity(1024);
+        let mut state = 0x9E37_79B9u32;
+        for _ in 0..1024 {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            binary.push((state >> 8) as u8);
+        }
+        let ratio = |data: &[u8]| lz_encode(data).len() as f64 / data.len() as f64;
+        let (text_ratio, repeated_ratio, binary_ratio) =
+            (ratio(&text), ratio(&repeated), ratio(&binary));
+        eprintln!(
+            "lz ratios: text {text_ratio:.3}, repeated {repeated_ratio:.3}, binary {binary_ratio:.3}"
+        );
+        assert!(text_ratio < 0.6, "{text_ratio}");
+        assert!(repeated_ratio < 0.05, "{repeated_ratio}");
+        assert!(binary_ratio < 1.2, "{binary_ratio}");
+    }
+
+    #[test]
     fn hash_key_stable() {
         let k1 = AssetKey::from_bytes(&[1, 2, 3]);
         let k2 = AssetKey::from_bytes(&[1, 2, 3]);
