@@ -178,18 +178,24 @@ pub fn rle_decode(bytes: &[u8]) -> Option<Vec<u8>> {
     (out.len() == declared).then_some(out)
 }
 
-/// N757: store a chunk as `0 || raw` or `1 || rle`, whichever is smaller. The
-/// tag keeps legacy raw chunk files readable and makes the stored size exact for
-/// quota accounting.
+/// N757: `pack_chunk` container magic. Legacy chunk files have no magic and are
+/// returned verbatim, so arbitrary raw bytes never collide with the tag.
+const CHUNK_MAGIC: &[u8; 4] = b"MRCH";
+
+/// N757: store a chunk as `MRCH || 0 || raw` or `MRCH || 1 || rle`, whichever
+/// is smaller. The magic keeps legacy raw chunk files readable and makes the
+/// stored size exact for quota accounting.
 fn pack_chunk(chunk: &[u8]) -> Vec<u8> {
     let encoded = rle_encode(chunk);
-    if encoded.len() + 1 < chunk.len() + 1 {
-        let mut out = Vec::with_capacity(encoded.len() + 1);
+    if encoded.len() + 5 < chunk.len() + 5 {
+        let mut out = Vec::with_capacity(encoded.len() + 5);
+        out.extend_from_slice(CHUNK_MAGIC);
         out.push(1);
         out.extend_from_slice(&encoded);
         out
     } else {
-        let mut out = Vec::with_capacity(chunk.len() + 1);
+        let mut out = Vec::with_capacity(chunk.len() + 5);
+        out.extend_from_slice(CHUNK_MAGIC);
         out.push(0);
         out.extend_from_slice(chunk);
         out
@@ -198,10 +204,13 @@ fn pack_chunk(chunk: &[u8]) -> Vec<u8> {
 
 /// N757: decode a stored chunk; untagged legacy files are raw bytes.
 fn decode_chunk(bytes: &[u8]) -> Option<Vec<u8>> {
-    match bytes.first() {
-        Some(0) => Some(bytes[1..].to_vec()),
-        Some(1) => rle_decode(&bytes[1..]),
-        _ => Some(bytes.to_vec()),
+    if bytes.len() < 5 || &bytes[0..4] != CHUNK_MAGIC {
+        return Some(bytes.to_vec());
+    }
+    match bytes[4] {
+        0 => Some(bytes[5..].to_vec()),
+        1 => rle_decode(&bytes[5..]),
+        _ => None,
     }
 }
 
@@ -1090,8 +1099,8 @@ mod tests {
         assert_eq!(a.len, 12);
         assert_eq!(b.len, 12);
         assert_eq!(store.unique_chunks(), 4, "two shared + two unique chunks");
-        // N757: each 4-byte chunk stores as `tag || raw` (5 bytes).
-        assert_eq!(store.total_bytes(), 20);
+        // N757: each 4-byte chunk stores as `MRCH || 0 || raw` (9 bytes).
+        assert_eq!(store.total_bytes(), 36);
         assert_eq!(store.get(&a).as_deref(), Some(&b"AAAABBBBCCCC"[..]));
         assert_eq!(store.get(&b).as_deref(), Some(&b"AAAABBBBXXXX"[..]));
         let shared = AssetKey::from_bytes(b"AAAA");
@@ -1099,7 +1108,7 @@ mod tests {
 
         store.release(&a);
         assert_eq!(store.ref_count(&shared), 1, "B still references the chunk");
-        assert_eq!(store.total_bytes(), 15, "CCCC was freed");
+        assert_eq!(store.total_bytes(), 27, "CCCC was freed");
         assert!(store.get(&a).is_none(), "released blob is incomplete");
         assert_eq!(store.get(&b).as_deref(), Some(&b"AAAABBBBXXXX"[..]));
 
@@ -1112,7 +1121,7 @@ mod tests {
     #[test]
     fn chunk_store_rejects_quota_before_mutating() {
         // N729: a blob larger than the quota is refused atomically.
-        let mut store = ChunkStore::new(4, 8);
+        let mut store = ChunkStore::new(4, 16);
         assert_eq!(
             store.insert(b"AAAABBBBCCCC"),
             Err(AssetError::QuotaExceeded)
@@ -1126,7 +1135,7 @@ mod tests {
         // A repeated chunk inside one blob is stored (and charged) once.
         let repeated = store.insert(b"AAAA".repeat(3).as_slice()).unwrap();
         assert_eq!(store.unique_chunks(), 1);
-        assert_eq!(store.total_bytes(), 5);
+        assert_eq!(store.total_bytes(), 9);
         assert_eq!(store.get(&repeated), Some(b"AAAAAAAAAAAA".to_vec()));
     }
 
@@ -1140,21 +1149,21 @@ mod tests {
         let a = store.insert(b"AAAABBBB").unwrap();
         let b = store.insert(b"AAAACCCC").unwrap();
         assert_eq!(store.unique_chunks(), 3);
-        assert_eq!(store.total_bytes(), 15);
+        assert_eq!(store.total_bytes(), 27);
         drop(store);
 
         let mut store = DiskChunkStore::open(&dir, 4, 64).unwrap();
         assert_eq!(store.unique_chunks(), 3, "index restored");
-        assert_eq!(store.total_bytes(), 15);
+        assert_eq!(store.total_bytes(), 27);
         assert_eq!(store.get(&a).as_deref(), Some(&b"AAAABBBB"[..]));
         let a2 = store.insert(b"AAAABBBB").unwrap();
         assert_eq!(store.ref_count(&a2), 2);
-        assert_eq!(store.total_bytes(), 15, "no new chunks for the same blob");
+        assert_eq!(store.total_bytes(), 27, "no new chunks for the same blob");
         store.release(&a).unwrap();
         assert_eq!(store.ref_count(&a2), 1);
         assert_eq!(store.get(&a2).as_deref(), Some(&b"AAAABBBB"[..]));
         store.release(&a2).unwrap();
-        assert_eq!(store.total_bytes(), 10, "AAAA/CCCC remain for b");
+        assert_eq!(store.total_bytes(), 18, "AAAA/CCCC remain for b");
         store.release(&b).unwrap();
         assert_eq!(store.total_bytes(), 0);
         assert_eq!(store.unique_chunks(), 0);
@@ -1198,14 +1207,14 @@ mod tests {
         assert_eq!(report.missing_blobs, 1);
         assert_eq!(report.orphan_chunks, 1);
         assert_eq!(report.temp_files, 1);
-        assert_eq!(store.total_bytes(), 5);
+        assert_eq!(store.total_bytes(), 9);
         assert_eq!(store.unique_chunks(), 1);
         assert_eq!(store.ref_count(&a), 1);
         assert!(store.get(&b).is_none());
         drop(store);
         let store = DiskChunkStore::open(&dir, 4, 64).unwrap();
         assert_eq!(store.unique_chunks(), 1);
-        assert_eq!(store.total_bytes(), 5);
+        assert_eq!(store.total_bytes(), 9);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
