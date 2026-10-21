@@ -100,6 +100,111 @@ impl AssetCache {
     }
 }
 
+/// N757: the RLE container magic (`MRLE` + u32 little-endian original length).
+const RLE_MAGIC: &[u8; 4] = b"MRLE";
+
+/// N757: deterministic PackBits-style run-length encoding. Literal packets hold
+/// 1..=128 bytes (token `len-1`); repeat packets hold 2..=129 copies of the next
+/// byte (token `257-len`). The declared length is checked on decode, so a
+/// truncated or overlong stream is rejected rather than decoded past its budget.
+pub fn rle_encode(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len() + bytes.len() / 128 + 16);
+    out.extend_from_slice(RLE_MAGIC);
+    out.extend_from_slice(&(bytes.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let run = run_length(bytes, index).min(129);
+        if run >= 3 {
+            out.push((257 - run) as u8);
+            out.push(bytes[index]);
+            index += run;
+            continue;
+        }
+        // Collect literals until the next useful run (or 128 bytes).
+        let start = index;
+        let mut literal = 0usize;
+        while index < bytes.len() && literal < 128 {
+            if literal > 0 && run_length(bytes, index).min(129) >= 3 {
+                break;
+            }
+            index += 1;
+            literal += 1;
+        }
+        out.push((literal - 1) as u8);
+        out.extend_from_slice(&bytes[start..index]);
+    }
+    out
+}
+
+fn run_length(bytes: &[u8], start: usize) -> usize {
+    let value = bytes[start];
+    bytes[start..]
+        .iter()
+        .take(129)
+        .take_while(|b| **b == value)
+        .count()
+}
+
+/// N757: decode an [`rle_encode`] stream. `None` means malformed input (bad
+/// magic, truncated packet, or more bytes than the header declared).
+pub fn rle_decode(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < 8 || &bytes[0..4] != RLE_MAGIC {
+        return None;
+    }
+    let declared = u32::from_le_bytes(bytes[4..8].try_into().ok()?) as usize;
+    let mut out = Vec::with_capacity(declared.min(bytes.len().saturating_mul(4)));
+    let mut index = 8usize;
+    while index < bytes.len() {
+        let token = bytes[index];
+        index += 1;
+        if token < 128 {
+            let count = usize::from(token) + 1;
+            let end = index.checked_add(count)?;
+            if end > bytes.len() {
+                return None;
+            }
+            out.extend_from_slice(&bytes[index..end]);
+            index = end;
+        } else {
+            let count = 257 - usize::from(token);
+            let value = *bytes.get(index)?;
+            index += 1;
+            out.extend(std::iter::repeat_n(value, count));
+        }
+        if out.len() > declared {
+            return None;
+        }
+    }
+    (out.len() == declared).then_some(out)
+}
+
+/// N757: store a chunk as `0 || raw` or `1 || rle`, whichever is smaller. The
+/// tag keeps legacy raw chunk files readable and makes the stored size exact for
+/// quota accounting.
+fn pack_chunk(chunk: &[u8]) -> Vec<u8> {
+    let encoded = rle_encode(chunk);
+    if encoded.len() + 1 < chunk.len() + 1 {
+        let mut out = Vec::with_capacity(encoded.len() + 1);
+        out.push(1);
+        out.extend_from_slice(&encoded);
+        out
+    } else {
+        let mut out = Vec::with_capacity(chunk.len() + 1);
+        out.push(0);
+        out.extend_from_slice(chunk);
+        out
+    }
+}
+
+/// N757: decode a stored chunk; untagged legacy files are raw bytes.
+fn decode_chunk(bytes: &[u8]) -> Option<Vec<u8>> {
+    match bytes.first() {
+        Some(0) => Some(bytes[1..].to_vec()),
+        Some(1) => rle_decode(&bytes[1..]),
+        _ => Some(bytes.to_vec()),
+    }
+}
+
 /// N729: a content-addressed blob assembled from fixed-size chunks. `chunks`
 /// are the hashes needed to reconstruct it in order; `len` checks the result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,8 +263,10 @@ impl ChunkStore {
         for chunk in bytes.chunks(self.chunk_size) {
             let key = AssetKey::from_bytes(chunk);
             if !self.chunks.contains_key(&key.0) && planned_new.insert(key.0.clone()) {
+                // N757: the quota is charged for the RLE-encoded chunk.
+                let stored = pack_chunk(chunk).len();
                 new_bytes = new_bytes
-                    .checked_add(chunk.len())
+                    .checked_add(stored)
                     .ok_or(AssetError::QuotaExceeded)?;
             }
             keys.push(key);
@@ -175,8 +282,9 @@ impl ChunkStore {
         // Commit: store the new chunks, then add one reference per occurrence.
         for (key, chunk) in keys.iter().zip(bytes.chunks(self.chunk_size)) {
             if !self.chunks.contains_key(&key.0) {
-                self.chunks.insert(key.0.clone(), chunk.to_vec());
-                self.total = self.total.saturating_add(chunk.len());
+                let stored = pack_chunk(chunk);
+                self.total = self.total.saturating_add(stored.len());
+                self.chunks.insert(key.0.clone(), stored);
             }
             *self.refs.entry(key.0.clone()).or_insert(0) += 1;
         }
@@ -191,7 +299,7 @@ impl ChunkStore {
     pub fn get(&self, blob: &StoredBlob) -> Option<Vec<u8>> {
         let mut out = Vec::with_capacity(blob.len);
         for key in &blob.chunks {
-            out.extend_from_slice(self.chunks.get(&key.0)?);
+            out.extend_from_slice(&decode_chunk(self.chunks.get(&key.0)?)?);
         }
         (out.len() == blob.len).then_some(out)
     }
@@ -376,8 +484,10 @@ impl DiskChunkStore {
         let mut new_bytes = 0usize;
         for (key, chunk) in blob.chunks.iter().zip(bytes.chunks(self.chunk_size)) {
             if !self.chunk_path(key).is_file() && planned.insert(key.0.clone()) {
+                // N757: the on-disk quota counts the compressed chunk.
+                let stored = pack_chunk(chunk).len();
                 new_bytes = new_bytes
-                    .checked_add(chunk.len())
+                    .checked_add(stored)
                     .ok_or(AssetError::QuotaExceeded)?;
             }
         }
@@ -398,9 +508,10 @@ impl DiskChunkStore {
                 continue;
             }
             let temp = self.dir.join(format!(".chunk-{}", key.0));
-            std::fs::write(&temp, chunk).map_err(io_err)?;
+            let stored = pack_chunk(chunk);
+            std::fs::write(&temp, &stored).map_err(io_err)?;
             std::fs::rename(temp, path).map_err(io_err)?;
-            self.total = self.total.saturating_add(chunk.len());
+            self.total = self.total.saturating_add(stored.len());
         }
         let entry = self
             .blobs
@@ -417,7 +528,7 @@ impl DiskChunkStore {
     pub fn get(&self, blob: &StoredBlob) -> Option<Vec<u8>> {
         let mut out = Vec::with_capacity(blob.len);
         for key in &blob.chunks {
-            out.extend_from_slice(&std::fs::read(self.chunk_path(key)).ok()?);
+            out.extend_from_slice(&decode_chunk(&std::fs::read(self.chunk_path(key)).ok()?)?);
         }
         (out.len() == blob.len).then_some(out)
     }
@@ -979,7 +1090,8 @@ mod tests {
         assert_eq!(a.len, 12);
         assert_eq!(b.len, 12);
         assert_eq!(store.unique_chunks(), 4, "two shared + two unique chunks");
-        assert_eq!(store.total_bytes(), 16);
+        // N757: each 4-byte chunk stores as `tag || raw` (5 bytes).
+        assert_eq!(store.total_bytes(), 20);
         assert_eq!(store.get(&a).as_deref(), Some(&b"AAAABBBBCCCC"[..]));
         assert_eq!(store.get(&b).as_deref(), Some(&b"AAAABBBBXXXX"[..]));
         let shared = AssetKey::from_bytes(b"AAAA");
@@ -987,7 +1099,7 @@ mod tests {
 
         store.release(&a);
         assert_eq!(store.ref_count(&shared), 1, "B still references the chunk");
-        assert_eq!(store.total_bytes(), 12, "CCCC was freed");
+        assert_eq!(store.total_bytes(), 15, "CCCC was freed");
         assert!(store.get(&a).is_none(), "released blob is incomplete");
         assert_eq!(store.get(&b).as_deref(), Some(&b"AAAABBBBXXXX"[..]));
 
@@ -1014,7 +1126,7 @@ mod tests {
         // A repeated chunk inside one blob is stored (and charged) once.
         let repeated = store.insert(b"AAAA".repeat(3).as_slice()).unwrap();
         assert_eq!(store.unique_chunks(), 1);
-        assert_eq!(store.total_bytes(), 4);
+        assert_eq!(store.total_bytes(), 5);
         assert_eq!(store.get(&repeated), Some(b"AAAAAAAAAAAA".to_vec()));
     }
 
@@ -1028,21 +1140,21 @@ mod tests {
         let a = store.insert(b"AAAABBBB").unwrap();
         let b = store.insert(b"AAAACCCC").unwrap();
         assert_eq!(store.unique_chunks(), 3);
-        assert_eq!(store.total_bytes(), 12);
+        assert_eq!(store.total_bytes(), 15);
         drop(store);
 
         let mut store = DiskChunkStore::open(&dir, 4, 64).unwrap();
         assert_eq!(store.unique_chunks(), 3, "index restored");
-        assert_eq!(store.total_bytes(), 12);
+        assert_eq!(store.total_bytes(), 15);
         assert_eq!(store.get(&a).as_deref(), Some(&b"AAAABBBB"[..]));
         let a2 = store.insert(b"AAAABBBB").unwrap();
         assert_eq!(store.ref_count(&a2), 2);
-        assert_eq!(store.total_bytes(), 12, "no new chunks for the same blob");
+        assert_eq!(store.total_bytes(), 15, "no new chunks for the same blob");
         store.release(&a).unwrap();
         assert_eq!(store.ref_count(&a2), 1);
         assert_eq!(store.get(&a2).as_deref(), Some(&b"AAAABBBB"[..]));
         store.release(&a2).unwrap();
-        assert_eq!(store.total_bytes(), 8, "AAAA/CCCC remain for b");
+        assert_eq!(store.total_bytes(), 10, "AAAA/CCCC remain for b");
         store.release(&b).unwrap();
         assert_eq!(store.total_bytes(), 0);
         assert_eq!(store.unique_chunks(), 0);
@@ -1086,14 +1198,46 @@ mod tests {
         assert_eq!(report.missing_blobs, 1);
         assert_eq!(report.orphan_chunks, 1);
         assert_eq!(report.temp_files, 1);
-        assert_eq!(store.total_bytes(), 4);
+        assert_eq!(store.total_bytes(), 5);
         assert_eq!(store.unique_chunks(), 1);
         assert_eq!(store.ref_count(&a), 1);
         assert!(store.get(&b).is_none());
         drop(store);
         let store = DiskChunkStore::open(&dir, 4, 64).unwrap();
         assert_eq!(store.unique_chunks(), 1);
-        assert_eq!(store.total_bytes(), 4);
+        assert_eq!(store.total_bytes(), 5);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rle_round_trips_and_quota_counts_compressed_bytes() {
+        // N757: deterministic PackBits round-trip, malformed streams rejected,
+        // and a repetitive chunk costs far less than its raw size.
+        let source: Vec<u8> = vec![7u8; 4096]
+            .into_iter()
+            .enumerate()
+            .map(|(i, b)| if i % 512 == 0 { 9 } else { b })
+            .collect();
+        let encoded = rle_encode(&source);
+        assert!(encoded.len() < source.len() / 4, "{}", encoded.len());
+        assert_eq!(rle_decode(&encoded).as_deref(), Some(source.as_slice()));
+        assert_eq!(rle_decode(&encoded[..encoded.len() - 1]), None);
+        assert_eq!(rle_decode(b"MRLE\x02\x00\x00\x00\x05"), None, "truncated");
+
+        let mut store = ChunkStore::new(4096, 512);
+        let blob = store.insert(&source).unwrap();
+        assert!(store.total_bytes() < 512, "{}", store.total_bytes());
+        assert_eq!(store.get(&blob).as_deref(), Some(source.as_slice()));
+
+        // The disk store writes the same compact form and restores it.
+        let dir = std::env::temp_dir().join(format!("mdc-rle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut disk = DiskChunkStore::open(&dir, 4096, 512).unwrap();
+        let persisted = disk.insert(&source).unwrap();
+        assert!(disk.total_bytes() < 512);
+        drop(disk);
+        let disk = DiskChunkStore::open(&dir, 4096, 512).unwrap();
+        assert_eq!(disk.get(&persisted).as_deref(), Some(source.as_slice()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
