@@ -1634,7 +1634,13 @@ impl HttpMirrorServer {
                                     }),
                                 None => (health_etag.clone(), health.clone()),
                             };
-                            let response = if request_not_modified(
+                            let response = if request_precondition_failed(
+                                &client.request[..end],
+                                &etag,
+                                last_publish,
+                            ) {
+                                precondition_failed(&etag, last_publish)
+                            } else if request_not_modified(
                                 &client.request[..end],
                                 &etag,
                                 last_publish,
@@ -1701,6 +1707,16 @@ impl HttpMirrorServer {
                             // Streams are not conditional.
                             let conditional = path.starts_with("/frame.");
                             let etag = frame_etag(&path, &query, self.frames);
+                            if conditional
+                                && request_precondition_failed(
+                                    &client.request[..end],
+                                    &etag,
+                                    last_publish,
+                                )
+                            {
+                                client.response = Some(precondition_failed(&etag, last_publish));
+                                continue;
+                            }
                             if conditional
                                 && request_not_modified(&client.request[..end], &etag, last_publish)
                             {
@@ -2818,6 +2834,35 @@ fn request_not_modified(request: &[u8], etag: &str, last_modified: u64) -> bool 
     header_value(request, "if-modified-since")
         .and_then(parse_http_date)
         .is_some_and(|since| since >= last_modified)
+}
+
+/// N770: evaluate `If-Match` (strong validators; `*` matches any existing
+/// representation). `None` means the header was absent.
+fn if_match(request: &[u8], etag: &str) -> Option<bool> {
+    header_value(request, "if-match").map(|value| {
+        value.trim() == "*" || value.split(',').any(|candidate| candidate.trim() == etag)
+    })
+}
+
+/// N770: RFC 7232 precondition failure. `If-Match` wins when present; otherwise
+/// `If-Unmodified-Since` fails when the representation changed after the date.
+fn request_precondition_failed(request: &[u8], etag: &str, last_modified: u64) -> bool {
+    if let Some(matched) = if_match(request, etag) {
+        return !matched;
+    }
+    header_value(request, "if-unmodified-since")
+        .and_then(parse_http_date)
+        .is_some_and(|since| last_modified > since)
+}
+
+/// N770: a `412 Precondition Failed` response with the current validators.
+fn precondition_failed(etag: &str, last_modified: u64) -> Vec<u8> {
+    format!(
+        "HTTP/1.1 412 Precondition Failed\r\nETag: {etag}\r\nLast-Modified: {}\r\n\
+         Content-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        http_date(last_modified)
+    )
+    .into_bytes()
 }
 
 /// N727: a `304 Not Modified` response carrying the validators.
@@ -4378,6 +4423,56 @@ mod tests {
     }
 
     #[test]
+    fn if_match_and_if_unmodified_since_preconditions() {
+        // N770: If-Match wins over If-Unmodified-Since; a stale date alone also
+        // fails with 412. Exact tokens, lists and `*` are accepted.
+        let stamp = 1_700_000_000u64;
+        let request = |headers: &str| format!("GET /frame.png HTTP/1.1\r\n{headers}\r\n");
+        assert!(!request_precondition_failed(
+            request("If-Match: \"x\"\r\n").as_bytes(),
+            "\"x\"",
+            stamp
+        ));
+        assert!(request_precondition_failed(
+            request("If-Match: \"other\"\r\n").as_bytes(),
+            "\"x\"",
+            stamp
+        ));
+        assert!(!request_precondition_failed(
+            request("If-Match: \"a\", \"x\"\r\n").as_bytes(),
+            "\"x\"",
+            stamp
+        ));
+        assert!(!request_precondition_failed(
+            request("If-Match: *\r\n").as_bytes(),
+            "\"x\"",
+            stamp
+        ));
+        let old = http_date(stamp - 1);
+        assert!(request_precondition_failed(
+            request(&format!("If-Unmodified-Since: {old}\r\n")).as_bytes(),
+            "\"x\"",
+            stamp
+        ));
+        let now = http_date(stamp);
+        assert!(!request_precondition_failed(
+            request(&format!("If-Unmodified-Since: {now}\r\n")).as_bytes(),
+            "\"x\"",
+            stamp
+        ));
+        // Even a stale date is ignored when If-Match already matched.
+        assert!(!request_precondition_failed(
+            request(&format!(
+                "If-Match: \"x\"\r\nIf-Unmodified-Since: {old}\r\n"
+            ))
+            .as_bytes(),
+            "\"x\"",
+            stamp
+        ));
+        assert!(precondition_failed("\"x\"", stamp).starts_with(b"HTTP/1.1 412"));
+    }
+
+    #[test]
     fn frame_and_health_honor_if_none_match() {
         // N727: both `/frame.png` and `/health` emit validators and reply 304
         // when the client presents the current ETag.
@@ -4441,6 +4536,27 @@ mod tests {
         assert!(frame_304.starts_with("HTTP/1.1 304"), "{frame_304}");
         assert!(!frame_304.contains("PNG"), "no body on 304");
         assert!(frame_304.contains(&format!("ETag: {frame_tag}")));
+
+        // N770: If-Match mismatch and a stale If-Unmodified-Since both return
+        // 412; a matching If-Match is a normal 200.
+        let frame_412 = fetch(
+            &mut server,
+            "GET /frame.png HTTP/1.1\r\nHost: x\r\nIf-Match: \"other\"\r\n\r\n".into(),
+        );
+        assert!(frame_412.starts_with("HTTP/1.1 412"), "{frame_412}");
+        assert_eq!(frame_412.split("\r\n\r\n").nth(1).unwrap_or(""), "");
+        let stale = fetch(
+            &mut server,
+            "GET /frame.png HTTP/1.1\r\nHost: x\r\n\
+             If-Unmodified-Since: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n"
+                .into(),
+        );
+        assert!(stale.starts_with("HTTP/1.1 412"), "{stale}");
+        let frame_match = fetch(
+            &mut server,
+            format!("GET /frame.png HTTP/1.1\r\nHost: x\r\nIf-Match: {frame_tag}\r\n\r\n"),
+        );
+        assert!(frame_match.starts_with("HTTP/1.1 200"), "{frame_match}");
 
         // N748: a single byte range yields 206 + Content-Range; multiple ranges
         // are rejected with 416.
