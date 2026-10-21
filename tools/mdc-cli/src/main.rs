@@ -4392,12 +4392,27 @@ fn cmd_texture_report(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
         return cmd_texture_report_batch(args);
     }
     let path = args.first().cloned().ok_or("texture-report <image>")?;
+    let json = args.iter().any(|arg| arg == "--json");
     let (report, fully_transparent) = texture_report_value(&path)?;
+    let report = if json {
+        texture_report_item(report)
+    } else {
+        report
+    };
     println!("{}", serde_json::to_string_pretty(&report)?);
     if fully_transparent {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// N781: give a single-image report the same `kind` marker batch items carry, so
+/// a single `--json` item can be concatenated with a batch `files` array.
+fn texture_report_item(mut report: serde_json::Value) -> serde_json::Value {
+    if let Some(object) = report.as_object_mut() {
+        object.insert("kind".into(), serde_json::json!("texture"));
+    }
+    report
 }
 
 /// N762: build the per-image report shared by the single and batch modes.
@@ -4518,7 +4533,7 @@ fn texture_report_batch_data(
         }
         let source = path.to_string_lossy().into_owned();
         let (report, _) = texture_report_value(&source)?;
-        reports.push(report);
+        reports.push(texture_report_item(report));
     }
     if reports.is_empty() {
         return Err(format!("no images found in {dir}").into());
@@ -4548,7 +4563,7 @@ fn texture_report_batch_data(
     let mut files = 0usize;
     let mut sum = 0.0f64;
     let mut min = 1.0f64;
-    for report in &mut reports {
+    for report in &reports {
         files += 1;
         let coverage = report["coverage"].as_f64().unwrap_or(0.0);
         sum += coverage;
@@ -4558,9 +4573,6 @@ fn texture_report_batch_data(
         }
         if report["fully_transparent"].as_bool().unwrap_or(false) {
             transparent += 1;
-        }
-        if let Some(object) = report.as_object_mut() {
-            object.insert("kind".into(), serde_json::json!("texture"));
         }
     }
     let summary = serde_json::json!({
@@ -4753,7 +4765,7 @@ motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] [--clip NAME] [--time T] [--mip N] [--smooth] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> [--time MS] --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss] [--defaults|--defaults-only [--key K]]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|asset verify <dir>|\
-model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg> [--strict]|diff <a.mdcpkg> <b.mdcpkg>|texture-report <image>|texture-report --batch <dir> [--json] [--min-coverage F] [--sort name|coverage|trimmable]"
+model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg> [--strict]|diff <a.mdcpkg> <b.mdcpkg>|texture-report <image> [--json]|texture-report --batch <dir> [--json] [--min-coverage F] [--sort name|coverage|trimmable]"
     );
 }
 
@@ -5297,6 +5309,13 @@ mod tests {
             )
             .unwrap();
         cmd_texture_report(&[path.to_string_lossy().into_owned()]).unwrap();
+        // N781: the single `--json` item carries the same `kind` marker.
+        cmd_texture_report(&[path.to_string_lossy().into_owned(), "--json".into()]).unwrap();
+        let (report, _) = texture_report_value(&path.to_string_lossy()).unwrap();
+        assert_eq!(
+            texture_report_item(report)["kind"],
+            serde_json::json!("texture")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
