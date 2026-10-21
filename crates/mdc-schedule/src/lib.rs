@@ -198,6 +198,86 @@ impl Scheduler {
     }
 }
 
+/// N758: one surface's demand for the current tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceDemand {
+    pub surface: u32,
+    /// Higher priorities are served first each round (ties by `surface`).
+    pub priority: u8,
+    pub tiles: Vec<TileCost>,
+}
+
+/// N758: what one surface may send under a shared byte budget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceSelection {
+    pub surface: u32,
+    pub selected: Vec<u32>,
+    pub deferred: Vec<u32>,
+}
+
+/// N758: the shared-budget plan across surfaces.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SharedDecision {
+    pub surfaces: Vec<SurfaceSelection>,
+    pub spent: u64,
+}
+
+impl SharedDecision {
+    pub fn selection(&self, surface: u32) -> Option<&SurfaceSelection> {
+        self.surfaces.iter().find(|s| s.surface == surface)
+    }
+}
+
+/// N758: plan several surfaces against one shared byte budget. Surfaces take
+/// turns one tile at a time (priority first, then a stable round-robin), so a
+/// low-bandwidth link still advances every surface and the picture converges
+/// instead of starving one display. A tile larger than the whole budget is still
+/// admitted when nothing has been spent yet, matching [`Scheduler::plan`].
+pub fn plan_shared(budget: u64, demands: &[SurfaceDemand]) -> SharedDecision {
+    let mut order: Vec<usize> = (0..demands.len()).collect();
+    order.sort_by_key(|&i| (std::cmp::Reverse(demands[i].priority), demands[i].surface));
+    let mut cursors = vec![0usize; demands.len()];
+    let mut selections: Vec<SurfaceSelection> = demands
+        .iter()
+        .map(|demand| SurfaceSelection {
+            surface: demand.surface,
+            selected: Vec::new(),
+            deferred: Vec::new(),
+        })
+        .collect();
+    let mut spent = 0u64;
+    loop {
+        let mut progressed = false;
+        for &i in &order {
+            if cursors[i] >= demands[i].tiles.len() {
+                continue;
+            }
+            let tile = demands[i].tiles[cursors[i]];
+            let cost = u64::from(tile.bytes);
+            let fits = budget == 0 || spent == 0 || spent.saturating_add(cost) <= budget;
+            if fits {
+                spent = spent.saturating_add(cost);
+                selections[i].selected.push(tile.index);
+                cursors[i] += 1;
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    for (i, demand) in demands.iter().enumerate() {
+        selections[i].deferred = demand.tiles[cursors[i]..]
+            .iter()
+            .map(|tile| tile.index)
+            .collect();
+    }
+    SharedDecision {
+        surfaces: selections,
+        spent,
+    }
+}
+
 /// Merge contiguous tile indices into `[start, end]` ranges (inclusive). Dirty
 /// blocks that touch become one transaction instead of many.
 pub fn merge_dirty_ranges(tiles: &[TileCost]) -> Vec<(u32, u32)> {
@@ -307,6 +387,100 @@ mod tests {
         scheduler.commit(0);
         // No fps clamp: an immediate retry still sends.
         assert!(!scheduler.plan(0, &tiles).is_defer());
+    }
+
+    #[test]
+    fn shared_budget_advances_every_surface_and_converges() {
+        // N758: two surfaces share 25 bytes per tick, 10 bytes per tile. Each
+        // round serves both, so neither surface starves and both finish.
+        let demands = vec![
+            SurfaceDemand {
+                surface: 1,
+                priority: 5,
+                tiles: (0..4).map(|i| TileCost::new(i, 10, false)).collect(),
+            },
+            SurfaceDemand {
+                surface: 2,
+                priority: 1,
+                tiles: (0..4).map(|i| TileCost::new(i, 10, false)).collect(),
+            },
+        ];
+        let first = plan_shared(25, &demands);
+        assert_eq!(first.spent, 20);
+        let one = first.selection(1).unwrap();
+        let two = first.selection(2).unwrap();
+        assert_eq!(one.selected, vec![0]);
+        assert_eq!(two.selected, vec![0]);
+        assert_eq!(one.deferred.len(), 3);
+        assert_eq!(two.deferred.len(), 3);
+
+        // Feed the deferred tiles back until both surfaces are empty.
+        let mut remaining: Vec<SurfaceDemand> = demands
+            .iter()
+            .map(|demand| {
+                let deferred = &first.selection(demand.surface).unwrap().deferred;
+                SurfaceDemand {
+                    surface: demand.surface,
+                    priority: demand.priority,
+                    tiles: demand
+                        .tiles
+                        .iter()
+                        .filter(|tile| deferred.contains(&tile.index))
+                        .cloned()
+                        .collect(),
+                }
+            })
+            .collect();
+        let mut rounds = 0;
+        loop {
+            let decision = plan_shared(25, &remaining);
+            rounds += 1;
+            let mut done = true;
+            for demand in &mut remaining {
+                let selection = decision.selection(demand.surface).unwrap();
+                let before = demand.tiles.len();
+                demand
+                    .tiles
+                    .retain(|tile| !selection.selected.contains(&tile.index));
+                done &= demand.tiles.is_empty();
+                assert!(demand.tiles.len() < before || before == 0);
+            }
+            if done {
+                break;
+            }
+            assert!(rounds < 8, "must converge");
+        }
+        assert_eq!(rounds, 3, "one tile per surface per round");
+    }
+
+    #[test]
+    fn shared_budget_honours_priority_but_never_starves() {
+        // A high-priority surface is served first in each round; with one tile's
+        // budget only the priority surface moves this tick, the other moves next.
+        let demands = vec![
+            SurfaceDemand {
+                surface: 7,
+                priority: 9,
+                tiles: vec![TileCost::new(0, 10, false)],
+            },
+            SurfaceDemand {
+                surface: 3,
+                priority: 1,
+                tiles: vec![TileCost::new(0, 10, false)],
+            },
+        ];
+        let decision = plan_shared(10, &demands);
+        assert_eq!(decision.selection(7).unwrap().selected, vec![0]);
+        assert!(decision.selection(3).unwrap().selected.is_empty());
+        assert_eq!(decision.selection(3).unwrap().deferred, vec![0]);
+        // With room for both, both are served in the same tick.
+        let decision = plan_shared(20, &demands);
+        assert_eq!(decision.selection(3).unwrap().selected, vec![0]);
+        assert_eq!(decision.spent, 20);
+        // An empty demand set and a zero budget are safe.
+        assert!(plan_shared(0, &[]).surfaces.is_empty());
+        let unlimited = plan_shared(0, &[demands[0].clone()]);
+        assert_eq!(unlimited.selection(7).unwrap().selected, vec![0]);
     }
 
     #[test]
