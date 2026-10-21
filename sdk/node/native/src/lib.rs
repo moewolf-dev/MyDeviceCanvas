@@ -345,6 +345,8 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                         mdc_core::GestureKind::Pinch => "pinch".into(),
                         mdc_core::GestureKind::Pan => "pan".into(),
                         mdc_core::GestureKind::Swipe => "swipe".into(),
+                        mdc_core::GestureKind::DoubleTap => "double-tap".into(),
+                        mdc_core::GestureKind::TripleTap => "triple-tap".into(),
                     },
                     pointer_id: gesture.pointer_id,
                     x: gesture.x,

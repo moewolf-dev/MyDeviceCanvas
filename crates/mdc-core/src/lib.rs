@@ -243,6 +243,10 @@ pub enum GestureKind {
     Pan,
     /// N745: three pointers swiped together.
     Swipe,
+    /// N755: a second tap within the multi-tap window.
+    DoubleTap,
+    /// N755: a third tap within the multi-tap window.
+    TripleTap,
 }
 
 /// N464: a gesture derived from raw input events.
@@ -272,6 +276,8 @@ pub struct GestureConfig {
     pub long_press_ms: u64,
     /// Movement beyond this many pixels becomes a drag.
     pub drag_threshold: u16,
+    /// N755: taps closer together than this form a double/triple tap.
+    pub multi_tap_ms: u64,
 }
 
 impl Default for GestureConfig {
@@ -280,6 +286,7 @@ impl Default for GestureConfig {
             tap_max_ms: 250,
             long_press_ms: 600,
             drag_threshold: 6,
+            multi_tap_ms: 300,
         }
     }
 }
@@ -333,6 +340,9 @@ pub struct GestureTracker {
     pinch: Option<PinchAnchor>,
     /// N745: the midpoint anchor for a three-finger swipe.
     swipe: Option<(u16, u16)>,
+    /// N755: the last tap's time/position and the current tap streak (0..=3).
+    last_tap: Option<(u64, u16, u16)>,
+    tap_streak: u8,
 }
 
 impl GestureTracker {
@@ -342,6 +352,8 @@ impl GestureTracker {
             pointers: std::collections::BTreeMap::new(),
             pinch: None,
             swipe: None,
+            last_tap: None,
+            tap_streak: 0,
         }
     }
 
@@ -550,8 +562,27 @@ impl GestureTracker {
                     return Vec::new();
                 }
                 if now_ms.saturating_sub(state.down_ms) <= self.config.tap_max_ms {
+                    // N755: consecutive taps inside the window become a double
+                    // (2) or triple (3) tap; the streak then restarts.
+                    let within = self.last_tap.is_some_and(|(at, _, _)| {
+                        now_ms.saturating_sub(at) <= self.config.multi_tap_ms
+                    });
+                    self.tap_streak = if within {
+                        self.tap_streak.saturating_add(1).min(3)
+                    } else {
+                        1
+                    };
+                    self.last_tap = Some((now_ms, event.x, event.y));
+                    let kind = match self.tap_streak {
+                        2 => GestureKind::DoubleTap,
+                        3 => {
+                            self.tap_streak = 0;
+                            GestureKind::TripleTap
+                        }
+                        _ => GestureKind::Tap,
+                    };
                     vec![Gesture {
-                        kind: GestureKind::Tap,
+                        kind,
                         pointer_id: event.pointer_id,
                         x: event.x,
                         y: event.y,
@@ -1748,6 +1779,20 @@ impl<T: Transport> Session<T> {
             pacing,
             dirty_threshold,
         })
+    }
+
+    /// N758: plan every surface against one shared budget (from the active
+    /// pacing scheduler, or unlimited when pacing is off). Each tile is billed at
+    /// 1 KiB, matching `send_frame`, and surfaces take turns so a low-bandwidth
+    /// link still advances each display.
+    pub fn plan_shared_surface_tiles(&self) -> Option<mdc_schedule::SharedDecision> {
+        let device = self.device.as_ref()?;
+        let budget = self
+            .pacing
+            .as_ref()
+            .map(|scheduler| scheduler.budget_bytes())
+            .unwrap_or(0);
+        Some(device.plan_shared_tiles(budget))
     }
 
     /// N741: adapt an active frame-pacing scheduler to the measured outbound
@@ -3255,6 +3300,27 @@ impl Device {
             None => Vec::new(),
         }
     }
+    /// N758: cut every surface into tiles and plan them against one shared byte
+    /// budget. Surfaces are equal priority; the caller can reorder the result.
+    pub fn plan_shared_tiles(&self, budget: u64) -> mdc_schedule::SharedDecision {
+        let demands: Vec<mdc_schedule::SurfaceDemand> = self
+            .capabilities
+            .surfaces
+            .iter()
+            .enumerate()
+            .map(|(index, surface)| mdc_schedule::SurfaceDemand {
+                surface: index as u32,
+                priority: 0,
+                tiles: plan_tiles(surface.width, surface.height, surface.preferred_tile_size)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(tile, _)| mdc_schedule::TileCost::new(tile as u32, 1024, false))
+                    .collect(),
+            })
+            .collect();
+        mdc_schedule::plan_shared(budget, &demands)
+    }
+
     pub fn validate_frame(&self, f: &Frame) -> Result<(), CoreError> {
         let surface = self
             .capabilities
@@ -3388,6 +3454,39 @@ mod tests {
             supports_full_framebuffer: false,
         }
     }
+
+    #[test]
+    fn shared_surface_plan_fairly_advances_two_displays() {
+        // N758: one KiB of budget selects one tile overall; both surfaces are
+        // represented, so 2 KiB serves the first tile of each.
+        let mut capabilities = caps();
+        capabilities.surfaces = vec![
+            Surface {
+                id: "main".into(),
+                width: 64,
+                height: 64,
+                stride: 128,
+                ..s()
+            },
+            Surface {
+                id: "aux".into(),
+                width: 64,
+                height: 64,
+                stride: 128,
+                ..s()
+            },
+        ];
+        let device = Device::new(capabilities);
+        let tight = device.plan_shared_tiles(1024);
+        assert_eq!(tight.surfaces.len(), 2);
+        assert_eq!(tight.surfaces[0].selected, vec![0]);
+        assert!(tight.surfaces[1].selected.is_empty());
+        assert_eq!(tight.surfaces[0].deferred.len(), 3, "64px/32px = 4 tiles");
+        let roomy = device.plan_shared_tiles(2048);
+        assert_eq!(roomy.surfaces[0].selected, vec![0]);
+        assert_eq!(roomy.surfaces[1].selected, vec![0]);
+    }
+
     #[test]
     fn validates_frame() {
         let mut q = SurfaceQueue::new(s());
@@ -6138,6 +6237,7 @@ mod tests {
             tap_max_ms: 10,
             long_press_ms: 5_000,
             drag_threshold: 6,
+            multi_tap_ms: 300,
         });
         assert_eq!(session.gesture_config().tap_max_ms, 10);
         let input = |phase: &str| mdc_protocol::InputEvent {
@@ -6492,6 +6592,36 @@ mod tests {
         assert!(tracker.on_events(&event(3, "up", 40, 20), 20).is_empty());
         assert!(tracker.on_events(&event(2, "up", 20, 10), 30).is_empty());
         assert!(tracker.on_events(&event(1, "up", 10, 10), 40).is_empty());
+    }
+
+    #[test]
+    fn double_and_triple_taps_share_a_window() {
+        // N755: taps inside the window escalate to double/triple and then reset;
+        // a tap after the window starts a fresh streak.
+        let event = |phase: &str, x: u16, y: u16| mdc_protocol::InputEvent {
+            surface_id: "main".into(),
+            pointer_id: 1,
+            phase: phase.into(),
+            x,
+            y,
+            node: None,
+        };
+        let tap = |tracker: &mut GestureTracker, at: u64| {
+            tracker.on_event(&event("down", 5, 5), at);
+            tracker
+                .on_event(&event("up", 5, 5), at + 50)
+                .map(|g| g.kind)
+        };
+        let mut tracker = GestureTracker::new(GestureConfig::default());
+        assert_eq!(tap(&mut tracker, 0), Some(GestureKind::Tap));
+        assert_eq!(tap(&mut tracker, 100), Some(GestureKind::DoubleTap));
+        assert_eq!(tap(&mut tracker, 200), Some(GestureKind::TripleTap));
+        // The fourth tap starts a new streak, because the triple reset it.
+        assert_eq!(tap(&mut tracker, 300), Some(GestureKind::Tap));
+        // A slow gap resets to a single tap.
+        assert_eq!(tap(&mut tracker, 2_000), Some(GestureKind::Tap));
+        // The next tap inside the window is a double again.
+        assert_eq!(tap(&mut tracker, 2_200), Some(GestureKind::DoubleTap));
     }
 
     #[test]

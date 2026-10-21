@@ -148,6 +148,8 @@ fn gesture_kind(kind: mdc_core::GestureKind) -> &'static str {
         mdc_core::GestureKind::Pinch => "pinch",
         mdc_core::GestureKind::Pan => "pan",
         mdc_core::GestureKind::Swipe => "swipe",
+        mdc_core::GestureKind::DoubleTap => "double-tap",
+        mdc_core::GestureKind::TripleTap => "triple-tap",
     }
 }
 
@@ -274,6 +276,7 @@ pub unsafe extern "C" fn mdc_session_set_gesture_config(
         tap_max_ms,
         long_press_ms,
         drag_threshold,
+        multi_tap_ms: mdc_core::GestureConfig::default().multi_tap_ms,
     });
     0
 }

@@ -27,7 +27,7 @@ export interface TileRequest {
 }
 /** N474: a recognised pointer gesture. */
 export interface GestureDto {
-  kind: "tap" | "long-press" | "drag" | "pinch" | "pan" | "swipe";
+  kind: "tap" | "long-press" | "drag" | "pinch" | "pan" | "swipe" | "double-tap" | "triple-tap";
   pointerId: number;
   x: number;
   y: number;
