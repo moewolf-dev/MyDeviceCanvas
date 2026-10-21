@@ -814,6 +814,7 @@ pub fn skin_arrays_multi_with_mode(
     for (i, position) in positions.iter().enumerate() {
         let mut real = [0.0f32; 4];
         let mut dual = [0.0f32; 4];
+        let mut scale = 0.0f32;
         let mut total = 0.0f32;
         for (set_joints, set_weights) in [(joints, weights), (joints2, weights2)] {
             let (Some(vertex_joints), Some(vertex_weights)) =
@@ -843,6 +844,7 @@ pub fn skin_arrays_multi_with_mode(
                     real[c] += dq.real[c] * weight;
                     dual[c] += dq.dual[c] * weight;
                 }
+                scale += dq.scale * weight;
                 total += weight;
             }
         }
@@ -867,7 +869,12 @@ pub fn skin_arrays_multi_with_mode(
             real[c] /= norm;
             dual[c] /= norm;
         }
-        out.push(transform_dual_quat(&real, &dual, *position));
+        out.push(transform_dual_quat(
+            &real,
+            &dual,
+            *position,
+            (scale / total).max(1e-6),
+        ));
     }
     out
 }
@@ -927,17 +934,28 @@ fn skin_arrays_multi_lbs(
 }
 
 /// N726: a rigid transform as a unit dual quaternion (`real` = w,x,y,z).
+/// N765: `scale` keeps the uniform scale that the quaternion cannot represent.
 struct DualQuat {
     real: [f32; 4],
     dual: [f32; 4],
+    scale: f32,
 }
 
-/// N726: split a matrix's rotation/translation into a dual quaternion. The
-/// linear part is reduced to its rotation (scale/shear is ignored).
+/// N726: split a matrix's rotation/translation into a dual quaternion.
+/// N765: uniform scale is measured from the basis column lengths and applied
+/// separately; non-uniform scale/shear is still reduced to the nearest rotation.
 fn dual_quat_from_matrix(m: &Mat4) -> Option<DualQuat> {
-    let (r00, r10, r20) = (m[0], m[1], m[2]);
-    let (r01, r11, r21) = (m[4], m[5], m[6]);
-    let (r02, r12, r22) = (m[8], m[9], m[10]);
+    let column = |x: f32, y: f32, z: f32| (x * x + y * y + z * z).sqrt();
+    let sx = column(m[0], m[1], m[2]);
+    let sy = column(m[4], m[5], m[6]);
+    let sz = column(m[8], m[9], m[10]);
+    if sx <= 1e-6 || sy <= 1e-6 || sz <= 1e-6 {
+        return None;
+    }
+    let scale = (sx + sy + sz) / 3.0;
+    let (r00, r10, r20) = (m[0] / sx, m[1] / sx, m[2] / sx);
+    let (r01, r11, r21) = (m[4] / sy, m[5] / sy, m[6] / sy);
+    let (r02, r12, r22) = (m[8] / sz, m[9] / sz, m[10] / sz);
     let trace = r00 + r11 + r22;
     let mut q = if trace > 0.0 {
         let s = (trace + 1.0).sqrt() * 2.0;
@@ -967,11 +985,17 @@ fn dual_quat_from_matrix(m: &Mat4) -> Option<DualQuat> {
         0.5 * (t[1] * q[0] + t[2] * q[1] - t[0] * q[3]),
         0.5 * (t[2] * q[0] + t[0] * q[2] - t[1] * q[1]),
     ];
-    Some(DualQuat { real: q, dual })
+    Some(DualQuat {
+        real: q,
+        dual,
+        scale,
+    })
 }
 
 /// N726: rotate + translate a point by a unit dual quaternion.
-fn transform_dual_quat(real: &[f32; 4], dual: &[f32; 4], p: [f32; 3]) -> [f32; 3] {
+/// N765: `scale` is applied first, so uniform scale survives the blend.
+fn transform_dual_quat(real: &[f32; 4], dual: &[f32; 4], p: [f32; 3], scale: f32) -> [f32; 3] {
+    let p = [p[0] * scale, p[1] * scale, p[2] * scale];
     let [qw, qx, qy, qz] = *real;
     let cross = |a: [f32; 3], b: [f32; 3]| {
         [
@@ -2299,10 +2323,13 @@ pub fn pack_material_atlas(package: &mut mdc_model::DevicePackage, max_page: u32
     let mut trimmed: Vec<Option<(mdc_model::TextureBlob, [f32; 4])>> =
         vec![None; package.texture_blobs.len()];
     let mut parts: Vec<(usize, u32, u32)> = Vec::new();
+    // N769: keep the deepest source mip chain so the packed page can rebuild it.
+    let mut mip_levels = 1usize;
     for (index, blob) in package.texture_blobs.iter().enumerate() {
         if !blob.validate() {
             continue;
         }
+        let levels = blob.mips.len() + 1;
         let (blob, uv_rect) = crate::trim_texture_blob(blob);
         if blob.width == 0 || blob.height == 0 {
             continue;
@@ -2311,6 +2338,7 @@ pub fn pack_material_atlas(package: &mut mdc_model::DevicePackage, max_page: u32
             continue;
         }
         parts.push((index, blob.width, blob.height));
+        mip_levels = mip_levels.max(levels);
         trimmed[index] = Some((blob, uv_rect));
     }
     if parts.len() < 2 {
@@ -2436,11 +2464,25 @@ pub fn pack_material_atlas(package: &mut mdc_model::DevicePackage, max_page: u32
     package.texture_blobs = vec![mdc_model::TextureBlob {
         width: max_page,
         height: page_h,
-        rgb565: page,
+        rgb565: page.clone(),
         alpha: if has_alpha { page_alpha } else { Vec::new() },
         palette: Vec::new(),
         indices: Vec::new(),
-        mips: Vec::new(),
+        // N769: rebuild the chain from the trimmed page (level 0 is the page).
+        mips: if mip_levels > 1 {
+            // Rebuild the full chain so the last level is always 1×1.
+            crate::bake_mipmaps(max_page, page_h, &page, 16)
+                .into_iter()
+                .skip(1)
+                .map(|(width, height, rgb565)| mdc_model::TextureMip {
+                    width,
+                    height,
+                    rgb565,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
     }];
     package.texture = package.texture_blobs.first().cloned();
     true
@@ -4888,6 +4930,40 @@ mod tests {
             SkinMode::Dqs,
         );
         assert!((dqs[0][0] - 2.0).abs() < 1e-3, "{dqs:?}");
+    }
+
+    #[test]
+    fn dqs_preserves_uniform_scale() {
+        // N765: a uniform scale lives in the dual-quaternion `scale` term; a
+        // 2× scaled joint at +1 translation maps (1,0,0) to 3, matching LBS.
+        let identity = mat4_identity();
+        let scaled = mat4_from_trs([1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [2.0, 2.0, 2.0]);
+        let skeleton = mdc_model::Skeleton {
+            joint_nodes: vec![0, 1],
+            inverse_bind: vec![identity, identity],
+            ..Default::default()
+        };
+        let mesh = mdc_model::Mesh {
+            skin_joints: vec![[0, 1, 0, 0]],
+            skin_weights: vec![[0.5, 0.5, 0.0, 0.0]],
+            ..Default::default()
+        };
+        let position = [[1.0f32, 0.0, 0.0]];
+        let worlds = [identity, scaled];
+        let lbs = skin_points_with_mode(&mesh, &skeleton, &worlds, &position, SkinMode::Lbs);
+        let dqs = skin_points_with_mode(&mesh, &skeleton, &worlds, &position, SkinMode::Dqs);
+        assert!((lbs[0][0] - 2.0).abs() < 1e-3, "{lbs:?}");
+        assert!((dqs[0][0] - 2.0).abs() < 1e-3, "{dqs:?}");
+        // A single scaled joint keeps both axes scaled.
+        let mesh = mdc_model::Mesh {
+            skin_joints: vec![[1, 0, 0, 0]],
+            skin_weights: vec![[1.0, 0.0, 0.0, 0.0]],
+            ..Default::default()
+        };
+        let position = [[1.0f32, 2.0, 0.0]];
+        let dqs = skin_points_with_mode(&mesh, &skeleton, &worlds, &position, SkinMode::Dqs);
+        assert!((dqs[0][0] - 3.0).abs() < 1e-3, "{dqs:?}");
+        assert!((dqs[0][1] - 4.0).abs() < 1e-3, "{dqs:?}");
     }
 
     #[test]
