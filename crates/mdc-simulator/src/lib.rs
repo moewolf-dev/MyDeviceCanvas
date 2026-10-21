@@ -1829,15 +1829,29 @@ fn fill_scene(
                     &mut child_drew,
                 );
             }
-            let x0 = u32::from(x);
-            let y0 = u32::from(y);
-            let x1 = (x0 + u32::from(w)).min(width);
-            let y1 = (y0 + u32::from(h)).min(height);
-            for yy in y0..y1 {
-                let row = (yy * width) as usize * 2;
-                let start = row + x0 as usize * 2;
-                let end = row + x1 as usize * 2;
-                pixels[start..end].copy_from_slice(&scratch[start..end]);
+            if transform.has_skew() {
+                // N778: a sheared clip is a parallelogram; a rect copy would
+                // include pixels outside it.
+                let corners: Vec<(i32, i32)> = transform.corners(rect).to_vec();
+                let mask = polygon_mask(width, height, &corners);
+                for (index, keep) in mask.iter().enumerate() {
+                    if *keep {
+                        let offset = index * 2;
+                        pixels[offset] = scratch[offset];
+                        pixels[offset + 1] = scratch[offset + 1];
+                    }
+                }
+            } else {
+                let x0 = u32::from(x);
+                let y0 = u32::from(y);
+                let x1 = (x0 + u32::from(w)).min(width);
+                let y1 = (y0 + u32::from(h)).min(height);
+                for yy in y0..y1 {
+                    let row = (yy * width) as usize * 2;
+                    let start = row + x0 as usize * 2;
+                    let end = row + x1 as usize * 2;
+                    pixels[start..end].copy_from_slice(&scratch[start..end]);
+                }
             }
             if child_drew {
                 *drew = true;
@@ -2323,6 +2337,32 @@ fn fill_scene(
                         last_control = None;
                         last_cubic_control = Some(control2);
                     }
+                    mdc_protocol::PathCommand::Horizontal(x) => {
+                        let y = current
+                            .and_then(|p| transform.inverse_map(p.0, p.1))
+                            .map(|(_, y)| y.round() as i32)
+                            .unwrap_or(0);
+                        let point = map([x, y]);
+                        if let Some(previous) = current {
+                            line(previous, point);
+                        }
+                        current = Some(point);
+                        last_control = None;
+                        last_cubic_control = None;
+                    }
+                    mdc_protocol::PathCommand::Vertical(y) => {
+                        let x = current
+                            .and_then(|p| transform.inverse_map(p.0, p.1))
+                            .map(|(x, _)| x.round() as i32)
+                            .unwrap_or(0);
+                        let point = map([x, y]);
+                        if let Some(previous) = current {
+                            line(previous, point);
+                        }
+                        current = Some(point);
+                        last_control = None;
+                        last_cubic_control = None;
+                    }
                     mdc_protocol::PathCommand::Cubic(control1, control2, point) => {
                         let control1 = map(control1);
                         let control2 = map(control2);
@@ -2598,6 +2638,10 @@ fn validate_config(key: &str, value: &str) -> Result<(), &'static str> {
         }
         // N586: a bounded tile-miss threshold.
         "tile_missing_threshold" => value.parse::<u64>().map(|_| ()).map_err(|_| "E_VALUE"),
+        // N777: 1..=4 weights, each 1..=16.
+        "surface_weights" => mdc_core::parse_surface_weights(value)
+            .map(|_| ())
+            .ok_or("E_VALUE"),
         _ => Ok(()),
     }
 }
@@ -2735,6 +2779,8 @@ impl Default for BoardProfile {
                 "filtering".into(),
                 // N586: tolerated unacknowledged tiles before a full frame.
                 "tile_missing_threshold".into(),
+                // N777: per-surface weights for the host shared budget.
+                "surface_weights".into(),
             ],
             // N596: no board-specific overrides by default.
             config_defaults: BTreeMap::new(),
@@ -5927,6 +5973,44 @@ mod tests {
     }
 
     #[test]
+    fn surface_weights_config_is_validated_and_survives_reload() {
+        // N777: the device stores a bounded weight list; bad values are rejected
+        // without changing the previous one, and the host can read it back.
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 32,
+            height: 32,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session.set_config("surface_weights", "3,1").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(session.surface_weights(), Some(vec![3, 1]));
+        assert_eq!(
+            session
+                .plan_shared_surface_tiles_from_config()
+                .unwrap()
+                .surfaces
+                .len(),
+            1,
+            "the default board exposes one surface"
+        );
+        for bad in ["0,1", "1,2,3,4,5", "1,x", ""] {
+            session.set_config("surface_weights", bad).unwrap();
+            device.poll().unwrap();
+            let _ = session.poll();
+        }
+        assert_eq!(
+            session.surface_weights(),
+            Some(vec![3, 1]),
+            "invalid weights leave the old value"
+        );
+    }
+
+    #[test]
     fn device_filtering_config_sets_the_sampler() {
         let (host, mut device) = FakeDevice::pair(BoardProfile::default());
         let mut session = Session::new(host);
@@ -7094,6 +7178,11 @@ mod tests {
             Some(0),
             "the curve stays above the top edge"
         );
+        // N773: horizontal/vertical commands.
+        render(&mut device, "M2,2;H20;v10;h-8;V2");
+        assert_ne!(device.pixel_rgb565(10, 2), Some(0), "horizontal");
+        assert_ne!(device.pixel_rgb565(20, 7), Some(0), "vertical");
+        assert_ne!(device.pixel_rgb565(12, 12), Some(0), "relative horizontal");
     }
 
     #[test]
@@ -7170,6 +7259,43 @@ mod tests {
         );
         assert!(device.render_scene());
         assert_ne!(device.pixel_rgb565(1, 10), Some(0), "unskewed");
+    }
+
+    #[test]
+    fn skewed_clip_and_mask_follow_the_shear() {
+        // N778: a clip inside a sheared group composites its parallelogram, and
+        // a mask polygon is sheared exactly before rasterizing.
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 20,
+            height: 16,
+            ..BoardProfile::default()
+        });
+        let show = |device: &mut FakeDevice, scene: &str| {
+            device.scene = Some(serde_json::from_str(scene).unwrap());
+            assert!(device.render_scene());
+        };
+        show(
+            &mut device,
+            r##"{"name":"g","kind":"group","value2":"1000,0","children":[
+                 {"name":"c","kind":"clip","rect":[0,0,4,12],"children":[
+                   {"name":"fill","kind":"rect","rect":[0,0,20,16],"value":"#FF0000"}]}]}"##,
+        );
+        assert_ne!(device.pixel_rgb565(12, 10), Some(0), "inside the lean");
+        assert_eq!(device.pixel_rgb565(4, 10), Some(0), "left of the lean");
+        assert_eq!(device.pixel_rgb565(18, 1), Some(0), "right of the lean");
+
+        show(
+            &mut device,
+            r##"{"name":"g","kind":"group","value2":"1000,0","children":[
+                 {"name":"m","kind":"mask","value2":"0,0;4,0;0,12","children":[
+                   {"name":"fill","kind":"rect","rect":[0,0,20,16],"value":"#00FF00"}]}]}"##,
+        );
+        assert_ne!(device.pixel_rgb565(3, 2), Some(0), "mask point sheared");
+        assert_eq!(
+            device.pixel_rgb565(10, 2),
+            Some(0),
+            "outside the sheared mask"
+        );
     }
 
     #[test]

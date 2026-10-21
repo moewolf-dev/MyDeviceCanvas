@@ -497,6 +497,10 @@ pub enum PathCommand {
     /// N763: a smooth cubic segment; the first control point is reflected from
     /// the previous cubic's second control. `(control2, end)`.
     SmoothCubic([i32; 2], [i32; 2]),
+    /// N773: a horizontal line to an absolute x (absolute `H` or relative `h`).
+    Horizontal(i32),
+    /// N773: a vertical line to an absolute y (absolute `V` or relative `v`).
+    Vertical(i32),
     Close,
 }
 
@@ -1012,6 +1016,25 @@ impl SceneNode {
                     let (control2, at) = (point(0), point(2));
                     out.push(PathCommand::SmoothCubic(control2, at));
                     current = at;
+                }
+                // N773: H x / V y (absolute or relative single-axis line).
+                ('H', 1) => {
+                    let x = if relative {
+                        current[0].saturating_add(numbers[0])
+                    } else {
+                        numbers[0]
+                    };
+                    out.push(PathCommand::Horizontal(x));
+                    current[0] = x;
+                }
+                ('V', 1) => {
+                    let y = if relative {
+                        current[1].saturating_add(numbers[0])
+                    } else {
+                        numbers[0]
+                    };
+                    out.push(PathCommand::Vertical(y));
+                    current[1] = y;
                 }
                 ('Z', 0) => {
                     out.push(PathCommand::Close);
@@ -3086,6 +3109,23 @@ mod tests {
             path.path_commands().unwrap()[1],
             PathCommand::Line([i32::MAX, 0])
         );
+
+        // N773: H/V are single-axis lines, absolute or relative.
+        path.value2 = Some("M2,3;H10;v4;h-5;V2;z".into());
+        let commands = path.path_commands().unwrap();
+        assert_eq!(
+            commands,
+            vec![
+                PathCommand::Move([2, 3]),
+                PathCommand::Horizontal(10),
+                PathCommand::Vertical(7),
+                PathCommand::Horizontal(5),
+                PathCommand::Vertical(2),
+                PathCommand::Close,
+            ]
+        );
+        path.value2 = Some("M1,1;H".into());
+        assert!(path.path_commands().is_none(), "H needs one number");
     }
 
     #[test]
