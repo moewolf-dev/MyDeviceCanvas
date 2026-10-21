@@ -1733,8 +1733,16 @@ impl HttpMirrorServer {
                                     };
                                     let bytes = match header_value(&client.request[..end], "range")
                                     {
-                                        Some(range) => apply_range(bytes, range),
-                                        None => bytes,
+                                        Some(range)
+                                            if if_range_matches(
+                                                &client.request[..end],
+                                                &etag,
+                                                last_publish,
+                                            ) =>
+                                        {
+                                            apply_range(bytes, range)
+                                        }
+                                        _ => bytes,
                                     };
                                     client.response =
                                         Some(if head { without_body(bytes) } else { bytes });
@@ -2863,6 +2871,20 @@ fn precondition_failed(etag: &str, last_modified: u64) -> Vec<u8> {
         http_date(last_modified)
     )
     .into_bytes()
+}
+
+/// N780: whether a `Range` request may be honoured. `If-Range` may carry an
+/// ETag (strong only) or an HTTP date; absent means "apply the range". A stale
+/// validator means the server returns the whole representation with 200.
+fn if_range_matches(request: &[u8], etag: &str, last_modified: u64) -> bool {
+    let Some(value) = header_value(request, "if-range") else {
+        return true;
+    };
+    let value = value.trim();
+    if value.starts_with('"') || value.starts_with("W/") {
+        return value == etag;
+    }
+    parse_http_date(value).is_some_and(|since| last_modified <= since)
 }
 
 /// N727: a `304 Not Modified` response carrying the validators.
@@ -4473,6 +4495,41 @@ mod tests {
     }
 
     #[test]
+    fn if_range_gates_a_partial_response() {
+        // N780: a matching ETag/date allows 206; a stale validator falls back to
+        // the full 200 representation, and no header applies the range.
+        let stamp = 1_700_000_000u64;
+        let request = |headers: &str| format!("GET /frame.png HTTP/1.1\r\n{headers}\r\n");
+        assert!(if_range_matches(
+            request("Range: bytes=0-1\r\n").as_bytes(),
+            "\"x\"",
+            stamp
+        ));
+        assert!(if_range_matches(
+            request("If-Range: \"x\"\r\n").as_bytes(),
+            "\"x\"",
+            stamp
+        ));
+        assert!(!if_range_matches(
+            request("If-Range: \"other\"\r\n").as_bytes(),
+            "\"x\"",
+            stamp
+        ));
+        let date = http_date(stamp);
+        assert!(if_range_matches(
+            request(&format!("If-Range: {date}\r\n")).as_bytes(),
+            "\"x\"",
+            stamp
+        ));
+        let old = http_date(stamp - 1);
+        assert!(!if_range_matches(
+            request(&format!("If-Range: {old}\r\n")).as_bytes(),
+            "\"x\"",
+            stamp
+        ));
+    }
+
+    #[test]
     fn frame_and_health_honor_if_none_match() {
         // N727: both `/frame.png` and `/health` emit validators and reply 304
         // when the client presents the current ETag.
@@ -4580,6 +4637,38 @@ mod tests {
         assert!(head_range.starts_with("HTTP/1.1 206"), "{head_range}");
         assert!(head_range.contains("Content-Length: 2"), "{head_range}");
         assert!(head_range.split("\r\n\r\n").nth(1).unwrap_or("").is_empty());
+
+        // N780: If-Range gates the partial response.
+        let ppm_ok = fetch(
+            &mut server,
+            "GET /frame.ppm HTTP/1.1\r\nHost: x\r\n\r\n".into(),
+        );
+        let ppm_tag = etag_of(&ppm_ok);
+        let range_match = fetch(
+            &mut server,
+            format!(
+                "GET /frame.ppm HTTP/1.1\r\nHost: x\r\nRange: bytes=0-1\r\n\
+                 If-Range: {ppm_tag}\r\n\r\n"
+            ),
+        );
+        assert!(range_match.starts_with("HTTP/1.1 206"), "{range_match}");
+        let range_stale = fetch(
+            &mut server,
+            "GET /frame.ppm HTTP/1.1\r\nHost: x\r\nRange: bytes=0-1\r\n\
+             If-Range: \"other\"\r\n\r\n"
+                .into(),
+        );
+        assert!(range_stale.starts_with("HTTP/1.1 200"), "{range_stale}");
+        let stale_body = range_stale.split("\r\n\r\n").nth(1).unwrap_or("");
+        assert!(stale_body.starts_with("P6"), "full PPM, not a slice");
+        let head_stale = fetch(
+            &mut server,
+            "HEAD /frame.ppm HTTP/1.1\r\nHost: x\r\nRange: bytes=0-1\r\n\
+             If-Range: \"other\"\r\n\r\n"
+                .into(),
+        );
+        assert!(head_stale.starts_with("HTTP/1.1 200"), "{head_stale}");
+        assert!(!head_stale.contains("Content-Length: 2"), "{head_stale}");
 
         let health_ok = fetch(
             &mut server,
