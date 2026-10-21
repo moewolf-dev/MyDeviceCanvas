@@ -464,6 +464,15 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Atlas trim before packing (N760) | sim-verified (UV remap) | physical: pending |
 | If-Modified-Since (N761) | sim-verified (ETag precedence) | n/a |
 | texture-report --batch (N762) | sim-verified (JSONL/exit) | n/a |
+| Relative path commands + S (N763) | sim-verified (device pixels) | physical: pending |
+| Tap chain boundaries (N764) | sim-verified (drag/long/cancel) | physical: pending |
+| DQS uniform scale (N765) | sim-verified (LBS parity) | physical: pending |
+| LZ chunk storage (N766) | sim-verified (round-trip/budget) | n/a |
+| Weighted shared budget (N767) | sim-verified (no starvation) | n/a |
+| Exact skew hit tests (N768) | sim-verified (inverse matrix) | physical: pending |
+| Atlas mip rebuild (N769) | sim-verified (1x1 tail) | physical: pending |
+| HTTP If-Match/precondition (N770) | sim-verified (412/priority) | n/a |
+| texture-report --batch --json (N771) | sim-verified (shared scan) | n/a |
 
 Rows marked `sim-verified` describe host/simulator behaviour only. The KTX2 row
 is also emitted by `mdc verify` as `compatibility_row`, generated from the same

@@ -229,12 +229,16 @@ coverage, the opaque bounding box and trimmable RGB565 bytes; a fully
 transparent image exits 1. N762: `--batch DIR [--min-coverage F]
 [--sort name|coverage|trimmable]` scans image files, prints one JSON line per
 image plus a `kind:"summary"` line, and exits 1 when any image is fully
-transparent or below the coverage threshold.
+transparent or below the coverage threshold. N771 adds `--json` for a single
+pretty document (`{kind:"batch", directory, files, summary}`); the same scan and
+exit-code decision backs both modes.
 
 N758: `Session::plan_shared_surface_tiles()` plans every device surface against
 one budget (the active pacing scheduler, or unlimited) and returns
 `mdc_schedule::SharedDecision`; `plan_shared` round-robins surfaces so none is
-starved. N757: stored chunks are `tag || raw|RLE` and the quota counts the stored
-bytes, so repetitive assets consume far less than their raw size.
+starved. N767 adds per-surface weights: every surface gets its first tile, then
+weights split the remaining budget. N757/N766: stored chunks are
+`tag || raw|RLE|LZ`, the quota counts the stored bytes, and LZ decoding rejects a
+declared size above `MAX_LZ_DECODE_BYTES` before allocating.
 
 

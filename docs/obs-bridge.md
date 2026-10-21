@@ -113,7 +113,10 @@ kind map reports at most `WS_LOG_KINDS_MAX` kinds in sorted (stable) order. N687
 `416` (browser sources only need one). N761: both endpoints also accept
 `If-Modified-Since` (IMF-fixdate, RFC 850 or asctime); a date at/after the last
 publish returns `304`. When `If-None-Match` is present it takes precedence, so a
-mismatching ETag still forces a full response even if the date matches.
+mismatching ETag still forces a full response even if the date matches. N770:
+`If-Match` (exact token, list, or `*`) and `If-Unmodified-Since` are preconditions;
+a mismatch/stale date returns `412 Precondition Failed` with the current
+validators, and `If-Match` takes precedence over `If-Unmodified-Since`.
 
 ## Guarantees
 

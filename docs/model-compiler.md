@@ -320,7 +320,9 @@ per-material textures into one bounded page, remapping material indices and mesh
 N760: each texture is trimmed to its opaque bounds before packing (when it carries
 a 1-bit alpha mask), and the mesh UVs are remapped in two steps (original →
 trimmed pixels → page), so a page can shrink without changing what the mesh
-samples.
+samples. N769: if any packed texture had a mip chain, the page gets a freshly
+downsampled full chain ending at 1×1 (level 0 is the page), keeping the levels
+consistent with the trimmed size.
 
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a
@@ -467,6 +469,10 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
   summed and divided by the actual weight total before the quaternion is
   normalised, so 0.25/0.75 and 0.5/0.5 weights agree with LBS; zero weights and
   out-of-range joints leave the vertex in bind pose instead of producing NaNs.
+- N765: uniform scale is measured from the joint matrix basis and blended
+  separately, then applied to the vertex before the quaternion rotation; a
+  uniformly scaled joint therefore matches LBS, while non-uniform scale/shear is
+  still reduced to the nearest rotation (documented limitation).
 - N736: with `SkinMode::Dqs`, normals and tangents are rotated by the same
   blended joint quaternion (the linear part is no longer averaged), so shading
   follows the DQS pose; `w` handedness is preserved.

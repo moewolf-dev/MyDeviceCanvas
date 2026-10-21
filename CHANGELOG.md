@@ -2,6 +2,31 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.89] — relative paths, multi-tap boundaries, DQS scale, LZ chunks, weighted budgets, exact skew hits, atlas mips, HTTP preconditions, texture-report JSON (N763–N772)
+
+### Added
+
+- `path` lowercase relative commands (`m/l/q/c/s/t/a`) and `S` smooth cubic (N763)
+- drag/long-press/cancel are excluded from double/triple tap chains (N764)
+- DQS preserves uniform joint scale (N765)
+- bounded LZSS chunk compression with a pre-allocation decode budget (N766)
+- per-surface weights for the shared budget in `mdc-schedule`/`mdc-core` (N767)
+- inverse-matrix hit testing for sheared scenes (N768)
+- mip-chain rebuild after atlas trimming (N769)
+- HTTP `If-Match` / `If-Unmodified-Since` with `412` (N770)
+- `mdc texture-report --batch --json` (N771)
+
+### Fixed
+
+- A cancelled pointer no longer falls through to a tap gesture (N764).
+- The LZ match-length byte is capped at 255 so long matches round-trip exactly
+  (N766).
+
+### Notes
+
+- Host/simulator only. D05, G03 and H06 remain open until physical hardware is
+  measured; no board is claimed working.
+
 ## [0.1.88] — arc/smooth paths, mask feather, multi-tap, DQS weights, RLE chunks, shared budgets, skew, atlas trim, If-Modified-Since, texture-report batch (N753–N762)
 
 ### Added

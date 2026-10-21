@@ -140,6 +140,11 @@ A device that accepts a scene rasterizes it locally:
   `M`); `M/L/Q/C/Z` are supported and `Z` closes to the start. N753 adds
   `A rx,ry,rotation,large-arc,sweep,x,y` (elliptical arc, flags 0/1, radii taken
   as magnitudes) and `T x,y` (smooth quadratic, reflecting the previous control).
+  N763 adds lowercase relative commands (`m/l/q/c/s/t/a`) whose coordinates are
+  offsets from the current point and may be mixed with absolute ones, plus
+  `S cx,cy,x,y` (smooth cubic, reflecting the previous cubic's second control).
+  `Z` returns the current point to the subpath start; relative accumulation
+  saturates instead of wrapping.
 - N744: `mask` composites its children only inside the polygon from `value2`
   (same point syntax as `polygon`); children keep absolute coordinates and the
   node is clipped to the framebuffer. A missing/short polygon draws nothing.
@@ -157,7 +162,8 @@ A device that accepts a scene rasterizes it locally:
   `y += ky·x`; clamped to ±2000). A sheared `rect` is rasterized as a
   parallelogram; other raster kinds use the sheared bounding box, while point
   geometry (polygon/polyline/path) is sheared exactly. Malformed shear is
-  ignored.
+  ignored. N768: hit-testing inverts the affine matrix and tests the local rect,
+  so pixels in the empty corners of the bounding box are not hits.
 - `render_scene` clears the framebuffer first (N137), so repeated renders are
   deterministic rather than accumulating.
 - A clip `fade_in_ms` darkens the atlas frame until that many virtual milliseconds pass.
