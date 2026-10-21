@@ -4454,6 +4454,39 @@ fn texture_report_value(
 /// N762: directory mode. Only image-like extensions are read, the order is
 /// explicit, and nothing accumulates beyond the sorted report list.
 fn cmd_texture_report_batch(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let batch = texture_report_batch_data(args)?;
+    if args.iter().any(|arg| arg == "--json") {
+        let body = serde_json::json!({
+            "kind": "batch",
+            "directory": batch.dir,
+            "files": batch.reports,
+            "summary": batch.summary,
+        });
+        println!("{}", serde_json::to_string_pretty(&body)?);
+    } else {
+        for report in &batch.reports {
+            println!("{}", serde_json::to_string(report)?);
+        }
+        println!("{}", serde_json::to_string(&batch.summary)?);
+    }
+    if batch.failed {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// N771: the batch scan shared by the JSONL and `--json` modes.
+struct TextureBatchReport {
+    dir: String,
+    reports: Vec<serde_json::Value>,
+    summary: serde_json::Value,
+    /// True when any file is fully transparent or below `--min-coverage`.
+    failed: bool,
+}
+
+fn texture_report_batch_data(
+    args: &[String],
+) -> Result<TextureBatchReport, Box<dyn std::error::Error>> {
     let value_of = |flag: &str| -> Option<String> {
         args.iter()
             .position(|arg| arg == flag)
@@ -4515,7 +4548,7 @@ fn cmd_texture_report_batch(args: &[String]) -> Result<(), Box<dyn std::error::E
     let mut files = 0usize;
     let mut sum = 0.0f64;
     let mut min = 1.0f64;
-    for mut report in reports {
+    for report in &mut reports {
         files += 1;
         let coverage = report["coverage"].as_f64().unwrap_or(0.0);
         sum += coverage;
@@ -4529,7 +4562,6 @@ fn cmd_texture_report_batch(args: &[String]) -> Result<(), Box<dyn std::error::E
         if let Some(object) = report.as_object_mut() {
             object.insert("kind".into(), serde_json::json!("texture"));
         }
-        println!("{}", serde_json::to_string(&report)?);
     }
     let summary = serde_json::json!({
         "kind": "summary",
@@ -4542,11 +4574,12 @@ fn cmd_texture_report_batch(args: &[String]) -> Result<(), Box<dyn std::error::E
         "min_coverage_threshold": min_coverage,
         "sort": sort,
     });
-    println!("{}", serde_json::to_string(&summary)?);
-    if below > 0 || transparent > 0 {
-        std::process::exit(1);
-    }
-    Ok(())
+    Ok(TextureBatchReport {
+        dir,
+        reports,
+        summary,
+        failed: below > 0 || transparent > 0,
+    })
 }
 
 /// N399: import a model and print a validation report; exit non-zero when invalid.
@@ -4720,7 +4753,7 @@ motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] [--clip NAME] [--time T] [--mip N] [--smooth] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> [--time MS] --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss] [--defaults|--defaults-only [--key K]]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|asset verify <dir>|\
-model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg> [--strict]|diff <a.mdcpkg> <b.mdcpkg>|texture-report <image>|texture-report --batch <dir> [--min-coverage F] [--sort name|coverage|trimmable]"
+model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg> [--strict]|diff <a.mdcpkg> <b.mdcpkg>|texture-report <image>|texture-report --batch <dir> [--json] [--min-coverage F] [--sort name|coverage|trimmable]"
     );
 }
 
@@ -5276,8 +5309,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for (name, alpha) in [("a.png", 255u8), ("b.png", 200)] {
-            let image =
-                RgbaImage::from_raw(2, 1, vec![255, 0, 0, alpha, 0, 255, 0, alpha]).unwrap();
+            let mut pixels = vec![255, 0, 0, alpha, 0, 255, 0, alpha];
+            if name == "b.png" {
+                // Half of the second image is transparent (coverage 0.5).
+                pixels[3] = 0;
+            }
+            let image = RgbaImage::from_raw(2, 1, pixels).unwrap();
             image
                 .write_to(
                     &mut std::fs::File::create(dir.join(name)).unwrap(),
@@ -5296,6 +5333,23 @@ mod tests {
             "trimmable".into(),
         ])
         .unwrap();
+        // N771: the same data feeds `--json`, and a threshold breach is reported
+        // to the caller rather than exiting inside the helper.
+        let batch = texture_report_batch_data(&[
+            "--batch".into(),
+            dir.to_string_lossy().into_owned(),
+            "--json".into(),
+            "--min-coverage".into(),
+            "0.9".into(),
+            "--sort".into(),
+            "coverage".into(),
+        ])
+        .unwrap();
+        assert_eq!(batch.reports.len(), 2);
+        assert!(batch.failed, "one image is below 90% coverage");
+        assert_eq!(batch.summary["below_threshold"], 1);
+        assert_eq!(batch.summary["files"], 2);
+        assert_eq!(batch.reports[0]["coverage"], 0.5, "sorted worst first");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
