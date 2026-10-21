@@ -494,6 +494,9 @@ pub enum PathCommand {
     /// N753: a smooth quadratic segment; the control point is reflected from the
     /// previous quadratic control (or the current point after another command).
     SmoothQuad([i32; 2]),
+    /// N763: a smooth cubic segment; the first control point is reflected from
+    /// the previous cubic's second control. `(control2, end)`.
+    SmoothCubic([i32; 2], [i32; 2]),
     Close,
 }
 
@@ -926,8 +929,14 @@ impl SceneNode {
     /// N743: a `path` command stream from `value2`, e.g.
     /// `"M1,1;L5,1;Q8,4 5,8;C1,1 2,2 3,3;Z"`. Commands are bounded to 64 and
     /// must start with `M`; malformed input is rejected.
+    ///
+    /// N763: lowercase commands are relative to the current point (`m/l/q/c/s/
+    /// t/a`) and may be mixed with absolute ones. `S` is a smooth cubic whose
+    /// first control point reflects the previous cubic.
     pub fn path_commands(&self) -> Option<Vec<PathCommand>> {
         let mut out = Vec::new();
+        let mut current = [0i32; 2];
+        let mut start = [0i32; 2];
         for part in self
             .value2
             .as_deref()?
@@ -936,7 +945,9 @@ impl SceneNode {
             .filter(|part| !part.is_empty())
         {
             let mut chars = part.chars();
-            let op = chars.next()?.to_ascii_uppercase();
+            let raw_op = chars.next()?;
+            let op = raw_op.to_ascii_uppercase();
+            let relative = raw_op.is_ascii_lowercase();
             let rest = chars.as_str();
             let numbers: Option<Vec<i32>> = rest
                 .split([' ', '\t', '\n', ','])
@@ -944,29 +955,68 @@ impl SceneNode {
                 .map(|token| token.parse().ok())
                 .collect();
             let numbers = numbers?;
-            let point = |index: usize| [numbers[index], numbers[index + 1]];
+            let point = |index: usize| -> [i32; 2] {
+                let [x, y] = [numbers[index], numbers[index + 1]];
+                if relative {
+                    [current[0].saturating_add(x), current[1].saturating_add(y)]
+                } else {
+                    [x, y]
+                }
+            };
             match (op, numbers.len()) {
-                ('M', 2) => out.push(PathCommand::Move(point(0))),
-                ('L', 2) => out.push(PathCommand::Line(point(0))),
-                ('Q', 4) => out.push(PathCommand::Quad(point(0), point(2))),
-                ('C', 6) => out.push(PathCommand::Cubic(point(0), point(2), point(4))),
+                ('M', 2) => {
+                    let at = point(0);
+                    out.push(PathCommand::Move(at));
+                    current = at;
+                    start = at;
+                }
+                ('L', 2) => {
+                    let at = point(0);
+                    out.push(PathCommand::Line(at));
+                    current = at;
+                }
+                ('Q', 4) => {
+                    let (control, at) = (point(0), point(2));
+                    out.push(PathCommand::Quad(control, at));
+                    current = at;
+                }
+                ('C', 6) => {
+                    let (control1, control2, at) = (point(0), point(2), point(4));
+                    out.push(PathCommand::Cubic(control1, control2, at));
+                    current = at;
+                }
                 // N753: A rx,ry,rotation,large-arc,sweep,x,y
                 ('A', 7) => {
                     if !matches!(numbers[3], 0 | 1) || !matches!(numbers[4], 0 | 1) {
                         return None;
                     }
+                    let at = point(5);
                     out.push(PathCommand::Arc {
                         rx: numbers[0].saturating_abs(),
                         ry: numbers[1].saturating_abs(),
                         rotation: numbers[2],
                         large_arc: numbers[3] == 1,
                         sweep: numbers[4] == 1,
-                        end: point(5),
+                        end: at,
                     });
+                    current = at;
                 }
                 // N753: T x,y (smooth quadratic end point)
-                ('T', 2) => out.push(PathCommand::SmoothQuad(point(0))),
-                ('Z', 0) => out.push(PathCommand::Close),
+                ('T', 2) => {
+                    let at = point(0);
+                    out.push(PathCommand::SmoothQuad(at));
+                    current = at;
+                }
+                // N763: S cx,cy,x,y (smooth cubic end point)
+                ('S', 4) => {
+                    let (control2, at) = (point(0), point(2));
+                    out.push(PathCommand::SmoothCubic(control2, at));
+                    current = at;
+                }
+                ('Z', 0) => {
+                    out.push(PathCommand::Close);
+                    current = start;
+                }
                 _ => return None,
             }
             if out.len() > 64 {
@@ -2998,6 +3048,44 @@ mod tests {
             path.path_commands().unwrap()[1],
             PathCommand::Arc { rx: 4, ry: 2, .. }
         ));
+    }
+
+    #[test]
+    fn relative_path_commands_accumulate_and_smooth_cubics_parse() {
+        // N763: lowercase commands are relative to the current point and can be
+        // mixed with absolute ones; `S` mirrors the previous cubic control.
+        let mut path = plain_node("p", "path");
+        path.value2 = Some("M10,10;l5,0;q5,5 5,10;t5,0;s2,2 4,4;a3,3,0,0,1,4,0;z".into());
+        let commands = path.path_commands().unwrap();
+        assert_eq!(commands[0], PathCommand::Move([10, 10]));
+        assert_eq!(commands[1], PathCommand::Line([15, 10]));
+        assert_eq!(commands[2], PathCommand::Quad([20, 15], [20, 20]));
+        assert_eq!(commands[3], PathCommand::SmoothQuad([25, 20]));
+        assert_eq!(commands[4], PathCommand::SmoothCubic([27, 22], [29, 24]));
+        assert_eq!(
+            commands[5],
+            PathCommand::Arc {
+                rx: 3,
+                ry: 3,
+                rotation: 0,
+                large_arc: false,
+                sweep: true,
+                end: [33, 24],
+            }
+        );
+        assert_eq!(commands[6], PathCommand::Close);
+        // Absolute `S` followed by a relative `m` offsets from its end point.
+        path.value2 = Some("M2,2;L6,2;S8,4 10,2;m1,1;l1,0".into());
+        let commands = path.path_commands().unwrap();
+        assert_eq!(commands[2], PathCommand::SmoothCubic([8, 4], [10, 2]));
+        assert_eq!(commands[3], PathCommand::Move([11, 3]));
+        assert_eq!(commands[4], PathCommand::Line([12, 3]));
+        // Overflowing relative coordinates saturate rather than wrap.
+        path.value2 = Some("M2147483647,0;l1,0".into());
+        assert_eq!(
+            path.path_commands().unwrap()[1],
+            PathCommand::Line([i32::MAX, 0])
+        );
     }
 
     #[test]

@@ -905,6 +905,36 @@ impl SceneTransform {
         }
     }
 
+    /// N759/N768: invert the affine transform for an exact point test.
+    fn inverse_map(&self, px: f32, py: f32) -> Option<(f32, f32)> {
+        let x = px - self.ox as f32;
+        let y = py - self.oy as f32;
+        let (a, b, c, d) = (
+            self.m[0] as f32 / 1000.0,
+            self.m[1] as f32 / 1000.0,
+            self.m[2] as f32 / 1000.0,
+            self.m[3] as f32 / 1000.0,
+        );
+        let det = a * d - b * c;
+        if det.abs() < 1e-6 {
+            return None;
+        }
+        Some(((d * x - b * y) / det, (a * y - c * x) / det))
+    }
+
+    /// N768: whether a pixel is inside the (possibly sheared) rect, using the
+    /// inverse transform instead of the axis-aligned bounding box.
+    fn contains(&self, rect: [u16; 4], x: u16, y: u16) -> Option<bool> {
+        let (lx, ly) = self.inverse_map(f32::from(x), f32::from(y))?;
+        let [rx, ry, rw, rh] = rect;
+        Some(
+            lx >= f32::from(rx)
+                && ly >= f32::from(ry)
+                && lx < f32::from(rx) + f32::from(rw)
+                && ly < f32::from(ry) + f32::from(rh),
+        )
+    }
+
     /// N368: a `clip` node's rect offsets its children without scaling them; the
     /// rect only bounds what is composited back.
     fn offset(self, rect: [u16; 4]) -> Self {
@@ -1620,6 +1650,14 @@ fn hit_test_node(
                 90 | 270 => [rect[0], rect[1], rect[3], rect[2]],
                 _ => rect,
             };
+            if transform.has_skew() {
+                // N768: inverse-map the pixel; the bounding box would report
+                // hits in the empty corners of a sheared rect.
+                if transform.contains(rect, x, y) == Some(true) {
+                    return Some(node.name.clone());
+                }
+                return None;
+            }
             let [rx, ry, rw, rh] = transform.apply(rect);
             let inside =
                 x >= rx && y >= ry && x < rx.saturating_add(rw) && y < ry.saturating_add(rh);
@@ -2129,6 +2167,8 @@ fn fill_scene(
             let mut start_point: Option<(f32, f32)> = None;
             // N753: the previous quadratic control point, reflected by `T`.
             let mut last_control: Option<(f32, f32)> = None;
+            // N763: the previous cubic second control point, reflected by `S`.
+            let mut last_cubic_control: Option<(f32, f32)> = None;
             let mut line = |from: (f32, f32), to: (f32, f32)| {
                 draw_line(
                     pixels,
@@ -2152,6 +2192,7 @@ fn fill_scene(
                         current = Some(point);
                         start_point = Some(point);
                         last_control = None;
+                        last_cubic_control = None;
                     }
                     mdc_protocol::PathCommand::Line(point) => {
                         let point = map(point);
@@ -2160,6 +2201,7 @@ fn fill_scene(
                         }
                         current = Some(point);
                         last_control = None;
+                        last_cubic_control = None;
                     }
                     mdc_protocol::PathCommand::Quad(control, point) => {
                         let control = map(control);
@@ -2191,6 +2233,7 @@ fn fill_scene(
                         }
                         current = Some(point);
                         last_control = Some(control);
+                        last_cubic_control = None;
                     }
                     mdc_protocol::PathCommand::SmoothQuad(point) => {
                         // N753: reflect the previous quadratic control; without
@@ -2215,6 +2258,7 @@ fn fill_scene(
                             last_control = None;
                         }
                         current = Some(point);
+                        last_cubic_control = None;
                     }
                     mdc_protocol::PathCommand::Arc {
                         rx,
@@ -2247,6 +2291,37 @@ fn fill_scene(
                         }
                         current = Some(point);
                         last_control = None;
+                        last_cubic_control = None;
+                    }
+                    mdc_protocol::PathCommand::SmoothCubic(control2, point) => {
+                        // N763: reflect the previous cubic control; fall back to
+                        // the current point (a straight-ish curve) without one.
+                        let control2 = map(control2);
+                        let point = map(point);
+                        if let Some(previous) = current {
+                            let control1 = last_cubic_control
+                                .map(|c| (2.0 * previous.0 - c.0, 2.0 * previous.1 - c.1))
+                                .unwrap_or(previous);
+                            let at = |t: f32| {
+                                let u = 1.0 - t;
+                                (
+                                    u * u * u * previous.0
+                                        + 3.0 * u * u * t * control1.0
+                                        + 3.0 * u * t * t * control2.0
+                                        + t * t * t * point.0,
+                                    u * u * u * previous.1
+                                        + 3.0 * u * u * t * control1.1
+                                        + 3.0 * u * t * t * control2.1
+                                        + t * t * t * point.1,
+                                )
+                            };
+                            for step in 1..=24 {
+                                line(at((step - 1) as f32 / 24.0), at(step as f32 / 24.0));
+                            }
+                        }
+                        current = Some(point);
+                        last_control = None;
+                        last_cubic_control = Some(control2);
                     }
                     mdc_protocol::PathCommand::Cubic(control1, control2, point) => {
                         let control1 = map(control1);
@@ -2272,6 +2347,7 @@ fn fill_scene(
                         }
                         current = Some(point);
                         last_control = None;
+                        last_cubic_control = Some(control2);
                     }
                     mdc_protocol::PathCommand::Close => {
                         if let (Some(previous), Some(first)) = (current, start_point) {
@@ -2279,6 +2355,7 @@ fn fill_scene(
                         }
                         current = start_point;
                         last_control = None;
+                        last_cubic_control = None;
                     }
                 }
             }
@@ -6989,6 +7066,37 @@ mod tests {
     }
 
     #[test]
+    fn relative_path_commands_and_smooth_cubic_render() {
+        // N763: a relative command stream draws the same geometry as absolute
+        // coordinates, and `S` bends away from the straight chord.
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 24,
+            height: 24,
+            ..BoardProfile::default()
+        });
+        let render = |device: &mut FakeDevice, value2: &str| {
+            device.scene = Some(
+                serde_json::from_str(&format!(
+                    r##"{{"name":"p","kind":"path","value2":"{value2}","value":"#FFFFFF"}}"##
+                ))
+                .unwrap(),
+            );
+            assert!(device.render_scene());
+        };
+        render(&mut device, "M2,20;l20,0");
+        assert_ne!(device.pixel_rgb565(12, 20), Some(0), "relative line drawn");
+        assert_eq!(device.pixel_rgb565(12, 2), Some(0));
+        render(&mut device, "M2,20;c4,-12 12,-12 16,0;s4,4 5,0");
+        assert_ne!(device.pixel_rgb565(2, 20), Some(0), "cubic starts");
+        assert_ne!(device.pixel_rgb565(23, 20), Some(0), "smooth cubic ends");
+        assert_eq!(
+            device.pixel_rgb565(12, 4),
+            Some(0),
+            "the curve stays above the top edge"
+        );
+    }
+
+    #[test]
     fn mask_invert_and_feather_soften_the_edge() {
         // N754: `invert` keeps the outside of the polygon; `feather=N` fades the
         // boundary instead of cutting it.
@@ -7036,20 +7144,22 @@ mod tests {
         });
         device.scene = Some(
             serde_json::from_str(
-                r##"{"name":"root","kind":"group","value2":"500,0","children":[
+                r##"{"name":"root","kind":"group","value2":"1000,0","children":[
                      {"name":"bar","kind":"rect","rect":[0,0,4,12],"value":"#FFFFFF"}]}"##,
             )
             .unwrap(),
         );
         assert!(device.render_scene());
-        assert_ne!(device.pixel_rgb565(1, 1), Some(0), "top is at x=0");
-        assert_ne!(device.pixel_rgb565(6, 10), Some(0), "bottom shifted right");
+        assert_ne!(device.pixel_rgb565(2, 1), Some(0), "top is at x=0");
+        assert_ne!(device.pixel_rgb565(12, 10), Some(0), "bottom shifted right");
         assert_eq!(
             device.pixel_rgb565(1, 10),
             Some(0),
             "left of the lean is empty"
         );
-        assert_eq!(device.hit_test(5, 10).as_deref(), Some("bar"));
+        assert_eq!(device.hit_test(12, 10).as_deref(), Some("bar"));
+        // N768: (3,10) is inside the axis-aligned box but outside the lean.
+        assert_eq!(device.hit_test(3, 10), None, "exact inverse hit test");
         // A malformed shear leaves the transform unchanged.
         device.scene = Some(
             serde_json::from_str(
