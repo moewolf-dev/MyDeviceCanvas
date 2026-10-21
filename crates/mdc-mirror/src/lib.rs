@@ -1634,7 +1634,11 @@ impl HttpMirrorServer {
                                     }),
                                 None => (health_etag.clone(), health.clone()),
                             };
-                            let response = if if_none_match(&client.request[..end], &etag) {
+                            let response = if request_not_modified(
+                                &client.request[..end],
+                                &etag,
+                                last_publish,
+                            ) {
                                 not_modified(&etag, last_publish)
                             } else {
                                 response
@@ -1693,10 +1697,13 @@ impl HttpMirrorServer {
                             }
                         } else {
                             // N727: `/frame.*` responses carry an ETag and honor
-                            // If-None-Match; streams are not conditional.
+                            // If-None-Match; N761 adds If-Modified-Since.
+                            // Streams are not conditional.
                             let conditional = path.starts_with("/frame.");
                             let etag = frame_etag(&path, &query, self.frames);
-                            if conditional && if_none_match(&client.request[..end], &etag) {
+                            if conditional
+                                && request_not_modified(&client.request[..end], &etag, last_publish)
+                            {
                                 client.response = Some(not_modified(&etag, last_publish));
                                 continue;
                             }
@@ -2729,6 +2736,88 @@ fn if_none_match(request: &[u8], etag: &str) -> bool {
     header_value(request, "if-none-match").is_some_and(|value| {
         value.trim() == "*" || value.split(',').any(|candidate| candidate.trim() == etag)
     })
+}
+
+/// N761: parse an HTTP date (`IMF-fixdate`, RFC 850, or asctime) to unix
+/// seconds. `None` for anything that is not a whole, valid date.
+fn parse_http_date(value: &str) -> Option<u64> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let month = |name: &str| {
+        MONTHS
+            .iter()
+            .position(|candidate| candidate.eq_ignore_ascii_case(name))
+            .map(|index| index as i64 + 1)
+    };
+    let tokens: Vec<&str> = value.split_whitespace().collect();
+    let (year, month, day, time) = match tokens.as_slice() {
+        // "Thu, 01 Jan 1970 00:00:00 GMT"
+        [_, day, month_name, year, time, _] => (
+            year.parse::<i64>().ok()?,
+            month(month_name)?,
+            day.parse::<i64>().ok()?,
+            *time,
+        ),
+        // "Thu Jan  1 00:00:00 1970"
+        [_, month_name, day, time, year] => (
+            year.parse::<i64>().ok()?,
+            month(month_name)?,
+            day.parse::<i64>().ok()?,
+            *time,
+        ),
+        // "Thursday, 01-Jan-70 00:00:00 GMT"
+        [_, date, time, _] => {
+            let mut parts = date.split('-');
+            let day = parts.next()?.parse::<i64>().ok()?;
+            let month = month(parts.next()?)?;
+            let year = parts.next()?.parse::<i64>().ok()?;
+            // RFC 850 two-digit years pivot at 1970 like common clients.
+            let year = if year < 70 {
+                year + 2000
+            } else if year < 100 {
+                year + 1900
+            } else {
+                year
+            };
+            (year, month, day, *time)
+        }
+        _ => return None,
+    };
+    let mut hms = time.split(':');
+    let hour = hms.next()?.parse::<u64>().ok()?;
+    let minute = hms.next()?.parse::<u64>().ok()?;
+    let second = hms.next()?.parse::<u64>().ok()?;
+    if hms.next().is_some() || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    if !(1..=31).contains(&day) || !(1..=12).contains(&month) || !(1970..=9999).contains(&year) {
+        return None;
+    }
+    // Howard Hinnant's days-from-civil (inverse of `http_date`).
+    let y = year - i64::from(month <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    if days < 0 {
+        return None;
+    }
+    Some(days as u64 * 86_400 + hour * 3600 + minute * 60 + second)
+}
+
+/// N761: evaluate the conditional headers in RFC 7232 order. `If-None-Match`
+/// wins when present (even if it does not match, `If-Modified-Since` is
+/// ignored); otherwise a date at or after `last_modified` means "not modified".
+fn request_not_modified(request: &[u8], etag: &str, last_modified: u64) -> bool {
+    if header_value(request, "if-none-match").is_some() {
+        return if_none_match(request, etag);
+    }
+    header_value(request, "if-modified-since")
+        .and_then(parse_http_date)
+        .is_some_and(|since| since >= last_modified)
 }
 
 /// N727: a `304 Not Modified` response carrying the validators.
@@ -4237,6 +4326,55 @@ mod tests {
         let missing = body(server.health_response(Some("nope")));
         assert!(missing["ws_log_entries"].as_array().unwrap().is_empty());
         assert_eq!(missing["ws_log"], 3);
+    }
+
+    #[test]
+    fn if_modified_since_parses_dates_and_etag_wins() {
+        // N761: http_date/parse_http_date are inverse for several epochs, all
+        // three HTTP date forms parse, and ETag takes precedence over the date.
+        for seconds in [0u64, 86_400, 1_700_000_000, 1_900_000_000] {
+            let text = http_date(seconds);
+            assert_eq!(parse_http_date(&text), Some(seconds), "{text}");
+        }
+        assert_eq!(
+            parse_http_date("Sunday, 06-Nov-94 08:49:37 GMT"),
+            Some(784_111_777)
+        );
+        assert_eq!(
+            parse_http_date("Sun Nov  6 08:49:37 1994"),
+            Some(784_111_777)
+        );
+        assert_eq!(parse_http_date("not a date"), None);
+        assert_eq!(parse_http_date("Thu, 32 Jan 1970 00:00:00 GMT"), None);
+
+        let stamp = 1_700_000_000u64;
+        let date = http_date(stamp);
+        let request = format!("GET /frame.png HTTP/1.1\r\nIf-Modified-Since: {date}\r\n\r\n");
+        assert!(request_not_modified(request.as_bytes(), "\"x\"", stamp));
+        // An earlier date means the representation changed.
+        let old = format!(
+            "GET /frame.png HTTP/1.1\r\nIf-Modified-Since: {}\r\n\r\n",
+            http_date(stamp - 10)
+        );
+        assert!(!request_not_modified(old.as_bytes(), "\"x\"", stamp));
+        // If-None-Match is present: its verdict wins, even when it mismatches.
+        let both = format!(
+            "GET /frame.png HTTP/1.1\r\nIf-None-Match: \"other\"\r\n\
+             If-Modified-Since: {date}\r\n\r\n"
+        );
+        assert!(!request_not_modified(both.as_bytes(), "\"x\"", stamp));
+        let matching = format!(
+            "GET /frame.png HTTP/1.1\r\nIf-None-Match: \"x\"\r\n\
+             If-Modified-Since: {}\r\n\r\n",
+            http_date(stamp - 10)
+        );
+        assert!(request_not_modified(matching.as_bytes(), "\"x\"", stamp));
+        // No conditional headers means a full response.
+        assert!(!request_not_modified(
+            b"GET /frame.png HTTP/1.1\r\n\r\n",
+            "\"x\"",
+            stamp
+        ));
     }
 
     #[test]

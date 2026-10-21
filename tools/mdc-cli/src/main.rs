@@ -4384,9 +4384,27 @@ fn cmd_diff(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// N752: report an image's alpha coverage/opaque bounds and trim potential.
+/// N762: `--batch DIR [--min-coverage F] [--sort name|coverage|trimmable]`
+/// emits one JSON line per image plus a summary line, and exits 1 when an image
+/// is fully transparent or below the coverage threshold.
 fn cmd_texture_report(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.iter().any(|arg| arg == "--batch") {
+        return cmd_texture_report_batch(args);
+    }
     let path = args.first().cloned().ok_or("texture-report <image>")?;
-    let bytes = std::fs::read(&path)?;
+    let (report, fully_transparent) = texture_report_value(&path)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    if fully_transparent {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// N762: build the per-image report shared by the single and batch modes.
+fn texture_report_value(
+    path: &str,
+) -> Result<(serde_json::Value, bool), Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path)?;
     let (baked, alpha) = mdc_bake::decode_rgba8_native(&bytes, &mdc_bake::BakeLimits::default())?;
     let width = baked.width as usize;
     let height = baked.height as usize;
@@ -4430,8 +4448,102 @@ fn cmd_texture_report(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
         "trimmable_bytes": rgb565_bytes.saturating_sub(cropped_bytes),
         "fully_transparent": opaque == 0,
     });
-    println!("{}", serde_json::to_string_pretty(&report)?);
-    if opaque == 0 {
+    Ok((report, opaque == 0))
+}
+
+/// N762: directory mode. Only image-like extensions are read, the order is
+/// explicit, and nothing accumulates beyond the sorted report list.
+fn cmd_texture_report_batch(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let value_of = |flag: &str| -> Option<String> {
+        args.iter()
+            .position(|arg| arg == flag)
+            .and_then(|index| args.get(index + 1))
+            .cloned()
+    };
+    let dir = value_of("--batch").ok_or("texture-report --batch <dir>")?;
+    let min_coverage = value_of("--min-coverage")
+        .map(|value| value.parse::<f64>())
+        .transpose()?
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0);
+    let sort = value_of("--sort").unwrap_or_else(|| "name".into());
+    const EXTENSIONS: [&str; 8] = ["png", "jpg", "jpeg", "webp", "bmp", "ppm", "pgm", "pnm"];
+    let mut reports = Vec::new();
+    for entry in std::fs::read_dir(&dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !EXTENSIONS.contains(&extension.as_str()) {
+            continue;
+        }
+        let source = path.to_string_lossy().into_owned();
+        let (report, _) = texture_report_value(&source)?;
+        reports.push(report);
+    }
+    if reports.is_empty() {
+        return Err(format!("no images found in {dir}").into());
+    }
+    match sort.as_str() {
+        "coverage" => reports.sort_by(|a, b| {
+            a["coverage"]
+                .as_f64()
+                .unwrap_or(0.0)
+                .total_cmp(&b["coverage"].as_f64().unwrap_or(0.0))
+        }),
+        "trimmable" => reports.sort_by(|a, b| {
+            b["trimmable_bytes"]
+                .as_u64()
+                .unwrap_or(0)
+                .cmp(&a["trimmable_bytes"].as_u64().unwrap_or(0))
+        }),
+        _ => reports.sort_by(|a, b| {
+            a["source"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["source"].as_str().unwrap_or(""))
+        }),
+    }
+    let mut below = 0usize;
+    let mut transparent = 0usize;
+    let mut files = 0usize;
+    let mut sum = 0.0f64;
+    let mut min = 1.0f64;
+    for mut report in reports {
+        files += 1;
+        let coverage = report["coverage"].as_f64().unwrap_or(0.0);
+        sum += coverage;
+        min = min.min(coverage);
+        if coverage < min_coverage {
+            below += 1;
+        }
+        if report["fully_transparent"].as_bool().unwrap_or(false) {
+            transparent += 1;
+        }
+        if let Some(object) = report.as_object_mut() {
+            object.insert("kind".into(), serde_json::json!("texture"));
+        }
+        println!("{}", serde_json::to_string(&report)?);
+    }
+    let summary = serde_json::json!({
+        "kind": "summary",
+        "directory": dir,
+        "files": files,
+        "below_threshold": below,
+        "fully_transparent": transparent,
+        "min_coverage": min,
+        "mean_coverage": if files == 0 { 0.0 } else { sum / files as f64 },
+        "min_coverage_threshold": min_coverage,
+        "sort": sort,
+    });
+    println!("{}", serde_json::to_string(&summary)?);
+    if below > 0 || transparent > 0 {
         std::process::exit(1);
     }
     Ok(())
@@ -4608,7 +4720,7 @@ motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] [--clip NAME] [--time T] [--mip N] [--smooth] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> [--time MS] --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss] [--defaults|--defaults-only [--key K]]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|asset verify <dir>|\
-model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg> [--strict]|diff <a.mdcpkg> <b.mdcpkg>|texture-report <image>"
+model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg> [--strict]|diff <a.mdcpkg> <b.mdcpkg>|texture-report <image>|texture-report --batch <dir> [--min-coverage F] [--sort name|coverage|trimmable]"
     );
 }
 
@@ -5152,6 +5264,67 @@ mod tests {
             )
             .unwrap();
         cmd_texture_report(&[path.to_string_lossy().into_owned()]).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn texture_report_batch_reads_a_directory() {
+        // N762: `--batch` accepts a directory and reports every image without
+        // failing when everything meets the threshold.
+        use image::RgbaImage;
+        let dir = std::env::temp_dir().join(format!("mdc-texture-batch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, alpha) in [("a.png", 255u8), ("b.png", 200)] {
+            let image =
+                RgbaImage::from_raw(2, 1, vec![255, 0, 0, alpha, 0, 255, 0, alpha]).unwrap();
+            image
+                .write_to(
+                    &mut std::fs::File::create(dir.join(name)).unwrap(),
+                    image::ImageFormat::Png,
+                )
+                .unwrap();
+        }
+        // A non-image file is ignored.
+        std::fs::write(dir.join("notes.txt"), b"ignore me").unwrap();
+        cmd_texture_report(&[
+            "--batch".into(),
+            dir.to_string_lossy().into_owned(),
+            "--min-coverage".into(),
+            "0.0".into(),
+            "--sort".into(),
+            "trimmable".into(),
+        ])
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn texture_report_measures_coverage_and_bounds() {
+        // N762: the shared per-image report drives both the single and batch
+        // modes; a half-opaque 4×2 image has a centred 2×1 bounds.
+        use image::RgbaImage;
+        let dir = std::env::temp_dir().join(format!("mdc-texture-bounds-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("half.png");
+        let mut pixels = vec![0u8; 4 * 2 * 4];
+        for x in 1..3 {
+            let index = x * 4;
+            pixels[index..index + 4].copy_from_slice(&[0, 255, 0, 255]);
+        }
+        RgbaImage::from_raw(4, 2, pixels)
+            .unwrap()
+            .write_to(
+                &mut std::fs::File::create(&path).unwrap(),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        let (report, transparent) = texture_report_value(&path.to_string_lossy()).expect("report");
+        assert!(!transparent);
+        assert_eq!(report["opaque_pixels"], 2);
+        assert_eq!(report["coverage"], 0.25);
+        assert_eq!(report["bbox"], serde_json::json!([1, 0, 2, 1]));
+        assert!(report["trimmable_bytes"].as_u64().unwrap() > 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

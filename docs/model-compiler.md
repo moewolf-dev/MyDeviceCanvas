@@ -317,6 +317,10 @@ scales the shaded colour) when the per-pixel pass runs; the per-triangle centroi
 sample remains for the flat path. N380:
 `pack_material_atlas` (and `mdc package --atlas MAX_PAGE`) shelf-packs a package's
 per-material textures into one bounded page, remapping material indices and mesh UVs.
+N760: each texture is trimmed to its opaque bounds before packing (when it carries
+a 1-bit alpha mask), and the mesh UVs are remapped in two steps (original →
+trimmed pixels → page), so a page can shrink without changing what the mesh
+samples.
 
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a
@@ -458,7 +462,11 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
   `RendererCapability.dqs` selects dual-quaternion blending for its device
   renderer, and `mdc render-mesh --dqs` selects it for offline renders. DQS
   blends the rigid joint transforms (removing the LBS candy-wrapper collapse),
-  while scale/shear is reduced to the nearest rotation.
+  while scale/shear is reduced to the nearest rotation. N756: both sets of
+  influences (`JOINTS_0/WEIGHTS_0` + `JOINTS_1/WEIGHTS_1`, up to eight) are
+  summed and divided by the actual weight total before the quaternion is
+  normalised, so 0.25/0.75 and 0.5/0.5 weights agree with LBS; zero weights and
+  out-of-range joints leave the vertex in bind pose instead of producing NaNs.
 - N736: with `SkinMode::Dqs`, normals and tangents are rotated by the same
   blended joint quaternion (the linear part is no longer averaged), so shading
   follows the DQS pose; `w` handedness is preserved.

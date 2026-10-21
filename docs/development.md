@@ -226,6 +226,15 @@ rate once and updates both the scheduler and the dirty threshold; it returns
 
 N752: `mdc texture-report <image>` decodes PNG/JPEG/WebP and reports opaque
 coverage, the opaque bounding box and trimmable RGB565 bytes; a fully
-transparent image exits 1.
+transparent image exits 1. N762: `--batch DIR [--min-coverage F]
+[--sort name|coverage|trimmable]` scans image files, prints one JSON line per
+image plus a `kind:"summary"` line, and exits 1 when any image is fully
+transparent or below the coverage threshold.
+
+N758: `Session::plan_shared_surface_tiles()` plans every device surface against
+one budget (the active pacing scheduler, or unlimited) and returns
+`mdc_schedule::SharedDecision`; `plan_shared` round-robins surfaces so none is
+starved. N757: stored chunks are `tag || raw|RLE` and the quota counts the stored
+bytes, so repetitive assets consume far less than their raw size.
 
 

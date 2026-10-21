@@ -110,7 +110,10 @@ kind map reports at most `WS_LOG_KINDS_MAX` kinds in sorted (stable) order. N687
 `Content-Length` and the validators) with no body; a conditional HEAD still gets
 `304`. N748: `/frame.*` honours a single `Range: bytes=...` with
 `206 Partial Content` + `Content-Range`; multiple ranges are rejected with
-`416` (browser sources only need one).
+`416` (browser sources only need one). N761: both endpoints also accept
+`If-Modified-Since` (IMF-fixdate, RFC 850 or asctime); a date at/after the last
+publish returns `304`. When `If-None-Match` is present it takes precedence, so a
+mismatching ETag still forces a full response even if the date matches.
 
 ## Guarantees
 

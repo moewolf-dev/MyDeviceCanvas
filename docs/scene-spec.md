@@ -137,10 +137,14 @@ A device that accepts a scene rasterizes it locally:
   quadratic or one more control point for cubic), flattened into 32 segments.
   Three/four points only; other counts draw nothing. N743: a command stream
   instead (`"M1,1;L5,1;Q8,4 5,8;C1,1 2,2 3,3;Z"`, ≤64 commands, must start with
-  `M`); `M/L/Q/C/Z` are supported and `Z` closes to the start.
+  `M`); `M/L/Q/C/Z` are supported and `Z` closes to the start. N753 adds
+  `A rx,ry,rotation,large-arc,sweep,x,y` (elliptical arc, flags 0/1, radii taken
+  as magnitudes) and `T x,y` (smooth quadratic, reflecting the previous control).
 - N744: `mask` composites its children only inside the polygon from `value2`
   (same point syntax as `polygon`); children keep absolute coordinates and the
   node is clipped to the framebuffer. A missing/short polygon draws nothing.
+  N754: `mode` may add `invert` (keep the outside) and `feather=N` (1..8 px box
+  blur on the boundary; the child is alpha-blended at the soft edge).
 - N740: `text` `mode` accepts `ellipsis` (cut over-long lines to the rect width
   and append `...`) and `valign=top|middle|bottom` (place the glyph block inside
   the rect height). Both are comma-separated with other tokens. N751 adds
@@ -149,6 +153,11 @@ A device that accepts a scene rasterizes it locally:
   is a transform for its children: `x`/`y` become a pixel offset and `w`/`h` a
   scale in permille (1000 = 1×; `0` leaves an axis unscaled). Nested groups
   compose. A drawable node is not treated as a group even with children.
+  N759: `value2` on a group is a shear `"kx,ky"` in permille (`x += kx·y`,
+  `y += ky·x`; clamped to ±2000). A sheared `rect` is rasterized as a
+  parallelogram; other raster kinds use the sheared bounding box, while point
+  geometry (polygon/polyline/path) is sheared exactly. Malformed shear is
+  ignored.
 - `render_scene` clears the framebuffer first (N137), so repeated renders are
   deterministic rather than accumulating.
 - A clip `fade_in_ms` darkens the atlas frame until that many virtual milliseconds pass.
