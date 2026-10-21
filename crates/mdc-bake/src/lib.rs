@@ -2712,3 +2712,89 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod n779_tests {
+    use super::*;
+
+    #[test]
+    fn device_render_selects_a_coarser_packed_mip() {
+        // N779: with a mipped opaque texture, rendering at 4×4 consumes the 4×4
+        // level, so it matches a package built from that coarse level directly.
+        let mut rgb565 = Vec::with_capacity(8 * 8 * 2);
+        for y in 0..8u16 {
+            for x in 0..8u16 {
+                let color: u16 = if (x < 4) ^ (y < 4) { 0xF800 } else { 0x07E0 };
+                rgb565.extend_from_slice(&color.to_le_bytes());
+            }
+        }
+        let base = mdc_model::TextureBlob {
+            width: 8,
+            height: 8,
+            rgb565,
+            alpha: Vec::new(),
+            palette: Vec::new(),
+            indices: Vec::new(),
+            mips: Vec::new(),
+        };
+        let levels = bake_mipmaps(base.width, base.height, &base.rgb565, 3);
+        let mipped = mdc_model::TextureBlob {
+            mips: levels
+                .iter()
+                .skip(1)
+                .map(|(width, height, rgb565)| mdc_model::TextureMip {
+                    width: *width,
+                    height: *height,
+                    rgb565: rgb565.clone(),
+                })
+                .collect(),
+            ..base.clone()
+        };
+        let coarse = blob_mip_level(&mipped, 1).expect("level 1");
+        assert_eq!((coarse.width, coarse.height), (4, 4));
+
+        let quad = || mdc_model::MeshGeometry {
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            uv: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            ..Default::default()
+        };
+        let model = mdc_model::Model {
+            nodes: vec![mdc_model::Node {
+                name: "root".into(),
+                mesh: Some(0),
+                ..Default::default()
+            }],
+            meshes: vec![mdc_model::Mesh {
+                name: "quad".into(),
+                vertices: 4,
+                indices: 6,
+                material: Some(0),
+                geometry: Some(quad()),
+                ..Default::default()
+            }],
+            materials: vec![mdc_model::Material {
+                name: "m".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let render = |blob: mdc_model::TextureBlob| {
+            let package = mesh_package_with_texture(
+                &model,
+                &mdc_model::RendererCapability::full_3d(),
+                Some(blob),
+            )
+            .unwrap();
+            render_package_mesh_mode(&package.package, (4, 4), ShadeMode::Flat)
+                .unwrap()
+                .rgb565
+        };
+        assert_eq!(render(mipped), render(coarse), "coarse level selected");
+    }
+}

@@ -814,7 +814,7 @@ pub fn skin_arrays_multi_with_mode(
     for (i, position) in positions.iter().enumerate() {
         let mut real = [0.0f32; 4];
         let mut dual = [0.0f32; 4];
-        let mut scale = 0.0f32;
+        let mut scale = [0.0f32; 3];
         let mut total = 0.0f32;
         for (set_joints, set_weights) in [(joints, weights), (joints2, weights2)] {
             let (Some(vertex_joints), Some(vertex_weights)) =
@@ -844,7 +844,9 @@ pub fn skin_arrays_multi_with_mode(
                     real[c] += dq.real[c] * weight;
                     dual[c] += dq.dual[c] * weight;
                 }
-                scale += dq.scale * weight;
+                for (slot, axis) in scale.iter_mut().zip(dq.scale) {
+                    *slot += axis * weight;
+                }
                 total += weight;
             }
         }
@@ -873,7 +875,7 @@ pub fn skin_arrays_multi_with_mode(
             &real,
             &dual,
             *position,
-            (scale / total).max(1e-6),
+            [scale[0] / total, scale[1] / total, scale[2] / total],
         ));
     }
     out
@@ -938,7 +940,8 @@ fn skin_arrays_multi_lbs(
 struct DualQuat {
     real: [f32; 4],
     dual: [f32; 4],
-    scale: f32,
+    /// N775: per-axis scale, blended component-wise before rotation.
+    scale: [f32; 3],
 }
 
 /// N726: split a matrix's rotation/translation into a dual quaternion.
@@ -952,7 +955,7 @@ fn dual_quat_from_matrix(m: &Mat4) -> Option<DualQuat> {
     if sx <= 1e-6 || sy <= 1e-6 || sz <= 1e-6 {
         return None;
     }
-    let scale = (sx + sy + sz) / 3.0;
+    let scale = [sx, sy, sz];
     let (r00, r10, r20) = (m[0] / sx, m[1] / sx, m[2] / sx);
     let (r01, r11, r21) = (m[4] / sy, m[5] / sy, m[6] / sy);
     let (r02, r12, r22) = (m[8] / sz, m[9] / sz, m[10] / sz);
@@ -994,8 +997,8 @@ fn dual_quat_from_matrix(m: &Mat4) -> Option<DualQuat> {
 
 /// N726: rotate + translate a point by a unit dual quaternion.
 /// N765: `scale` is applied first, so uniform scale survives the blend.
-fn transform_dual_quat(real: &[f32; 4], dual: &[f32; 4], p: [f32; 3], scale: f32) -> [f32; 3] {
-    let p = [p[0] * scale, p[1] * scale, p[2] * scale];
+fn transform_dual_quat(real: &[f32; 4], dual: &[f32; 4], p: [f32; 3], scale: [f32; 3]) -> [f32; 3] {
+    let p = [p[0] * scale[0], p[1] * scale[1], p[2] * scale[2]];
     let [qw, qx, qy, qz] = *real;
     let cross = |a: [f32; 3], b: [f32; 3]| {
         [
@@ -4964,6 +4967,61 @@ mod tests {
         let dqs = skin_points_with_mode(&mesh, &skeleton, &worlds, &position, SkinMode::Dqs);
         assert!((dqs[0][0] - 3.0).abs() < 1e-3, "{dqs:?}");
         assert!((dqs[0][1] - 4.0).abs() < 1e-3, "{dqs:?}");
+    }
+
+    #[test]
+    fn dqs_preserves_non_uniform_scale() {
+        // N775: per-axis scale is measured and blended component-wise, so a
+        // single non-uniform joint matches LBS exactly.
+        let identity = mat4_identity();
+        let non_uniform = mat4_from_trs([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [2.0, 3.0, 1.0]);
+        let skeleton = mdc_model::Skeleton {
+            joint_nodes: vec![0],
+            inverse_bind: vec![identity],
+            ..Default::default()
+        };
+        let mesh = mdc_model::Mesh {
+            skin_joints: vec![[0, 0, 0, 0]],
+            skin_weights: vec![[1.0, 0.0, 0.0, 0.0]],
+            ..Default::default()
+        };
+        let position = [[1.0f32, 1.0, 1.0]];
+        let worlds = [non_uniform];
+        let lbs = skin_points_with_mode(&mesh, &skeleton, &worlds, &position, SkinMode::Lbs);
+        let dqs = skin_points_with_mode(&mesh, &skeleton, &worlds, &position, SkinMode::Dqs);
+        for c in 0..3 {
+            assert!((lbs[0][c] - dqs[0][c]).abs() < 1e-3, "{lbs:?} vs {dqs:?}");
+        }
+        assert!((dqs[0][0] - 2.0).abs() < 1e-3);
+        assert!((dqs[0][1] - 3.0).abs() < 1e-3);
+
+        // Two differently scaled/rotated joints stay finite and within a
+        // documented bound of LBS (rotation blending and scale cannot agree
+        // exactly by construction).
+        let quarter = std::f32::consts::FRAC_1_SQRT_2;
+        let rotated = mat4_from_trs(
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, quarter, quarter],
+            [1.0, 2.0, 1.0],
+        );
+        let skeleton = mdc_model::Skeleton {
+            joint_nodes: vec![0, 1],
+            inverse_bind: vec![identity, identity],
+            ..Default::default()
+        };
+        let mesh = mdc_model::Mesh {
+            skin_joints: vec![[0, 1, 0, 0]],
+            skin_weights: vec![[0.5, 0.5, 0.0, 0.0]],
+            ..Default::default()
+        };
+        let worlds = [non_uniform, rotated];
+        let lbs = skin_points_with_mode(&mesh, &skeleton, &worlds, &position, SkinMode::Lbs);
+        let dqs = skin_points_with_mode(&mesh, &skeleton, &worlds, &position, SkinMode::Dqs);
+        assert!(dqs[0].iter().all(|v| v.is_finite()), "{dqs:?}");
+        let deviation = (0..3)
+            .map(|c| (lbs[0][c] - dqs[0][c]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(deviation < 3.0, "lbs={lbs:?} dqs={dqs:?}");
     }
 
     #[test]
