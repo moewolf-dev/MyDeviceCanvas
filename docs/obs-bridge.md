@@ -116,7 +116,10 @@ publish returns `304`. When `If-None-Match` is present it takes precedence, so a
 mismatching ETag still forces a full response even if the date matches. N770:
 `If-Match` (exact token, list, or `*`) and `If-Unmodified-Since` are preconditions;
 a mismatch/stale date returns `412 Precondition Failed` with the current
-validators, and `If-Match` takes precedence over `If-Unmodified-Since`.
+validators, and `If-Match` takes precedence over `If-Unmodified-Since`. N780:
+`If-Range` gates `Range` — a matching strong ETag/date returns `206`, while a
+stale validator ignores the range and returns the full `200` (HEAD keeps the
+full `Content-Length`).
 
 ## Guarantees
 

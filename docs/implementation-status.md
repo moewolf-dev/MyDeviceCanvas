@@ -107,6 +107,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 93 | N743–N752: path command streams, mask node, three-finger swipe, DQS mesh package, disk compaction, HTTP Range, trim mips, joint tuning, text background/underline, texture-report | sim-verified |
 | 94 | N753–N762: arc/smooth paths, mask invert/feather, multi-tap gestures, DQS weight normalisation, RLE chunks, shared surface budgets, group skew, atlas trim, If-Modified-Since, texture-report batch | sim-verified |
 | 95 | N763–N772: relative/smooth paths, tap-chain boundaries, DQS scale, LZ chunks, weighted budgets, exact skew hits, atlas mips, HTTP preconditions, texture-report JSON | sim-verified |
+| 96 | N773–N782: H/V paths, tap radius, non-uniform DQS, LZ fuzz/ratios, config weights, sheared clips, atlas mip selection, If-Range, single-file JSON | sim-verified |
 | 87 | N683–N692: verbatim partial-group cases, sprite fit/pad on a shared fit box, package_order report, inspect --defaults alias, configurable WS kind limit, archive --json alias, verify manifest locality | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.

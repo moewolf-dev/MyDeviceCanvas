@@ -231,14 +231,20 @@ transparent image exits 1. N762: `--batch DIR [--min-coverage F]
 image plus a `kind:"summary"` line, and exits 1 when any image is fully
 transparent or below the coverage threshold. N771 adds `--json` for a single
 pretty document (`{kind:"batch", directory, files, summary}`); the same scan and
-exit-code decision backs both modes.
+exit-code decision backs both modes. N781: a single `--json` report also carries
+`kind:"texture"`, so it can be concatenated with batch `files` entries.
 
 N758: `Session::plan_shared_surface_tiles()` plans every device surface against
 one budget (the active pacing scheduler, or unlimited) and returns
 `mdc_schedule::SharedDecision`; `plan_shared` round-robins surfaces so none is
 starved. N767 adds per-surface weights: every surface gets its first tile, then
-weights split the remaining budget. N757/N766: stored chunks are
-`tag || raw|RLE|LZ`, the quota counts the stored bytes, and LZ decoding rejects a
-declared size above `MAX_LZ_DECODE_BYTES` before allocating.
+weights split the remaining budget. N777: `surface_weights` is a negotiated
+config key (1–4 entries, each 1–16);
+`Session::plan_shared_surface_tiles_from_config()` uses it, and invalid values
+leave the previous weights. N757/N766: stored chunks are `tag || raw|RLE|LZ`, the
+quota counts the stored bytes, and LZ decoding rejects a declared size above
+`MAX_LZ_DECODE_BYTES` before allocating. N776 adds a mutation/truncation corpus
+for the decoder; measured ratios are in
+[`chunk-compression.md`](chunk-compression.md).
 
 

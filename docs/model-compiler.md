@@ -322,7 +322,10 @@ a 1-bit alpha mask), and the mesh UVs are remapped in two steps (original →
 trimmed pixels → page), so a page can shrink without changing what the mesh
 samples. N769: if any packed texture had a mip chain, the page gets a freshly
 downsampled full chain ending at 1×1 (level 0 is the page), keeping the levels
-consistent with the trimmed size.
+consistent with the trimmed size. N779: an opaque page is sampled through
+`blob_for_target`, so a small render target consumes the coarser level instead of
+the full-size page; pages with a 1-bit alpha plane keep level 0 because mips
+carry no mask.
 
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a
@@ -473,6 +476,10 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
   separately, then applied to the vertex before the quaternion rotation; a
   uniformly scaled joint therefore matches LBS, while non-uniform scale/shear is
   still reduced to the nearest rotation (documented limitation).
+- N775: scale is blended per axis (not as one average), so a single non-uniform
+  joint matches LBS exactly and mixed differently-scaled joints remain finite
+  and close to LBS; rotation blending still means the two modes are not
+  bit-identical.
 - N736: with `SkinMode::Dqs`, normals and tangents are rotated by the same
   blended joint quaternion (the linear part is no longer averaged), so shading
   follows the DQS pose; `w` handedness is preserved.

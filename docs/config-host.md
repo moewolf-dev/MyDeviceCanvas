@@ -33,7 +33,8 @@ see an unchanged capabilities map. `CONFIG` (0x33) carries a CBOR
   `Unsupported`; nothing is sent.
 - **Bounded**: values over `MAX_CONFIG_VALUE_BYTES` are refused before any
   packet; the device validates per key (brightness 0–255, rotation 0/90/180/270,
-  Wi-Fi length, `tile_missing_threshold` integer) and rejects invalid values.
+  Wi-Fi length, `tile_missing_threshold` integer, `surface_weights` as 1–4
+  comma-separated integers in 1–16) and rejects invalid values.
 - **Negotiated behaviour**: `tile_missing_threshold` (N586) is a config key the
   host reads to decide how many unacknowledged tiles it tolerates before forcing
   a full frame (`Session::enforce_tile_reconciliation_from_config`). N596: each
@@ -42,7 +43,12 @@ see an unchanged capabilities map. `CONFIG` (0x33) carries a CBOR
   inspect` reports the board's `config_defaults` (N606). N616: the board also
   advertises those defaults in `Capabilities.config.defaults`, so
   `Session::advertised_config_default` (and `tile_missing_threshold`) can read a
-  factory default without a `get_config` round trip.
+  factory default without a `get_config` round trip. N777: `surface_weights`
+  carries per-surface budget weights (1–4 entries, each 1–16); the host parses it
+  into `Session::surface_weights` and
+  `Session::plan_shared_surface_tiles_from_config`, so weighting is a negotiated
+  device setting rather than a board-name branch. Invalid values are rejected and
+  leave the previous weights in place.
 - **Redaction**: a password/token value is never echoed in a reply — the device
   answers `***` on `get`, and the CLI/Node surface shows the redacted value. The
   stored value never enters a log.

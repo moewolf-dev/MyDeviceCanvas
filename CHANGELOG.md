@@ -2,6 +2,27 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.90] — H/V paths, tap radius, non-uniform DQS, LZ fuzz, config weights, sheared clips, atlas mip selection, If-Range, single-file JSON (N773–N782)
+
+### Added
+
+- `path` `H`/`V` absolute and `h`/`v` relative single-axis lines (N773)
+- `GestureConfig.multi_tap_radius` and node-aware double/triple taps (N774)
+- per-axis DQS scale blending for non-uniform joints (N775)
+- LZ mutation/truncation corpus plus measured compression ratios (N776)
+- `surface_weights` device config and config-driven shared budgets (N777)
+- sheared `clip`/`mask` compositing follows the affine parallelogram (N778)
+- device renders select a coarser mip for small opaque targets (N779)
+- `If-Range` gating for conditional `Range`/HEAD responses (N780)
+- single-image `texture-report --json` with the batch `kind` marker (N781)
+
+### Notes
+
+- Host/simulator only. D05, G03 and H06 remain open until physical hardware is
+  measured; no board is claimed working.
+- Chunk compression and its budgets are documented in
+  [`docs/chunk-compression.md`](docs/chunk-compression.md).
+
 ## [0.1.89] — relative paths, multi-tap boundaries, DQS scale, LZ chunks, weighted budgets, exact skew hits, atlas mips, HTTP preconditions, texture-report JSON (N763–N772)
 
 ### Added
