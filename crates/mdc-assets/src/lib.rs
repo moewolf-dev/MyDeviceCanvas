@@ -102,6 +102,13 @@ impl AssetCache {
 
 /// N757: the RLE container magic (`MRLE` + u32 little-endian original length).
 const RLE_MAGIC: &[u8; 4] = b"MRLE";
+/// N766: the LZSS container magic and its decompression budget. A chunk is at
+/// most 1 MiB, so 16 MiB is a generous pre-allocation guard.
+const LZ_MAGIC: &[u8; 4] = b"MRLZ";
+pub const MAX_LZ_DECODE_BYTES: usize = 16 * 1024 * 1024;
+const LZ_WINDOW: usize = 4096;
+const LZ_MIN_MATCH: usize = 3;
+const LZ_MAX_MATCH: usize = 255;
 
 /// N757: deterministic PackBits-style run-length encoding. Literal packets hold
 /// 1..=128 bytes (token `len-1`); repeat packets hold 2..=129 copies of the next
@@ -178,6 +185,125 @@ pub fn rle_decode(bytes: &[u8]) -> Option<Vec<u8>> {
     (out.len() == declared).then_some(out)
 }
 
+/// N766: deterministic LZSS encoding (4 KiB window, 3..=255 byte matches).
+/// Tokens are grouped behind a control byte (bit 1 = match, 0 = literal); a
+/// match is a little-endian `u16` distance plus a `u8` length. The declared
+/// length is in the header so decode never allocates beyond it.
+pub fn lz_encode(bytes: &[u8]) -> Vec<u8> {
+    enum Item {
+        Literal(u8),
+        Match(usize, usize),
+    }
+    let mut items: Vec<Item> = Vec::new();
+    let mut last: HashMap<u32, usize> = HashMap::new();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let key = |at: usize| -> Option<u32> {
+            (at + LZ_MIN_MATCH <= bytes.len()).then(|| {
+                (u32::from(bytes[at]) << 16)
+                    | (u32::from(bytes[at + 1]) << 8)
+                    | u32::from(bytes[at + 2])
+            })
+        };
+        let mut best = (0usize, 0usize); // (distance, length)
+        if let Some(key) = key(index) {
+            if let Some(&candidate) = last.get(&key) {
+                if index > candidate && index - candidate <= LZ_WINDOW {
+                    let limit = LZ_MAX_MATCH.min(bytes.len() - index);
+                    let mut length = 0usize;
+                    while length < limit && bytes[candidate + length] == bytes[index + length] {
+                        length += 1;
+                    }
+                    if length >= LZ_MIN_MATCH {
+                        best = (index - candidate, length);
+                    }
+                }
+            }
+            last.insert(key, index);
+        }
+        if best.0 > 0 {
+            items.push(Item::Match(best.0, best.1));
+            // Register the interior positions so later matches remain local.
+            for at in index + 1..index + best.1 {
+                if let Some(key) = key(at) {
+                    last.insert(key, at);
+                }
+            }
+            index += best.1;
+        } else {
+            items.push(Item::Literal(bytes[index]));
+            index += 1;
+        }
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 2 + 16);
+    out.extend_from_slice(LZ_MAGIC);
+    out.extend_from_slice(&(bytes.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    for group in items.chunks(8) {
+        let mut control = 0u8;
+        for (bit, item) in group.iter().enumerate() {
+            if matches!(item, Item::Match(_, _)) {
+                control |= 1 << bit;
+            }
+        }
+        out.push(control);
+        for item in group {
+            match item {
+                Item::Literal(value) => out.push(*value),
+                Item::Match(distance, length) => {
+                    out.extend_from_slice(&(*distance as u16).to_le_bytes());
+                    out.push(*length as u8);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// N766: decode an [`lz_encode`] stream. The declared size is checked against
+/// [`MAX_LZ_DECODE_BYTES`] *before* allocating, and every match is validated
+/// against the bytes already produced, so a decompression bomb or a corrupt
+/// stream returns `None` instead of growing without bound.
+pub fn lz_decode(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < 8 || &bytes[0..4] != LZ_MAGIC {
+        return None;
+    }
+    let declared = u32::from_le_bytes(bytes[4..8].try_into().ok()?) as usize;
+    if declared > MAX_LZ_DECODE_BYTES {
+        return None;
+    }
+    let mut out = Vec::with_capacity(declared);
+    let mut index = 8usize;
+    while out.len() < declared {
+        let control = *bytes.get(index)?;
+        index += 1;
+        for bit in 0..8 {
+            if out.len() >= declared {
+                break;
+            }
+            if control & (1 << bit) == 0 {
+                out.push(*bytes.get(index)?);
+                index += 1;
+            } else {
+                let distance =
+                    u16::from_le_bytes([*bytes.get(index)?, *bytes.get(index + 1)?]) as usize;
+                let length = *bytes.get(index + 2)? as usize;
+                index += 3;
+                if distance == 0 || distance > out.len() || length < LZ_MIN_MATCH {
+                    return None;
+                }
+                for _ in 0..length {
+                    if out.len() >= declared {
+                        return None;
+                    }
+                    let value = out[out.len() - distance];
+                    out.push(value);
+                }
+            }
+        }
+    }
+    (out.len() == declared).then_some(out)
+}
+
 /// N757: `pack_chunk` container magic. Legacy chunk files have no magic and are
 /// returned verbatim, so arbitrary raw bytes never collide with the tag.
 const CHUNK_MAGIC: &[u8; 4] = b"MRCH";
@@ -186,20 +312,17 @@ const CHUNK_MAGIC: &[u8; 4] = b"MRCH";
 /// is smaller. The magic keeps legacy raw chunk files readable and makes the
 /// stored size exact for quota accounting.
 fn pack_chunk(chunk: &[u8]) -> Vec<u8> {
-    let encoded = rle_encode(chunk);
-    if encoded.len() + 5 < chunk.len() + 5 {
-        let mut out = Vec::with_capacity(encoded.len() + 5);
-        out.extend_from_slice(CHUNK_MAGIC);
-        out.push(1);
-        out.extend_from_slice(&encoded);
-        out
-    } else {
-        let mut out = Vec::with_capacity(chunk.len() + 5);
-        out.extend_from_slice(CHUNK_MAGIC);
-        out.push(0);
-        out.extend_from_slice(chunk);
-        out
-    }
+    let rle = rle_encode(chunk);
+    let lz = lz_encode(chunk);
+    let (tag, payload) = [(0u8, chunk), (1u8, rle.as_slice()), (2u8, lz.as_slice())]
+        .into_iter()
+        .min_by_key(|(_, candidate)| candidate.len())
+        .unwrap_or((0, chunk));
+    let mut out = Vec::with_capacity(payload.len() + 5);
+    out.extend_from_slice(CHUNK_MAGIC);
+    out.push(tag);
+    out.extend_from_slice(payload);
+    out
 }
 
 /// N757: decode a stored chunk; untagged legacy files are raw bytes.
@@ -210,6 +333,7 @@ fn decode_chunk(bytes: &[u8]) -> Option<Vec<u8>> {
     match bytes[4] {
         0 => Some(bytes[5..].to_vec()),
         1 => rle_decode(&bytes[5..]),
+        2 => lz_decode(&bytes[5..]),
         _ => None,
     }
 }
@@ -1248,6 +1372,40 @@ mod tests {
         let disk = DiskChunkStore::open(&dir, 4096, 512).unwrap();
         assert_eq!(disk.get(&persisted).as_deref(), Some(source.as_slice()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lz_round_trips_and_rejects_decompression_bombs() {
+        // N766: LZSS beats RLE on natural text, round-trips every byte, and
+        // rejects an oversized declaration before allocating.
+        let text = b"the quick brown fox jumps over the lazy dog. ".repeat(64);
+        let lz = lz_encode(&text);
+        let rle = rle_encode(&text);
+        assert!(lz.len() < rle.len(), "lz={} rle={}", lz.len(), rle.len());
+        assert_eq!(lz_decode(&lz).as_deref(), Some(text.as_slice()));
+
+        let mut bomb = Vec::from(&b"MRLZ"[..]);
+        bomb.extend_from_slice(&(MAX_LZ_DECODE_BYTES as u32 + 1).to_le_bytes());
+        assert_eq!(
+            lz_decode(&bomb),
+            None,
+            "declared size rejected before alloc"
+        );
+
+        // A match that points before the output or a truncated token is invalid.
+        let mut bad = Vec::from(&b"MRLZ"[..]);
+        bad.extend_from_slice(&8u32.to_le_bytes());
+        bad.push(0b0000_0001);
+        bad.extend_from_slice(&1u16.to_le_bytes());
+        bad.push(3);
+        assert_eq!(lz_decode(&bad), None, "distance before output");
+        assert_eq!(lz_decode(&lz[..lz.len() - 1]), None, "truncated stream");
+
+        // A repetitive chunk is stored in its compressed form and still reads back.
+        let mut store = ChunkStore::new(4096, 512);
+        let blob = store.insert(&text).unwrap();
+        assert!(store.total_bytes() < 512);
+        assert_eq!(store.get(&blob).as_deref(), Some(text.as_slice()));
     }
 
     #[test]
