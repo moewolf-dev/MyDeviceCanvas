@@ -2760,6 +2760,7 @@ fn shared_surface_plan_converges_under_a_low_budget() {
             .map(|(index, tiles)| mdc_schedule::SurfaceDemand {
                 surface: index as u32,
                 priority: 0,
+                weight: 1,
                 tiles: tiles
                     .iter()
                     .map(|tile| mdc_schedule::TileCost::new(*tile, 8, false))

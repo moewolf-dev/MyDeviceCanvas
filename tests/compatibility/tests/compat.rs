@@ -6250,6 +6250,14 @@ fn scene_arc_mask_and_group_skew_reach_the_device() {
     assert_ne!(device.pixel_rgb565(8, 6), Some(0), "arc top");
     assert_ne!(device.pixel_rgb565(22, 12), Some(0), "smooth quad end");
 
+    // N763: lowercase commands and `S` reach the device too.
+    show(
+        &mut session,
+        &mut device,
+        r##"{"name":"rel","kind":"path","value2":"M2,14;l20,0","value":"#FFFFFF"}"##,
+    );
+    assert_ne!(device.pixel_rgb565(12, 14), Some(0), "relative line");
+
     show(
         &mut session,
         &mut device,
@@ -6295,7 +6303,24 @@ fn material_atlas_trims_transparent_margins() {
         alpha: mask(x0, y0),
         palette: Vec::new(),
         indices: Vec::new(),
-        mips: Vec::new(),
+        // N769: a source chain that must be rebuilt for the trimmed page.
+        mips: vec![
+            mdc_model::TextureMip {
+                width: 4,
+                height: 4,
+                rgb565: color.to_le_bytes().repeat(16),
+            },
+            mdc_model::TextureMip {
+                width: 2,
+                height: 2,
+                rgb565: color.to_le_bytes().repeat(4),
+            },
+            mdc_model::TextureMip {
+                width: 1,
+                height: 1,
+                rgb565: color.to_le_bytes().to_vec(),
+            },
+        ],
     };
     let mesh = |material: usize, uv: [f32; 2]| mdc_model::Mesh {
         name: format!("quad-{material}"),
@@ -6347,6 +6372,11 @@ fn material_atlas_trims_transparent_margins() {
     let page = &package.texture_blobs[0];
     assert_eq!((page.width, page.height), (16, 2), "trimmed page height");
     assert_eq!(page.alpha.len(), 4, "alpha mask follows the trimmed page");
+    // N769: the packed page carries a rebuilt chain ending at 1×1.
+    assert!(!page.mips.is_empty());
+    let last = page.mips.last().unwrap();
+    assert_eq!((last.width, last.height), (1, 1));
+    assert!(page.validate(), "trimmed page and mips validate");
     let sample = |mesh: &mdc_model::Mesh| {
         let [u, v] = mesh.geometry.as_ref().unwrap().uv[0];
         let x = ((u * page.width as f32).floor() as usize).min(page.width as usize - 1);
