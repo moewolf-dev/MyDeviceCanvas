@@ -2,6 +2,34 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.88] — arc/smooth paths, mask feather, multi-tap, DQS weights, RLE chunks, shared budgets, skew, atlas trim, If-Modified-Since, texture-report batch (N753–N762)
+
+### Added
+
+- `path` `A` (elliptical arc) and `T` (smooth quadratic) commands (N753)
+- `mask` `invert` and `feather=N` modes (N754)
+- double/triple tap gestures with a configurable window (N755)
+- RLE-compressed chunk storage with quota charged on stored bytes (N757)
+- `mdc_schedule::plan_shared` + `Session::plan_shared_surface_tiles` for
+  multi-surface budgets (N758)
+- group shear via `value2: "kx,ky"` (N759)
+- transparent-margin trimming inside `pack_material_atlas` (N760)
+- HTTP `If-Modified-Since` with ETag precedence (N761)
+- `mdc texture-report --batch DIR` JSONL + threshold exit (N762)
+
+### Changed
+
+- DQS skinning now normalises by the actual influence total and covers eight
+  influences (`JOINTS_1`/`WEIGHTS_1`) consistently with LBS (N756).
+- `ChunkStore`/`DiskChunkStore` write `tag || raw|RLE` chunks; existing byte
+  quotas now measure stored (compressed) size. Untagged legacy files still read
+  as raw chunks.
+
+### Notes
+
+- Host/simulator only. D05, G03 and H06 remain open until physical hardware is
+  measured; no board is claimed working.
+
 ## [0.1.87] — path command streams, polygon masks, three-finger swipe, DQS mesh packages, disk compaction, Range/206, trim mips, joint tuning, text backgrounds, texture-report (N743–N752)
 
 ### Added

@@ -454,6 +454,16 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Joint streaming tuning (N750) | sim-verified (both knobs) | n/a |
 | Text bg/underline (N751) | sim-verified (device pixels) | physical: pending |
 | texture-report (N752) | sim-verified (JSON/exit) | n/a |
+| Path `A`/`T` commands (N753) | sim-verified (device pixels) | physical: pending |
+| Mask invert/feather (N754) | sim-verified (soft edge) | physical: pending |
+| Double/triple tap (N755) | sim-verified (manager event) | physical: pending |
+| DQS weight normalisation (N756) | sim-verified (8 influences) | physical: pending |
+| RLE chunk storage (N757) | sim-verified (round-trip/quota) | n/a |
+| Shared surface budget (N758) | sim-verified (fair convergence) | n/a |
+| Group skew (N759) | sim-verified (device pixels) | physical: pending |
+| Atlas trim before packing (N760) | sim-verified (UV remap) | physical: pending |
+| If-Modified-Since (N761) | sim-verified (ETag precedence) | n/a |
+| texture-report --batch (N762) | sim-verified (JSONL/exit) | n/a |
 
 Rows marked `sim-verified` describe host/simulator behaviour only. The KTX2 row
 is also emitted by `mdc verify` as `compatibility_row`, generated from the same
