@@ -277,6 +277,7 @@ pub unsafe extern "C" fn mdc_session_set_gesture_config(
         long_press_ms,
         drag_threshold,
         multi_tap_ms: mdc_core::GestureConfig::default().multi_tap_ms,
+        multi_tap_radius: mdc_core::GestureConfig::default().multi_tap_radius,
     });
     0
 }

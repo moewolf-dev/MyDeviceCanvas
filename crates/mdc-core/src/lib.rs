@@ -278,6 +278,8 @@ pub struct GestureConfig {
     pub drag_threshold: u16,
     /// N755: taps closer together than this form a double/triple tap.
     pub multi_tap_ms: u64,
+    /// N774: consecutive taps must stay within this many pixels on both axes.
+    pub multi_tap_radius: u16,
 }
 
 impl Default for GestureConfig {
@@ -287,6 +289,7 @@ impl Default for GestureConfig {
             long_press_ms: 600,
             drag_threshold: 6,
             multi_tap_ms: 300,
+            multi_tap_radius: 24,
         }
     }
 }
@@ -340,8 +343,9 @@ pub struct GestureTracker {
     pinch: Option<PinchAnchor>,
     /// N745: the midpoint anchor for a three-finger swipe.
     swipe: Option<(u16, u16)>,
-    /// N755: the last tap's time/position and the current tap streak (0..=3).
-    last_tap: Option<(u64, u16, u16)>,
+    /// N755: the last tap's time/position/node and the current streak (0..=3).
+    /// N774: taps at different nodes or too far away start a new chain.
+    last_tap: Option<(u64, u16, u16, Option<String>)>,
     tap_streak: u8,
 }
 
@@ -583,15 +587,20 @@ impl GestureTracker {
                 if now_ms.saturating_sub(state.down_ms) <= self.config.tap_max_ms {
                     // N755: consecutive taps inside the window become a double
                     // (2) or triple (3) tap; the streak then restarts.
-                    let within = self.last_tap.is_some_and(|(at, _, _)| {
-                        now_ms.saturating_sub(at) <= self.config.multi_tap_ms
+                    // N774: a different node or a far-away tap starts a new chain.
+                    let node = event.node.clone().or(state.node.clone());
+                    let within = self.last_tap.as_ref().is_some_and(|(at, x, y, prior)| {
+                        now_ms.saturating_sub(*at) <= self.config.multi_tap_ms
+                            && event.x.abs_diff(*x) <= self.config.multi_tap_radius
+                            && event.y.abs_diff(*y) <= self.config.multi_tap_radius
+                            && *prior == node
                     });
                     self.tap_streak = if within {
                         self.tap_streak.saturating_add(1).min(3)
                     } else {
                         1
                     };
-                    self.last_tap = Some((now_ms, event.x, event.y));
+                    self.last_tap = Some((now_ms, event.x, event.y, node.clone()));
                     let kind = match self.tap_streak {
                         2 => GestureKind::DoubleTap,
                         3 => {
@@ -605,7 +614,7 @@ impl GestureTracker {
                         pointer_id: event.pointer_id,
                         x: event.x,
                         y: event.y,
-                        node: event.node.clone().or(state.node.clone()),
+                        node,
                         scale: 1000,
                         rotation: 0,
                         dx: 0,
@@ -1129,6 +1138,30 @@ pub fn validate_tile_base(tile: &Tile, current_frame_id: u64) -> Result<(), Tran
 
 /// N308: tile edge the host uses when a device does not announce a preference.
 pub const DEFAULT_TILE_SIZE: u16 = 32;
+
+/// N777: the most surface weights a device config may carry.
+pub const MAX_SURFACE_WEIGHTS: usize = 4;
+/// N777: the largest relative weight accepted from a device config.
+pub const MAX_SURFACE_WEIGHT: u16 = 16;
+
+/// N777: parse a `surface_weights` config value (`"3,1"`). Empty, zero, more
+/// than four entries, non-numeric or out-of-range values are rejected so the
+/// host keeps its previous weights instead of silently re-balancing.
+pub fn parse_surface_weights(value: &str) -> Option<Vec<u16>> {
+    let weights: Vec<u16> = value
+        .split(',')
+        .map(str::trim)
+        .map(str::parse::<u16>)
+        .collect::<Result<_, _>>()
+        .ok()?;
+    if weights.is_empty()
+        || weights.len() > MAX_SURFACE_WEIGHTS
+        || weights.iter().any(|w| *w == 0 || *w > MAX_SURFACE_WEIGHT)
+    {
+        return None;
+    }
+    Some(weights)
+}
 
 /// N308: host-side tile cut for a surface. Uses the device-advertised preferred
 /// tile size when non-zero, otherwise [`DEFAULT_TILE_SIZE`]. Never overruns the
@@ -1833,6 +1866,20 @@ impl<T: Transport> Session<T> {
             .map(|scheduler| scheduler.budget_bytes())
             .unwrap_or(0);
         Some(device.plan_shared_tiles_weighted(budget, weights))
+    }
+
+    /// N777: the device's advertised surface weights (`surface_weights` config),
+    /// or `None` when unset/invalid.
+    pub fn surface_weights(&self) -> Option<Vec<u16>> {
+        self.config_cache
+            .get("surface_weights")
+            .and_then(|value| parse_surface_weights(value))
+    }
+
+    /// N777: plan with the device's configured weights (falling back to 1 each).
+    pub fn plan_shared_surface_tiles_from_config(&self) -> Option<mdc_schedule::SharedDecision> {
+        let weights = self.surface_weights().unwrap_or_default();
+        self.plan_shared_surface_tiles_weighted(&weights)
     }
 
     /// N741: adapt an active frame-pacing scheduler to the measured outbound
@@ -3504,6 +3551,16 @@ mod tests {
             preferred_tile_size: 0,
             supports_partial_update: false,
             supports_full_framebuffer: false,
+        }
+    }
+
+    #[test]
+    fn surface_weight_config_parser_is_bounded() {
+        // N777: 1..=4 entries, each 1..=16; whitespace tolerated.
+        assert_eq!(parse_surface_weights("3,1"), Some(vec![3, 1]));
+        assert_eq!(parse_surface_weights(" 2 , 4 "), Some(vec![2, 4]));
+        for bad in ["", "0", "17", "1,0", "1,2,3,4,5", "1,x", "-1"] {
+            assert_eq!(parse_surface_weights(bad), None, "{bad}");
         }
     }
 
@@ -6295,6 +6352,7 @@ mod tests {
             long_press_ms: 5_000,
             drag_threshold: 6,
             multi_tap_ms: 300,
+            multi_tap_radius: 24,
         });
         assert_eq!(session.gesture_config().tap_max_ms, 10);
         let input = |phase: &str| mdc_protocol::InputEvent {
@@ -6720,6 +6778,50 @@ mod tests {
         tracker.on_event(&event("down", 5, 5), 1_400);
         tracker.on_event(&event("cancel", 5, 5), 1_410);
         assert_eq!(tap(&mut tracker, 1_450), Some(GestureKind::Tap));
+    }
+
+    #[test]
+    fn multi_tap_requires_the_same_node_and_nearby_position() {
+        // N774: time alone is not enough; a distant tap or a tap on another
+        // node starts a new chain instead of escalating.
+        let event = |phase: &str, x: u16, y: u16, node: Option<&str>| mdc_protocol::InputEvent {
+            surface_id: "main".into(),
+            pointer_id: 1,
+            phase: phase.into(),
+            x,
+            y,
+            node: node.map(str::to_string),
+        };
+        let tap = |tracker: &mut GestureTracker, at: u64, x: u16, y: u16, node: Option<&str>| {
+            tracker.on_event(&event("down", x, y, node), at);
+            tracker
+                .on_event(&event("up", x, y, node), at + 40)
+                .map(|g| g.kind)
+        };
+        let mut tracker = GestureTracker::new(GestureConfig::default());
+        assert_eq!(
+            tap(&mut tracker, 0, 10, 10, Some("a")),
+            Some(GestureKind::Tap)
+        );
+        assert_eq!(
+            tap(&mut tracker, 80, 12, 11, Some("a")),
+            Some(GestureKind::DoubleTap)
+        );
+        // A different node resets even at the same point.
+        assert_eq!(
+            tap(&mut tracker, 160, 10, 10, Some("b")),
+            Some(GestureKind::Tap)
+        );
+        // Too far away resets too.
+        assert_eq!(
+            tap(&mut tracker, 240, 40, 10, Some("b")),
+            Some(GestureKind::Tap)
+        );
+        // Same node and nearby position escalates again.
+        assert_eq!(
+            tap(&mut tracker, 320, 42, 12, Some("b")),
+            Some(GestureKind::DoubleTap)
+        );
     }
 
     #[test]
