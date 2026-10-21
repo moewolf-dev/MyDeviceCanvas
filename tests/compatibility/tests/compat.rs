@@ -6258,6 +6258,15 @@ fn scene_arc_mask_and_group_skew_reach_the_device() {
     );
     assert_ne!(device.pixel_rgb565(12, 14), Some(0), "relative line");
 
+    // N773: H/V commands are single-axis lines on the device.
+    show(
+        &mut session,
+        &mut device,
+        r##"{"name":"hv","kind":"path","value2":"M2,2;H20;v10;h-8","value":"#FFFFFF"}"##,
+    );
+    assert_ne!(device.pixel_rgb565(10, 2), Some(0), "horizontal");
+    assert_ne!(device.pixel_rgb565(20, 7), Some(0), "vertical");
+
     show(
         &mut session,
         &mut device,
@@ -6279,6 +6288,17 @@ fn scene_arc_mask_and_group_skew_reach_the_device() {
     );
     assert_ne!(device.pixel_rgb565(6, 10), Some(0), "sheared right");
     assert_eq!(device.hit_test(6, 10).as_deref(), Some("bar"));
+
+    // N778: sheared clip and mask use the transformed parallelogram.
+    show(
+        &mut session,
+        &mut device,
+        r##"{"name":"g","kind":"group","value2":"1000,0","children":[
+             {"name":"c","kind":"clip","rect":[0,0,4,12],"children":[
+               {"name":"fill","kind":"rect","rect":[0,0,20,16],"value":"#FF0000"}]}]}"##,
+    );
+    assert_ne!(device.pixel_rgb565(12, 10), Some(0), "inside sheared clip");
+    assert_eq!(device.pixel_rgb565(4, 10), Some(0), "outside sheared clip");
 }
 
 #[test]
