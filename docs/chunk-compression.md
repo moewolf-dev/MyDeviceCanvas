@@ -1,4 +1,4 @@
-# Chunk compression (N757 / N766 / N776)
+# Chunk compression (N757 / N766 / N776 / N786)
 
 Stored asset chunks are compressed per chunk (chunk boundaries are fixed by the
 `ChunkStore`), so identical byte ranges still dedupe by their SHA-256 of the
@@ -27,8 +27,11 @@ length is checked on decode. RLE is chosen for long single-byte runs.
 - 4 KiB window, matches of 3..=255 bytes.
 - One control byte covers up to eight items (bit 0 = first item). `0` = literal
   byte; `1` = `u16` little-endian distance + `u8` length.
-- Encoding is deterministic: a 3-byte hash of the last position, greedy match,
-  then interior positions are registered for later matches.
+- Encoding is deterministic. N786: each 3-byte key keeps a chain of up to 64
+  earlier positions (newest first). The encoder takes the longest in-window
+  match and, on a tie, the nearer distance. The current index is linked before
+  the next search, and so are the interior positions of a match. The bitstream
+  (magic, control byte, `u16` distance, `u8` length) is unchanged.
 - `MAX_LZ_DECODE_BYTES` (16 MiB) is checked against the declared length **before**
   allocating the output buffer. Every match is validated against already-produced
   bytes and against the declared length, so a decompression bomb or corrupt

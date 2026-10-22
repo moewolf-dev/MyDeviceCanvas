@@ -86,6 +86,10 @@ the C ABI's `mdc_session_tile_reconciliation_ex` and the Swift wrapper.
 `gesture: { kind: "tap" | "long-press" | "drag" | "pinch" | "pan" | "swipe" | "double-tap" | "triple-tap", pointerId, x, y, node?, scale, rotation, dx, dy }`; the
 core derives them from the raw input stream (`GestureTracker`). N493 adds the
 hit-tested scene `node`. N488 lets the host tune the thresholds via
-`Session::set_gesture_config` (`mdc_session_set_gesture_config` in C). The C ABI
+`Session::set_gesture_config` (`mdc_session_set_gesture_config` in C). N784:
+`setMultiTapRadius(radius)` / `multiTapRadius()` (C:
+`mdc_session_set_multi_tap_radius`, a `uint32_t` so values above 4096 return
+-2) round-trip the multi-tap radius; the 3-argument setter leaves the current
+radius in place. The C ABI
 reports the same events as poll kind `8` with the gesture kind in `phase` and the
 node in the `node` out-param.

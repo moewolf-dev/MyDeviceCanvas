@@ -2,6 +2,27 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.91] — implicit path groups, multi-tap radius SDK, DQS inverse-transpose, LZ hash chains, weight credit, sheared images, alpha mips, weak ETags, texture-report archive (N783–N792)
+
+### Added
+
+- `path` commands accept extra coordinate groups in one token; repeated `M`/`m` pairs are linetos and each group counts toward the 64-command budget (N783)
+- C `mdc_session_set_multi_tap_radius` and Node `setMultiTapRadius` / `multiTapRadius` (N784)
+- DQS normals and tangents use the inverse-transpose of the blended per-axis scale (N785)
+- LZSS hash-chain matching (longest match, nearer tie-break, chain of 64) with the same bitstream (N786)
+- `WeightedSharedScheduler` accumulates weight credit across calls (N787)
+- sheared `image` / `sprite` sampling via per-pixel inverse mapping and bilinear filtering (N788)
+- alpha atlases select a coarse colour mip and resample the level-0 mask onto it (`texture_for_target`) (N789)
+- weak `If-None-Match` comparison; `If-Match` stays strong, so `412` still precedes `304` (N790)
+- `mdc texture-report --batch --json --out FILE` atomic archive of the same JSON document (N791)
+
+### Notes
+
+- Host/simulator only. D05, G03 and H06 remain open until physical hardware is
+  measured; no board is claimed working.
+- The 3-argument gesture setter keeps the current multi-tap radius and window.
+  `plan_shared` stays fair-first; the strict weight ratio is the stateful scheduler.
+
 ## [0.1.90] — H/V paths, tap radius, non-uniform DQS, LZ fuzz, config weights, sheared clips, atlas mip selection, If-Range, single-file JSON (N773–N782)
 
 ### Added

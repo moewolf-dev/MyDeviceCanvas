@@ -144,7 +144,11 @@ A device that accepts a scene rasterizes it locally:
   offsets from the current point and may be mixed with absolute ones, plus
   `S cx,cy,x,y` (smooth cubic, reflecting the previous cubic's second control).
   N773 adds `H x`/`V y` single-axis lines (absolute; lowercase `h`/`v` are
-  relative to the current point). All commands may be mixed in one stream.
+  relative to the current point). N783: a command may repeat its coordinate
+  group in the same token (`L1,1 4,1`, `Q`/`C`/`H`/`V`/`S`/`T`/`A`, and extra
+  pairs after `M`/`m` which become linetos). Each group counts toward the
+  64-command budget; a ragged tail draws nothing. All commands may be mixed in
+  one stream.
   `Z` returns the current point to the subpath start; relative accumulation
   saturates instead of wrapping.
 - N744: `mask` composites its children only inside the polygon from `value2`
@@ -169,6 +173,10 @@ A device that accepts a scene rasterizes it locally:
 - N778: a `clip` inside a sheared group composites its transformed
   parallelogram (not the bounding box); a `mask` polygon is sheared before the
   coverage mask is built, so soft edges and inversion follow the same affine.
+  N788: `image` and `sprite` under that shear inverse-map each pixel centre and
+  sample bilinearly, so the parallelogram is filled and the empty corner of the
+  bounding box stays transparent. Axis-aligned images keep their previous
+  nearest/bilinear path.
 - `render_scene` clears the framebuffer first (N137), so repeated renders are
   deterministic rather than accumulating.
 - A clip `fade_in_ms` darkens the atlas frame until that many virtual milliseconds pass.

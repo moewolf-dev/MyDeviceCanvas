@@ -324,8 +324,10 @@ samples. N769: if any packed texture had a mip chain, the page gets a freshly
 downsampled full chain ending at 1×1 (level 0 is the page), keeping the levels
 consistent with the trimmed size. N779: an opaque page is sampled through
 `blob_for_target`, so a small render target consumes the coarser level instead of
-the full-size page; pages with a 1-bit alpha plane keep level 0 because mips
-carry no mask.
+the full-size page. N789: a page that also has a 1-bit alpha plane still selects
+that colour level; the mask is an any-opaque box filter of level 0 onto the
+chosen size (`texture_for_target`), because mip payloads themselves carry no
+alpha.
 
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a
@@ -483,6 +485,10 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
 - N736: with `SkinMode::Dqs`, normals and tangents are rotated by the same
   blended joint quaternion (the linear part is no longer averaged), so shading
   follows the DQS pose; `w` handedness is preserved.
+- N785: that rotation is applied after the inverse-transpose of the blended
+  per-axis scale (`v / scale`, then the quaternion, then renormalise). A single
+  non-uniform joint therefore shades like an inverse-transpose, which is not
+  the forward LBS direction; both stay unit length and the tangent `w` is kept.
 - N746: `render_package_mesh_skinned` sends skinned mesh packages through the
   scene renderer with an explicit `SkinMode`, so DQS affects mesh-package
   normals/tangents as well as the scene path; skeleton-less packages keep the

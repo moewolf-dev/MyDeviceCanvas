@@ -119,7 +119,10 @@ a mismatch/stale date returns `412 Precondition Failed` with the current
 validators, and `If-Match` takes precedence over `If-Unmodified-Since`. N780:
 `If-Range` gates `Range` — a matching strong ETag/date returns `206`, while a
 stale validator ignores the range and returns the full `200` (HEAD keeps the
-full `Content-Length`).
+full `Content-Length`). N790: `If-None-Match` uses weak comparison, so `W/"tag"`
+matches a strong `"tag"` and can still return `304`. `If-Match` and `If-Range`
+stay strong: a `W/` validator does not satisfy them, and a failing `If-Match`
+returns `412` before any `304`. Generated frame tags remain strong.
 
 ## Guarantees
 

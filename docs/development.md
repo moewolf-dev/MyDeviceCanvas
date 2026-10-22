@@ -232,7 +232,11 @@ image plus a `kind:"summary"` line, and exits 1 when any image is fully
 transparent or below the coverage threshold. N771 adds `--json` for a single
 pretty document (`{kind:"batch", directory, files, summary}`); the same scan and
 exit-code decision backs both modes. N781: a single `--json` report also carries
-`kind:"texture"`, so it can be concatenated with batch `files` entries.
+`kind:"texture"`, so it can be concatenated with batch `files` entries. N791:
+`--batch --json --out FILE` writes that same pretty document via a temp file
+and `rename` (the temp is removed if the write fails) and then prints it; the
+exit code is still 1 when any image is fully transparent or below the coverage
+threshold.
 
 N758: `Session::plan_shared_surface_tiles()` plans every device surface against
 one budget (the active pacing scheduler, or unlimited) and returns
@@ -245,6 +249,12 @@ leave the previous weights. N757/N766: stored chunks are `tag || raw|RLE|LZ`, th
 quota counts the stored bytes, and LZ decoding rejects a declared size above
 `MAX_LZ_DECODE_BYTES` before allocating. N776 adds a mutation/truncation corpus
 for the decoder; measured ratios are in
-[`chunk-compression.md`](chunk-compression.md).
+[`chunk-compression.md`](chunk-compression.md). N786: LZ matching walks a
+bounded hash chain (longest match, nearer distance on a tie) instead of only
+the previous position of each 3-byte key. N784: C
+`mdc_session_set_multi_tap_radius` / Node `setMultiTapRadius` set the radius
+without changing the 3-argument gesture setter, which keeps the current radius.
+N787: `WeightedSharedScheduler` carries weight credit across `plan` calls so a
+one-tile budget converges to the weight ratio; `plan_shared` stays fair-first.
 
 
