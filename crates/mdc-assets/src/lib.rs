@@ -189,45 +189,71 @@ pub fn rle_decode(bytes: &[u8]) -> Option<Vec<u8>> {
 /// Tokens are grouped behind a control byte (bit 1 = match, 0 = literal); a
 /// match is a little-endian `u16` distance plus a `u8` length. The declared
 /// length is in the header so decode never allocates beyond it.
+/// N786: each 3-byte key keeps a bounded hash chain (newest first). The
+/// encoder picks the longest in-window match, breaking ties toward the nearer
+/// one, so an earlier longer copy wins over a nearer shorter one.
 pub fn lz_encode(bytes: &[u8]) -> Vec<u8> {
+    const MAX_CHAIN: usize = 64;
     enum Item {
         Literal(u8),
         Match(usize, usize),
     }
+    let key_at = |at: usize| -> Option<u32> {
+        (at + LZ_MIN_MATCH <= bytes.len()).then(|| {
+            (u32::from(bytes[at]) << 16)
+                | (u32::from(bytes[at + 1]) << 8)
+                | u32::from(bytes[at + 2])
+        })
+    };
     let mut items: Vec<Item> = Vec::new();
-    let mut last: HashMap<u32, usize> = HashMap::new();
+    let mut head: HashMap<u32, usize> = HashMap::new();
+    let mut prev = vec![usize::MAX; bytes.len()];
+    let link = |head: &mut HashMap<u32, usize>, prev: &mut [usize], at: usize| {
+        let Some(key) = key_at(at) else {
+            return;
+        };
+        if let Some(&older) = head.get(&key) {
+            prev[at] = older;
+        }
+        head.insert(key, at);
+    };
     let mut index = 0usize;
     while index < bytes.len() {
-        let key = |at: usize| -> Option<u32> {
-            (at + LZ_MIN_MATCH <= bytes.len()).then(|| {
-                (u32::from(bytes[at]) << 16)
-                    | (u32::from(bytes[at + 1]) << 8)
-                    | u32::from(bytes[at + 2])
-            })
-        };
         let mut best = (0usize, 0usize); // (distance, length)
-        if let Some(key) = key(index) {
-            if let Some(&candidate) = last.get(&key) {
-                if index > candidate && index - candidate <= LZ_WINDOW {
-                    let limit = LZ_MAX_MATCH.min(bytes.len() - index);
-                    let mut length = 0usize;
-                    while length < limit && bytes[candidate + length] == bytes[index + length] {
-                        length += 1;
-                    }
-                    if length >= LZ_MIN_MATCH {
-                        best = (index - candidate, length);
-                    }
+        if let Some(key) = key_at(index) {
+            let mut candidate = head.get(&key).copied();
+            let mut seen = 0usize;
+            while let Some(at) = candidate {
+                if index <= at || index - at > LZ_WINDOW || seen >= MAX_CHAIN {
+                    break;
                 }
+                let limit = LZ_MAX_MATCH.min(bytes.len() - index);
+                let mut length = 0usize;
+                while length < limit && bytes[at + length] == bytes[index + length] {
+                    length += 1;
+                }
+                let distance = index - at;
+                if length >= LZ_MIN_MATCH
+                    && (length > best.1 || (length == best.1 && distance < best.0))
+                {
+                    best = (distance, length);
+                }
+                if length == LZ_MAX_MATCH {
+                    break;
+                }
+                let older = prev[at];
+                if older == usize::MAX || older >= at {
+                    break;
+                }
+                candidate = Some(older);
+                seen += 1;
             }
-            last.insert(key, index);
         }
-        if best.0 > 0 {
+        link(&mut head, &mut prev, index);
+        if best.1 >= LZ_MIN_MATCH {
             items.push(Item::Match(best.0, best.1));
-            // Register the interior positions so later matches remain local.
             for at in index + 1..index + best.1 {
-                if let Some(key) = key(at) {
-                    last.insert(key, at);
-                }
+                link(&mut head, &mut prev, at);
             }
             index += best.1;
         } else {
@@ -1462,6 +1488,50 @@ mod tests {
         assert!(text_ratio < 0.6, "{text_ratio}");
         assert!(repeated_ratio < 0.05, "{repeated_ratio}");
         assert!(binary_ratio < 1.2, "{binary_ratio}");
+    }
+
+    #[test]
+    fn lz_hash_chain_prefers_the_longer_earlier_copy() {
+        // N786: at the repeated copy, the nearer candidate is only the 26-byte
+        // prefix. The chain still reaches the earlier 36-byte copy, and that
+        // longer match wins. The gaps are bytes that do not themselves start a
+        // match into the repeat.
+        let long = b"abcdefghijklmnopqrstuvwxyz0123456789";
+        let short = b"abcdefghijklmnopqrstuvwxyz";
+        let mut data = Vec::new();
+        data.extend_from_slice(long);
+        data.extend_from_slice(&[0x00, 0x00]);
+        data.extend_from_slice(short);
+        data.push(0x01);
+        data.extend_from_slice(long);
+        let encoded = lz_encode(&data);
+        assert_eq!(lz_decode(&encoded).as_deref(), Some(data.as_slice()));
+        // The nearer copy shares only 26 bytes. A last-position hash stops there
+        // and emits the digit tail as literals; the chain still reaches the
+        // earlier full copy, so one match covers all 36 bytes.
+        let mut index = 8usize;
+        let mut longest = 0usize;
+        while index < encoded.len() {
+            let control = encoded[index];
+            index += 1;
+            for bit in 0..8 {
+                if index >= encoded.len() {
+                    break;
+                }
+                if control & (1 << bit) == 0 {
+                    index += 1;
+                } else {
+                    longest = longest.max(encoded[index + 2] as usize);
+                    index += 3;
+                }
+            }
+        }
+        assert!(
+            longest >= long.len(),
+            "longest match {longest}, encoded {} input {}",
+            encoded.len(),
+            data.len()
+        );
     }
 
     #[test]
