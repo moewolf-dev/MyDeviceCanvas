@@ -475,6 +475,30 @@ fn parse_source_dims(spec: Option<&str>) -> Option<(u16, u16)> {
     Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
+/// N788: one atlas frame as a tightly packed RGB565 grid.
+fn sprite_source(
+    atlas: &mdc_model::AtlasBlob,
+    index: u32,
+    src_w: u16,
+    src_h: u16,
+) -> Option<Vec<u16>> {
+    let offset = atlas.frame_offset(index)?;
+    if src_w == 0 || src_h == 0 {
+        return None;
+    }
+    let sprite_w = atlas.sprite_width as usize;
+    let atlas_row = (atlas.columns as usize) * sprite_w * 2;
+    let mut source = Vec::with_capacity(usize::from(src_w) * usize::from(src_h));
+    for sy in 0..usize::from(src_h) {
+        for sx in 0..usize::from(src_w) {
+            let src = offset + sy * atlas_row + sx * 2;
+            let bytes = atlas.rgb565.get(src..src + 2)?;
+            source.push(u16::from_le_bytes([bytes[0], bytes[1]]));
+        }
+    }
+    Some(source)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn blit_sprite(
     pixels: &mut [u8],
@@ -565,6 +589,102 @@ fn blit_sprite(
                 mode.linear,
             );
             put_pixel(pixels, dst, value, alpha);
+            drew = true;
+        }
+    }
+    drew
+}
+
+/// N788: sample `source` through the inverse of a sheared group transform.
+/// Each framebuffer pixel maps back into the authored rect and is filtered
+/// bilinearly, so the empty corners of the bounding box stay untouched.
+#[allow(clippy::too_many_arguments)]
+fn blit_sheared_source(
+    pixels: &mut [u8],
+    width: u32,
+    height: u32,
+    transform: SceneTransform,
+    rect: [u16; 4],
+    source: &[u16],
+    src_w: u16,
+    src_h: u16,
+    alpha: u8,
+    mode: ImageMode,
+    rotate: u16,
+    align: &str,
+) -> bool {
+    if src_w == 0 || src_h == 0 || rect[2] == 0 || rect[3] == 0 || source.is_empty() {
+        return false;
+    }
+    let (draw_w, draw_h, off_x, off_y) =
+        fit_box(rect[2], rect[3], src_w, src_h, rotate, mode, align);
+    let corners = transform.corners(rect);
+    let min_x = corners.iter().map(|p| p.0).min().unwrap_or(0).max(0) as u32;
+    let min_y = corners.iter().map(|p| p.1).min().unwrap_or(0).max(0) as u32;
+    let max_x = corners
+        .iter()
+        .map(|p| p.0)
+        .max()
+        .unwrap_or(0)
+        .clamp(0, width as i32) as u32;
+    let max_y = corners
+        .iter()
+        .map(|p| p.1)
+        .max()
+        .unwrap_or(0)
+        .clamp(0, height as i32) as u32;
+    let mut drew = false;
+    for py in min_y..max_y.min(height) {
+        for px in min_x..max_x.min(width) {
+            let Some((lx, ly)) = transform.inverse_map(px as f32 + 0.5, py as f32 + 0.5) else {
+                continue;
+            };
+            let rel_x = lx - f32::from(rect[0]);
+            let rel_y = ly - f32::from(rect[1]);
+            if rel_x < 0.0
+                || rel_y < 0.0
+                || rel_x >= f32::from(rect[2])
+                || rel_y >= f32::from(rect[3])
+            {
+                continue;
+            }
+            let fx_pix = rel_x - f32::from(off_x);
+            let fy_pix = rel_y - f32::from(off_y);
+            if fx_pix < 0.0
+                || fy_pix < 0.0
+                || fx_pix >= f32::from(draw_w)
+                || fy_pix >= f32::from(draw_h)
+            {
+                continue;
+            }
+            let mut fx = fx_pix / f32::from(draw_w.max(1));
+            let mut fy = fy_pix / f32::from(draw_h.max(1));
+            if mode.flip_h {
+                fx = 1.0 - fx;
+            }
+            if mode.flip_v {
+                fy = 1.0 - fy;
+            }
+            match rotate {
+                90 => {
+                    let t = fx;
+                    fx = fy;
+                    fy = 1.0 - t;
+                }
+                180 => {
+                    fx = 1.0 - fx;
+                    fy = 1.0 - fy;
+                }
+                270 => {
+                    let t = fx;
+                    fx = 1.0 - fy;
+                    fy = t;
+                }
+                _ => {}
+            }
+            let value = sample_source(source, u32::from(src_w), u32::from(src_h), fx, fy, true);
+            let at = ((py * width + px) * 2) as usize;
+            put_pixel(pixels, at, value, alpha);
             drew = true;
         }
     }
@@ -2012,22 +2132,24 @@ fn fill_scene(
             // turns the sampled image.
             let (src_w, src_h) = parse_source_dims(node.value2.as_deref()).unwrap_or((w, h));
             let mode = parse_image_mode(node.mode.as_deref());
-            if blit_hex_rgb565(
-                pixels,
-                width,
-                height,
-                x,
-                y,
-                w,
-                h,
-                hex,
-                alpha,
-                src_w,
-                src_h,
-                mode,
-                node.rotate.unwrap_or(0),
-                node.align.as_deref().unwrap_or("center"),
-            ) {
+            let rotate = node.rotate.unwrap_or(0);
+            let align = node.align.as_deref().unwrap_or("center");
+            let painted = if transform.has_skew() {
+                decode_hex_words(hex, usize::from(src_w) * usize::from(src_h)).is_some_and(
+                    |source| {
+                        blit_sheared_source(
+                            pixels, width, height, transform, authored, &source, src_w, src_h,
+                            alpha, mode, rotate, align,
+                        )
+                    },
+                )
+            } else {
+                blit_hex_rgb565(
+                    pixels, width, height, x, y, w, h, hex, alpha, src_w, src_h, mode, rotate,
+                    align,
+                )
+            };
+            if painted {
                 *drew = true;
             }
         }
@@ -2041,21 +2163,23 @@ fn fill_scene(
         ) {
             let [x, y, w, h] = transform.apply(authored);
             let mode = parse_image_mode(node.mode.as_deref());
-            if blit_sprite(
-                pixels,
-                width,
-                height,
-                atlas,
-                index,
-                x,
-                y,
-                w,
-                h,
-                alpha,
-                mode,
-                node.rotate.unwrap_or(0),
-                node.align.as_deref().unwrap_or("center"),
-            ) {
+            let rotate = node.rotate.unwrap_or(0);
+            let align = node.align.as_deref().unwrap_or("center");
+            let painted = if transform.has_skew() {
+                let src_w = atlas.sprite_width.min(u32::from(u16::MAX)) as u16;
+                let src_h = atlas.sprite_height.min(u32::from(u16::MAX)) as u16;
+                sprite_source(atlas, index, src_w, src_h).is_some_and(|source| {
+                    blit_sheared_source(
+                        pixels, width, height, transform, authored, &source, src_w, src_h, alpha,
+                        mode, rotate, align,
+                    )
+                })
+            } else {
+                blit_sprite(
+                    pixels, width, height, atlas, index, x, y, w, h, alpha, mode, rotate, align,
+                )
+            };
+            if painted {
                 *drew = true;
             }
         }
@@ -7183,6 +7307,102 @@ mod tests {
         assert_ne!(device.pixel_rgb565(10, 2), Some(0), "horizontal");
         assert_ne!(device.pixel_rgb565(20, 7), Some(0), "vertical");
         assert_ne!(device.pixel_rgb565(12, 12), Some(0), "relative horizontal");
+        // N783: one `L` with two coordinate pairs draws both segments.
+        render(&mut device, "M2,4;L18,4 18,16");
+        assert_ne!(device.pixel_rgb565(10, 4), Some(0), "repeated line");
+        assert_ne!(device.pixel_rgb565(18, 10), Some(0), "second implicit line");
+        assert_eq!(
+            device.pixel_rgb565(4, 10),
+            Some(0),
+            "the corner is not filled"
+        );
+    }
+
+    #[test]
+    fn sheared_image_and_sprite_sample_the_parallelogram() {
+        // N788: a group shear of x' = x + y. Pixels in the bounding-box corner
+        // stay clear; the left/right of the image stay on the parallelogram.
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 20,
+            height: 10,
+            ..BoardProfile::default()
+        });
+        device.scene = Some(
+            serde_json::from_str(
+                r##"{"name":"g","kind":"group","value2":"1000,0","children":[
+                    {"name":"img","kind":"image","rect":[0,0,8,4],
+                     "value":"F80007E0","value2":"2,1"}]}"##,
+            )
+            .unwrap(),
+        );
+        assert!(device.render_scene());
+        let red = |pixel: u16| (pixel >> 11) > ((pixel >> 5) & 0x3f);
+        let green = |pixel: u16| ((pixel >> 5) & 0x3f) > (pixel >> 11);
+        assert_eq!(device.pixel_rgb565(0, 3), Some(0), "outside the shear");
+        assert!(
+            red(device.pixel_rgb565(3, 2).unwrap()),
+            "left texel {:?}",
+            device.pixel_rgb565(3, 2)
+        );
+        assert!(
+            green(device.pixel_rgb565(9, 2).unwrap()),
+            "right texel {:?}",
+            device.pixel_rgb565(9, 2)
+        );
+
+        device.atlas = Some(mdc_model::AtlasBlob {
+            sprite_width: 2,
+            sprite_height: 1,
+            frames: 1,
+            columns: 1,
+            rows: 1,
+            rgb565: vec![0x00, 0xF8, 0xE0, 0x07],
+            clips: Vec::new(),
+            mips: Vec::new(),
+        });
+        device.scene = Some(
+            serde_json::from_str(
+                r##"{"name":"g","kind":"group","value2":"1000,0","children":[
+                    {"name":"sp","kind":"sprite","rect":[0,0,8,4],"value":"0"}]}"##,
+            )
+            .unwrap(),
+        );
+        assert!(device.render_scene());
+        assert_eq!(
+            device.pixel_rgb565(0, 3),
+            Some(0),
+            "sprite outside the shear"
+        );
+        assert!(red(device.pixel_rgb565(3, 2).unwrap()), "sprite left");
+        assert!(green(device.pixel_rgb565(9, 2).unwrap()), "sprite right");
+    }
+
+    #[test]
+    fn alpha_atlas_mip_selection_is_visible_to_the_device() {
+        // N789: the device crate uses the same coarse colour level as the host,
+        // with the level-0 alpha mask resampled onto it.
+        let base = mdc_model::TextureBlob {
+            width: 8,
+            height: 8,
+            rgb565: [0xF8u8, 0x00].repeat(64),
+            alpha: Vec::new(),
+            palette: Vec::new(),
+            indices: Vec::new(),
+            mips: Vec::new(),
+        };
+        let mut mipped = mdc_bake::mip_texture_blob(&base, 8, false);
+        let mut alpha = vec![0u8; 8];
+        for y in 0..8u32 {
+            for x in 0..4u32 {
+                let index = (y * 8 + x) as usize;
+                alpha[index / 8] |= 1 << (index % 8);
+            }
+        }
+        mipped.alpha = alpha;
+        let selected = mdc_bake::texture_for_target(&mipped, (2, 2));
+        assert_eq!((selected.width, selected.height), (2, 2));
+        assert!(selected.alpha_at(0.25, 0.25));
+        assert!(!selected.alpha_at(0.75, 0.25));
     }
 
     #[test]

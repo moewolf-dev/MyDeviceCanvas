@@ -937,6 +937,9 @@ impl SceneNode {
     /// N763: lowercase commands are relative to the current point (`m/l/q/c/s/
     /// t/a`) and may be mixed with absolute ones. `S` is a smooth cubic whose
     /// first control point reflects the previous cubic.
+    ///
+    /// N783: extra coordinate groups after `M/L/Q/C/H/V/S/T/A` repeat that
+    /// command (SVG implicit repetition). A repeated `M`/`m` becomes a line.
     pub fn path_commands(&self) -> Option<Vec<PathCommand>> {
         let mut out = Vec::new();
         let mut current = [0i32; 2];
@@ -959,91 +962,121 @@ impl SceneNode {
                 .map(|token| token.parse().ok())
                 .collect();
             let numbers = numbers?;
-            let point = |index: usize| -> [i32; 2] {
-                let [x, y] = [numbers[index], numbers[index + 1]];
-                if relative {
-                    [current[0].saturating_add(x), current[1].saturating_add(y)]
-                } else {
-                    [x, y]
-                }
+            let stride = match op {
+                'M' | 'L' | 'T' => 2,
+                'Q' | 'S' => 4,
+                'C' => 6,
+                'A' => 7,
+                'H' | 'V' => 1,
+                'Z' => 0,
+                _ => return None,
             };
-            match (op, numbers.len()) {
-                ('M', 2) => {
-                    let at = point(0);
-                    out.push(PathCommand::Move(at));
-                    current = at;
-                    start = at;
+            if stride == 0 {
+                if !numbers.is_empty() {
+                    return None;
                 }
-                ('L', 2) => {
-                    let at = point(0);
-                    out.push(PathCommand::Line(at));
-                    current = at;
-                }
-                ('Q', 4) => {
-                    let (control, at) = (point(0), point(2));
-                    out.push(PathCommand::Quad(control, at));
-                    current = at;
-                }
-                ('C', 6) => {
-                    let (control1, control2, at) = (point(0), point(2), point(4));
-                    out.push(PathCommand::Cubic(control1, control2, at));
-                    current = at;
-                }
-                // N753: A rx,ry,rotation,large-arc,sweep,x,y
-                ('A', 7) => {
-                    if !matches!(numbers[3], 0 | 1) || !matches!(numbers[4], 0 | 1) {
-                        return None;
-                    }
-                    let at = point(5);
-                    out.push(PathCommand::Arc {
-                        rx: numbers[0].saturating_abs(),
-                        ry: numbers[1].saturating_abs(),
-                        rotation: numbers[2],
-                        large_arc: numbers[3] == 1,
-                        sweep: numbers[4] == 1,
-                        end: at,
-                    });
-                    current = at;
-                }
-                // N753: T x,y (smooth quadratic end point)
-                ('T', 2) => {
-                    let at = point(0);
-                    out.push(PathCommand::SmoothQuad(at));
-                    current = at;
-                }
-                // N763: S cx,cy,x,y (smooth cubic end point)
-                ('S', 4) => {
-                    let (control2, at) = (point(0), point(2));
-                    out.push(PathCommand::SmoothCubic(control2, at));
-                    current = at;
-                }
-                // N773: H x / V y (absolute or relative single-axis line).
-                ('H', 1) => {
-                    let x = if relative {
-                        current[0].saturating_add(numbers[0])
-                    } else {
-                        numbers[0]
-                    };
-                    out.push(PathCommand::Horizontal(x));
-                    current[0] = x;
-                }
-                ('V', 1) => {
-                    let y = if relative {
-                        current[1].saturating_add(numbers[0])
-                    } else {
-                        numbers[0]
-                    };
-                    out.push(PathCommand::Vertical(y));
-                    current[1] = y;
-                }
-                ('Z', 0) => {
+            } else if numbers.is_empty() || numbers.len() % stride != 0 {
+                return None;
+            }
+            let mut offset = 0usize;
+            let mut first = true;
+            loop {
+                if op == 'Z' {
                     out.push(PathCommand::Close);
                     current = start;
+                    break;
                 }
-                _ => return None,
-            }
-            if out.len() > 64 {
-                return None;
+                if offset >= numbers.len() {
+                    break;
+                }
+                let point_at = |index: usize, current: [i32; 2]| -> [i32; 2] {
+                    let x = numbers[index];
+                    let y = numbers[index + 1];
+                    if relative {
+                        [current[0].saturating_add(x), current[1].saturating_add(y)]
+                    } else {
+                        [x, y]
+                    }
+                };
+                match op {
+                    'M' | 'L' => {
+                        let at = point_at(offset, current);
+                        // SVG: pairs after the first moveto are implicit lineto.
+                        let draw_line = op == 'L' || !first;
+                        if draw_line {
+                            out.push(PathCommand::Line(at));
+                        } else {
+                            out.push(PathCommand::Move(at));
+                            start = at;
+                        }
+                        current = at;
+                    }
+                    'Q' => {
+                        let control = point_at(offset, current);
+                        let at = point_at(offset + 2, current);
+                        out.push(PathCommand::Quad(control, at));
+                        current = at;
+                    }
+                    'C' => {
+                        let control1 = point_at(offset, current);
+                        let control2 = point_at(offset + 2, current);
+                        let at = point_at(offset + 4, current);
+                        out.push(PathCommand::Cubic(control1, control2, at));
+                        current = at;
+                    }
+                    'A' => {
+                        if !matches!(numbers[offset + 3], 0 | 1)
+                            || !matches!(numbers[offset + 4], 0 | 1)
+                        {
+                            return None;
+                        }
+                        let at = point_at(offset + 5, current);
+                        out.push(PathCommand::Arc {
+                            rx: numbers[offset].saturating_abs(),
+                            ry: numbers[offset + 1].saturating_abs(),
+                            rotation: numbers[offset + 2],
+                            large_arc: numbers[offset + 3] == 1,
+                            sweep: numbers[offset + 4] == 1,
+                            end: at,
+                        });
+                        current = at;
+                    }
+                    'T' => {
+                        let at = point_at(offset, current);
+                        out.push(PathCommand::SmoothQuad(at));
+                        current = at;
+                    }
+                    'S' => {
+                        let control2 = point_at(offset, current);
+                        let at = point_at(offset + 2, current);
+                        out.push(PathCommand::SmoothCubic(control2, at));
+                        current = at;
+                    }
+                    'H' => {
+                        let x = if relative {
+                            current[0].saturating_add(numbers[offset])
+                        } else {
+                            numbers[offset]
+                        };
+                        out.push(PathCommand::Horizontal(x));
+                        current[0] = x;
+                    }
+                    'V' => {
+                        let y = if relative {
+                            current[1].saturating_add(numbers[offset])
+                        } else {
+                            numbers[offset]
+                        };
+                        out.push(PathCommand::Vertical(y));
+                        current[1] = y;
+                    }
+                    _ => return None,
+                }
+                first = false;
+                offset += stride;
+                if out.len() > 64 {
+                    return None;
+                }
             }
         }
         match out.first() {
@@ -3126,6 +3159,45 @@ mod tests {
         );
         path.value2 = Some("M1,1;H".into());
         assert!(path.path_commands().is_none(), "H needs one number");
+
+        // N783: extra coordinate groups repeat the command. A repeated moveto
+        // is an implicit lineto, and a ragged tail is rejected.
+        path.value2 = Some("M2,3 8,3;L10,3 10,9;H12 14;v2 3;Q1,1 2,2 3,3 4,4".into());
+        let commands = path.path_commands().unwrap();
+        assert_eq!(
+            commands[..6],
+            [
+                PathCommand::Move([2, 3]),
+                PathCommand::Line([8, 3]),
+                PathCommand::Line([10, 3]),
+                PathCommand::Line([10, 9]),
+                PathCommand::Horizontal(12),
+                PathCommand::Horizontal(14),
+            ]
+        );
+        assert_eq!(commands[6], PathCommand::Vertical(11));
+        assert_eq!(commands[7], PathCommand::Vertical(14));
+        assert_eq!(commands[8], PathCommand::Quad([1, 1], [2, 2]));
+        assert_eq!(commands[9], PathCommand::Quad([3, 3], [4, 4]));
+        path.value2 = Some("m1,1 2,0;c1,0 2,0 3,0 1,1 2,1 3,1".into());
+        let commands = path.path_commands().unwrap();
+        assert_eq!(commands[0], PathCommand::Move([1, 1]));
+        assert_eq!(commands[1], PathCommand::Line([3, 1]));
+        assert_eq!(commands[2], PathCommand::Cubic([4, 1], [5, 1], [6, 1]));
+        assert_eq!(commands[3], PathCommand::Cubic([7, 2], [8, 2], [9, 2]));
+        path.value2 = Some("M0,0;L1,1 2".into());
+        assert!(path.path_commands().is_none(), "ragged coordinate group");
+        path.value2 = Some(format!(
+            "M0,0;L{}",
+            (0..64)
+                .map(|i| format!("{i},0"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+        assert!(
+            path.path_commands().is_none(),
+            "implicit repeats count toward the 64-command budget"
+        );
     }
 
     #[test]
