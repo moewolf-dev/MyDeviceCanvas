@@ -5104,6 +5104,26 @@ mod tests {
     }
 
     #[test]
+    fn scene_lint_reports_animation_keys() {
+        // N829: the report exposes the sampled key count and flags bad tracks.
+        let node: mdc_protocol::SceneNode = serde_json::from_value(serde_json::json!({
+            "name": "pulse", "kind": "rect", "rect": [0, 0, 4, 4], "value": "#fff",
+            "anim": {
+                "duration_ms": 10,
+                "color": [{"time_ms": 0, "value": "#000"}],
+                "rotate": [[0, 90]],
+                "opacity": [[0, 255]]
+            }
+        }))
+        .unwrap();
+        let report = node.lint();
+        assert_eq!(report.anim_keys, 3);
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["anim_keys"], 3);
+        assert!(json["warnings"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
     fn validate_json_field_order_is_stable() {
         // N640: the report's key order is a contract (serde_json sorts keys).
         let gltf = br#"{"asset":{"version":"2.0"},
