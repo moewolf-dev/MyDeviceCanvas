@@ -2826,6 +2826,79 @@ fn delayed_colour_and_rotate_scene_soak_stays_bounded() {
 }
 
 #[test]
+fn blended_atlas_soak_stays_bounded() {
+    // N840: 5000 weighted atlas renders keep the framebuffer size constant and
+    // keep the resolved blend at two clips.
+    use mdc_model::{AtlasBlob, AtlasClip, DevicePackage, MdcPackage, PackageMode};
+    let clip = |name: &str, start: u32| AtlasClip {
+        name: name.into(),
+        start,
+        frames: 1,
+        fps: 1,
+        looping: true,
+        fade_in_ms: 0,
+        fade_out_ms: 0,
+        mode: None,
+        speed_permille: None,
+    };
+    let package = DevicePackage {
+        target: "esp32-plane".into(),
+        mode: PackageMode::BakedSprites,
+        nodes: Vec::new(),
+        meshes: Vec::new(),
+        textures: Vec::new(),
+        materials: Vec::new(),
+        lights: Vec::new(),
+        skeletons: Vec::new(),
+        animations: Vec::new(),
+        sprites: Vec::new(),
+        layers: Vec::new(),
+        estimated_bytes: 8,
+        atlas: Some(AtlasBlob {
+            sprite_width: 2,
+            sprite_height: 2,
+            frames: 2,
+            columns: 2,
+            rows: 1,
+            rgb565: vec![
+                0x00, 0xF8, 0x00, 0xF8, 0xE0, 0x07, 0xE0, 0x07, 0x00, 0xF8, 0x00, 0xF8, 0xE0, 0x07,
+                0xE0, 0x07,
+            ],
+            clips: vec![clip("idle", 0), clip("wave", 1)],
+            mips: Vec::new(),
+        }),
+        texture: None,
+        texture_blobs: Vec::new(),
+    };
+    let sealed = MdcPackage::seal(package).unwrap();
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 2,
+        height: 2,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    let _ = session.poll();
+    session
+        .install_package(&sealed.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    session.set_animation_blend("idle:500,wave:500").unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    let bytes = device.metrics_snapshot().pixel_bytes;
+    for tick in 0..5000u64 {
+        device.clock.tick = tick * 7;
+        assert!(device.render_atlas_frame());
+        assert_eq!(device.metrics_snapshot().pixel_bytes, bytes);
+    }
+    assert_eq!(device.animation_blend().len(), 2);
+    assert!(device.pixel_rgb565(0, 0).is_some());
+}
+
+#[test]
 fn shared_surface_plan_converges_under_a_low_budget() {
     // N758: 4 tiles per surface at 8 bytes each, one 8-byte slice per tick, so
     // each round only one surface moves but both finish within 8 rounds.

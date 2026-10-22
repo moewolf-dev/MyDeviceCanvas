@@ -4562,6 +4562,84 @@ fn scene_colour_rotate_and_delay_reach_the_device() {
 }
 
 #[test]
+fn animated_blend_reaches_the_device() {
+    // N839: a weighted blend installed over the real PACKAGE/CONFIG path mixes
+    // two atlas clips and reports the accepted value back to the host.
+    use mdc_core::{ConnectionState, Session};
+    use mdc_model::{AtlasBlob, AtlasClip, DevicePackage, MdcPackage, PackageMode};
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let clip = |name: &str, start: u32| AtlasClip {
+        name: name.into(),
+        start,
+        frames: 1,
+        fps: 1,
+        looping: true,
+        fade_in_ms: 0,
+        fade_out_ms: 0,
+        mode: None,
+        speed_permille: None,
+    };
+    let atlas = AtlasBlob {
+        sprite_width: 1,
+        sprite_height: 1,
+        frames: 2,
+        columns: 2,
+        rows: 1,
+        rgb565: vec![0x00, 0xF8, 0xE0, 0x07],
+        clips: vec![clip("idle", 0), clip("wave", 1)],
+        mips: Vec::new(),
+    };
+    let package = DevicePackage {
+        target: "esp32-plane".into(),
+        mode: PackageMode::BakedSprites,
+        nodes: Vec::new(),
+        meshes: Vec::new(),
+        textures: Vec::new(),
+        materials: Vec::new(),
+        lights: Vec::new(),
+        skeletons: Vec::new(),
+        animations: Vec::new(),
+        sprites: Vec::new(),
+        layers: Vec::new(),
+        estimated_bytes: 8,
+        atlas: Some(atlas),
+        texture: None,
+        texture_blobs: Vec::new(),
+    };
+    let sealed = MdcPackage::seal(package).unwrap();
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile::default());
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+    session
+        .install_package(&sealed.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.package_ready());
+
+    session.set_animation_blend("idle:500,wave:500").unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert_eq!(device.animation_blend().len(), 2);
+    assert_eq!(session.active_animation_blend(), Some("idle:500,wave:500"));
+    assert!(device.render_atlas_frame());
+    assert_eq!(
+        device.pixel_rgb565(0, 0),
+        Some(0x8400),
+        "the device mixes red and green"
+    );
+
+    session.stop_animation_blend().unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+    assert!(device.animation_blend().is_empty());
+}
+
+#[test]
 fn http_mirror_serves_a_device_frame_to_a_loopback_client() {
     use mdc_core::{ConnectionState, Session};
     use mdc_simulator::{BoardProfile, FakeDevice};
