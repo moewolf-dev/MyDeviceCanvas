@@ -597,6 +597,16 @@ impl Easing {
     }
 }
 
+/// N825: one colour keyframe. Colours use the same syntax as scene `value`
+/// (`#RRGGBB`, `#RGB`, bare hex, named colours).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneColorKey {
+    /// Keyframe time in milliseconds.
+    pub time_ms: u16,
+    /// Colour value at that time.
+    pub value: String,
+}
+
 /// N463: a keyframed scene animation. Keyframes are `[time_ms, value]` and are
 /// interpolated; `duration_ms` bounds the clip.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -607,6 +617,14 @@ pub struct SceneAnim {
     /// Whether the clip repeats (otherwise it holds the last keyframe).
     #[serde(default)]
     pub looping: bool,
+    /// N823: delay before the clip starts, in milliseconds. The first keyframe
+    /// is held until then (`None`/0 starts immediately).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay_ms: Option<u32>,
+    /// N823: playback speed in permille (1000 = authored speed). `None` and `0`
+    /// both mean 1000, so an old payload keeps its timing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_permille: Option<u16>,
     /// Opacity keyframes: `[time_ms, opacity 0..=255]`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub opacity: Vec<[u16; 2]>,
@@ -617,6 +635,14 @@ pub struct SceneAnim {
     /// rect, matching the `focus` field's `"cx%,cy%"` form).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub focus: Vec<[u16; 3]>,
+    /// N825: colour keyframes for kinds whose `value` is a colour. `text`,
+    /// `image` and `sprite` keep their payload and are not recoloured.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub color: Vec<SceneColorKey>,
+    /// N827: quarter-turn keyframes `[time_ms, degrees]`. The sampled angle snaps
+    /// to the nearest multiple of 90 (0/90/180/270).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rotate: Vec<[u16; 2]>,
     /// N724: segment easing (`linear` default, `ease-in`, `ease-out`,
     /// `ease-in-out`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -629,13 +655,25 @@ impl SceneAnim {
         Easing::parse(self.easing.as_deref())
     }
 
-    /// The clip-local time for `time_ms`.
+    /// The clip-local time for `time_ms`. N823: `delay_ms` holds the first
+    /// keyframe until the delay elapses, and `speed_permille` scales the elapsed
+    /// time (0 is treated as 1000 so old payloads keep their timing).
     pub fn local_time(&self, time_ms: u64) -> u32 {
+        let delay = u64::from(self.delay_ms.unwrap_or(0));
+        if time_ms < delay {
+            return 0;
+        }
+        let speed = u64::from(
+            self.speed_permille
+                .filter(|speed| *speed > 0)
+                .unwrap_or(1000),
+        );
+        let elapsed = time_ms.saturating_sub(delay).saturating_mul(speed) / 1000;
         let duration = u64::from(self.duration_ms.max(1));
         let local = if self.looping {
-            time_ms % duration
+            elapsed % duration
         } else {
-            time_ms.min(duration)
+            elapsed.min(duration)
         };
         local as u32
     }
@@ -696,6 +734,53 @@ impl SceneAnim {
         };
         Some([channel(1)?, channel(2)?])
     }
+
+    /// N825: the sampled colour at `time_ms`, or `None` when there are no valid
+    /// colour keyframes. Invalid colour values are skipped rather than treated
+    /// as white.
+    pub fn color_at(&self, time_ms: u64) -> Option<[u8; 3]> {
+        let frames: Vec<(u32, [u8; 3])> = self
+            .color
+            .iter()
+            .filter_map(|key| parse_color_rgb(&key.value).map(|rgb| (u32::from(key.time_ms), rgb)))
+            .collect();
+        if frames.is_empty() {
+            return None;
+        }
+        let t = self.local_time(time_ms);
+        if t <= frames[0].0 {
+            return Some(frames[0].1);
+        }
+        for pair in frames.windows(2) {
+            let ((t0, c0), (t1, c1)) = (pair[0], pair[1]);
+            if t <= t1 && t1 > t0 {
+                let span = (t1 - t0) as f32;
+                let f = self.easing().apply((t - t0) as f32 / span);
+                let channel = |a: u8, b: u8| -> u8 {
+                    (f32::from(a) + (f32::from(b) - f32::from(a)) * f).round() as u8
+                };
+                return Some([
+                    channel(c0[0], c1[0]),
+                    channel(c0[1], c1[1]),
+                    channel(c0[2], c1[2]),
+                ]);
+            }
+        }
+        frames.last().map(|(_, rgb)| *rgb)
+    }
+
+    /// N827: the sampled quarter-turn at `time_ms`, snapped to the nearest
+    /// multiple of 90 degrees. Returns `None` when there are no rotate keys.
+    pub fn rotate_at(&self, time_ms: u64) -> Option<u16> {
+        let t = self.local_time(time_ms);
+        sample_keys(
+            &self.rotate,
+            t,
+            |k, value| (u32::from(k), u32::from(value)),
+            self.easing(),
+        )
+        .map(|value| ((value.saturating_add(45) / 90) % 4 * 90) as u16)
+    }
 }
 
 /// N723: parse `"x,y;x,y;..."` into bounded integer points.
@@ -739,6 +824,23 @@ where
     frames.last().map(|(_, value)| *value)
 }
 
+/// N825: kinds whose `value` is a colour (the ones a colour track may drive).
+fn kind_uses_colour_value(kind: &str) -> bool {
+    matches!(
+        kind,
+        "rect"
+            | "circle"
+            | "line"
+            | "gradient"
+            | "rounded-rect"
+            | "polygon"
+            | "polyline"
+            | "arc"
+            | "pie"
+            | "path"
+    )
+}
+
 /// N463: apply a node's animation (in place) at `time_ms`, recursively.
 pub fn apply_scene_animation(node: &mut SceneNode, time_ms: u64) {
     if let Some(anim) = node.anim.clone() {
@@ -751,6 +853,17 @@ pub fn apply_scene_animation(node: &mut SceneNode, time_ms: u64) {
         // N546: a focus track drives the radial gradient centre.
         if let Some([cx, cy]) = anim.focus_at(time_ms) {
             node.focus = Some(format!("{cx},{cy}"));
+        }
+        // N825: colour tracks only rewrite `value` for colour-bearing kinds, so
+        // text glyphs, image hex and sprite indices are never overwritten.
+        if let Some([r, g, b]) = anim.color_at(time_ms) {
+            if kind_uses_colour_value(&node.kind) {
+                node.value = Some(format!("#{r:02X}{g:02X}{b:02X}"));
+            }
+        }
+        // N827: rotate tracks feed the existing quarter-turn handling.
+        if let Some(rotate) = anim.rotate_at(time_ms) {
+            node.rotate = Some(rotate);
         }
     }
     for child in &mut node.children {
@@ -772,6 +885,8 @@ pub struct SceneLint {
     pub warnings: Vec<String>,
     pub nodes: u32,
     pub depth: u32,
+    /// N829: animation keyframes across the tree (sampled tracks only).
+    pub anim_keys: u32,
 }
 
 impl SceneNode {
@@ -853,6 +968,7 @@ impl SceneNode {
             warnings: Vec::new(),
             nodes: self.count(),
             depth: self.depth(),
+            anim_keys: self.anim_keys(),
         };
         if report.nodes > SCENE_MAX_NODES {
             report.problems.push(format!(
@@ -864,6 +980,12 @@ impl SceneNode {
             report.problems.push(format!(
                 "depth {} over the {SCENE_MAX_DEPTH} limit",
                 report.depth
+            ));
+        }
+        if report.anim_keys > SCENE_MAX_ANIM_KEYS {
+            report.problems.push(format!(
+                "{} animation keys over the {SCENE_MAX_ANIM_KEYS} limit",
+                report.anim_keys
             ));
         }
         let mut names = std::collections::BTreeSet::new();
@@ -935,17 +1057,63 @@ impl SceneNode {
                 .warnings
                 .push(format!("duplicate node name '{}'", self.name));
         }
+        // N829: surface animation tracks that cannot be applied as authored.
+        if let Some(anim) = &self.anim {
+            if anim.duration_ms == 0 {
+                report.warnings.push(format!(
+                    "node '{}' has a zero animation duration (treated as 1 ms)",
+                    self.name
+                ));
+            }
+            if !anim.looping {
+                let late = |time: u16| u32::from(time) > anim.duration_ms;
+                if anim.opacity.iter().any(|key| late(key[0]))
+                    || anim.rect.iter().any(|key| late(key[0]))
+                    || anim.focus.iter().any(|key| late(key[0]))
+                    || anim.color.iter().any(|key| late(key.time_ms))
+                    || anim.rotate.iter().any(|key| late(key[0]))
+                {
+                    report.warnings.push(format!(
+                        "node '{}' has keyframes after its {} ms duration",
+                        self.name, anim.duration_ms
+                    ));
+                }
+            }
+            for key in &anim.color {
+                if parse_color_rgb(&key.value).is_none() {
+                    report.warnings.push(format!(
+                        "node '{}' has an invalid colour key '{}'",
+                        self.name, key.value
+                    ));
+                }
+            }
+            for key in &anim.rotate {
+                if key[1] % 90 != 0 {
+                    report.warnings.push(format!(
+                        "node '{}' rotate key {} snaps to the nearest quarter turn",
+                        self.name, key[1]
+                    ));
+                }
+            }
+        }
         for child in &self.children {
             child.lint_into(report, names);
         }
     }
 
-    /// N477/N546: animation keyframes across the tree (opacity + rect + focus).
+    /// N477/N546/N829: animation keyframes across the tree (opacity + rect +
+    /// focus + colour + rotate).
     pub fn anim_keys(&self) -> u32 {
         let own = self
             .anim
             .as_ref()
-            .map(|anim| (anim.opacity.len() + anim.rect.len() + anim.focus.len()) as u32)
+            .map(|anim| {
+                (anim.opacity.len()
+                    + anim.rect.len()
+                    + anim.focus.len()
+                    + anim.color.len()
+                    + anim.rotate.len()) as u32
+            })
             .unwrap_or(0);
         self.children
             .iter()
@@ -1191,13 +1359,19 @@ impl SceneNode {
 /// N136/N348/N505: parse `#RRGGBB`, `#RGB`, bare hex, or a named colour
 /// (default white). Public so the renderers can parse gradient stops.
 pub fn parse_color(value: &str) -> u16 {
-    if let Some(rgb) = parse_hex_color(value) {
-        return rgb565_from(rgb.0, rgb.1, rgb.2);
-    }
-    match named_color(value) {
-        Some(rgb) => rgb565_from(rgb.0, rgb.1, rgb.2),
+    match parse_color_rgb(value) {
+        Some([r, g, b]) => rgb565_from(r, g, b),
         None => 0xFFFF,
     }
+}
+
+/// N825: parse a colour into 8-bit channels. Unlike [`parse_color`], malformed
+/// values return `None` so an animation can skip them.
+pub fn parse_color_rgb(value: &str) -> Option<[u8; 3]> {
+    if let Some((r, g, b)) = parse_hex_color(value) {
+        return Some([r, g, b]);
+    }
+    named_color(value).map(|(r, g, b)| [r, g, b])
 }
 
 /// Parse `#RRGGBB` or `#RGB` (the `#` optional) into 8-bit channels.
@@ -3010,6 +3184,10 @@ mod tests {
             opacity: Vec::new(),
             rect: Vec::new(),
             focus: vec![[0, 0, 100], [100, 100, 0]],
+            delay_ms: None,
+            speed_permille: None,
+            color: Vec::new(),
+            rotate: Vec::new(),
             easing: None,
         };
         assert_eq!(anim.focus_at(0), Some([0, 100]));
@@ -3032,6 +3210,10 @@ mod tests {
             opacity: vec![[0, 128]],
             rect: Vec::new(),
             focus: Vec::new(),
+            delay_ms: None,
+            speed_permille: None,
+            color: Vec::new(),
+            rotate: Vec::new(),
             easing: None,
         });
         apply_scene_animation(&mut untouched, 5);
@@ -3047,6 +3229,10 @@ mod tests {
             opacity: vec![[0, 0], [1000, 255]],
             rect: vec![[0, 0, 0, 10, 10], [1000, 100, 10, 10, 10]],
             focus: vec![[0, 0, 100], [1000, 100, 0]],
+            delay_ms: None,
+            speed_permille: None,
+            color: Vec::new(),
+            rotate: Vec::new(),
             easing: Some(easing.into()),
         };
         let linear = anim("linear");
@@ -3075,6 +3261,181 @@ mod tests {
         node.anim = Some(ease_in);
         apply_scene_animation(&mut node, 250);
         assert_eq!(node.opacity, Some(16));
+    }
+
+    #[test]
+    fn scene_delay_and_speed_scale_the_animation_clock() {
+        // N823: the first keyframe is held until `delay_ms`; speed scales the
+        // elapsed time afterwards. Zero speed keeps the authored timing.
+        let anim = |delay: Option<u32>, speed: Option<u16>| SceneAnim {
+            duration_ms: 100,
+            looping: true,
+            opacity: vec![[0, 0], [100, 255]],
+            rect: Vec::new(),
+            focus: Vec::new(),
+            delay_ms: delay,
+            speed_permille: speed,
+            color: Vec::new(),
+            rotate: Vec::new(),
+            easing: None,
+        };
+        let delayed = anim(Some(50), Some(2000));
+        assert_eq!(delayed.opacity_at(0), Some(0));
+        assert_eq!(delayed.opacity_at(49), Some(0));
+        assert_eq!(delayed.opacity_at(50), Some(0), "delay holds the first key");
+        assert_eq!(delayed.opacity_at(75), Some(128), "25 ms at 2x = 50 ms");
+        assert_eq!(delayed.opacity_at(100), Some(0), "wraps after 50 ms at 2x");
+        // A zero/absent speed is 1000 permille, not a freeze or a divide by zero.
+        assert_eq!(anim(None, Some(0)).opacity_at(50), Some(128));
+        assert_eq!(anim(None, None).opacity_at(50), Some(128));
+    }
+
+    #[test]
+    fn scene_colour_keyframes_drive_colour_values_only() {
+        // N825: colour keys interpolate per channel and write `value` on colour
+        // kinds. Text/image/sprite payloads are never overwritten.
+        let anim = SceneAnim {
+            duration_ms: 100,
+            looping: false,
+            opacity: Vec::new(),
+            rect: Vec::new(),
+            focus: Vec::new(),
+            delay_ms: None,
+            speed_permille: None,
+            color: vec![
+                SceneColorKey {
+                    time_ms: 0,
+                    value: "#000000".into(),
+                },
+                SceneColorKey {
+                    time_ms: 100,
+                    value: "#FFFFFF".into(),
+                },
+            ],
+            rotate: Vec::new(),
+            easing: None,
+        };
+        assert_eq!(anim.color_at(0), Some([0, 0, 0]));
+        assert_eq!(anim.color_at(50), Some([128, 128, 128]));
+        assert_eq!(anim.color_at(500), Some([255, 255, 255]));
+        // Invalid values are skipped instead of falling back to white.
+        let partial = SceneAnim {
+            color: vec![
+                SceneColorKey {
+                    time_ms: 0,
+                    value: "not-a-colour".into(),
+                },
+                SceneColorKey {
+                    time_ms: 10,
+                    value: "red".into(),
+                },
+            ],
+            ..anim.clone()
+        };
+        assert_eq!(partial.color_at(0), Some([255, 0, 0]));
+
+        let mut rect = plain_node("r", "rect");
+        rect.anim = Some(anim.clone());
+        apply_scene_animation(&mut rect, 50);
+        assert_eq!(rect.value.as_deref(), Some("#808080"));
+        assert_eq!(rect.anim_keys(), 2, "colour keys count toward the budget");
+
+        let mut label = plain_node("t", "text");
+        label.value = Some("hi".into());
+        label.anim = Some(anim);
+        apply_scene_animation(&mut label, 50);
+        assert_eq!(label.value.as_deref(), Some("hi"), "glyphs are preserved");
+        assert!(!kind_uses_colour_value("text"));
+        assert!(kind_uses_colour_value("rect"));
+        assert!(kind_uses_colour_value("path"));
+    }
+
+    #[test]
+    fn scene_rotate_keyframes_snap_to_quarter_turns() {
+        // N827: the sampled angle rounds to the nearest multiple of 90.
+        let anim = SceneAnim {
+            duration_ms: 100,
+            looping: true,
+            opacity: Vec::new(),
+            rect: Vec::new(),
+            focus: Vec::new(),
+            delay_ms: None,
+            speed_permille: None,
+            color: Vec::new(),
+            rotate: vec![[0, 0], [100, 360]],
+            easing: None,
+        };
+        assert_eq!(anim.rotate_at(0), Some(0));
+        assert_eq!(anim.rotate_at(25), Some(90));
+        assert_eq!(anim.rotate_at(50), Some(180));
+        assert_eq!(anim.rotate_at(75), Some(270));
+        assert_eq!(anim.rotate_at(100), Some(0), "360 wraps to 0");
+        let mut rect = plain_node("r", "rect");
+        rect.anim = Some(anim);
+        apply_scene_animation(&mut rect, 50);
+        assert_eq!(rect.rotate, Some(180));
+    }
+
+    #[test]
+    fn scene_lint_reports_animation_keys_and_bad_tracks() {
+        // N829: the report counts sampled keys and flags unusable tracks.
+        let mut node = plain_node("r", "rect");
+        node.rect = Some([0, 0, 4, 4]);
+        node.value = Some("#FFFFFF".into());
+        node.anim = Some(SceneAnim {
+            duration_ms: 10,
+            looping: false,
+            opacity: vec![[20, 255]],
+            rect: Vec::new(),
+            focus: Vec::new(),
+            delay_ms: None,
+            speed_permille: None,
+            color: vec![SceneColorKey {
+                time_ms: 0,
+                value: "bogus".into(),
+            }],
+            rotate: vec![[0, 45]],
+            easing: None,
+        });
+        let report = node.lint();
+        assert_eq!(report.anim_keys, 3);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("invalid colour key")),
+            "{:?}",
+            report.warnings
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("nearest quarter turn")),
+            "{:?}",
+            report.warnings
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("after its 10 ms duration")),
+            "{:?}",
+            report.warnings
+        );
+
+        let mut over = plain_node("r", "rect");
+        over.rect = Some([0, 0, 1, 1]);
+        over.value = Some("#FFFFFF".into());
+        over.anim = Some(SceneAnim {
+            duration_ms: 1000,
+            looping: true,
+            opacity: (0..=SCENE_MAX_ANIM_KEYS as u16).map(|k| [k, 128]).collect(),
+            ..SceneAnim::default()
+        });
+        let report = over.lint();
+        assert!(!report.valid);
+        assert_eq!(report.anim_keys, SCENE_MAX_ANIM_KEYS + 1);
     }
 
     #[test]
