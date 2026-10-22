@@ -785,6 +785,23 @@ impl SceneNode {
         self.blend.as_deref() == Some("additive")
     }
 
+    /// N793: path stroke width from a `mode` token `width=N` (1..=8). A missing
+    /// or invalid token stays at 1, so existing 1-pixel paths keep their pixels.
+    pub fn stroke_width(&self) -> u8 {
+        let mut width = 1u8;
+        for token in self.mode.as_deref().unwrap_or("").split(',') {
+            let Some(value) = token.trim().strip_prefix("width=") else {
+                continue;
+            };
+            if let Ok(parsed) = value.trim().parse::<u8>() {
+                if (1..=8).contains(&parsed) {
+                    width = parsed;
+                }
+            }
+        }
+        width
+    }
+
     /// N450: whether the node is visible (default true).
     pub fn is_visible(&self) -> bool {
         self.visible.unwrap_or(true)
@@ -3198,6 +3215,25 @@ mod tests {
             path.path_commands().is_none(),
             "implicit repeats count toward the 64-command budget"
         );
+    }
+
+    #[test]
+    fn path_stroke_width_reads_a_mode_token() {
+        // N793: `width=N` is 1..=8. Missing and invalid tokens stay at 1 pixel.
+        let mut path = plain_node("p", "path");
+        assert_eq!(path.stroke_width(), 1);
+        path.mode = Some("width=3".into());
+        assert_eq!(path.stroke_width(), 3);
+        path.mode = Some("linear,width=8".into());
+        assert_eq!(path.stroke_width(), 8);
+        path.mode = Some("width=0".into());
+        assert_eq!(path.stroke_width(), 1);
+        path.mode = Some("width=9".into());
+        assert_eq!(path.stroke_width(), 1);
+        path.mode = Some("width=nope".into());
+        assert_eq!(path.stroke_width(), 1);
+        path.mode = Some("width=4,width=nope".into());
+        assert_eq!(path.stroke_width(), 4);
     }
 
     #[test]

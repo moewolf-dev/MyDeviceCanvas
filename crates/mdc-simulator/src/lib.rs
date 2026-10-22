@@ -1620,6 +1620,8 @@ fn flatten_arc(
 }
 
 /// N157: Bresenham line from `rect[0..2]` to `rect[2..4]`, clipped to bounds.
+/// N793: `stroke` is the square stamp size (1..=8). `1` is the historical pixel.
+#[allow(clippy::too_many_arguments)]
 fn draw_line(
     pixels: &mut [u8],
     width: u32,
@@ -1629,6 +1631,7 @@ fn draw_line(
     alpha: u8,
     // N497: 0 draws a solid line; otherwise this is the dash length in pixels.
     dash: u16,
+    stroke: u8,
 ) {
     let (mut x0, mut y0) = (i64::from(rect[0]), i64::from(rect[1]));
     let (x1, y1) = (i64::from(rect[2]), i64::from(rect[3]));
@@ -1638,13 +1641,23 @@ fn draw_line(
     let sy = if y0 < y1 { 1 } else { -1 };
     let mut err = dx + dy;
     let mut step: u32 = 0;
+    let stroke = i64::from(stroke.clamp(1, 8));
+    let half = (stroke - 1) / 2;
     loop {
         // N497: in a dashed line, only the first `dash` pixels of each period
         // are painted.
         let paint = dash == 0 || step % (2 * u32::from(dash)) < u32::from(dash);
-        if paint && x0 >= 0 && y0 >= 0 && (x0 as u32) < width && (y0 as u32) < height {
-            let index = ((y0 as u32 * width + x0 as u32) * 2) as usize;
-            put_pixel(pixels, index, color, alpha);
+        if paint {
+            for oy in -half..=(stroke - 1 - half) {
+                for ox in -half..=(stroke - 1 - half) {
+                    let px = x0 + ox;
+                    let py = y0 + oy;
+                    if px >= 0 && py >= 0 && (px as u32) < width && (py as u32) < height {
+                        let index = ((py as u32 * width + px as u32) * 2) as usize;
+                        put_pixel(pixels, index, color, alpha);
+                    }
+                }
+            }
         }
         step = step.saturating_add(1);
         if x0 == x1 && y0 == y1 {
@@ -2105,6 +2118,7 @@ fn fill_scene(
                         color,
                         alpha,
                         0,
+                        1,
                     );
                 }
                 draw_text(
@@ -2211,6 +2225,7 @@ fn fill_scene(
                 node.color_rgb565(),
                 alpha,
                 dash,
+                1,
             );
             *drew = true;
         }
@@ -2251,6 +2266,7 @@ fn fill_scene(
                         color,
                         alpha,
                         0,
+                        1,
                     );
                 };
                 for pair in transformed.windows(2) {
@@ -2300,6 +2316,8 @@ fn fill_scene(
             (x as f32, y as f32)
         };
         let color = node.color_rgb565();
+        // N793: `mode` token `width=N` thickens every path segment.
+        let stroke = node.stroke_width();
         if let Some(commands) = node.path_commands() {
             let mut current: Option<(f32, f32)> = None;
             let mut start_point: Option<(f32, f32)> = None;
@@ -2321,6 +2339,7 @@ fn fill_scene(
                     color,
                     alpha,
                     0,
+                    stroke,
                 );
             };
             for command in commands {
@@ -2571,6 +2590,7 @@ fn fill_scene(
                     color,
                     alpha,
                     0,
+                    stroke,
                 );
                 previous = current;
             }
@@ -7316,6 +7336,53 @@ mod tests {
             Some(0),
             "the corner is not filled"
         );
+        // N793: width=1 keeps the orthogonal neighbour clear; width=3 paints it.
+        let render_mode = |device: &mut FakeDevice, mode: &str| {
+            device.scene = Some(
+                serde_json::from_str(&format!(
+                    r##"{{"name":"p","kind":"path","mode":"{mode}","value2":"M4,8;L16,8","value":"#FFFFFF"}}"##
+                ))
+                .unwrap(),
+            );
+            assert!(device.render_scene());
+        };
+        render_mode(&mut device, "width=1");
+        assert_ne!(device.pixel_rgb565(4, 8), Some(0), "endpoint on the stroke");
+        assert_ne!(device.pixel_rgb565(16, 8), Some(0), "far endpoint");
+        assert_eq!(
+            device.pixel_rgb565(4, 9),
+            Some(0),
+            "width 1 stays one pixel"
+        );
+        render_mode(&mut device, "width=3");
+        assert_ne!(device.pixel_rgb565(4, 8), Some(0), "center stays on");
+        assert_ne!(
+            device.pixel_rgb565(4, 9),
+            Some(0),
+            "width 3 covers the neighbour"
+        );
+        assert_ne!(
+            device.pixel_rgb565(4, 7),
+            Some(0),
+            "width 3 covers both sides"
+        );
+        assert_eq!(
+            device.pixel_rgb565(4, 10),
+            Some(0),
+            "width 3 stops at one pixel"
+        );
+        render_mode(&mut device, "width=nope");
+        assert_eq!(
+            device.pixel_rgb565(4, 9),
+            Some(0),
+            "invalid width stays 1 pixel"
+        );
+        render_mode(&mut device, "width=0");
+        assert_eq!(
+            device.pixel_rgb565(4, 9),
+            Some(0),
+            "out-of-range width stays 1"
+        );
     }
 
     #[test]
@@ -7375,6 +7442,42 @@ mod tests {
         );
         assert!(red(device.pixel_rgb565(3, 2).unwrap()), "sprite left");
         assert!(green(device.pixel_rgb565(9, 2).unwrap()), "sprite right");
+
+        // N798: flip and a half-turn swap the parallelogram's ends; both together
+        // restore the original ends. The empty corner stays clear.
+        let sheared = |mode: &str, rotate: u16| {
+            serde_json::from_str::<mdc_protocol::SceneNode>(&format!(
+                r##"{{"name":"g","kind":"group","value2":"1000,0","children":[
+                    {{"name":"img","kind":"image","rect":[0,0,8,4],
+                     "mode":"{mode}","rotate":{rotate},
+                     "value":"F80007E0","value2":"2,1"}}]}}"##
+            ))
+            .unwrap()
+        };
+        let ends = |device: &mut FakeDevice, mode: &str, rotate: u16| {
+            device.scene = Some(sheared(mode, rotate));
+            assert!(device.render_scene());
+            assert_eq!(device.pixel_rgb565(0, 3), Some(0), "corner stays outside");
+            (
+                device.pixel_rgb565(3, 2).unwrap(),
+                device.pixel_rgb565(9, 2).unwrap(),
+            )
+        };
+        let (left, right) = ends(&mut device, "flip-h", 0);
+        assert!(green(left), "flip-h swaps the left end: {left:#06x}");
+        assert!(red(right), "flip-h swaps the right end: {right:#06x}");
+        let (left, right) = ends(&mut device, "", 180);
+        assert!(green(left), "rotate 180 swaps the left end: {left:#06x}");
+        assert!(red(right), "rotate 180 swaps the right end: {right:#06x}");
+        let (left, right) = ends(&mut device, "flip-h", 180);
+        assert!(
+            red(left),
+            "flip-h plus 180 restores the left end: {left:#06x}"
+        );
+        assert!(
+            green(right),
+            "flip-h plus 180 restores the right end: {right:#06x}"
+        );
     }
 
     #[test]
