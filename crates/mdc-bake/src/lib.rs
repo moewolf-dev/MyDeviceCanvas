@@ -28,8 +28,8 @@ pub use skin::{
     render_scene_at_mode, sample_channel, sample_channel_looped, skin_arrays, skin_arrays_multi,
     skin_arrays_multi_with_mode, skin_normals, skin_normals_multi, skin_normals_multi_with_mode,
     skin_points, skin_points_with_mode, skin_preview, skin_tangents_multi,
-    skin_tangents_multi_with_mode, transform_direction, transform_point, Mat4, SceneClip,
-    ShadeMode, SkinMode,
+    skin_tangents_multi_with_mode, texture_for_target, transform_direction, transform_point, Mat4,
+    SceneClip, ShadeMode, SkinMode,
 };
 pub use texture::{Filter, TextureMap, Wrap};
 

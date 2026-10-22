@@ -119,6 +119,7 @@ pub fn skin_tangents_multi(
 
 /// N736: skin tangents with an explicit blend mode (DQS rotates the xyz by the
 /// blended joint quaternion and preserves `w`).
+/// N785: the same inverse-transpose scale used for normals is applied first.
 #[allow(clippy::too_many_arguments)]
 pub fn skin_tangents_multi_with_mode(
     joints: &[[u16; 4]],
@@ -137,18 +138,9 @@ pub fn skin_tangents_multi_with_mode(
     }
     let mut out = Vec::with_capacity(tangents.len());
     for (i, tangent) in tangents.iter().enumerate() {
-        let xyz = match blended_quat(joints, weights, joints2, weights2, i, skeleton, worlds) {
-            Some(q) => {
-                let rotated = rotate_quat(&q, [tangent[0], tangent[1], tangent[2]]);
-                let len =
-                    (rotated[0] * rotated[0] + rotated[1] * rotated[1] + rotated[2] * rotated[2])
-                        .sqrt();
-                if len > 1e-6 {
-                    [rotated[0] / len, rotated[1] / len, rotated[2] / len]
-                } else {
-                    [tangent[0], tangent[1], tangent[2]]
-                }
-            }
+        let xyz = match blended_basis(joints, weights, joints2, weights2, i, skeleton, worlds) {
+            Some(basis) => dqs_direction(&basis, [tangent[0], tangent[1], tangent[2]])
+                .unwrap_or([tangent[0], tangent[1], tangent[2]]),
             None => [tangent[0], tangent[1], tangent[2]],
         };
         out.push([xyz[0], xyz[1], xyz[2], tangent[3]]);
@@ -253,6 +245,8 @@ pub fn skin_normals_multi(
 
 /// N736: skin normals with an explicit blend mode. DQS rotates by the blended
 /// joint quaternion instead of averaging the transformed normals.
+/// N785: a non-uniform scale is applied as the inverse-transpose of the blended
+/// per-axis scale before that rotation.
 #[allow(clippy::too_many_arguments)]
 pub fn skin_normals_multi_with_mode(
     joints: &[[u16; 4]],
@@ -271,18 +265,8 @@ pub fn skin_normals_multi_with_mode(
     }
     let mut out = Vec::with_capacity(normals.len());
     for (i, normal) in normals.iter().enumerate() {
-        match blended_quat(joints, weights, joints2, weights2, i, skeleton, worlds) {
-            Some(q) => {
-                let rotated = rotate_quat(&q, *normal);
-                let len =
-                    (rotated[0] * rotated[0] + rotated[1] * rotated[1] + rotated[2] * rotated[2])
-                        .sqrt();
-                out.push(if len > 1e-6 {
-                    [rotated[0] / len, rotated[1] / len, rotated[2] / len]
-                } else {
-                    *normal
-                });
-            }
+        match blended_basis(joints, weights, joints2, weights2, i, skeleton, worlds) {
+            Some(basis) => out.push(dqs_direction(&basis, *normal).unwrap_or(*normal)),
             None => out.push(*normal),
         }
     }
@@ -345,8 +329,14 @@ fn skin_normals_multi_lbs(
     out
 }
 
-/// N736: the blended unit quaternion of one vertex's joint influences.
-fn blended_quat(
+/// N785: blended rotation plus the weight-averaged per-axis scale.
+struct BlendedBasis {
+    quat: [f32; 4],
+    scale: [f32; 3],
+}
+
+/// N736/N785: the blended unit quaternion and per-axis scale of one vertex.
+fn blended_basis(
     joints: &[[u16; 4]],
     weights: &[[f32; 4]],
     joints2: &[[u16; 4]],
@@ -354,8 +344,9 @@ fn blended_quat(
     index: usize,
     skeleton: &Skeleton,
     worlds: &[Mat4],
-) -> Option<[f32; 4]> {
+) -> Option<BlendedBasis> {
     let mut real = [0.0f32; 4];
+    let mut scale = [0.0f32; 3];
     let mut total = 0.0f32;
     for (set_joints, set_weights) in [(joints, weights), (joints2, weights2)] {
         let (Some(vertex_joints), Some(vertex_weights)) =
@@ -384,6 +375,9 @@ fn blended_quat(
             for (slot, value) in real.iter_mut().zip(dq.real.iter()) {
                 *slot += value * weight;
             }
+            for (slot, value) in scale.iter_mut().zip(dq.scale.iter()) {
+                *slot += value * weight;
+            }
             total += weight;
         }
     }
@@ -395,12 +389,36 @@ fn blended_quat(
     if norm <= 1e-6 {
         return None;
     }
-    Some([
-        real[0] / norm,
-        real[1] / norm,
-        real[2] / norm,
-        real[3] / norm,
-    ])
+    for value in &mut scale {
+        *value /= total;
+        if *value < 1e-6 {
+            *value = 1e-6;
+        }
+    }
+    Some(BlendedBasis {
+        quat: [
+            real[0] / norm,
+            real[1] / norm,
+            real[2] / norm,
+            real[3] / norm,
+        ],
+        scale,
+    })
+}
+
+/// N785: inverse-transpose of a diagonal scale, then the blended rotation.
+fn dqs_direction(basis: &BlendedBasis, v: [f32; 3]) -> Option<[f32; 3]> {
+    let scaled = [
+        v[0] / basis.scale[0],
+        v[1] / basis.scale[1],
+        v[2] / basis.scale[2],
+    ];
+    let rotated = rotate_quat(&basis.quat, scaled);
+    let len = (rotated[0] * rotated[0] + rotated[1] * rotated[1] + rotated[2] * rotated[2]).sqrt();
+    if !len.is_finite() || len <= 1e-6 {
+        return None;
+    }
+    Some([rotated[0] / len, rotated[1] / len, rotated[2] / len])
 }
 
 /// N736: rotate a vector by a unit quaternion (w,x,y,z).
@@ -2091,18 +2109,78 @@ pub fn render_package_mesh(
     render_package_mesh_mode(package, size, ShadeMode::Flat)
 }
 
-/// N514: the texture blob for a render target, sampled at the coarsest mip level
-/// that still covers `size` in both axes. Blobs with an alpha plane (mips carry
-/// no alpha) or without a chain are returned unchanged.
-fn blob_for_target(blob: &mdc_model::TextureBlob, size: (u32, u32)) -> mdc_model::TextureBlob {
-    if !blob.alpha.is_empty() {
-        return blob.clone();
+/// N789: box-downsample a 1-bit alpha mask onto `dst_w`×`dst_h`. A destination
+/// texel stays opaque when any source texel in its box is opaque, so a cutout
+/// silhouette is not punched by a coarser colour level.
+fn resample_alpha_mask(alpha: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+    let pixels = (dst_w as usize).saturating_mul(dst_h as usize);
+    let mut out = vec![0u8; pixels.div_ceil(8)];
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 || alpha.is_empty() {
+        return out;
     }
+    let bit = |x: u32, y: u32| -> bool {
+        let index = (y.saturating_mul(src_w).saturating_add(x)) as usize;
+        alpha
+            .get(index / 8)
+            .is_some_and(|byte| byte & (1 << (index % 8)) != 0)
+    };
+    for y in 0..dst_h {
+        let y0 = y.saturating_mul(src_h) / dst_h;
+        let y1 = (y + 1).saturating_mul(src_h) / dst_h;
+        let y1 = y1.max(y0.saturating_add(1)).min(src_h);
+        for x in 0..dst_w {
+            let x0 = x.saturating_mul(src_w) / dst_w;
+            let x1 = (x + 1).saturating_mul(src_w) / dst_w;
+            let x1 = x1.max(x0.saturating_add(1)).min(src_w);
+            let mut opaque = false;
+            'scan: for yy in y0..y1 {
+                for xx in x0..x1 {
+                    if bit(xx, yy) {
+                        opaque = true;
+                        break 'scan;
+                    }
+                }
+            }
+            if opaque {
+                let index = (y.saturating_mul(dst_w).saturating_add(x)) as usize;
+                if let Some(byte) = out.get_mut(index / 8) {
+                    *byte |= 1 << (index % 8);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// N514: the texture blob for a render target, sampled at the coarsest mip level
+/// that still covers `size` in both axes.
+/// N789: an alpha mask is resampled from level 0 onto that colour level instead
+/// of forcing the full-resolution blob (mips themselves carry no alpha).
+fn blob_for_target(blob: &mdc_model::TextureBlob, size: (u32, u32)) -> mdc_model::TextureBlob {
     let level = crate::select_mip_level(blob.width, blob.height, size.0, size.1);
     if level == 0 {
         return blob.clone();
     }
-    crate::blob_mip_level(blob, level).unwrap_or_else(|| blob.clone())
+    let mut selected = crate::blob_mip_level(blob, level).unwrap_or_else(|| blob.clone());
+    if !blob.alpha.is_empty() && (selected.width != blob.width || selected.height != blob.height) {
+        selected.alpha = resample_alpha_mask(
+            &blob.alpha,
+            blob.width,
+            blob.height,
+            selected.width,
+            selected.height,
+        );
+    }
+    selected
+}
+
+/// N789: public view of [`blob_for_target`] so the simulator and host renderers
+/// share one mip/alpha selection.
+pub fn texture_for_target(
+    blob: &mdc_model::TextureBlob,
+    size: (u32, u32),
+) -> mdc_model::TextureBlob {
+    blob_for_target(blob, size)
 }
 
 /// N454: like [`render_package_mesh`] but with an explicit shade mode (`Smooth`
@@ -3248,13 +3326,27 @@ mod tests {
         let small = blob_for_target(&mipped, (2, 2));
         assert_eq!((small.width, small.height), (2, 2));
         assert!(small.mips.is_empty());
-        // A blob without a chain is unchanged, as is one with an alpha plane.
+        // A blob without a chain is unchanged.
         assert_eq!(blob_for_target(&base, (2, 2)).width, 8);
+        // N789: alpha no longer pins the colour to level 0. The left half of
+        // the mask stays opaque after the 2×2 resample; the right half does not.
+        let mut alpha = vec![0u8; 8];
+        for y in 0..8u32 {
+            for x in 0..4u32 {
+                let index = (y * 8 + x) as usize;
+                alpha[index / 8] |= 1 << (index % 8);
+            }
+        }
         let with_alpha = mdc_model::TextureBlob {
-            alpha: vec![0xff; 8],
+            alpha,
             ..mipped.clone()
         };
-        assert_eq!(blob_for_target(&with_alpha, (2, 2)).width, 8);
+        let selected = blob_for_target(&with_alpha, (2, 2));
+        assert_eq!((selected.width, selected.height), (2, 2));
+        assert!(selected.validate());
+        assert!(selected.alpha_at(0.25, 0.25), "left stays opaque");
+        assert!(!selected.alpha_at(0.75, 0.25), "right was transparent");
+        assert_eq!(texture_for_target(&with_alpha, (2, 2)).width, 2);
     }
 
     use super::*;
@@ -4458,6 +4550,71 @@ mod tests {
             "normal tilted to y: {:?}",
             out[0]
         );
+    }
+
+    #[test]
+    fn dqs_normals_use_inverse_transpose_scale() {
+        // N785: a diagonal non-uniform scale. Inverse-transpose and the forward
+        // LBS matrix disagree on a diagonal normal, but both stay unit length
+        // and in the same half-space. Tangents keep their handedness.
+        let skeleton = mdc_model::Skeleton {
+            name: "s".into(),
+            bones: 1,
+            joint_nodes: vec![0],
+            inverse_bind: vec![mat4_identity()],
+        };
+        let world = mat4_from_trs([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [2.0, 0.5, 1.0]);
+        let normal = [1.0, 1.0, 0.0];
+        let dqs = skin_normals_multi_with_mode(
+            &[[0, 0, 0, 0]],
+            &[[1.0, 0.0, 0.0, 0.0]],
+            &[],
+            &[],
+            &[normal],
+            &skeleton,
+            &[world],
+            SkinMode::Dqs,
+        );
+        let lbs = skin_normals(
+            &[[0, 0, 0, 0]],
+            &[[1.0, 0.0, 0.0, 0.0]],
+            &[normal],
+            &skeleton,
+            &[world],
+        );
+        let unit = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        assert!((unit(dqs[0]) - 1.0).abs() < 1e-4, "{:?}", dqs[0]);
+        assert!((unit(lbs[0]) - 1.0).abs() < 1e-4, "{:?}", lbs[0]);
+        let dot = dqs[0][0] * lbs[0][0] + dqs[0][1] * lbs[0][1] + dqs[0][2] * lbs[0][2];
+        assert!(
+            dot.is_finite() && dot > 0.4,
+            "dot {dot} dqs {:?} lbs {:?}",
+            dqs[0],
+            lbs[0]
+        );
+        // Inverse-transpose of diag(2, 0.5, 1) on (1,1,0) is (0.5, 2, 0).
+        let expect = {
+            let len = (0.5f32 * 0.5 + 2.0 * 2.0).sqrt();
+            [0.5 / len, 2.0 / len, 0.0]
+        };
+        assert!(
+            (dqs[0][0] - expect[0]).abs() < 1e-3 && (dqs[0][1] - expect[1]).abs() < 1e-3,
+            "dqs {:?} expect {:?}",
+            dqs[0],
+            expect
+        );
+        let tangents = skin_tangents_multi_with_mode(
+            &[[0, 0, 0, 0]],
+            &[[1.0, 0.0, 0.0, 0.0]],
+            &[],
+            &[],
+            &[[1.0, 1.0, 0.0, -1.0]],
+            &skeleton,
+            &[world],
+            SkinMode::Dqs,
+        );
+        assert!((tangents[0][3] + 1.0).abs() < 1e-6);
+        assert!((tangents[0][0] - expect[0]).abs() < 1e-3);
     }
 
     #[test]
