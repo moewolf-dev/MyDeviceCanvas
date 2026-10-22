@@ -2755,10 +2755,30 @@ fn frame_etag(path: &str, query: &str, frames: u64) -> String {
     )
 }
 
+/// N790: the opaque tag of a validator, ignoring a `W/` weak prefix.
+fn validator_opaque(token: &str) -> &str {
+    let token = token.trim();
+    token.strip_prefix("W/").unwrap_or(token).trim()
+}
+
+fn validator_is_weak(token: &str) -> bool {
+    token.trim().starts_with("W/")
+}
+
+/// N790: RFC 7232 weak comparison (the `W/` prefix does not matter).
+fn tags_weak_eq(candidate: &str, etag: &str) -> bool {
+    let candidate = validator_opaque(candidate);
+    !candidate.is_empty() && candidate == validator_opaque(etag)
+}
+
 /// N727: parse `If-None-Match` (exact token, comma list, or `*`).
+/// N790: comparison is weak, so `W/"tag"` matches a strong `"tag"`.
 fn if_none_match(request: &[u8], etag: &str) -> bool {
     header_value(request, "if-none-match").is_some_and(|value| {
-        value.trim() == "*" || value.split(',').any(|candidate| candidate.trim() == etag)
+        value.trim() == "*"
+            || value
+                .split(',')
+                .any(|candidate| tags_weak_eq(candidate, etag))
     })
 }
 
@@ -2846,9 +2866,14 @@ fn request_not_modified(request: &[u8], etag: &str, last_modified: u64) -> bool 
 
 /// N770: evaluate `If-Match` (strong validators; `*` matches any existing
 /// representation). `None` means the header was absent.
+/// N790: a `W/` validator never satisfies a strong comparison.
 fn if_match(request: &[u8], etag: &str) -> Option<bool> {
     header_value(request, "if-match").map(|value| {
-        value.trim() == "*" || value.split(',').any(|candidate| candidate.trim() == etag)
+        value.trim() == "*"
+            || value.split(',').any(|candidate| {
+                let candidate = candidate.trim();
+                !validator_is_weak(candidate) && candidate == etag
+            })
     })
 }
 
@@ -4492,6 +4517,53 @@ mod tests {
             stamp
         ));
         assert!(precondition_failed("\"x\"", stamp).starts_with(b"HTTP/1.1 412"));
+    }
+
+    #[test]
+    fn weak_etags_use_weak_comparison_for_304_and_strong_for_412() {
+        // N790: If-None-Match compares weakly; If-Match and If-Range do not.
+        let etag = "\"abc\"";
+        let stamp = 1_700_000_000u64;
+        let request = |headers: &str| format!("GET /frame.bmp HTTP/1.1\r\n{headers}\r\n");
+        assert!(request_not_modified(
+            request("If-None-Match: W/\"abc\"\r\n").as_bytes(),
+            etag,
+            stamp
+        ));
+        assert!(!request_not_modified(
+            request("If-None-Match: W/\"no\"\r\n").as_bytes(),
+            etag,
+            stamp
+        ));
+        let date = http_date(stamp);
+        assert!(
+            !request_not_modified(
+                request(&format!(
+                    "If-None-Match: W/\"no\"\r\nIf-Modified-Since: {date}\r\n"
+                ))
+                .as_bytes(),
+                etag,
+                stamp
+            ),
+            "a present If-None-Match wins over the date"
+        );
+        assert!(request_precondition_failed(
+            request("If-Match: W/\"abc\"\r\n").as_bytes(),
+            etag,
+            stamp
+        ));
+        assert!(!request_precondition_failed(
+            request("If-Match: \"abc\"\r\n").as_bytes(),
+            etag,
+            stamp
+        ));
+        let both = request("If-Match: W/\"abc\"\r\nIf-None-Match: W/\"abc\"\r\n");
+        assert!(request_precondition_failed(both.as_bytes(), etag, stamp));
+        assert!(request_not_modified(both.as_bytes(), etag, stamp));
+        assert!(
+            !if_range_matches(request("If-Range: W/\"abc\"\r\n").as_bytes(), etag, stamp),
+            "If-Range stays a strong comparison"
+        );
     }
 
     #[test]
