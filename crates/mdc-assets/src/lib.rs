@@ -192,6 +192,7 @@ pub fn rle_decode(bytes: &[u8]) -> Option<Vec<u8>> {
 /// N786: each 3-byte key keeps a bounded hash chain (newest first). The
 /// encoder picks the longest in-window match, breaking ties toward the nearer
 /// one, so an earlier longer copy wins over a nearer shorter one.
+/// N796: a match is deferred when the next byte starts a strictly longer one.
 pub fn lz_encode(bytes: &[u8]) -> Vec<u8> {
     const MAX_CHAIN: usize = 64;
     enum Item {
@@ -204,6 +205,40 @@ pub fn lz_encode(bytes: &[u8]) -> Vec<u8> {
                 | (u32::from(bytes[at + 1]) << 8)
                 | u32::from(bytes[at + 2])
         })
+    };
+    let best_at = |head: &HashMap<u32, usize>, prev: &[usize], index: usize| -> (usize, usize) {
+        let mut best = (0usize, 0usize); // (distance, length)
+        let Some(key) = key_at(index) else {
+            return best;
+        };
+        let mut candidate = head.get(&key).copied();
+        let mut seen = 0usize;
+        while let Some(at) = candidate {
+            if index <= at || index - at > LZ_WINDOW || seen >= MAX_CHAIN {
+                break;
+            }
+            let limit = LZ_MAX_MATCH.min(bytes.len() - index);
+            let mut length = 0usize;
+            while length < limit && bytes[at + length] == bytes[index + length] {
+                length += 1;
+            }
+            let distance = index - at;
+            if length >= LZ_MIN_MATCH
+                && (length > best.1 || (length == best.1 && distance < best.0))
+            {
+                best = (distance, length);
+            }
+            if length == LZ_MAX_MATCH {
+                break;
+            }
+            let older = prev[at];
+            if older == usize::MAX || older >= at {
+                break;
+            }
+            candidate = Some(older);
+            seen += 1;
+        }
+        best
     };
     let mut items: Vec<Item> = Vec::new();
     let mut head: HashMap<u32, usize> = HashMap::new();
@@ -219,43 +254,21 @@ pub fn lz_encode(bytes: &[u8]) -> Vec<u8> {
     };
     let mut index = 0usize;
     while index < bytes.len() {
-        let mut best = (0usize, 0usize); // (distance, length)
-        if let Some(key) = key_at(index) {
-            let mut candidate = head.get(&key).copied();
-            let mut seen = 0usize;
-            while let Some(at) = candidate {
-                if index <= at || index - at > LZ_WINDOW || seen >= MAX_CHAIN {
-                    break;
-                }
-                let limit = LZ_MAX_MATCH.min(bytes.len() - index);
-                let mut length = 0usize;
-                while length < limit && bytes[at + length] == bytes[index + length] {
-                    length += 1;
-                }
-                let distance = index - at;
-                if length >= LZ_MIN_MATCH
-                    && (length > best.1 || (length == best.1 && distance < best.0))
-                {
-                    best = (distance, length);
-                }
-                if length == LZ_MAX_MATCH {
-                    break;
-                }
-                let older = prev[at];
-                if older == usize::MAX || older >= at {
-                    break;
-                }
-                candidate = Some(older);
-                seen += 1;
-            }
-        }
+        let best = best_at(&head, &prev, index);
         link(&mut head, &mut prev, index);
         if best.1 >= LZ_MIN_MATCH {
-            items.push(Item::Match(best.0, best.1));
-            for at in index + 1..index + best.1 {
-                link(&mut head, &mut prev, at);
+            // N796: emit one literal when the following position has a longer match.
+            let lazy = index + 1 < bytes.len() && best_at(&head, &prev, index + 1).1 > best.1;
+            if lazy {
+                items.push(Item::Literal(bytes[index]));
+                index += 1;
+            } else {
+                items.push(Item::Match(best.0, best.1));
+                for at in index + 1..index + best.1 {
+                    link(&mut head, &mut prev, at);
+                }
+                index += best.1;
             }
-            index += best.1;
         } else {
             items.push(Item::Literal(bytes[index]));
             index += 1;
@@ -1529,6 +1542,48 @@ mod tests {
         assert!(
             longest >= long.len(),
             "longest match {longest}, encoded {} input {}",
+            encoded.len(),
+            data.len()
+        );
+    }
+
+    #[test]
+    fn lz_lazy_match_prefers_the_longer_next_copy() {
+        // N796: at `cur` the current match is the 5-byte `short` copy. The next
+        // byte starts the 8-byte `long` copy, so lazy encoding emits one literal
+        // and then that longer match. The bitstream and decode budget are unchanged.
+        let short = b"abcde";
+        let long = b"bcdefghi";
+        let cur = b"abcdefghi";
+        let mut data = Vec::new();
+        data.extend_from_slice(long);
+        data.extend_from_slice(&[0x00, 0x00]);
+        data.extend_from_slice(short);
+        data.push(0x01);
+        data.extend_from_slice(cur);
+        let encoded = lz_encode(&data);
+        assert_eq!(lz_decode(&encoded).as_deref(), Some(data.as_slice()));
+        assert!(encoded.starts_with(b"MRLZ"));
+        let mut index = 8usize;
+        let mut longest = 0usize;
+        while index < encoded.len() {
+            let control = encoded[index];
+            index += 1;
+            for bit in 0..8 {
+                if index >= encoded.len() {
+                    break;
+                }
+                if control & (1 << bit) == 0 {
+                    index += 1;
+                } else {
+                    longest = longest.max(encoded[index + 2] as usize);
+                    index += 3;
+                }
+            }
+        }
+        assert!(
+            longest >= long.len(),
+            "lazy longest {longest}, encoded {} input {}",
             encoded.len(),
             data.len()
         );
