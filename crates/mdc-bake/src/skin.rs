@@ -2156,10 +2156,97 @@ fn resample_alpha_mask(alpha: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: 
 /// that still covers `size` in both axes.
 /// N789: an alpha mask is resampled from level 0 onto that colour level instead
 /// of forcing the full-resolution blob (mips themselves carry no alpha).
+/// N799: box-filter palette indices onto a coarser grid. Each destination texel
+/// averages the RGB565 colours in its box, then keeps the closest palette index
+/// that actually appears there (a uniform box keeps its index).
+fn resample_indices(blob: &mdc_model::TextureBlob, dst_w: u32, dst_h: u32) -> Vec<u8> {
+    let channels = |color: u16| -> [i32; 3] {
+        [
+            i32::from((color >> 11) & 0x1f),
+            i32::from((color >> 5) & 0x3f),
+            i32::from(color & 0x1f),
+        ]
+    };
+    let mut out = vec![0u8; (dst_w as usize).saturating_mul(dst_h as usize)];
+    if blob.width == 0 || blob.height == 0 || dst_w == 0 || dst_h == 0 {
+        return out;
+    }
+    for y in 0..dst_h {
+        let y0 = y.saturating_mul(blob.height) / dst_h;
+        let y1 = (y + 1).saturating_mul(blob.height) / dst_h;
+        let y1 = y1.max(y0.saturating_add(1)).min(blob.height);
+        for x in 0..dst_w {
+            let x0 = x.saturating_mul(blob.width) / dst_w;
+            let x1 = (x + 1).saturating_mul(blob.width) / dst_w;
+            let x1 = x1.max(x0.saturating_add(1)).min(blob.width);
+            let mut sum = [0i32; 3];
+            let mut count = 0i32;
+            let mut present = [false; 256];
+            for yy in y0..y1 {
+                for xx in x0..x1 {
+                    let pixel = (yy.saturating_mul(blob.width).saturating_add(xx)) as usize;
+                    let index = blob.indices.get(pixel).copied().unwrap_or(0);
+                    present[index as usize] = true;
+                    let color = blob.palette.get(index as usize).copied().unwrap_or(0);
+                    let ch = channels(color);
+                    sum[0] += ch[0];
+                    sum[1] += ch[1];
+                    sum[2] += ch[2];
+                    count += 1;
+                }
+            }
+            if count == 0 {
+                continue;
+            }
+            let avg = [sum[0] / count, sum[1] / count, sum[2] / count];
+            let mut best_i = 0u8;
+            let mut best_d = i32::MAX;
+            for (i, on) in present.iter().enumerate() {
+                if !on {
+                    continue;
+                }
+                let color = blob.palette.get(i).copied().unwrap_or(0);
+                let ch = channels(color);
+                let distance =
+                    (ch[0] - avg[0]).pow(2) + (ch[1] - avg[1]).pow(2) + (ch[2] - avg[2]).pow(2);
+                if distance < best_d {
+                    best_d = distance;
+                    best_i = i as u8;
+                }
+            }
+            out[(y.saturating_mul(dst_w).saturating_add(x)) as usize] = best_i;
+        }
+    }
+    out
+}
+
 fn blob_for_target(blob: &mdc_model::TextureBlob, size: (u32, u32)) -> mdc_model::TextureBlob {
     let level = crate::select_mip_level(blob.width, blob.height, size.0, size.1);
     if level == 0 {
         return blob.clone();
+    }
+    // N799: indexed blobs have no stored RGB mips. Synthesize the coarse level
+    // from the palette and resample alpha from level 0.
+    if blob.is_indexed() {
+        let dst_w = (blob.width >> level).max(1);
+        let dst_h = (blob.height >> level).max(1);
+        let alpha = if blob.alpha.is_empty() {
+            Vec::new()
+        } else {
+            resample_alpha_mask(&blob.alpha, blob.width, blob.height, dst_w, dst_h)
+        };
+        let selected = mdc_model::TextureBlob {
+            width: dst_w,
+            height: dst_h,
+            rgb565: Vec::new(),
+            alpha,
+            palette: blob.palette.clone(),
+            indices: resample_indices(blob, dst_w, dst_h),
+            mips: Vec::new(),
+        };
+        if selected.validate() {
+            return selected;
+        }
     }
     let mut selected = crate::blob_mip_level(blob, level).unwrap_or_else(|| blob.clone());
     if !blob.alpha.is_empty() && (selected.width != blob.width || selected.height != blob.height) {
@@ -3347,6 +3434,42 @@ mod tests {
         assert!(selected.alpha_at(0.25, 0.25), "left stays opaque");
         assert!(!selected.alpha_at(0.75, 0.25), "right was transparent");
         assert_eq!(texture_for_target(&with_alpha, (2, 2)).width, 2);
+        // N799: an indexed blob resamples palette indices onto the coarse level.
+        // The left half is index 0, the right half index 1; alpha still comes
+        // from the level-0 any-opaque mask.
+        let mut indices = vec![1u8; 64];
+        for y in 0..8u32 {
+            for x in 0..4u32 {
+                indices[(y * 8 + x) as usize] = 0;
+            }
+        }
+        let indexed = mdc_model::TextureBlob {
+            width: 8,
+            height: 8,
+            rgb565: Vec::new(),
+            alpha: with_alpha.alpha.clone(),
+            palette: vec![0xF800, 0x07E0],
+            indices,
+            mips: Vec::new(),
+        };
+        assert!(indexed.validate());
+        let coarse = blob_for_target(&indexed, (2, 2));
+        assert_eq!((coarse.width, coarse.height), (2, 2));
+        assert!(coarse.validate());
+        assert!(coarse.is_indexed());
+        assert_eq!(coarse.palette, indexed.palette);
+        assert_eq!(coarse.indices, vec![0, 1, 0, 1]);
+        assert!(coarse.alpha_at(0.25, 0.25));
+        assert!(!coarse.alpha_at(0.75, 0.25));
+        let opaque = mdc_model::TextureBlob {
+            alpha: Vec::new(),
+            ..indexed.clone()
+        };
+        let shrunk = blob_for_target(&opaque, (2, 2));
+        assert_eq!((shrunk.width, shrunk.height), (2, 2));
+        assert!(shrunk.alpha.is_empty());
+        assert_eq!(shrunk.sample(0.25, 0.25), 0xF800);
+        assert_eq!(shrunk.sample(0.75, 0.25), 0x07E0);
     }
 
     use super::*;
@@ -4615,6 +4738,65 @@ mod tests {
         );
         assert!((tangents[0][3] + 1.0).abs() < 1e-6);
         assert!((tangents[0][0] - expect[0]).abs() < 1e-3);
+    }
+
+    #[test]
+    fn dqs_two_joints_blend_inverse_transpose_scales() {
+        // N795: two joints with different diagonal scales. A weight of 1 on the
+        // first joint matches the single-joint inverse-transpose; a 0.75/0.25
+        // blend matches the weight-averaged scale. Every sample stays finite.
+        let skeleton = mdc_model::Skeleton {
+            name: "s".into(),
+            bones: 2,
+            joint_nodes: vec![0, 1],
+            inverse_bind: vec![mat4_identity(), mat4_identity()],
+        };
+        let world_a = mat4_from_trs([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [2.0, 0.5, 1.0]);
+        let world_b = mat4_from_trs([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [1.0, 2.0, 4.0]);
+        let normal = [1.0, 1.0, 0.0];
+        let skin = |weights: [f32; 4]| {
+            skin_normals_multi_with_mode(
+                &[[0, 1, 0, 0]],
+                &[weights],
+                &[],
+                &[],
+                &[normal],
+                &skeleton,
+                &[world_a, world_b],
+                SkinMode::Dqs,
+            )
+        };
+        let unit = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        let expect_scale = |scale: [f32; 3]| {
+            let x = normal[0] / scale[0];
+            let y = normal[1] / scale[1];
+            let len = (x * x + y * y).sqrt();
+            [x / len, y / len, 0.0]
+        };
+        let only = skin([1.0, 0.0, 0.0, 0.0]);
+        assert!(only[0].iter().all(|v| v.is_finite()));
+        assert!((unit(only[0]) - 1.0).abs() < 1e-4, "{:?}", only[0]);
+        let single = expect_scale([2.0, 0.5, 1.0]);
+        assert!(
+            (only[0][0] - single[0]).abs() < 1e-3 && (only[0][1] - single[1]).abs() < 1e-3,
+            "weight 1 {:?} expect {:?}",
+            only[0],
+            single
+        );
+        let blended = skin([0.75, 0.25, 0.0, 0.0]);
+        assert!(blended[0].iter().all(|v| v.is_finite()));
+        assert!((unit(blended[0]) - 1.0).abs() < 1e-4, "{:?}", blended[0]);
+        let mixed = expect_scale([
+            0.75 * 2.0 + 0.25 * 1.0,
+            0.75 * 0.5 + 0.25 * 2.0,
+            0.75 * 1.0 + 0.25 * 4.0,
+        ]);
+        assert!(
+            (blended[0][0] - mixed[0]).abs() < 1e-3 && (blended[0][1] - mixed[1]).abs() < 1e-3,
+            "blend {:?} expect {:?}",
+            blended[0],
+            mixed
+        );
     }
 
     #[test]
