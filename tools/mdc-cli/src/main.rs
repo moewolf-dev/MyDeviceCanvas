@@ -5392,6 +5392,19 @@ mod tests {
         let (report, _) = texture_report_value(&path.to_string_lossy()).unwrap();
         assert_eq!(archived, texture_report_item(report));
         assert_eq!(archived["kind"], "texture");
+        // N811: `--out` creates a missing parent and writes the same JSON.
+        let nested = dir.join("missing").join("one.json");
+        assert!(!nested.parent().unwrap().exists());
+        cmd_texture_report(&[
+            path.to_string_lossy().into_owned(),
+            "--json".into(),
+            "--out".into(),
+            nested.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        let nested_body: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&nested).unwrap()).unwrap();
+        assert_eq!(nested_body, archived);
         assert!(cmd_texture_report(&[
             path.to_string_lossy().into_owned(),
             "--out".into(),
@@ -5488,6 +5501,22 @@ mod tests {
         assert_eq!(archived, expected);
         assert_eq!(archived["summary"]["files"], 2);
         assert_eq!(archived["kind"], "batch");
+        // N811: batch `--out` also creates a missing parent.
+        let nested = dir.join("missing").join("batch.json");
+        assert!(!nested.parent().unwrap().exists());
+        cmd_texture_report(&[
+            "--batch".into(),
+            dir.to_string_lossy().into_owned(),
+            "--json".into(),
+            "--out".into(),
+            nested.to_string_lossy().into_owned(),
+            "--min-coverage".into(),
+            "0.0".into(),
+        ])
+        .unwrap();
+        let nested_body: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&nested).unwrap()).unwrap();
+        assert_eq!(nested_body, archived);
         let blocked = dir.join("blocked");
         std::fs::create_dir(&blocked).unwrap();
         assert!(write_bytes_atomic(&blocked, b"{}").is_err());
