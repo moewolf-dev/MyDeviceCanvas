@@ -1166,6 +1166,55 @@ pub fn parse_surface_weights(value: &str) -> Option<Vec<u16>> {
     Some(weights)
 }
 
+/// N833: maximum number of clips in one `animation_blend` value.
+pub const MAX_ANIMATION_BLEND_CLIPS: usize = 4;
+/// N833: maximum weight for one blended clip (1000 = authored scale).
+pub const MAX_ANIMATION_WEIGHT: u16 = 1000;
+/// N833: maximum clip-name length in an `animation_blend` value.
+pub const MAX_ANIMATION_NAME: usize = 32;
+
+/// N833: parse `"clip:weight,clip:weight"` into bounded weights. `off` and an
+/// empty string mean "no blend" and return an empty list. Names are exact and
+/// unique; weights are `1..=1000`; at most [`MAX_ANIMATION_BLEND_CLIPS`].
+pub fn parse_animation_blend(value: &str) -> Option<Vec<(String, u16)>> {
+    let value = value.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("off") {
+        return Some(Vec::new());
+    }
+    let mut entries: Vec<(String, u16)> = Vec::new();
+    for token in value.split(',') {
+        let (name, weight) = token.trim().split_once(':')?;
+        let name = name.trim();
+        if name.is_empty() || name.len() > MAX_ANIMATION_NAME || name.eq_ignore_ascii_case("off") {
+            return None;
+        }
+        let weight: u16 = weight.trim().parse().ok()?;
+        if weight == 0 || weight > MAX_ANIMATION_WEIGHT {
+            return None;
+        }
+        if entries.iter().any(|(existing, _)| existing == name) {
+            return None;
+        }
+        entries.push((name.to_string(), weight));
+        if entries.len() > MAX_ANIMATION_BLEND_CLIPS {
+            return None;
+        }
+    }
+    (!entries.is_empty()).then_some(entries)
+}
+
+/// N833: format a blend list back to the canonical `clip:weight` string.
+pub fn format_animation_blend(entries: &[(String, u16)]) -> String {
+    if entries.is_empty() {
+        return "off".to_string();
+    }
+    entries
+        .iter()
+        .map(|(name, weight)| format!("{name}:{weight}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// N308: host-side tile cut for a surface. Uses the device-advertised preferred
 /// tile size when non-zero, otherwise [`DEFAULT_TILE_SIZE`]. Never overruns the
 /// surface and never returns a zero-area tile.
@@ -2868,18 +2917,54 @@ impl<T: Transport> Session<T> {
     }
 
     /// N73: play a baked-atlas clip on the device (via the `animation` setting).
+    /// N833: a single clip clears a cached blend selection so the two settings
+    /// cannot both appear active on the host.
     pub fn set_animation(&mut self, clip: &str) -> Result<u32, CoreError> {
-        self.set_config("animation", clip)
+        let reply = self.set_config("animation", clip)?;
+        if self.config_cache.contains_key("animation_blend") {
+            self.config_cache
+                .insert("animation_blend".to_string(), "off".to_string());
+        }
+        Ok(reply)
     }
 
     /// N73: stop the device-side animation.
     pub fn stop_animation(&mut self) -> Result<u32, CoreError> {
-        self.set_config("animation", "off")
+        let reply = self.set_config("animation", "off")?;
+        if self.config_cache.contains_key("animation_blend") {
+            self.config_cache
+                .insert("animation_blend".to_string(), "off".to_string());
+        }
+        Ok(reply)
     }
 
     /// N73: the clip the device reported as active, if any.
     pub fn active_animation(&self) -> Option<&str> {
         self.config("animation").filter(|value| *value != "off")
+    }
+
+    /// N833: blend up to four clips (`"idle:700,wave:300"`). A non-empty blend
+    /// clears the cached single-clip selection; `off` clears the blend.
+    pub fn set_animation_blend(&mut self, blend: &str) -> Result<u32, CoreError> {
+        let reply = self.set_config("animation_blend", blend)?;
+        if parse_animation_blend(blend).is_some_and(|entries| !entries.is_empty())
+            && self.config_cache.contains_key("animation")
+        {
+            self.config_cache
+                .insert("animation".to_string(), "off".to_string());
+        }
+        Ok(reply)
+    }
+
+    /// N833: stop blending and leave the device with no running clip.
+    pub fn stop_animation_blend(&mut self) -> Result<u32, CoreError> {
+        self.set_config("animation_blend", "off")
+    }
+
+    /// N833: the blend string the device reported, if any (`off` is hidden).
+    pub fn active_animation_blend(&self) -> Option<&str> {
+        self.config("animation_blend")
+            .filter(|value| *value != "off")
     }
 
     /// N83: stop any running animation so the device presents its scene (if one
@@ -3564,6 +3649,36 @@ mod tests {
         assert_eq!(parse_surface_weights(" 2 , 4 "), Some(vec![2, 4]));
         for bad in ["", "0", "17", "1,0", "1,2,3,4,5", "1,x", "-1"] {
             assert_eq!(parse_surface_weights(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn animation_blend_config_parser_is_bounded() {
+        // N833: `off`/empty clear the blend; entries are name:weight with unique
+        // names, weights 1..=1000, and at most four clips.
+        assert_eq!(parse_animation_blend("off"), Some(Vec::new()));
+        assert_eq!(parse_animation_blend("  "), Some(Vec::new()));
+        assert_eq!(
+            parse_animation_blend("idle:700, wave:300"),
+            Some(vec![("idle".into(), 700), ("wave".into(), 300)])
+        );
+        assert_eq!(
+            format_animation_blend(&[("idle".into(), 700), ("wave".into(), 300)]),
+            "idle:700,wave:300"
+        );
+        assert_eq!(format_animation_blend(&[]), "off");
+        for bad in [
+            "idle",
+            "idle:0",
+            "idle:1001",
+            "idle:-1",
+            "idle:1,idle:2",
+            ":5",
+            "off:5",
+            "a:1,b:2,c:3,d:4,e:5",
+            "this-name-is-longer-than-thirty-two-bytes:1",
+        ] {
+            assert_eq!(parse_animation_blend(bad), None, "{bad}");
         }
     }
 
