@@ -344,10 +344,12 @@ pub fn lz_decode(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// N806: literal count and longest match read from an `MRLZ` bitstream.
+/// N816: `matches` counts how many back-references the stream contains.
 /// Encoding and [`MAX_LZ_DECODE_BYTES`] are unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LzStats {
     pub literals: u64,
+    pub matches: u64,
     pub longest_match: u16,
 }
 
@@ -363,6 +365,7 @@ pub fn lz_stats(encoded: &[u8]) -> Option<LzStats> {
     }
     let mut index = 8usize;
     let mut literals = 0u64;
+    let mut matches = 0u64;
     let mut longest_match = 0u16;
     let mut produced = 0usize;
     while produced < declared {
@@ -383,6 +386,7 @@ pub fn lz_stats(encoded: &[u8]) -> Option<LzStats> {
                 if usize::from(length) < LZ_MIN_MATCH {
                     return None;
                 }
+                matches += 1;
                 longest_match = longest_match.max(u16::from(length));
                 produced += usize::from(length);
             }
@@ -390,6 +394,7 @@ pub fn lz_stats(encoded: &[u8]) -> Option<LzStats> {
     }
     Some(LzStats {
         literals,
+        matches,
         longest_match,
     })
 }
@@ -1617,6 +1622,7 @@ mod tests {
         assert!(encoded.starts_with(b"MRLZ"));
         let mut index = 8usize;
         let mut longest = 0usize;
+        let mut match_count = 0u64;
         while index < encoded.len() {
             let control = encoded[index];
             index += 1;
@@ -1627,6 +1633,7 @@ mod tests {
                 if control & (1 << bit) == 0 {
                     index += 1;
                 } else {
+                    match_count += 1;
                     longest = longest.max(encoded[index + 2] as usize);
                     index += 3;
                 }
@@ -1639,14 +1646,18 @@ mod tests {
             data.len()
         );
         // N806: the same bitstream reports that match without a second encoding.
+        // N816: it also counts every back-reference.
         let stats = lz_stats(&encoded).unwrap();
         assert_eq!(stats.longest_match as usize, longest);
+        assert_eq!(stats.matches, match_count);
+        assert!(stats.matches > 0);
         assert!(stats.longest_match as usize >= long.len());
         assert!(stats.literals > 0);
         assert!(stats.literals < data.len() as u64);
         let plain = lz_encode(b"xyz");
         let plain_stats = lz_stats(&plain).unwrap();
         assert_eq!(plain_stats.literals, 3);
+        assert_eq!(plain_stats.matches, 0);
         assert_eq!(plain_stats.longest_match, 0);
         assert_eq!(lz_decode(&plain).as_deref(), Some(b"xyz".as_slice()));
         assert!(lz_stats(b"raw").is_none());
