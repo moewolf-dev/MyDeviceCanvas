@@ -90,6 +90,9 @@ hit-tested scene `node`. N488 lets the host tune the thresholds via
 `setMultiTapRadius(radius)` / `multiTapRadius()` (C:
 `mdc_session_set_multi_tap_radius`, a `uint32_t` so values above 4096 return
 -2) round-trip the multi-tap radius; the 3-argument setter leaves the current
-radius in place. The C ABI
+radius in place. N794: `setMultiTapMs(ms)` / `multiTapMs()` (C:
+`mdc_session_set_multi_tap_ms`, a `uint32_t`) round-trip the multi-tap window.
+`0`..=`60000` is accepted; a larger value throws in JavaScript and returns -2
+from C. The 3-argument setter leaves the current window in place. The C ABI
 reports the same events as poll kind `8` with the gesture kind in `phase` and the
 node in the `node` out-param.

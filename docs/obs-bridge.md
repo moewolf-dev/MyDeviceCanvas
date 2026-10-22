@@ -122,7 +122,12 @@ stale validator ignores the range and returns the full `200` (HEAD keeps the
 full `Content-Length`). N790: `If-None-Match` uses weak comparison, so `W/"tag"`
 matches a strong `"tag"` and can still return `304`. `If-Match` and `If-Range`
 stay strong: a `W/` validator does not satisfy them, and a failing `If-Match`
-returns `412` before any `304`. Generated frame tags remain strong.
+returns `412` before any `304`. Generated frame tags remain strong unless the
+request query contains `weak=1` (N800). That response ETag is prefixed with
+`W/`. `If-None-Match` still matches it weakly (including the opaque form without
+`W/`) and can return `304`. `If-Match` and `If-Range` stay strong comparisons, so
+a weak validator on either side does not satisfy them and a failing `If-Match`
+still returns `412` first. `weak=0` and every other query keep a strong tag.
 
 ## Guarantees
 

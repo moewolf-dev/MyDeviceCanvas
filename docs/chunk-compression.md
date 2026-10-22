@@ -1,4 +1,4 @@
-# Chunk compression (N757 / N766 / N776 / N786)
+# Chunk compression (N757 / N766 / N776 / N786 / N796)
 
 Stored asset chunks are compressed per chunk (chunk boundaries are fixed by the
 `ChunkStore`), so identical byte ranges still dedupe by their SHA-256 of the
@@ -30,8 +30,11 @@ length is checked on decode. RLE is chosen for long single-byte runs.
 - Encoding is deterministic. N786: each 3-byte key keeps a chain of up to 64
   earlier positions (newest first). The encoder takes the longest in-window
   match and, on a tie, the nearer distance. The current index is linked before
-  the next search, and so are the interior positions of a match. The bitstream
-  (magic, control byte, `u16` distance, `u8` length) is unchanged.
+  the next search, and so are the interior positions of a match. N796: if the
+  next byte starts a strictly longer match, the encoder emits one literal and
+  takes that longer match on the following step. The bitstream
+  (magic, control byte, `u16` distance, `u8` length) and `MAX_LZ_DECODE_BYTES`
+  are unchanged.
 - `MAX_LZ_DECODE_BYTES` (16 MiB) is checked against the declared length **before**
   allocating the output buffer. Every match is validated against already-produced
   bytes and against the declared length, so a decompression bomb or corrupt
@@ -45,8 +48,8 @@ container header and control overhead.
 
 | Fixture | Input bytes | LZ output bytes | Ratio |
 |---|---:|---:|---:|
-| Repeated English sentence | 3,328 | 112 | 0.034 |
-| Constant `0x5A` | 4,096 | 60 | 0.015 |
+| Repeated English sentence | 2,880 | 95 | 0.033 |
+| Constant `0x5A` | 4,096 | 63 | 0.015 |
 | xorshift binary stream | 1,024 | 1,160 | 1.133 |
 
 For incompressible data the worst case is the literal path: 1 control byte per 8

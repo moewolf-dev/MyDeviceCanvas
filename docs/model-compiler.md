@@ -327,7 +327,11 @@ consistent with the trimmed size. N779: an opaque page is sampled through
 the full-size page. N789: a page that also has a 1-bit alpha plane still selects
 that colour level; the mask is an any-opaque box filter of level 0 onto the
 chosen size (`texture_for_target`), because mip payloads themselves carry no
-alpha.
+alpha. N799: a palette-indexed blob has no stored RGB mip chain, so the same
+selection synthesizes `width >> level` by `height >> level` indices. Each coarse
+texel averages the RGB565 colours in its box and keeps the closest palette index
+that appears in that box (a uniform box keeps its index). Alpha, when present,
+is still the level-0 any-opaque resample. The result validates as an indexed blob.
 
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a
@@ -489,6 +493,9 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
   per-axis scale (`v / scale`, then the quaternion, then renormalise). A single
   non-uniform joint therefore shades like an inverse-transpose, which is not
   the forward LBS direction; both stay unit length and the tangent `w` is kept.
+- N795: two joints with different diagonal scales stay finite. A weight of 1 on
+  one joint matches that joint's single-joint inverse-transpose; a split weight
+  matches the weight-averaged per-axis scale, then the same quaternion.
 - N746: `render_package_mesh_skinned` sends skinned mesh packages through the
   scene renderer with an explicit `SkinMode`, so DQS affects mesh-package
   normals/tangents as well as the scene path; skeleton-less packages keep the

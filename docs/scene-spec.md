@@ -151,6 +151,9 @@ A device that accepts a scene rasterizes it locally:
   one stream.
   `Z` returns the current point to the subpath start; relative accumulation
   saturates instead of wrapping.
+  N793: `mode` may include `width=N` (1..=8), a square stamp around each
+  Bresenham pixel. A missing, non-numeric, or out-of-range token stays at 1
+  pixel and does not reject the path.
 - N744: `mask` composites its children only inside the polygon from `value2`
   (same point syntax as `polygon`); children keep absolute coordinates and the
   node is clipped to the framebuffer. A missing/short polygon draws nothing.
@@ -177,6 +180,10 @@ A device that accepts a scene rasterizes it locally:
   sample bilinearly, so the parallelogram is filled and the empty corner of the
   bounding box stays transparent. Axis-aligned images keep their previous
   nearest/bilinear path.
+  N798: that inverse map composes `flip-h` / `flip-v` and `rotate`
+  (0/90/180/270) before the bilinear sample. A horizontal flip or a half-turn
+  swaps the ends of a left/right image; both together restore them. The empty
+  corner stays transparent.
 - `render_scene` clears the framebuffer first (N137), so repeated renders are
   deterministic rather than accumulating.
 - A clip `fade_in_ms` darkens the atlas frame until that many virtual milliseconds pass.

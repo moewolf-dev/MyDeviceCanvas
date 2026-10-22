@@ -2,6 +2,28 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.92] — path stroke width, multi-tap window SDK, multi-joint DQS, LZ lazy matches, weight reset, sheared flip/rotate, indexed mips, weak ETag output, single-file archive (N793–N802)
+
+### Added
+
+- `path` `mode` token `width=N` (1..=8) thickens the stroke; missing or invalid tokens stay 1 pixel (N793)
+- C `mdc_session_set_multi_tap_ms` and Node `setMultiTapMs` / `multiTapMs` (N794)
+- two-joint DQS normals follow the weight-averaged inverse-transpose scale (N795)
+- LZSS lazy matching: a longer match at the next byte is taken after one literal (N796)
+- `WeightedSharedScheduler::reset_served` clears the cross-call credit (N797)
+- sheared `image` / `sprite` sampling composes `flip-h` / `flip-v` and quarter-turns (N798)
+- indexed atlases resample palette indices onto the selected mip; alpha stays any-opaque from level 0 (N799)
+- `/frame.*` query `weak=1` emits a `W/` ETag; `304` stays weak and `412` / `If-Range` stay strong (N800)
+- `mdc texture-report <image> --json --out FILE` atomically archives the single-file JSON (N801)
+
+### Notes
+
+- Host/simulator only. D05, G03 and H06 remain open until physical hardware is
+  measured; no board is claimed working.
+- The 3-argument gesture setter still keeps the current multi-tap window and radius.
+- Lazy LZ keeps the `MRLZ` bitstream and `MAX_LZ_DECODE_BYTES`. Re-measured ratios:
+  text 0.033 (2,880 → 95), repeated `0x5A` 0.015 (4,096 → 63), binary 1.133 (1,024 → 1,160).
+
 ## [0.1.91] — implicit path groups, multi-tap radius SDK, DQS inverse-transpose, LZ hash chains, weight credit, sheared images, alpha mips, weak ETags, texture-report archive (N783–N792)
 
 ### Added
