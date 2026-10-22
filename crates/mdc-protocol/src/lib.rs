@@ -3291,6 +3291,49 @@ mod tests {
     }
 
     #[test]
+    fn scene_animation_new_fields_are_additive() {
+        // N823/N825/N827: an old CBOR animation payload decodes unchanged and
+        // the new tracks stay absent on the wire when unset.
+        #[derive(Serialize)]
+        struct OldAnim {
+            duration_ms: u32,
+            looping: bool,
+            opacity: Vec<[u16; 2]>,
+        }
+        let old_bytes = serde_cbor::to_vec(&OldAnim {
+            duration_ms: 10,
+            looping: true,
+            opacity: vec![[0, 255]],
+        })
+        .unwrap();
+        let old: SceneAnim = serde_cbor::from_slice(&old_bytes).unwrap();
+        assert!(old.delay_ms.is_none());
+        assert!(old.speed_permille.is_none());
+        assert!(old.color.is_empty());
+        assert!(old.rotate.is_empty());
+        assert_eq!(old.opacity_at(5), Some(255));
+        let wire = String::from_utf8_lossy(&serde_cbor::to_vec(&old).unwrap()).into_owned();
+        assert!(!wire.contains("delay_ms"));
+        assert!(!wire.contains("color"));
+        assert!(!wire.contains("rotate"));
+
+        let new = SceneAnim {
+            duration_ms: 10,
+            delay_ms: Some(5),
+            speed_permille: Some(2000),
+            color: vec![SceneColorKey {
+                time_ms: 0,
+                value: "red".into(),
+            }],
+            rotate: vec![[0, 90]],
+            ..SceneAnim::default()
+        };
+        assert_eq!(new.local_time(10), 10);
+        assert_eq!(new.color_at(0), Some([255, 0, 0]));
+        assert_eq!(new.rotate_at(0), Some(90));
+    }
+
+    #[test]
     fn scene_colour_keyframes_drive_colour_values_only() {
         // N825: colour keys interpolate per channel and write `value` on colour
         // kinds. Text/image/sprite payloads are never overwritten.
