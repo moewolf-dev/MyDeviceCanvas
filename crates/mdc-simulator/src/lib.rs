@@ -5479,6 +5479,11 @@ mod tests {
         session.poll().unwrap();
         assert_eq!(device.animation_blend().len(), 2);
         assert_eq!(session.active_animation_blend(), Some("idle:500,wave:500"));
+        assert_eq!(
+            session.active_animation(),
+            None,
+            "the blend replaced the cached single clip"
+        );
         assert!(device.render_atlas_frame());
         assert_eq!(
             device.pixel_rgb565(0, 0),
@@ -5498,6 +5503,7 @@ mod tests {
         session.poll().unwrap();
         assert!(device.animation_blend().is_empty());
         assert_eq!(device.active_clip(), Some("idle"));
+        assert_eq!(session.active_animation_blend(), None);
 
         // `off` clears both.
         session.set_animation_blend("idle:500,wave:500").unwrap();

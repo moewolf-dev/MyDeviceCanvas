@@ -2917,25 +2917,13 @@ impl<T: Transport> Session<T> {
     }
 
     /// N73: play a baked-atlas clip on the device (via the `animation` setting).
-    /// N833: a single clip clears a cached blend selection so the two settings
-    /// cannot both appear active on the host.
     pub fn set_animation(&mut self, clip: &str) -> Result<u32, CoreError> {
-        let reply = self.set_config("animation", clip)?;
-        if self.config_cache.contains_key("animation_blend") {
-            self.config_cache
-                .insert("animation_blend".to_string(), "off".to_string());
-        }
-        Ok(reply)
+        self.set_config("animation", clip)
     }
 
     /// N73: stop the device-side animation.
     pub fn stop_animation(&mut self) -> Result<u32, CoreError> {
-        let reply = self.set_config("animation", "off")?;
-        if self.config_cache.contains_key("animation_blend") {
-            self.config_cache
-                .insert("animation_blend".to_string(), "off".to_string());
-        }
-        Ok(reply)
+        self.set_config("animation", "off")
     }
 
     /// N73: the clip the device reported as active, if any.
@@ -2943,17 +2931,10 @@ impl<T: Transport> Session<T> {
         self.config("animation").filter(|value| *value != "off")
     }
 
-    /// N833: blend up to four clips (`"idle:700,wave:300"`). A non-empty blend
-    /// clears the cached single-clip selection; `off` clears the blend.
+    /// N833: blend up to four clips (`"idle:700,wave:300"`). The device replaces
+    /// the single clip; the cache follows the accepted reply.
     pub fn set_animation_blend(&mut self, blend: &str) -> Result<u32, CoreError> {
-        let reply = self.set_config("animation_blend", blend)?;
-        if parse_animation_blend(blend).is_some_and(|entries| !entries.is_empty())
-            && self.config_cache.contains_key("animation")
-        {
-            self.config_cache
-                .insert("animation".to_string(), "off".to_string());
-        }
-        Ok(reply)
+        self.set_config("animation_blend", blend)
     }
 
     /// N833: stop blending and leave the device with no running clip.
@@ -2994,6 +2975,16 @@ impl<T: Transport> Session<T> {
         };
         if reply.ok {
             if let Some(value) = reply.value {
+                // N833: a successful animation reply means the device replaced
+                // the other selection; mirror that in the cache. A rejected set
+                // produces no reply here, so the old value survives.
+                if reply.key == "animation" {
+                    self.config_cache
+                        .insert("animation_blend".to_string(), "off".to_string());
+                } else if reply.key == "animation_blend" {
+                    self.config_cache
+                        .insert("animation".to_string(), "off".to_string());
+                }
                 self.config_cache.insert(reply.key, value);
             }
         }
