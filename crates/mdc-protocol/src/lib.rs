@@ -739,11 +739,12 @@ impl SceneAnim {
     /// colour keyframes. Invalid colour values are skipped rather than treated
     /// as white.
     pub fn color_at(&self, time_ms: u64) -> Option<[u8; 3]> {
-        let frames: Vec<(u32, [u8; 3])> = self
+        let mut frames: Vec<(u32, [u8; 3])> = self
             .color
             .iter()
             .filter_map(|key| parse_color_rgb(&key.value).map(|rgb| (u32::from(key.time_ms), rgb)))
             .collect();
+        frames.sort_by_key(|(time, _)| *time);
         if frames.is_empty() {
             return None;
         }
@@ -3361,6 +3362,22 @@ mod tests {
         assert_eq!(anim.color_at(0), Some([0, 0, 0]));
         assert_eq!(anim.color_at(50), Some([128, 128, 128]));
         assert_eq!(anim.color_at(500), Some([255, 255, 255]));
+        // Keys are sampled in time order even when authored out of order.
+        let unsorted = SceneAnim {
+            color: vec![
+                SceneColorKey {
+                    time_ms: 100,
+                    value: "#FFFFFF".into(),
+                },
+                SceneColorKey {
+                    time_ms: 0,
+                    value: "#000000".into(),
+                },
+            ],
+            ..anim.clone()
+        };
+        assert_eq!(unsorted.color_at(0), Some([0, 0, 0]));
+        assert_eq!(unsorted.color_at(50), Some([128, 128, 128]));
         // Invalid values are skipped instead of falling back to white.
         let partial = SceneAnim {
             color: vec![
