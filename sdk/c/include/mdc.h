@@ -171,6 +171,13 @@ int mdc_session_set_multi_tap_radius(MdcSession* session, uint32_t radius);
 /** N784: write the current multi-tap radius (null out-param is ignored). */
 int mdc_session_multi_tap_radius(const MdcSession* session, uint16_t* radius);
 
+/** N794: set the multi-tap window in milliseconds (0..=60000). Above 60000
+ *  returns -2. A null session returns -1. Does not change the 3-argument setter. */
+int mdc_session_set_multi_tap_ms(MdcSession* session, uint32_t ms);
+
+/** N794: write the current multi-tap window (null out-param is ignored). */
+int mdc_session_multi_tap_ms(const MdcSession* session, uint32_t* ms);
+
 /** Form B: ask the device to start mirroring `surface_id` (NULL = "main"). 0 or negative. */
 int mdc_start_mirror(MdcSession* session, const char* surface_id, uint16_t max_fps);
 

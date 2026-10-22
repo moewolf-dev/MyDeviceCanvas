@@ -282,6 +282,9 @@ pub struct GestureConfig {
     pub multi_tap_radius: u16,
 }
 
+/// N794: `mdc_session_set_multi_tap_ms` refuses a window above this (milliseconds).
+pub const MULTI_TAP_MS_MAX: u64 = 60_000;
+
 impl Default for GestureConfig {
     fn default() -> Self {
         Self {

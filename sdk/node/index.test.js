@@ -183,6 +183,23 @@ test("multi-tap radius round-trips and rejects an out-of-range value", async () 
   mdc.dispose();
 });
 
+test("multi-tap window round-trips and rejects an out-of-range value", async () => {
+  const writes = [];
+  const mdc = new MyDeviceCanvas({
+    multiTapMs() { return writes.at(-1) ?? 300; },
+    setMultiTapMs(ms) { writes.push(ms); return ms; },
+  });
+  assert.equal(await mdc.multiTapMs(), 300);
+  assert.equal(await mdc.setMultiTapMs(450), 450);
+  assert.equal(await mdc.multiTapMs(), 450);
+  assert.equal(await mdc.setMultiTapMs(60000), 60000);
+  await assert.rejects(() => mdc.setMultiTapMs(60001), /out of range/);
+  await assert.rejects(() => mdc.setMultiTapMs(1.5), /out of range/);
+  await assert.rejects(() => mdc.setMultiTapMs(-1), /out of range/);
+  assert.deepEqual(writes, [450, 60000]);
+  mdc.dispose();
+});
+
 test("config get/set go through the public SDK", async () => {
   const writes = [];
   const mdc = new MyDeviceCanvas({

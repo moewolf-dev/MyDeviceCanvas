@@ -226,6 +226,26 @@ export class MyDeviceCanvas {
     }
     return this._native.setMultiTapRadius(value);
   }
+  /** N794: the multi-tap window in milliseconds (default 300 before a session exists). */
+  async multiTapMs() {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.multiTapMs !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.multiTapMs();
+  }
+  /** N794: set the multi-tap window. `0` is simultaneous-only; above 60000 throws. */
+  async setMultiTapMs(ms) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.setMultiTapMs !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    const value = Number(ms);
+    if (!Number.isInteger(value) || value < 0 || value > 60000) {
+      throw new Error("multi_tap_ms out of range");
+    }
+    return this._native.setMultiTapMs(value);
+  }
   /** N42: read a device configuration value. */
   async getConfig(key) {
     if (this._disposed) throw new Error("manager is disposed");

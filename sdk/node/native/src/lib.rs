@@ -888,6 +888,44 @@ impl NativeManager {
         Ok(config.multi_tap_radius)
     }
 
+    /// N794: the current multi-tap window in milliseconds.
+    #[napi(js_name = "multiTapMs")]
+    pub fn multi_tap_ms(&self) -> Result<u32> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        let ms = match state.sim.as_ref() {
+            Some(sim) => sim.session.gesture_config().multi_tap_ms,
+            None => mdc_core::GestureConfig::default().multi_tap_ms,
+        };
+        Ok(u32::try_from(ms).unwrap_or(u32::MAX))
+    }
+
+    /// N794: set the multi-tap window. Values above 60000 are refused.
+    #[napi(js_name = "setMultiTapMs")]
+    pub fn set_multi_tap_ms(&self, ms: u32) -> Result<u32> {
+        if u64::from(ms) > mdc_core::MULTI_TAP_MS_MAX {
+            return Err(Error::from_reason("multi_tap_ms out of range"));
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        let mut config = sim.session.gesture_config();
+        config.multi_tap_ms = u64::from(ms);
+        sim.session.set_gesture_config(config);
+        Ok(ms)
+    }
+
     /// N42: write a device configuration value and return the accepted value.
     #[napi(js_name = "setConfig")]
     pub fn set_config(&self, key: String, value: String) -> Result<String> {

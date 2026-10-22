@@ -306,6 +306,45 @@ pub unsafe extern "C" fn mdc_session_set_multi_tap_radius(
     0
 }
 
+/// N794: set the multi-tap window. `0` chains only simultaneous taps; values
+/// above [`mdc_core::MULTI_TAP_MS_MAX`] return -2. A null session returns -1.
+///
+/// # Safety
+///
+/// `session` must be a valid pointer returned by a `mdc_session_*` constructor.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_set_multi_tap_ms(session: *mut MdcSession, ms: u32) -> c_int {
+    if u64::from(ms) > mdc_core::MULTI_TAP_MS_MAX {
+        return -2;
+    }
+    let Some(session) = session.as_mut() else {
+        return -1;
+    };
+    let mut config = session.session.gesture_config();
+    config.multi_tap_ms = u64::from(ms);
+    session.session.set_gesture_config(config);
+    0
+}
+
+/// N794: write the current multi-tap window (a null out-param is ignored).
+///
+/// # Safety
+///
+/// `session` must be a valid pointer returned by a `mdc_session_*` constructor.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_multi_tap_ms(
+    session: *const MdcSession,
+    ms: *mut u32,
+) -> c_int {
+    let Some(session) = session.as_ref() else {
+        return -1;
+    };
+    if !ms.is_null() {
+        *ms = u32::try_from(session.session.gesture_config().multi_tap_ms).unwrap_or(u32::MAX);
+    }
+    0
+}
+
 /// N784: write the current multi-tap radius (a null out-param is ignored).
 ///
 /// # Safety
@@ -2476,6 +2515,28 @@ mod tests {
             assert_eq!(mdc_session_set_gesture_config(session, 111, 2222, 9), 0);
             assert_eq!(mdc_session_multi_tap_radius(session, &mut radius), 0);
             assert_eq!(radius, 8);
+            // N794: the window round-trips, an out-of-range value is refused,
+            // and the 3-argument setter keeps the custom window and radius.
+            let mut window = 0u32;
+            assert_eq!(mdc_session_multi_tap_ms(session, &mut window), 0);
+            assert_eq!(window, 300);
+            assert_eq!(mdc_session_set_multi_tap_ms(session, 450), 0);
+            assert_eq!(mdc_session_multi_tap_ms(session, &mut window), 0);
+            assert_eq!(window, 450);
+            assert_eq!(mdc_session_set_multi_tap_ms(session, 60_001), -2);
+            assert_eq!(mdc_session_multi_tap_ms(session, &mut window), 0);
+            assert_eq!(window, 450);
+            assert_eq!(mdc_session_set_multi_tap_ms(std::ptr::null_mut(), 10), -1);
+            assert_eq!(mdc_session_multi_tap_ms(std::ptr::null(), &mut window), -1);
+            assert_eq!(mdc_session_multi_tap_ms(session, std::ptr::null_mut()), 0);
+            assert_eq!(mdc_session_set_gesture_config(session, 111, 2222, 9), 0);
+            assert_eq!(mdc_session_multi_tap_ms(session, &mut window), 0);
+            assert_eq!(window, 450);
+            assert_eq!(mdc_session_multi_tap_radius(session, &mut radius), 0);
+            assert_eq!(radius, 8);
+            assert_eq!(mdc_session_set_multi_tap_radius(session, 12), 0);
+            assert_eq!(mdc_session_multi_tap_ms(session, &mut window), 0);
+            assert_eq!(window, 450);
             mdc_session_destroy(session);
         }
     }

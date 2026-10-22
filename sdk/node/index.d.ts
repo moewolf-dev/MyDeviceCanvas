@@ -140,6 +140,10 @@ export declare class MyDeviceCanvas {
   multiTapRadius(): Promise<number>;
   /** N784: set the multi-tap radius (`0`..=`4096`). */
   setMultiTapRadius(radius: number): Promise<number>;
+  /** N794: multi-tap window in milliseconds. */
+  multiTapMs(): Promise<number>;
+  /** N794: set the multi-tap window (`0`..=`60000`). */
+  setMultiTapMs(ms: number): Promise<number>;
   getConfig(key: string): Promise<string>;
   setConfig(key: string, value: string | number): Promise<string>;
   setScene(node: { name: string; kind: string; children?: unknown[]; value?: string }): Promise<void>;
