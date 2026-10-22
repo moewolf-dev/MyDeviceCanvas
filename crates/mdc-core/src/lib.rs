@@ -6458,8 +6458,13 @@ mod tests {
         };
         assert_eq!(tap_at(0), Some(GestureKind::Tap));
         assert_eq!(tap_at(100), Some(GestureKind::DoubleTap));
-        assert_eq!(tap_at(201), Some(GestureKind::Tap));
-        assert_eq!(tap_at(250), Some(GestureKind::DoubleTap));
+        // N814: a third tap inside the stored window is a triple-tap.
+        assert_eq!(tap_at(200), Some(GestureKind::TripleTap));
+        // The triple resets the streak; a tap outside the window restarts at 1.
+        assert_eq!(tap_at(350), Some(GestureKind::Tap));
+        assert_eq!(tap_at(430), Some(GestureKind::DoubleTap));
+        assert_eq!(tap_at(600), Some(GestureKind::Tap));
+        assert_eq!(tap_at(680), Some(GestureKind::DoubleTap));
     }
 
     #[test]
