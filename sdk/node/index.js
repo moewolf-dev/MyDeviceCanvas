@@ -292,6 +292,25 @@ export class MyDeviceCanvas {
     }
     return this._native.stopAnimation();
   }
+  /** N837: blend clips as `"clip:weight,clip:weight"`; `"off"` stops. */
+  async setAnimationBlend(blend) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.setAnimationBlend !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    if (typeof blend !== "string") {
+      throw new TypeError("setAnimationBlend expects a string");
+    }
+    return this._native.setAnimationBlend(blend);
+  }
+  /** N837: the accepted blend, or `"off"`. */
+  async animationBlend() {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.animationBlend !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.animationBlend();
+  }
   /** N234: upload a runtime package (Uint8Array of `.mdcpkg` bytes). */
   async installPackage(bytes) {
     if (this._disposed) throw new Error("manager is disposed");

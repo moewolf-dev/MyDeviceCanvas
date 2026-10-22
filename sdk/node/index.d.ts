@@ -150,6 +150,10 @@ export declare class MyDeviceCanvas {
   clearScene(): Promise<void>;
   setAnimation(clip: string): Promise<string>;
   stopAnimation(): Promise<void>;
+  /** N837: blend clips as `"clip:weight,clip:weight"`; `"off"` stops. */
+  setAnimationBlend(blend: string): Promise<string>;
+  /** N837: the accepted blend, or `"off"`. */
+  animationBlend(): Promise<string>;
   /** N234: upload a runtime package (`.mdcpkg` bytes). */
   installPackage(bytes: Uint8Array): Promise<boolean>;
   /** N238: true once the last accepted package is render-ready. */

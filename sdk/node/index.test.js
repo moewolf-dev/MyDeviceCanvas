@@ -228,8 +228,16 @@ test("animation helpers go through the public SDK", async () => {
   const mdc = new MyDeviceCanvas({
     setAnimation(clip) { calls.push(clip); return clip; },
     stopAnimation() { calls.push("off"); },
+    setAnimationBlend(blend) { calls.push(blend); return blend; },
+    animationBlend() { return "idle:700,wave:300"; },
   });
   assert.equal(await mdc.setAnimation("idle"), "idle");
   await mdc.stopAnimation();
-  assert.deepEqual(calls, ["idle", "off"]);
+  assert.equal(
+    await mdc.setAnimationBlend("idle:700,wave:300"),
+    "idle:700,wave:300"
+  );
+  assert.equal(await mdc.animationBlend(), "idle:700,wave:300");
+  await assert.rejects(mdc.setAnimationBlend(7), /string/);
+  assert.deepEqual(calls, ["idle", "off", "idle:700,wave:300"]);
 });

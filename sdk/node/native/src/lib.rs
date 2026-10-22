@@ -1021,6 +1021,50 @@ impl NativeManager {
         Ok(())
     }
 
+    /// N837: blend up to four clips (`"idle:700,wave:300"`).
+    #[napi(js_name = "setAnimationBlend")]
+    pub fn set_animation_blend(&self, blend: String) -> Result<String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        sim.session
+            .set_animation_blend(&blend)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        pump_link(sim)?;
+        Ok(sim
+            .session
+            .active_animation_blend()
+            .unwrap_or("off")
+            .to_string())
+    }
+
+    /// N837: the blend the device last accepted (`"off"` when inactive).
+    #[napi(js_name = "animationBlend")]
+    pub fn animation_blend(&self) -> Result<String> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        let sim = state
+            .sim
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("no simulator session"))?;
+        Ok(sim
+            .session
+            .active_animation_blend()
+            .unwrap_or("off")
+            .to_string())
+    }
+
     /// N233: upload a runtime package (`.mdcpkg` bytes) and report readiness.
     #[napi(js_name = "installPackage")]
     pub fn install_package(&self, bytes: Buffer) -> Result<bool> {
