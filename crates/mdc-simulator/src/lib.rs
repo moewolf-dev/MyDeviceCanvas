@@ -2316,8 +2316,10 @@ fn fill_scene(
             (x as f32, y as f32)
         };
         let color = node.color_rgb565();
-        // N793: `mode` token `width=N` thickens every path segment.
+        // N793/N803: `width=N` thickens every path segment; `dash=N` skips the
+        // gap pixels of that same Bresenham step before the stamp is applied.
         let stroke = node.stroke_width();
+        let dash = node.stroke_dash();
         if let Some(commands) = node.path_commands() {
             let mut current: Option<(f32, f32)> = None;
             let mut start_point: Option<(f32, f32)> = None;
@@ -2338,7 +2340,7 @@ fn fill_scene(
                     ],
                     color,
                     alpha,
-                    0,
+                    dash,
                     stroke,
                 );
             };
@@ -2589,7 +2591,7 @@ fn fill_scene(
                     ],
                     color,
                     alpha,
-                    0,
+                    dash,
                     stroke,
                 );
                 previous = current;
@@ -7383,6 +7385,36 @@ mod tests {
             Some(0),
             "out-of-range width stays 1"
         );
+        // N803: dash=4 width=3 paints a thick on-segment and leaves a gap pixel
+        // clear. The square stamp reaches one pixel into the gap, so the
+        // asserted gap pixel sits beyond that stamp.
+        render_mode(&mut device, "dash=4,width=3");
+        assert_ne!(device.pixel_rgb565(5, 8), Some(0), "dash segment center");
+        assert_ne!(
+            device.pixel_rgb565(5, 9),
+            Some(0),
+            "width covers the dash segment"
+        );
+        assert_eq!(device.pixel_rgb565(9, 8), Some(0), "dash gap stays clear");
+        assert_eq!(
+            device.pixel_rgb565(9, 9),
+            Some(0),
+            "width does not fill the gap"
+        );
+        render_mode(&mut device, "dash=4,width=nope");
+        assert_ne!(device.pixel_rgb565(4, 8), Some(0), "dashed stroke still on");
+        assert_eq!(
+            device.pixel_rgb565(4, 9),
+            Some(0),
+            "invalid width stays one pixel on a dash"
+        );
+        assert_eq!(device.pixel_rgb565(8, 8), Some(0), "the gap stays clear");
+        render_mode(&mut device, "width=1");
+        assert_ne!(
+            device.pixel_rgb565(8, 8),
+            Some(0),
+            "a solid path keeps the gap pixel"
+        );
     }
 
     #[test]
@@ -7618,6 +7650,31 @@ mod tests {
             device.pixel_rgb565(10, 2),
             Some(0),
             "outside the sheared mask"
+        );
+
+        // N808: an image child is masked to the same parallelogram. Pixels the
+        // image would paint outside the lean stay clear.
+        show(
+            &mut device,
+            r##"{"name":"g","kind":"group","value2":"1000,0","children":[
+                 {"name":"c","kind":"clip","rect":[0,0,4,12],"children":[
+                   {"name":"img","kind":"image","rect":[0,0,16,16],
+                    "value":"F800F800F800F800","value2":"2,2"}]}]}"##,
+        );
+        assert_eq!(
+            device.pixel_rgb565(12, 10),
+            Some(0xF800),
+            "image pixel inside the parallelogram"
+        );
+        assert_eq!(
+            device.pixel_rgb565(16, 10),
+            Some(0),
+            "image pixel outside the parallelogram"
+        );
+        assert_eq!(
+            device.pixel_rgb565(4, 10),
+            Some(0),
+            "axis-aligned box outside the lean"
         );
     }
 

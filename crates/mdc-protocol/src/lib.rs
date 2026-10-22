@@ -802,6 +802,24 @@ impl SceneNode {
         width
     }
 
+    /// N803: path dash length from a `mode` token `dash=N` (1..=64). A missing
+    /// or invalid token stays at 0, which paints a solid stroke. A later invalid
+    /// token does not clear an earlier dash.
+    pub fn stroke_dash(&self) -> u16 {
+        let mut dash = 0u16;
+        for token in self.mode.as_deref().unwrap_or("").split(',') {
+            let Some(value) = token.trim().strip_prefix("dash=") else {
+                continue;
+            };
+            if let Ok(parsed) = value.trim().parse::<u16>() {
+                if (1..=64).contains(&parsed) {
+                    dash = parsed;
+                }
+            }
+        }
+        dash
+    }
+
     /// N450: whether the node is visible (default true).
     pub fn is_visible(&self) -> bool {
         self.visible.unwrap_or(true)
@@ -3234,6 +3252,23 @@ mod tests {
         assert_eq!(path.stroke_width(), 1);
         path.mode = Some("width=4,width=nope".into());
         assert_eq!(path.stroke_width(), 4);
+        // N803: `dash=N` is 1..=64 and does not change the stroke width.
+        assert_eq!(path.stroke_dash(), 0);
+        path.mode = Some("dash=4,width=3".into());
+        assert_eq!(path.stroke_dash(), 4);
+        assert_eq!(path.stroke_width(), 3);
+        path.mode = Some("width=5,dash=64".into());
+        assert_eq!(path.stroke_dash(), 64);
+        assert_eq!(path.stroke_width(), 5);
+        path.mode = Some("dash=0".into());
+        assert_eq!(path.stroke_dash(), 0);
+        path.mode = Some("dash=65".into());
+        assert_eq!(path.stroke_dash(), 0);
+        path.mode = Some("dash=nope".into());
+        assert_eq!(path.stroke_dash(), 0);
+        path.mode = Some("dash=8,dash=nope".into());
+        assert_eq!(path.stroke_dash(), 8);
+        assert_eq!(path.stroke_width(), 1);
     }
 
     #[test]
