@@ -5392,6 +5392,19 @@ mod tests {
         let (report, _) = texture_report_value(&path.to_string_lossy()).unwrap();
         assert_eq!(archived, texture_report_item(report));
         assert_eq!(archived["kind"], "texture");
+        // N821: an existing target is atomically replaced; the new file carries
+        // the same document and no `.tmp` survives.
+        std::fs::write(&out, b"stale").unwrap();
+        cmd_texture_report(&[
+            path.to_string_lossy().into_owned(),
+            "--json".into(),
+            "--out".into(),
+            out.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        let replaced: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        assert_eq!(replaced, archived, "the existing file is overwritten");
         // N811: `--out` creates a missing parent and writes the same JSON.
         let nested = dir.join("missing").join("one.json");
         assert!(!nested.parent().unwrap().exists());

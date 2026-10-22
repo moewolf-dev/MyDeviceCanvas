@@ -242,7 +242,8 @@ document (`kind:"texture"`) with the same temp-file `rename`; `--out` without
 transparent image still exits 1 after the archive is written. N811: both the
 single-file and `--batch` `--json --out` forms create a missing parent
 directory before the atomic rename. A failed rename still leaves no sibling
-`.tmp`.
+`.tmp`. N821: when the target already exists, the temp file replaces it
+atomically and the archived JSON matches stdout; no `.tmp` survives.
 
 N758: `Session::plan_shared_surface_tiles()` plans every device surface against
 one budget (the active pacing scheduler, or unlimited) and returns
@@ -263,7 +264,9 @@ strictly longer, emits one literal instead. The `MRLZ` layout and
 `MAX_LZ_DECODE_BYTES` are unchanged; the re-measured ratios are in
 [`chunk-compression.md`](chunk-compression.md). N806: `lz_stats` reads the
 literal count and the longest match from that bitstream and does not encode
-a second stream. N784: C
+a second stream. N816: the same read-only pass also counts back-reference
+matches (`matches`); the lazy fixture's longest match is still at least 8.
+N784: C
 `mdc_session_set_multi_tap_radius` / Node `setMultiTapRadius` set the radius
 without changing the 3-argument gesture setter, which keeps the current radius.
 N794: `mdc_session_set_multi_tap_ms` / Node `setMultiTapMs` set the window
@@ -271,11 +274,15 @@ N794: `mdc_session_set_multi_tap_ms` / Node `setMultiTapMs` set the window
 that window too. N804: a window stored with `set_gesture_config` /
 `setMultiTapMs` splits chains — taps inside `multi_tap_ms` become a
 double-tap, and taps outside it stay separate taps. The 3-argument setter
-still leaves the current window and radius unchanged. N787: `WeightedSharedScheduler` carries weight credit across
+still leaves the current window and radius unchanged. N814: a third tap inside
+the same stored window is a triple-tap; after that reset, a tap outside the
+window starts again at one. N787: `WeightedSharedScheduler` carries weight credit across
 `plan` calls so a one-tile budget converges to the weight ratio; `plan_shared`
 stays fair-first. N797: `served(surface)` reads the accumulated count and
 `reset_served()` clears it so the next plans converge again. N807:
 `export_served` / `import_served` round-trip those counts, and the next
-`plan` calls continue from the imported snapshot.
+`plan` calls continue from the imported snapshot. N817: an import is partial —
+listed surfaces are overwritten and unlisted surfaces keep their counts, so a
+later plan continues exactly like a scheduler that always had that history.
 
 
