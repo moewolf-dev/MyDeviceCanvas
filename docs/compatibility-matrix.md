@@ -509,6 +509,15 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Indexed mip tie-break (N809) | sim-verified (palette resample) | physical: pending |
 | Weak If-Range (N810) | sim-verified (200/206) | n/a |
 | texture-report --out parent (N811) | sim-verified (single and batch) | n/a |
+| Path dash phase (N813) | sim-verified (device pixels) | physical: pending |
+| Triple-tap in the stored window (N814) | sim-verified (session events) | n/a |
+| Rotated multi-joint DQS tangents (N815) | sim-verified (finite, w kept) | physical: pending |
+| LZ match count (N816) | sim-verified (read-only bitstream) | n/a |
+| Partial served-count import (N817) | sim-verified (unlisted kept) | n/a |
+| Sheared clip sprite (N818) | sim-verified (device pixels) | physical: pending |
+| Indexed mip two-box level (N819) | sim-verified (palette resample) | physical: pending |
+| Date If-Range on a weak tag (N820) | sim-verified (200/206) | n/a |
+| texture-report --out overwrite (N821) | sim-verified (atomic replace) | n/a |
 
 Rows marked `sim-verified` describe host/simulator behaviour only. The KTX2 row
 is also emitted by `mdc verify` as `compatibility_row`, generated from the same

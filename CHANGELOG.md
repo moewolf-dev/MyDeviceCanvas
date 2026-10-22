@@ -2,6 +2,28 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.94] — dash phase, in-window triple taps, rotated DQS tangents, LZ match counts, partial served import, sheared clip sprites, two-box indexed mips, weak-tag date If-Range, atomic overwrite (N813–N822)
+
+### Added
+
+- `path` `mode` accepts `phase=N` (0..=64) to shift the dash period; gap samples and the width stamp follow the shift (N813)
+- a third tap inside the window stored by `set_gesture_config` is a triple-tap, and the next tap outside restarts at one (N814)
+- two-joint DQS tangents stay finite with a non-identity rotation, keep `w`, and match the inverse-transpose scale formula (N815)
+- `lz_stats` also reports the number of back-reference matches without changing the `MRLZ` bitstream (N816)
+- `import_served` is partial: listed surfaces are overwritten while unlisted counts survive, and the next plan continues (N817)
+- a `sprite` child of a sheared `clip` is masked to the parallelogram; an axis-aligned clip is unchanged (N818)
+- a 4×2 indexed image reduced to 2×1 handles an equidistant box and a closer-minority box independently (N819)
+- a date-form `If-Range` still returns `206` on a `weak=1` response; a stale date or the weak tag returns `200` (N820)
+- `texture-report --json --out` atomically replaces an existing target and leaves no `.tmp` (N821)
+
+### Notes
+
+- Host/simulator only. D05, G03 and H06 remain open until physical hardware is
+  measured; no board is claimed working.
+- The 3-argument gesture setter still keeps the current multi-tap window and radius.
+- `lz_stats` still does not encode or relax `MAX_LZ_DECODE_BYTES`; the lazy fixture's longest match stays at least 8.
+- A failed `--out` rename still leaves no sibling `.tmp`.
+
 ## [0.1.93] — thick dashed paths, multi-tap window split, DQS tangents, LZ stats, served snapshot, sheared image clip, indexed mip ties, weak If-Range, report parent dirs (N803–N812)
 
 ### Added
