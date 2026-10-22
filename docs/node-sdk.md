@@ -37,6 +37,7 @@ is idempotent and cancels listeners; every method rejects after dispose.
 | `getConfig(key)` / `setConfig(key, value)` | capability-gated |
 | `setScene(node)` / `clearScene()` | CBOR scene |
 | `setAnimation(clip)` / `stopAnimation()` | baked-atlas clip |
+| `setAnimationBlend("idle:700,wave:300")` / `animationBlend()` | weighted atlas or mesh clip blend (N837) |
 | `installPackage(bytes)` | N234: upload `.mdcpkg` bytes (`Uint8Array`); resolves `true` when ready |
 | `packageReady()` | N238: whether the last accepted package is render-ready |
 | `connectTcp(address)` | remote peer instead of the in-process simulator |

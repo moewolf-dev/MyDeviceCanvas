@@ -524,6 +524,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Scene animation lint keys (N829) | sim-verified (report/budget) | n/a |
 | Delayed colour/rotate fixture (N830) | sim-verified (SCENE path) | physical: pending |
 | Animated scene soak (N831) | sim-verified (constant buffer) | n/a |
+| Animation blend config parser (N833) | sim-verified (bounded weights) | n/a |
+| Animation blend resolution (N834) | sim-verified (atlas/mesh names) | physical: pending |
+| Atlas frame blending (N835) | sim-verified (device pixels) | physical: pending |
+| Mesh clip blending (N836) | sim-verified (device pixels) | physical: pending |
+| Node animation blend (N837) | sim-verified (JS/native) | n/a |
+| C animation blend (N838) | sim-verified (C ABI) | n/a |
+| Blend package fixture (N839) | sim-verified (CONFIG path) | physical: pending |
+| Blend soak (N840) | sim-verified (constant buffer) | n/a |
 
 Rows marked `sim-verified` describe host/simulator behaviour only. The KTX2 row
 is also emitted by `mdc verify` as `compatibility_row`, generated from the same

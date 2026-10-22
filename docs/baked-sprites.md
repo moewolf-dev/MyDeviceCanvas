@@ -71,6 +71,28 @@ switch over the new clip's `fade_in_ms` (capped at 2 s), so a transition does no
 snap. A zero `fade_in_ms` switches immediately; `config set animation off` clears
 the frozen frame.
 
+## Weighted blending (N833–N840)
+
+`config set animation_blend "idle:700,wave:300"` blends 1–4 clips by weight.
+Weights are `1..=1000` and are normalised by their sum, so `700,300` and
+`7,3` produce the same pixels. Names are unique and exact; `off` (or an empty
+value) stops the blend. For a mesh package the identifiers follow `animation`
+(`index`/`name`/`default`).
+
+- **Atlas packages**: the device samples each clip's current frame at the shared
+  start tick and averages the RGB565 channels per pixel.
+- **Mesh packages**: the device renders each selected clip at the current scene
+  time and averages the full frames. At most four frames are held per render.
+- **Precedence**: a non-empty blend replaces a single `animation` selection;
+  setting `animation` clears the blend; `stop_animation`/`animation off` clears
+  both. The device replies with the canonical accepted value, and a bad name,
+  duplicate name, zero weight or over-limit list leaves the previous blend
+  intact.
+- **Cross-fade**: switching *between* single clips still cross-fades; entering a
+  blend starts from the blended frame immediately (no extra frozen buffer).
+- **Budget**: `MAX_ANIMATION_BLEND_CLIPS = 4`; blending adds no persistent
+  per-frame buffer (the mesh path holds at most four transient frames).
+
 ## Non-goals
 
 - No on-device image decode (the atlas arrives as RGB565).

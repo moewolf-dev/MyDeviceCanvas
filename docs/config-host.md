@@ -26,6 +26,14 @@ see an unchanged capabilities map. `CONFIG` (0x33) carries a CBOR
 - The reserved `animation` key plays a baked-atlas clip (see
   [baked-sprites.md](baked-sprites.md)); it is handled by the device runtime, not
   the settings map, and is refused when no atlas is installed.
+- N833/N834: `animation_blend` accepts `"clip:weight,clip:weight"` (1–4 clips,
+  weights 1–1000, unique names) and is handled by the animation runtime. A
+  non-empty blend replaces a single `animation` selection; setting `animation`
+  clears the blend; `off`/empty clears both. Atlas clips resolve by name, mesh
+  package clips by `index`/`name`/`default`. `Session::set_animation_blend`,
+  `stop_animation_blend`, and `active_animation_blend` wrap the same key; Node
+  exposes `setAnimationBlend`/`animationBlend`, and C exposes
+  `mdc_set_animation_blend`/`mdc_animation_blend`.
 
 ## Guarantees
 

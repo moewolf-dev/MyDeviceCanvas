@@ -2,6 +2,26 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.96] — weighted animation blending for atlas and mesh packages (N833–N842)
+
+### Added
+
+- `animation_blend` config key accepts `"clip:weight,clip:weight"` (1–4 unique clips, weights 1–1000), with `Session::set_animation_blend` / `stop_animation_blend` / `active_animation_blend` (N833)
+- the simulator advertises and resolves `animation_blend` for atlas clips by name and mesh package clips by index/name/default; `off`/empty clears, a bad entry leaves the previous blend (N834)
+- atlas playback averages the selected frames' RGB565 channels (N835)
+- mesh playback renders each selected clip and averages the full frames (N836)
+- Node `setAnimationBlend` / `animationBlend` and C `mdc_set_animation_blend` / `mdc_animation_blend` (N837/N838)
+- a real `SCENE`-path compatibility fixture and a 5,000-render atlas blend soak (N839/N840)
+
+### Notes
+
+- Host/simulator only. D05, G03 and H06 remain open until physical hardware is
+  measured; no board is claimed working.
+- A non-empty blend replaces a single clip; setting `animation` clears the blend.
+- Entering a blend does not add a cross-fade buffer; switching single clips still
+  cross-fades.
+- Mesh blending holds at most four transient frames per render.
+
 ## [0.1.95] — delayed scene clocks, animated colours and quarter turns, animation lint keys (N823–N832)
 
 ### Added
