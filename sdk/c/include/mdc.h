@@ -164,6 +164,13 @@ int mdc_session_set_gesture_config(MdcSession* session, uint64_t tap_max_ms, uin
 int mdc_session_gesture_config(const MdcSession* session, uint64_t* tap_max_ms,
                                uint64_t* long_press_ms, uint16_t* drag_threshold);
 
+/** N784: set the multi-tap radius in pixels (0..=4096). The argument is 32-bit
+ *  so a value above 4096 is distinguishable and returns -2. 0, -1 or -2. */
+int mdc_session_set_multi_tap_radius(MdcSession* session, uint32_t radius);
+
+/** N784: write the current multi-tap radius (null out-param is ignored). */
+int mdc_session_multi_tap_radius(const MdcSession* session, uint16_t* radius);
+
 /** Form B: ask the device to start mirroring `surface_id` (NULL = "main"). 0 or negative. */
 int mdc_start_mirror(MdcSession* session, const char* surface_id, uint16_t max_fps);
 

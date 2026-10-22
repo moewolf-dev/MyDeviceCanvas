@@ -851,6 +851,43 @@ impl NativeManager {
         Ok(sim.session.config(&key).unwrap_or("").to_string())
     }
 
+    /// N784: the current multi-tap radius in pixels.
+    #[napi(js_name = "multiTapRadius")]
+    pub fn multi_tap_radius(&self) -> Result<u16> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        let Some(sim) = state.sim.as_ref() else {
+            return Ok(mdc_core::GestureConfig::default().multi_tap_radius);
+        };
+        Ok(sim.session.gesture_config().multi_tap_radius)
+    }
+
+    /// N784: set the multi-tap radius. Values above 4096 are refused.
+    #[napi(js_name = "setMultiTapRadius")]
+    pub fn set_multi_tap_radius(&self, radius: u32) -> Result<u16> {
+        if radius > 4096 {
+            return Err(Error::from_reason("multi_tap_radius out of range"));
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        ensure_sim(&mut state)?;
+        let sim = state.sim.as_mut().unwrap();
+        let mut config = sim.session.gesture_config();
+        config.multi_tap_radius = radius as u16;
+        sim.session.set_gesture_config(config);
+        Ok(config.multi_tap_radius)
+    }
+
     /// N42: write a device configuration value and return the accepted value.
     #[napi(js_name = "setConfig")]
     pub fn set_config(&self, key: String, value: String) -> Result<String> {

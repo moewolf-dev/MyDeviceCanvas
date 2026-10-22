@@ -272,13 +272,56 @@ pub unsafe extern "C" fn mdc_session_set_gesture_config(
     let Some(session) = session.as_mut() else {
         return -1;
     };
+    let current = session.session.gesture_config();
     session.session.set_gesture_config(GestureConfig {
         tap_max_ms,
         long_press_ms,
         drag_threshold,
-        multi_tap_ms: mdc_core::GestureConfig::default().multi_tap_ms,
-        multi_tap_radius: mdc_core::GestureConfig::default().multi_tap_radius,
+        multi_tap_ms: current.multi_tap_ms,
+        multi_tap_radius: current.multi_tap_radius,
     });
+    0
+}
+
+/// N784: set the multi-tap radius. `0` is an exact-pixel chain; values above
+/// 4096 return -2. A null session returns -1.
+///
+/// # Safety
+///
+/// `session` must be a valid pointer returned by a `mdc_session_*` constructor.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_set_multi_tap_radius(
+    session: *mut MdcSession,
+    radius: u32,
+) -> c_int {
+    if radius > 4096 {
+        return -2;
+    }
+    let Some(session) = session.as_mut() else {
+        return -1;
+    };
+    let mut config = session.session.gesture_config();
+    config.multi_tap_radius = radius as u16;
+    session.session.set_gesture_config(config);
+    0
+}
+
+/// N784: write the current multi-tap radius (a null out-param is ignored).
+///
+/// # Safety
+///
+/// `session` must be a valid pointer returned by a `mdc_session_*` constructor.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_session_multi_tap_radius(
+    session: *const MdcSession,
+    radius: *mut u16,
+) -> c_int {
+    let Some(session) = session.as_ref() else {
+        return -1;
+    };
+    if !radius.is_null() {
+        *radius = session.session.gesture_config().multi_tap_radius;
+    }
     0
 }
 
@@ -2406,6 +2449,33 @@ mod tests {
                 mdc_session_set_gesture_config(std::ptr::null_mut(), 1, 1, 1),
                 -1
             );
+            // N784: the radius round-trips and an out-of-range value is refused
+            // without clobbering the previous setting.
+            let mut radius = 0u16;
+            assert_eq!(mdc_session_multi_tap_radius(session, &mut radius), 0);
+            assert_eq!(radius, 24);
+            assert_eq!(mdc_session_set_multi_tap_radius(session, 8), 0);
+            assert_eq!(mdc_session_multi_tap_radius(session, &mut radius), 0);
+            assert_eq!(radius, 8);
+            assert_eq!(mdc_session_set_multi_tap_radius(session, 4097), -2);
+            assert_eq!(mdc_session_multi_tap_radius(session, &mut radius), 0);
+            assert_eq!(radius, 8);
+            assert_eq!(
+                mdc_session_set_multi_tap_radius(std::ptr::null_mut(), 4),
+                -1
+            );
+            assert_eq!(
+                mdc_session_multi_tap_radius(std::ptr::null(), &mut radius),
+                -1
+            );
+            assert_eq!(
+                mdc_session_multi_tap_radius(session, std::ptr::null_mut()),
+                0
+            );
+            // The older setter keeps a custom radius.
+            assert_eq!(mdc_session_set_gesture_config(session, 111, 2222, 9), 0);
+            assert_eq!(mdc_session_multi_tap_radius(session, &mut radius), 0);
+            assert_eq!(radius, 8);
             mdc_session_destroy(session);
         }
     }

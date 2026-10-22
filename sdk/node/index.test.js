@@ -167,6 +167,22 @@ test("tile reconciliation goes through the public SDK", async () => {
   bare.dispose();
 });
 
+test("multi-tap radius round-trips and rejects an out-of-range value", async () => {
+  const writes = [];
+  const mdc = new MyDeviceCanvas({
+    multiTapRadius() { return writes.at(-1) ?? 24; },
+    setMultiTapRadius(radius) { writes.push(radius); return radius; },
+  });
+  assert.equal(await mdc.multiTapRadius(), 24);
+  assert.equal(await mdc.setMultiTapRadius(8), 8);
+  assert.equal(await mdc.multiTapRadius(), 8);
+  await assert.rejects(() => mdc.setMultiTapRadius(4097), /out of range/);
+  await assert.rejects(() => mdc.setMultiTapRadius(1.5), /out of range/);
+  await assert.rejects(() => mdc.setMultiTapRadius(-1), /out of range/);
+  assert.deepEqual(writes, [8]);
+  mdc.dispose();
+});
+
 test("config get/set go through the public SDK", async () => {
   const writes = [];
   const mdc = new MyDeviceCanvas({

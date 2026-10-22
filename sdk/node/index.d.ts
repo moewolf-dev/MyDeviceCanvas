@@ -136,6 +136,10 @@ export declare class MyDeviceCanvas {
   mirrorStats(): Promise<MirrorStats | null>;
   /** N576: partial-update tiles sent/received/missing (parity with C). */
   tileReconciliation(): Promise<TileReconciliation | null>;
+  /** N784: multi-tap radius in pixels. */
+  multiTapRadius(): Promise<number>;
+  /** N784: set the multi-tap radius (`0`..=`4096`). */
+  setMultiTapRadius(radius: number): Promise<number>;
   getConfig(key: string): Promise<string>;
   setConfig(key: string, value: string | number): Promise<string>;
   setScene(node: { name: string; kind: string; children?: unknown[]; value?: string }): Promise<void>;

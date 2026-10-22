@@ -206,6 +206,26 @@ export class MyDeviceCanvas {
     if (this._disposed) throw new Error("manager is disposed");
     return (await this._native.tileReconciliation?.()) ?? null;
   }
+  /** N784: the multi-tap radius in pixels (default 24 before a session exists). */
+  async multiTapRadius() {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.multiTapRadius !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.multiTapRadius();
+  }
+  /** N784: set the multi-tap radius. `0` is exact-pixel; above 4096 throws. */
+  async setMultiTapRadius(radius) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.setMultiTapRadius !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    const value = Number(radius);
+    if (!Number.isInteger(value) || value < 0 || value > 4096) {
+      throw new Error("multi_tap_radius out of range");
+    }
+    return this._native.setMultiTapRadius(value);
+  }
   /** N42: read a device configuration value. */
   async getConfig(key) {
     if (this._disposed) throw new Error("manager is disposed");
