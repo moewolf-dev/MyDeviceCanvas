@@ -2,6 +2,25 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.95] — delayed scene clocks, animated colours and quarter turns, animation lint keys (N823–N832)
+
+### Added
+
+- `SceneAnim.delay_ms` holds the first keyframe until the delay elapses; `speed_permille` scales the elapsed time (0/absent = 1000) (N823)
+- `SceneAnim.color` keyframes interpolate RGB and drive `value` on colour-bearing scene kinds; text/image/sprite payloads are untouched (N825)
+- `SceneAnim.rotate` keyframes sample an angle and snap to the nearest quarter turn, feeding rasterisation and hit-testing (N827)
+- `mdc scene-lint` reports `anim_keys`, enforces the 256-key budget, and warns on invalid colour keys, non-quarter rotate keys and keys after a non-looping duration (N829)
+- delayed/speeded, colour and rotate tracks reach a FakeDevice through the real `SCENE` path and render on the device clock (N830)
+- a 5,000-tick delayed colour/rotate scene soak keeps the framebuffer size constant (N831)
+
+### Notes
+
+- Host/simulator only. D05, G03 and H06 remain open until physical hardware is
+  measured; no board is claimed working.
+- Colour tracks never overwrite text glyphs, image hex or sprite indices.
+- A rotate key is snapped rather than interpolated through an arbitrary angle.
+- `anim_keys` includes opacity, rect, focus, colour and rotate keys.
+
 ## [0.1.94] — dash phase, in-window triple taps, rotated DQS tangents, LZ match counts, partial served import, sheared clip sprites, two-box indexed mips, weak-tag date If-Range, atomic overwrite (N813–N822)
 
 ### Added

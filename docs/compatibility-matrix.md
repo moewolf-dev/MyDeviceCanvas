@@ -518,6 +518,12 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Indexed mip two-box level (N819) | sim-verified (palette resample) | physical: pending |
 | Date If-Range on a weak tag (N820) | sim-verified (200/206) | n/a |
 | texture-report --out overwrite (N821) | sim-verified (atomic replace) | n/a |
+| Scene animation delay/speed (N823) | sim-verified (device clock) | physical: pending |
+| Animated scene colour (N825) | sim-verified (device pixels) | physical: pending |
+| Animated scene rotate (N827) | sim-verified (device pixels/hit) | physical: pending |
+| Scene animation lint keys (N829) | sim-verified (report/budget) | n/a |
+| Delayed colour/rotate fixture (N830) | sim-verified (SCENE path) | physical: pending |
+| Animated scene soak (N831) | sim-verified (constant buffer) | n/a |
 
 Rows marked `sim-verified` describe host/simulator behaviour only. The KTX2 row
 is also emitted by `mdc verify` as `compatibility_row`, generated from the same

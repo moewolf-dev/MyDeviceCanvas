@@ -85,6 +85,14 @@ A device that accepts a scene rasterizes it locally:
   clock; a looping clip wraps, otherwise it holds the last frame. N724:
   `easing` (`linear` default, `ease-in`, `ease-out`, `ease-in-out`) shapes each
   segment while keeping both endpoints exact.
+  N823: `delay_ms` holds the first keyframe until the delay elapses, and
+  `speed_permille` scales elapsed time (1000 = authored; `0`/absent means 1000).
+  N825: `color` is a list of `{time_ms, value}` keys; the RGB channels
+  interpolate and drive `value` for `rect`/`circle`/`line`/`gradient`/
+  `rounded-rect`/`polygon`/`polyline`/`arc`/`pie`/`path`, while `text`, `image`
+  and `sprite` keep their payload. N827: `rotate` is `[[time_ms, degrees]...]`
+  and snaps to the nearest quarter turn (0/90/180/270). N829: these tracks count
+  toward the scene animation-key budget (`mdc scene-lint` reports `anim_keys`).
 - N546: `anim.focus: [[time_ms, cx%, cy%]...]` animates the radial `gradient`
   centre (same percent semantics as `focus`); values are clamped to `0..=100`.
 - N475: `rotate: 90|180|270` swaps the rect axes for axis-aligned fills; a rotated
