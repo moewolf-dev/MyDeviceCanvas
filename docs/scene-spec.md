@@ -155,9 +155,10 @@ A device that accepts a scene rasterizes it locally:
   Bresenham pixel. A missing, non-numeric, or out-of-range token stays at 1
   pixel and does not reject the path.
   N803: `mode` may also include `dash=N` (1..=64) beside `width`. The stamp
-  runs only on Bresenham steps the dash paints, so a gap pixel beyond the
-  stamp stays clear. A missing or invalid dash stays solid. An invalid width
-  stays 1 pixel and does not clear a valid dash.
+  runs only on Bresenham steps the dash paints, and it skips any pixel that
+  is itself a gap sample, so the first off-phase pixel stays clear. A missing
+  or invalid dash stays solid. An invalid width stays 1 pixel and does not
+  clear a valid dash.
 - N744: `mask` composites its children only inside the polygon from `value2`
   (same point syntax as `polygon`); children keep absolute coordinates and the
   node is clipped to the framebuffer. A missing/short polygon draws nothing.

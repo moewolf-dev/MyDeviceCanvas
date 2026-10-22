@@ -1643,22 +1643,14 @@ fn draw_line(
     let mut step: u32 = 0;
     let stroke = i64::from(stroke.clamp(1, 8));
     let half = (stroke - 1) / 2;
+    // N803: record the Bresenham samples first so a wide stamp can skip pixels
+    // that are themselves dash-gap samples.
+    let mut samples = Vec::new();
     loop {
         // N497: in a dashed line, only the first `dash` pixels of each period
         // are painted.
         let paint = dash == 0 || step % (2 * u32::from(dash)) < u32::from(dash);
-        if paint {
-            for oy in -half..=(stroke - 1 - half) {
-                for ox in -half..=(stroke - 1 - half) {
-                    let px = x0 + ox;
-                    let py = y0 + oy;
-                    if px >= 0 && py >= 0 && (px as u32) < width && (py as u32) < height {
-                        let index = ((py as u32 * width + px as u32) * 2) as usize;
-                        put_pixel(pixels, index, color, alpha);
-                    }
-                }
-            }
-        }
+        samples.push((x0, y0, paint));
         step = step.saturating_add(1);
         if x0 == x1 && y0 == y1 {
             break;
@@ -1671,6 +1663,29 @@ fn draw_line(
         if e2 <= dx {
             err += dx;
             y0 += sy;
+        }
+    }
+    let gaps: Vec<(i64, i64)> = samples
+        .iter()
+        .filter(|sample| !sample.2)
+        .map(|sample| (sample.0, sample.1))
+        .collect();
+    for (x0, y0, paint) in samples {
+        if !paint {
+            continue;
+        }
+        for oy in -half..=(stroke - 1 - half) {
+            for ox in -half..=(stroke - 1 - half) {
+                let px = x0 + ox;
+                let py = y0 + oy;
+                if gaps.iter().any(|&(gx, gy)| gx == px && gy == py) {
+                    continue;
+                }
+                if px >= 0 && py >= 0 && (px as u32) < width && (py as u32) < height {
+                    let index = ((py as u32 * width + px as u32) * 2) as usize;
+                    put_pixel(pixels, index, color, alpha);
+                }
+            }
         }
     }
 }
@@ -7385,15 +7400,20 @@ mod tests {
             Some(0),
             "out-of-range width stays 1"
         );
-        // N803: dash=4 width=3 paints a thick on-segment and leaves a gap pixel
-        // clear. The square stamp reaches one pixel into the gap, so the
-        // asserted gap pixel sits beyond that stamp.
+        // N803: dash=4 width=3 paints a thick on-segment. The stamp must not
+        // cover the first off-phase sample (8,8); a later gap pixel stays clear
+        // too. The neighbour of an on-segment pixel (5,9) stays covered.
         render_mode(&mut device, "dash=4,width=3");
         assert_ne!(device.pixel_rgb565(5, 8), Some(0), "dash segment center");
         assert_ne!(
             device.pixel_rgb565(5, 9),
             Some(0),
             "width covers the dash segment"
+        );
+        assert_eq!(
+            device.pixel_rgb565(8, 8),
+            Some(0),
+            "the first gap sample stays clear"
         );
         assert_eq!(device.pixel_rgb565(9, 8), Some(0), "dash gap stays clear");
         assert_eq!(
