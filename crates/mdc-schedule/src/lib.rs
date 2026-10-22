@@ -331,6 +331,25 @@ impl WeightedSharedScheduler {
         self.served.clear();
     }
 
+    /// N807: the served counts as plain pairs, sorted by surface id.
+    pub fn export_served(&self) -> Vec<(u32, u64)> {
+        let mut counts: Vec<(u32, u64)> = self
+            .served
+            .iter()
+            .map(|(&surface, &count)| (surface, count))
+            .collect();
+        counts.sort_unstable_by_key(|item| item.0);
+        counts
+    }
+
+    /// N807: replace the served counts. Later `plan` calls continue from these.
+    pub fn import_served(&mut self, counts: &[(u32, u64)]) {
+        self.served.clear();
+        for &(surface, count) in counts {
+            self.served.insert(surface, count);
+        }
+    }
+
     /// Plan one tick. `budget == 0` is unlimited. A zero weight is treated as 1.
     /// Credit outranks `priority`: the long-run counts follow the weights.
     pub fn plan(&mut self, budget: u64, demands: &[SurfaceDemand]) -> SharedDecision {
@@ -681,6 +700,20 @@ mod tests {
         }
         assert_eq!(again, [30, 10]);
         assert_eq!(scheduler.served(1), 30);
+        // N807: a snapshot reloads onto a fresh scheduler, and the next plans
+        // match a scheduler that never stopped.
+        let snapshot = scheduler.export_served();
+        let mut restored = WeightedSharedScheduler::new();
+        restored.import_served(&snapshot);
+        assert_eq!(restored.served(1), scheduler.served(1));
+        assert_eq!(restored.served(2), scheduler.served(2));
+        for _ in 0..40 {
+            scheduler.plan(10, &demands);
+            restored.plan(10, &demands);
+        }
+        assert_eq!(restored.export_served(), scheduler.export_served());
+        assert_eq!(restored.served(1), 60);
+        assert_eq!(restored.served(2), 20);
         // One larger tick follows the same ratio (3 then 1).
         let fresh = {
             let mut scheduler = WeightedSharedScheduler::new();
