@@ -2,6 +2,28 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.93] — thick dashed paths, multi-tap window split, DQS tangents, LZ stats, served snapshot, sheared image clip, indexed mip ties, weak If-Range, report parent dirs (N803–N812)
+
+### Added
+
+- `path` `mode` accepts `dash=N` (1..=64) together with `width=N`; gap pixels stay clear and solid dash segments take the width stamp (N803)
+- `Session::set_gesture_config` `multi_tap_ms` splits an in-window double-tap from two taps outside the window (N804)
+- two-joint DQS tangents stay finite, keep `w`, and a weight of 1 matches the single-joint inverse-transpose (N805)
+- `lz_stats` reads literal count and longest match from an `MRLZ` bitstream (N806)
+- `WeightedSharedScheduler` export/import of served counts; later plans continue from the import (N807)
+- a sheared `clip` keeps only `image` pixels inside the parallelogram (N808)
+- indexed mip ties keep the smaller palette index; a closer average colour beats a raw majority (N809)
+- `weak=1` makes a weak `If-Range` return the full `200`; a strong `If-Range` can still return `206` (N810)
+- `texture-report --json --out` creates a missing parent for both a single image and `--batch` (N811)
+
+### Notes
+
+- Host/simulator only. D05, G03 and H06 remain open until physical hardware is
+  measured; no board is claimed working.
+- The 3-argument gesture setter still keeps the current multi-tap window and radius.
+- `lz_stats` does not change the `MRLZ` bitstream or `MAX_LZ_DECODE_BYTES`. The lazy fixture's longest match stays at least 8.
+- A failed `--out` rename still leaves no sibling `.tmp`.
+
 ## [0.1.92] — path stroke width, multi-tap window SDK, multi-joint DQS, LZ lazy matches, weight reset, sheared flip/rotate, indexed mips, weak ETag output, single-file archive (N793–N802)
 
 ### Added

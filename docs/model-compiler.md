@@ -332,6 +332,9 @@ selection synthesizes `width >> level` by `height >> level` indices. Each coarse
 texel averages the RGB565 colours in its box and keeps the closest palette index
 that appears in that box (a uniform box keeps its index). Alpha, when present,
 is still the level-0 any-opaque resample. The result validates as an indexed blob.
+N809: an exact distance tie keeps the smaller index. A colour closer to the
+box average wins even when another index occupies more texels. Alpha stays
+the level-0 any-opaque resample, and the coarse blob still validates.
 
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a
@@ -496,6 +499,9 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
 - N795: two joints with different diagonal scales stay finite. A weight of 1 on
   one joint matches that joint's single-joint inverse-transpose; a split weight
   matches the weight-averaged per-axis scale, then the same quaternion.
+- N805: tangents of those two joints stay finite, keep tangent `w`, and a
+  weight of 1 matches that joint's single-joint inverse-transpose. A split
+  weight matches the same averaged scale used for the normals.
 - N746: `render_package_mesh_skinned` sends skinned mesh packages through the
   scene renderer with an explicit `SkinMode`, so DQS affects mesh-package
   normals/tangents as well as the scene path; skeleton-less packages keep the

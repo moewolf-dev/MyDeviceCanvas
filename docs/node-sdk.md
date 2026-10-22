@@ -93,6 +93,8 @@ hit-tested scene `node`. N488 lets the host tune the thresholds via
 radius in place. N794: `setMultiTapMs(ms)` / `multiTapMs()` (C:
 `mdc_session_set_multi_tap_ms`, a `uint32_t`) round-trip the multi-tap window.
 `0`..=`60000` is accepted; a larger value throws in JavaScript and returns -2
-from C. The 3-argument setter leaves the current window in place. The C ABI
+from C. The 3-argument setter leaves the current window in place. N804: that
+stored window is what splits a double-tap (second tap inside `multi_tap_ms`)
+from two separate taps (second tap outside it). The C ABI
 reports the same events as poll kind `8` with the gesture kind in `phase` and the
 node in the `node` out-param.

@@ -128,6 +128,11 @@ request query contains `weak=1` (N800). That response ETag is prefixed with
 `W/`) and can return `304`. `If-Match` and `If-Range` stay strong comparisons, so
 a weak validator on either side does not satisfy them and a failing `If-Match`
 still returns `412` first. `weak=0` and every other query keep a strong tag.
+N810: when the generated tag is weak (`weak=1`), sending that `W/` value as
+`If-Range` returns the full `200` body instead of `206`. A strong `If-Range`
+on a strong tag can still return `206`. A failing `If-Match` is still `412`
+before `304`. Weak validators do not satisfy `If-Range` even when both sides
+are weak.
 
 ## Guarantees
 

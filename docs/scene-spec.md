@@ -154,6 +154,10 @@ A device that accepts a scene rasterizes it locally:
   N793: `mode` may include `width=N` (1..=8), a square stamp around each
   Bresenham pixel. A missing, non-numeric, or out-of-range token stays at 1
   pixel and does not reject the path.
+  N803: `mode` may also include `dash=N` (1..=64) beside `width`. The stamp
+  runs only on Bresenham steps the dash paints, so a gap pixel beyond the
+  stamp stays clear. A missing or invalid dash stays solid. An invalid width
+  stays 1 pixel and does not clear a valid dash.
 - N744: `mask` composites its children only inside the polygon from `value2`
   (same point syntax as `polygon`); children keep absolute coordinates and the
   node is clipped to the framebuffer. A missing/short polygon draws nothing.
@@ -184,6 +188,9 @@ A device that accepts a scene rasterizes it locally:
   (0/90/180/270) before the bilinear sample. A horizontal flip or a half-turn
   swaps the ends of a left/right image; both together restore them. The empty
   corner stays transparent.
+  N808: an `image` child of a sheared `clip` is copied back only inside that
+  parallelogram. Image pixels that fall in the bounding box but outside the
+  lean stay clear. The axis-aligned image path is unchanged.
 - `render_scene` clears the framebuffer first (N137), so repeated renders are
   deterministic rather than accumulating.
 - A clip `fade_in_ms` darkens the atlas frame until that many virtual milliseconds pass.

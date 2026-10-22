@@ -1,4 +1,4 @@
-# Chunk compression (N757 / N766 / N776 / N786 / N796)
+# Chunk compression (N757 / N766 / N776 / N786 / N796 / N806)
 
 Stored asset chunks are compressed per chunk (chunk boundaries are fixed by the
 `ChunkStore`), so identical byte ranges still dedupe by their SHA-256 of the
@@ -34,7 +34,10 @@ length is checked on decode. RLE is chosen for long single-byte runs.
   next byte starts a strictly longer match, the encoder emits one literal and
   takes that longer match on the following step. The bitstream
   (magic, control byte, `u16` distance, `u8` length) and `MAX_LZ_DECODE_BYTES`
-  are unchanged.
+  are unchanged. N806: `lz_stats` reads the literal count and the longest
+  match length back from that bitstream. It does not encode, and a stream
+  that is not `MRLZ` or that declares more than `MAX_LZ_DECODE_BYTES` is
+  rejected. The lazy fixture's longest match stays at least 8.
 - `MAX_LZ_DECODE_BYTES` (16 MiB) is checked against the declared length **before**
   allocating the output buffer. Every match is validated against already-produced
   bytes and against the declared length, so a decompression bomb or corrupt
