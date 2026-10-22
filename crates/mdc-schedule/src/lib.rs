@@ -306,6 +306,97 @@ pub fn plan_shared(budget: u64, demands: &[SurfaceDemand]) -> SharedDecision {
     }
 }
 
+/// N787: cross-call weighted credit. Each `plan` serves the surface furthest
+/// behind `served / weight`, so a one-tile budget converges to the weight ratio
+/// over many calls instead of always preferring the same surface.
+#[derive(Debug, Default, Clone)]
+pub struct WeightedSharedScheduler {
+    served: std::collections::HashMap<u32, u64>,
+}
+
+impl WeightedSharedScheduler {
+    pub fn new() -> Self {
+        Self {
+            served: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Tiles this scheduler has handed to `surface` across every `plan` call.
+    pub fn served(&self, surface: u32) -> u64 {
+        self.served.get(&surface).copied().unwrap_or(0)
+    }
+
+    /// Plan one tick. `budget == 0` is unlimited. A zero weight is treated as 1.
+    /// Credit outranks `priority`: the long-run counts follow the weights.
+    pub fn plan(&mut self, budget: u64, demands: &[SurfaceDemand]) -> SharedDecision {
+        let weights: Vec<u64> = demands
+            .iter()
+            .map(|demand| u64::from(demand.weight.max(1)))
+            .collect();
+        let sum_w = weights.iter().copied().sum::<u64>().max(1);
+        let mut cursors = vec![0usize; demands.len()];
+        let mut selections: Vec<SurfaceSelection> = demands
+            .iter()
+            .map(|demand| SurfaceSelection {
+                surface: demand.surface,
+                selected: Vec::new(),
+                deferred: Vec::new(),
+            })
+            .collect();
+        let mut spent = 0u64;
+        loop {
+            let total: u64 = demands
+                .iter()
+                .map(|demand| self.served(demand.surface))
+                .sum();
+            let mut best: Option<usize> = None;
+            let mut best_key: (i128, u8, u64, u32) = (i128::MIN, 0, 0, 0);
+            for (i, demand) in demands.iter().enumerate() {
+                if cursors[i] >= demand.tiles.len() {
+                    continue;
+                }
+                let cost = u64::from(demand.tiles[cursors[i]].bytes);
+                if budget != 0 && spent != 0 && spent.saturating_add(cost) > budget {
+                    continue;
+                }
+                let served = self.served(demand.surface);
+                let deficit = weights[i] as i128 * total as i128 - served as i128 * sum_w as i128;
+                // Higher deficit, then higher priority, then higher weight, then
+                // the lower surface id (stable when everyone is equally behind).
+                let key = (
+                    deficit,
+                    demand.priority,
+                    weights[i],
+                    u32::MAX - demand.surface,
+                );
+                if best.is_none() || key > best_key {
+                    best = Some(i);
+                    best_key = key;
+                }
+            }
+            let Some(i) = best else {
+                break;
+            };
+            spent = spent.saturating_add(u64::from(demands[i].tiles[cursors[i]].bytes));
+            selections[i]
+                .selected
+                .push(demands[i].tiles[cursors[i]].index);
+            cursors[i] += 1;
+            *self.served.entry(demands[i].surface).or_default() += 1;
+        }
+        for (i, demand) in demands.iter().enumerate() {
+            selections[i].deferred = demand.tiles[cursors[i]..]
+                .iter()
+                .map(|tile| tile.index)
+                .collect();
+        }
+        SharedDecision {
+            surfaces: selections,
+            spent,
+        }
+    }
+}
+
 /// Merge contiguous tile indices into `[start, end]` ranges (inclusive). Dirty
 /// blocks that touch become one transaction instead of many.
 pub fn merge_dirty_ranges(tiles: &[TileCost]) -> Vec<(u32, u32)> {
@@ -543,6 +634,44 @@ mod tests {
         let zero = plan_shared(10, &[demand(3, 0), demand(4, 0)]);
         assert_eq!(zero.selection(3).unwrap().selected, vec![0]);
         assert!(zero.selection(4).unwrap().selected.is_empty());
+    }
+
+    #[test]
+    fn weighted_credit_converges_across_calls() {
+        // N787: a one-tile budget still yields a 3:1 split over 40 calls.
+        let demand = |surface: u32, weight: u16| SurfaceDemand {
+            surface,
+            priority: 0,
+            weight,
+            tiles: (0..8).map(|i| TileCost::new(i, 10, false)).collect(),
+        };
+        let demands = vec![demand(1, 3), demand(2, 1)];
+        let mut scheduler = WeightedSharedScheduler::new();
+        let mut counts = [0u32; 2];
+        for _ in 0..40 {
+            let decision = scheduler.plan(10, &demands);
+            if !decision.selection(1).unwrap().selected.is_empty() {
+                counts[0] += 1;
+            }
+            if !decision.selection(2).unwrap().selected.is_empty() {
+                counts[1] += 1;
+            }
+        }
+        assert_eq!(counts, [30, 10]);
+        assert_eq!(scheduler.served(1), 30);
+        assert_eq!(scheduler.served(2), 10);
+        // One larger tick follows the same ratio (3 then 1).
+        let fresh = {
+            let mut scheduler = WeightedSharedScheduler::new();
+            scheduler.plan(40, &demands)
+        };
+        assert_eq!(fresh.selection(1).unwrap().selected.len(), 3);
+        assert_eq!(fresh.selection(2).unwrap().selected.len(), 1);
+        // A zero weight is one share, and an empty plan spends nothing.
+        let mut scheduler = WeightedSharedScheduler::new();
+        let zero = scheduler.plan(10, &[demand(3, 0)]);
+        assert_eq!(zero.selection(3).unwrap().selected, vec![0]);
+        assert_eq!(scheduler.plan(10, &[]).spent, 0);
     }
 
     #[test]
