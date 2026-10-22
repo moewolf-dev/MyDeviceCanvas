@@ -4470,14 +4470,22 @@ fn texture_report_value(
 /// explicit, and nothing accumulates beyond the sorted report list.
 fn cmd_texture_report_batch(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let batch = texture_report_batch_data(args)?;
-    if args.iter().any(|arg| arg == "--json") {
-        let body = serde_json::json!({
-            "kind": "batch",
-            "directory": batch.dir,
-            "files": batch.reports,
-            "summary": batch.summary,
-        });
-        println!("{}", serde_json::to_string_pretty(&body)?);
+    let json = args.iter().any(|arg| arg == "--json");
+    let out = args
+        .iter()
+        .position(|arg| arg == "--out")
+        .and_then(|index| args.get(index + 1))
+        .cloned();
+    if out.is_some() && !json {
+        return Err("texture-report --out requires --batch --json".into());
+    }
+    if json {
+        let pretty = serde_json::to_string_pretty(&texture_report_batch_body(&batch))?;
+        if let Some(path) = out {
+            // N791: the archived body is the same document printed on stdout.
+            write_bytes_atomic(std::path::Path::new(&path), pretty.as_bytes())?;
+        }
+        println!("{pretty}");
     } else {
         for report in &batch.reports {
             println!("{}", serde_json::to_string(report)?);
@@ -4486,6 +4494,43 @@ fn cmd_texture_report_batch(args: &[String]) -> Result<(), Box<dyn std::error::E
     }
     if batch.failed {
         std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// N771: the pretty `--json` document for a batch scan.
+fn texture_report_batch_body(batch: &TextureBatchReport) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "batch",
+        "directory": batch.dir,
+        "files": batch.reports,
+        "summary": batch.summary,
+    })
+}
+
+/// N791: write `bytes` via a sibling temp file and `rename`, removing the temp
+/// if either step fails so a partial archive is never left beside the target.
+fn write_bytes_atomic(
+    path: &std::path::Path,
+    bytes: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => std::path::Path::new("."),
+    };
+    std::fs::create_dir_all(parent)?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("out");
+    let tmp = parent.join(format!(".{name}.{}.tmp", std::process::id()));
+    if let Err(error) = std::fs::write(&tmp, bytes) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error.into());
+    }
+    if let Err(error) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error.into());
     }
     Ok(())
 }
@@ -4765,7 +4810,7 @@ motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] [--clip NAME] [--time T] [--mip N] [--smooth] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> [--time MS] --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss] [--defaults|--defaults-only [--key K]]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|asset verify <dir>|\
-model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg> [--strict]|diff <a.mdcpkg> <b.mdcpkg>|texture-report <image> [--json]|texture-report --batch <dir> [--json] [--min-coverage F] [--sort name|coverage|trimmable]"
+model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg> [--strict]|diff <a.mdcpkg> <b.mdcpkg>|texture-report <image> [--json]|texture-report --batch <dir> [--json] [--out FILE] [--min-coverage F] [--sort name|coverage|trimmable]"
     );
 }
 
@@ -5369,6 +5414,43 @@ mod tests {
         assert_eq!(batch.summary["below_threshold"], 1);
         assert_eq!(batch.summary["files"], 2);
         assert_eq!(batch.reports[0]["coverage"], 0.5, "sorted worst first");
+        // N791: `--out` archives the same pretty JSON the command prints, and a
+        // failed rename leaves no sibling temp file.
+        let out = dir.join("archive.json");
+        cmd_texture_report(&[
+            "--batch".into(),
+            dir.to_string_lossy().into_owned(),
+            "--json".into(),
+            "--out".into(),
+            out.to_string_lossy().into_owned(),
+            "--min-coverage".into(),
+            "0.0".into(),
+        ])
+        .unwrap();
+        let archived: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        let expected = texture_report_batch_body(
+            &texture_report_batch_data(&[
+                "--batch".into(),
+                dir.to_string_lossy().into_owned(),
+                "--min-coverage".into(),
+                "0.0".into(),
+            ])
+            .unwrap(),
+        );
+        assert_eq!(archived, expected);
+        assert_eq!(archived["summary"]["files"], 2);
+        assert_eq!(archived["kind"], "batch");
+        let blocked = dir.join("blocked");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(write_bytes_atomic(&blocked, b"{}").is_err());
+        assert!(std::fs::read_dir(&dir).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        }));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
