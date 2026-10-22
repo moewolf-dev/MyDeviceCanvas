@@ -2748,11 +2748,17 @@ fn etag_hash(text: &str) -> u64 {
 }
 
 /// N727: a strong validator for one frame representation (query included).
+/// N800: `weak=1` prefixes the same tag with `W/`. Other queries stay strong.
 fn frame_etag(path: &str, query: &str, frames: u64) -> String {
-    format!(
+    let tag = format!(
         "\"f{frames}-{:016x}\"",
         etag_hash(&format!("{path}?{query}:{frames}"))
-    )
+    );
+    if query_param(query, "weak") == Some("1") {
+        format!("W/{tag}")
+    } else {
+        tag
+    }
 }
 
 /// N790: the opaque tag of a validator, ignoring a `W/` weak prefix.
@@ -2907,7 +2913,8 @@ fn if_range_matches(request: &[u8], etag: &str, last_modified: u64) -> bool {
     };
     let value = value.trim();
     if value.starts_with('"') || value.starts_with("W/") {
-        return value == etag;
+        // Strong comparison: a weak validator on either side does not match.
+        return !validator_is_weak(value) && !validator_is_weak(etag) && value == etag;
     }
     parse_http_date(value).is_some_and(|since| last_modified <= since)
 }
@@ -4564,6 +4571,44 @@ mod tests {
             !if_range_matches(request("If-Range: W/\"abc\"\r\n").as_bytes(), etag, stamp),
             "If-Range stays a strong comparison"
         );
+        // N800: `weak=1` emits a weak validator. 304 still compares weakly;
+        // 412 and If-Range stay strong, including against the opaque form.
+        let weak = frame_etag("/frame.bmp", "weak=1", 4);
+        assert!(weak.starts_with("W/"), "{weak}");
+        let opaque = validator_opaque(&weak).to_string();
+        assert!(request_not_modified(
+            request(&format!("If-None-Match: {weak}\r\n")).as_bytes(),
+            &weak,
+            stamp
+        ));
+        assert!(request_not_modified(
+            request(&format!("If-None-Match: {opaque}\r\n")).as_bytes(),
+            &weak,
+            stamp
+        ));
+        assert!(request_precondition_failed(
+            request(&format!("If-Match: {weak}\r\n")).as_bytes(),
+            &weak,
+            stamp
+        ));
+        assert!(request_precondition_failed(
+            request(&format!("If-Match: {opaque}\r\n")).as_bytes(),
+            &weak,
+            stamp
+        ));
+        assert!(!if_range_matches(
+            request(&format!("If-Range: {weak}\r\n")).as_bytes(),
+            &weak,
+            stamp
+        ));
+        assert!(!if_range_matches(
+            request(&format!("If-Range: {opaque}\r\n")).as_bytes(),
+            &weak,
+            stamp
+        ));
+        let strong = frame_etag("/frame.bmp", "scale=2", 4);
+        assert!(strong.starts_with('"'), "{strong}");
+        assert!(!frame_etag("/frame.bmp", "weak=0", 4).starts_with("W/"));
     }
 
     #[test]
