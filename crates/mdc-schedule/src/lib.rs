@@ -343,8 +343,9 @@ impl WeightedSharedScheduler {
     }
 
     /// N807: replace the served counts. Later `plan` calls continue from these.
+    /// N817: the import is partial. Listed surfaces are overwritten; surfaces
+    /// that are not listed keep their existing count.
     pub fn import_served(&mut self, counts: &[(u32, u64)]) {
-        self.served.clear();
         for &(surface, count) in counts {
             self.served.insert(surface, count);
         }
@@ -714,6 +715,25 @@ mod tests {
         assert_eq!(restored.export_served(), scheduler.export_served());
         assert_eq!(restored.served(1), 60);
         assert_eq!(restored.served(2), 20);
+        // N817: a partial import overwrites only the listed surfaces; the next
+        // plans match a scheduler that had the same counts all along.
+        let mut partial = WeightedSharedScheduler::new();
+        partial.import_served(&[(1, 60), (2, 20), (7, 3)]);
+        partial.import_served(&[(1, 5), (9, 1)]);
+        assert_eq!(
+            partial.export_served(),
+            vec![(1, 5), (2, 20), (7, 3), (9, 1)]
+        );
+        let mut reference = WeightedSharedScheduler::new();
+        reference.import_served(&[(1, 5), (2, 20)]);
+        for _ in 0..40 {
+            partial.plan(10, &demands);
+            reference.plan(10, &demands);
+        }
+        assert_eq!(partial.served(1), reference.served(1));
+        assert_eq!(partial.served(2), reference.served(2));
+        assert_eq!(partial.served(7), 3, "unlisted surface kept its count");
+        assert_eq!(partial.served(9), 1, "unlisted surface kept its count");
         // One larger tick follows the same ratio (3 then 1).
         let fresh = {
             let mut scheduler = WeightedSharedScheduler::new();
