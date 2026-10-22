@@ -6497,6 +6497,10 @@ mod tests {
                 rect: Vec::new(),
                 // Bright focus starts top-left, ends bottom-right.
                 focus: vec![[0, 0, 0], [100, 100, 100]],
+                delay_ms: None,
+                speed_permille: None,
+                color: Vec::new(),
+                rotate: Vec::new(),
                 easing: None,
             }),
             rotate: None,
@@ -7194,6 +7198,10 @@ mod tests {
                 opacity: vec![[0, 0], [100, 255]],
                 rect: Vec::new(),
                 focus: Vec::new(),
+                delay_ms: None,
+                speed_permille: None,
+                color: Vec::new(),
+                rotate: Vec::new(),
                 easing: None,
             }),
             rotate: None,
@@ -7217,6 +7225,176 @@ mod tests {
         assert!(device.render_scene());
         let mid = device.pixel_rgb565(0, 0).unwrap();
         assert!(mid != 0 && mid != 0xFFFF, "blended midway: {mid:#06x}");
+    }
+
+    #[test]
+    fn scene_animation_delay_and_speed_reach_the_device() {
+        // N823/N824: the device clock feeds delay and speed before sampling.
+        use mdc_protocol::{SceneAnim, SceneNode};
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 2,
+            height: 2,
+            ..BoardProfile::default()
+        });
+        device.scene = Some(SceneNode {
+            name: "fade".into(),
+            kind: "rect".into(),
+            rect: Some([0, 0, 2, 2]),
+            value: Some("#FFFFFF".into()),
+            value2: None,
+            opacity: Some(255),
+            visible: None,
+            anim: Some(SceneAnim {
+                duration_ms: 100,
+                looping: false,
+                opacity: vec![[0, 0], [100, 255]],
+                rect: Vec::new(),
+                focus: Vec::new(),
+                delay_ms: Some(100),
+                speed_permille: Some(2000),
+                color: Vec::new(),
+                rotate: Vec::new(),
+                easing: None,
+            }),
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: None,
+            focus: None,
+            children: Vec::new(),
+        });
+        assert!(device.render_scene());
+        assert_eq!(
+            device.pixel_rgb565(1, 1),
+            Some(0),
+            "delay holds the first key"
+        );
+        device.clock.tick = 100;
+        assert!(device.render_scene());
+        assert_eq!(
+            device.pixel_rgb565(1, 1),
+            Some(0),
+            "elapsed time is still 0"
+        );
+        device.clock.tick = 150;
+        assert!(device.render_scene());
+        assert_eq!(
+            device.pixel_rgb565(1, 1),
+            Some(0xFFFF),
+            "50 ms at 2x reaches the end"
+        );
+    }
+
+    #[test]
+    fn scene_colour_animation_changes_a_rect_over_time() {
+        // N825/N826: colour keys interpolate and drive the rect fill.
+        use mdc_protocol::{SceneAnim, SceneColorKey, SceneNode};
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 2,
+            height: 2,
+            ..BoardProfile::default()
+        });
+        device.scene = Some(SceneNode {
+            name: "pulse".into(),
+            kind: "rect".into(),
+            rect: Some([0, 0, 2, 2]),
+            value: Some("#000000".into()),
+            value2: None,
+            opacity: None,
+            visible: None,
+            anim: Some(SceneAnim {
+                duration_ms: 100,
+                looping: false,
+                opacity: Vec::new(),
+                rect: Vec::new(),
+                focus: Vec::new(),
+                delay_ms: None,
+                speed_permille: None,
+                color: vec![
+                    SceneColorKey {
+                        time_ms: 0,
+                        value: "#000000".into(),
+                    },
+                    SceneColorKey {
+                        time_ms: 100,
+                        value: "#FFFFFF".into(),
+                    },
+                ],
+                rotate: Vec::new(),
+                easing: None,
+            }),
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: None,
+            focus: None,
+            children: Vec::new(),
+        });
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(0, 0), Some(0), "black at t=0");
+        device.clock.tick = 50;
+        assert!(device.render_scene());
+        let mid = device.pixel_rgb565(0, 0).unwrap();
+        assert!(mid != 0 && mid != 0xFFFF, "grey midway: {mid:#06x}");
+        device.clock.tick = 100;
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(0, 0), Some(0xFFFF), "white at the end");
+    }
+
+    #[test]
+    fn scene_rotate_animation_swaps_axes_and_hit_test() {
+        // N827/N828: a rotate track drives both rasterisation and hit-testing.
+        use mdc_protocol::{SceneAnim, SceneNode};
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 8,
+            height: 8,
+            ..BoardProfile::default()
+        });
+        device.scene = Some(SceneNode {
+            name: "wide".into(),
+            kind: "rect".into(),
+            rect: Some([0, 0, 8, 2]),
+            value: Some("#FFFFFF".into()),
+            value2: None,
+            opacity: None,
+            visible: None,
+            anim: Some(SceneAnim {
+                duration_ms: 100,
+                looping: false,
+                opacity: Vec::new(),
+                rect: Vec::new(),
+                focus: Vec::new(),
+                delay_ms: None,
+                speed_permille: None,
+                color: Vec::new(),
+                rotate: vec![[0, 0], [100, 90]],
+                easing: None,
+            }),
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: None,
+            focus: None,
+            children: Vec::new(),
+        });
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(7, 1), Some(0xFFFF), "wide at t=0");
+        assert_eq!(device.hit_test(7, 1).as_deref(), Some("wide"));
+        device.clock.tick = 100;
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(1, 7), Some(0xFFFF), "tall at the end");
+        assert_eq!(device.pixel_rgb565(7, 1), Some(0), "not wide at the end");
+        assert_eq!(device.hit_test(1, 7).as_deref(), Some("wide"));
+        assert!(
+            device.hit_test(7, 1).is_none(),
+            "hit-test follows the rotate"
+        );
     }
 
     #[test]
