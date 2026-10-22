@@ -343,6 +343,57 @@ pub fn lz_decode(bytes: &[u8]) -> Option<Vec<u8>> {
     (out.len() == declared).then_some(out)
 }
 
+/// N806: literal count and longest match read from an `MRLZ` bitstream.
+/// Encoding and [`MAX_LZ_DECODE_BYTES`] are unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LzStats {
+    pub literals: u64,
+    pub longest_match: u16,
+}
+
+/// Read [`LzStats`] from a stream produced by [`lz_encode`]. A stream that is
+/// not `MRLZ`, or whose declared length exceeds the decode budget, is `None`.
+pub fn lz_stats(encoded: &[u8]) -> Option<LzStats> {
+    if encoded.len() < 8 || &encoded[0..4] != LZ_MAGIC {
+        return None;
+    }
+    let declared = u32::from_le_bytes(encoded[4..8].try_into().ok()?) as usize;
+    if declared > MAX_LZ_DECODE_BYTES {
+        return None;
+    }
+    let mut index = 8usize;
+    let mut literals = 0u64;
+    let mut longest_match = 0u16;
+    let mut produced = 0usize;
+    while produced < declared {
+        let control = *encoded.get(index)?;
+        index += 1;
+        for bit in 0..8 {
+            if produced >= declared {
+                break;
+            }
+            if control & (1 << bit) == 0 {
+                encoded.get(index)?;
+                index += 1;
+                literals += 1;
+                produced += 1;
+            } else {
+                let length = *encoded.get(index + 2)?;
+                index += 3;
+                if usize::from(length) < LZ_MIN_MATCH {
+                    return None;
+                }
+                longest_match = longest_match.max(u16::from(length));
+                produced += usize::from(length);
+            }
+        }
+    }
+    Some(LzStats {
+        literals,
+        longest_match,
+    })
+}
+
 /// N757: `pack_chunk` container magic. Legacy chunk files have no magic and are
 /// returned verbatim, so arbitrary raw bytes never collide with the tag.
 const CHUNK_MAGIC: &[u8; 4] = b"MRCH";
@@ -1587,6 +1638,18 @@ mod tests {
             encoded.len(),
             data.len()
         );
+        // N806: the same bitstream reports that match without a second encoding.
+        let stats = lz_stats(&encoded).unwrap();
+        assert_eq!(stats.longest_match as usize, longest);
+        assert!(stats.longest_match as usize >= long.len());
+        assert!(stats.literals > 0);
+        assert!(stats.literals < data.len() as u64);
+        let plain = lz_encode(b"xyz");
+        let plain_stats = lz_stats(&plain).unwrap();
+        assert_eq!(plain_stats.literals, 3);
+        assert_eq!(plain_stats.longest_match, 0);
+        assert_eq!(lz_decode(&plain).as_deref(), Some(b"xyz".as_slice()));
+        assert!(lz_stats(b"raw").is_none());
     }
 
     #[test]
