@@ -335,6 +335,9 @@ is still the level-0 any-opaque resample. The result validates as an indexed blo
 N809: an exact distance tie keeps the smaller index. A colour closer to the
 box average wins even when another index occupies more texels. Alpha stays
 the level-0 any-opaque resample, and the coarse blob still validates.
+N819: several boxes at the same selected level are independent. A 4×2 image
+reduced to 2×1 can keep the smaller index in an equidistant box and the closer
+minority colour in a second box whose raw majority is farther from the average.
 
 The package gate validates a baked atlas against its whole `columns × rows`
 grid, so a padded grid (frame count not a perfect square) is accepted while a
@@ -502,6 +505,10 @@ package `estimated_bytes` is advisory (textures for the MCU backend; textures +
 - N805: tangents of those two joints stay finite, keep tangent `w`, and a
   weight of 1 matches that joint's single-joint inverse-transpose. A split
   weight matches the same averaged scale used for the normals.
+- N815: the same two-joint check with a non-identity rotation on both joints
+  keeps tangents finite and `w` intact. The result is the inverse-transpose
+  scale followed by the blended rotation; a weight of 1 still matches the
+  single-joint formula.
 - N746: `render_package_mesh_skinned` sends skinned mesh packages through the
   scene renderer with an explicit `SkinMode`, so DQS affects mesh-package
   normals/tangents as well as the scene path; skeleton-less packages keep the

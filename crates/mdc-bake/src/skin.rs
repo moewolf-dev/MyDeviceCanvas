@@ -3508,6 +3508,28 @@ mod tests {
             "the closer average colour beats the raw majority"
         );
         assert!(closer.alpha.is_empty());
+        // N819: one 4x2 image holds both boxes at the same selected level. The
+        // left box is an equidistant tie (smaller index 0); the right box has a
+        // two-count majority but its average is nearer the minority index 0.
+        let two_boxes = mdc_model::TextureBlob {
+            width: 4,
+            height: 2,
+            rgb565: Vec::new(),
+            alpha: Vec::new(),
+            palette: vec![0x0640, 0x0000, 0x06E0],
+            // row 0: 0 2 | 1 1   row 1: 0 2 | 0 2
+            indices: vec![0, 2, 1, 1, 0, 2, 0, 2],
+            mips: Vec::new(),
+        };
+        assert!(two_boxes.validate());
+        let boxes = texture_for_target(&two_boxes, (2, 1));
+        assert_eq!((boxes.width, boxes.height), (2, 1));
+        assert!(boxes.validate());
+        assert_eq!(
+            boxes.indices,
+            vec![0, 0],
+            "tie keeps the smaller index and the closer colour wins the second box"
+        );
     }
 
     use super::*;
@@ -5300,6 +5322,70 @@ mod tests {
         );
         assert!(tangent_out[0][1].abs() > 0.9, "{tangent_out:?}");
         assert_eq!(tangent_out[0][3], -1.0, "handedness is preserved");
+    }
+
+    #[test]
+    fn dqs_tangents_keep_rotation_with_non_uniform_scale() {
+        // N815: two joints with different diagonal scales and the same
+        // non-identity rotation. Tangents stay finite, keep `w`, and both a
+        // weight of 1 and a 0.75/0.25 blend match the inverse-transpose formula
+        // followed by that rotation.
+        let skeleton = mdc_model::Skeleton {
+            name: "s".into(),
+            bones: 2,
+            joint_nodes: vec![0, 1],
+            inverse_bind: vec![mat4_identity(), mat4_identity()],
+        };
+        let rotation = [
+            0.0,
+            0.0,
+            std::f32::consts::FRAC_1_SQRT_2,
+            std::f32::consts::FRAC_1_SQRT_2,
+        ];
+        let world_a = mat4_from_trs([0.0, 0.0, 0.0], rotation, [2.0, 0.5, 1.0]);
+        let world_b = mat4_from_trs([0.0, 0.0, 0.0], rotation, [1.0, 2.0, 4.0]);
+        let tangent = [1.0f32, 1.0, 0.0, -1.0];
+        let skin = |weights: [f32; 4]| {
+            skin_tangents_multi_with_mode(
+                &[[0, 1, 0, 0]],
+                &[weights],
+                &[],
+                &[],
+                &[tangent],
+                &skeleton,
+                &[world_a, world_b],
+                SkinMode::Dqs,
+            )
+        };
+        let expect = |scale: [f32; 3]| {
+            let x = tangent[0] / scale[0];
+            let y = tangent[1] / scale[1];
+            // 90 degrees around z: (x, y) -> (-y, x).
+            let rotated = [-y, x, 0.0];
+            let len = (rotated[0] * rotated[0] + rotated[1] * rotated[1]).sqrt();
+            [rotated[0] / len, rotated[1] / len, 0.0]
+        };
+        let only = skin([1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(only.len(), 1);
+        assert!(only[0].iter().all(|v| v.is_finite()), "{:?}", only[0]);
+        assert_eq!(only[0][3], -1.0, "handedness is preserved");
+        let single = expect([2.0, 0.5, 1.0]);
+        assert!(
+            (only[0][0] - single[0]).abs() < 1e-3 && (only[0][1] - single[1]).abs() < 1e-3,
+            "weight 1 {:?} expect {:?}",
+            only[0],
+            single
+        );
+        let blended = skin([0.75, 0.25, 0.0, 0.0]);
+        assert!(blended[0].iter().all(|v| v.is_finite()), "{:?}", blended[0]);
+        assert_eq!(blended[0][3], -1.0, "blended handedness is preserved");
+        let average = expect([1.75, 0.875, 1.75]);
+        assert!(
+            (blended[0][0] - average[0]).abs() < 1e-3 && (blended[0][1] - average[1]).abs() < 1e-3,
+            "blended {:?} expect {:?}",
+            blended[0],
+            average
+        );
     }
 
     #[test]
