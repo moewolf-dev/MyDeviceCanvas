@@ -6267,6 +6267,15 @@ fn scene_arc_mask_and_group_skew_reach_the_device() {
     assert_ne!(device.pixel_rgb565(10, 2), Some(0), "horizontal");
     assert_ne!(device.pixel_rgb565(20, 7), Some(0), "vertical");
 
+    // N783: extra coordinate groups are implicit commands on the device.
+    show(
+        &mut session,
+        &mut device,
+        r##"{"name":"rep","kind":"path","value2":"M2,4 10,4;L10,8 18,8","value":"#FFFFFF"}"##,
+    );
+    assert_ne!(device.pixel_rgb565(6, 4), Some(0), "implicit lineto");
+    assert_ne!(device.pixel_rgb565(14, 8), Some(0), "repeated line");
+
     show(
         &mut session,
         &mut device,
