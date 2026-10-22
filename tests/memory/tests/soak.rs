@@ -1566,6 +1566,10 @@ fn animated_scene_rendering_stays_bounded() {
                     opacity: vec![[0, 0], [50, 255], [100, 0]],
                     rect: Vec::new(),
                     focus: Vec::new(),
+                    delay_ms: None,
+                    speed_permille: None,
+                    color: Vec::new(),
+                    rotate: Vec::new(),
                     easing: None,
                 }),
                 rotate: Some(90),
@@ -2474,6 +2478,10 @@ fn focus_animation_render_soak_is_bounded() {
                 opacity: Vec::new(),
                 rect: Vec::new(),
                 focus: vec![[0, 0, 0], [100, 100, 100]],
+                delay_ms: None,
+                speed_permille: None,
+                color: Vec::new(),
+                rotate: Vec::new(),
                 easing: None,
             }),
             rotate: None,
@@ -2746,6 +2754,75 @@ fn rle_chunk_store_soak_stays_under_its_compressed_quota() {
     }
     assert_eq!(store.total_bytes(), 0);
     assert_eq!(store.unique_chunks(), 0);
+}
+
+#[test]
+fn delayed_colour_and_rotate_scene_soak_stays_bounded() {
+    // N831: 5000 ticks of delayed colour/rotate tracks keep the framebuffer and
+    // the sampled scene bounded (the animation is applied to a clone).
+    use mdc_protocol::{SceneAnim, SceneColorKey, SceneNode};
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 32,
+        height: 16,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    let _ = session.poll();
+    session
+        .set_scene(SceneNode {
+            name: "pulse".into(),
+            kind: "rect".into(),
+            rect: Some([0, 0, 32, 8]),
+            value: Some("#FF0000".into()),
+            value2: None,
+            opacity: None,
+            visible: None,
+            anim: Some(SceneAnim {
+                duration_ms: 200,
+                looping: true,
+                opacity: Vec::new(),
+                rect: Vec::new(),
+                focus: Vec::new(),
+                delay_ms: Some(50),
+                speed_permille: Some(1500),
+                color: vec![
+                    SceneColorKey {
+                        time_ms: 0,
+                        value: "#FF0000".into(),
+                    },
+                    SceneColorKey {
+                        time_ms: 100,
+                        value: "#00FF00".into(),
+                    },
+                    SceneColorKey {
+                        time_ms: 200,
+                        value: "#0000FF".into(),
+                    },
+                ],
+                rotate: vec![[0, 0], [100, 90], [200, 180]],
+                easing: None,
+            }),
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: None,
+            focus: None,
+            children: Vec::new(),
+        })
+        .unwrap();
+    device.poll().unwrap();
+    let bytes = device.metrics_snapshot().pixel_bytes;
+    assert_eq!(bytes, 32 * 16 * 2);
+    for tick in 0..5000u64 {
+        device.clock.tick = tick * 7;
+        assert!(device.render_scene());
+        assert_eq!(device.metrics_snapshot().pixel_bytes, bytes);
+    }
+    assert!(device.pixel_rgb565(0, 0).is_some());
 }
 
 #[test]

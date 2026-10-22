@@ -2941,6 +2941,10 @@ fn animated_scene_reaches_the_mirror() {
                 opacity: vec![[0, 0], [100, 255]],
                 rect: Vec::new(),
                 focus: Vec::new(),
+                delay_ms: None,
+                speed_permille: None,
+                color: Vec::new(),
+                rotate: Vec::new(),
                 easing: None,
             }),
             rotate: None,
@@ -4495,6 +4499,69 @@ fn scene_align_z_wrap_and_dash_render_deterministically() {
 }
 
 #[test]
+fn scene_colour_rotate_and_delay_reach_the_device() {
+    // N823/N825/N827/N830: delayed colour and rotate tracks arrive through the
+    // real SCENE path and render on the device clock.
+    use mdc_core::{ConnectionState, Session};
+    use mdc_protocol::SceneNode;
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 8,
+        height: 8,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+    let scene: SceneNode = serde_json::from_str(
+        r##"{
+            "name": "bar",
+            "kind": "rect",
+            "rect": [0, 0, 8, 2],
+            "value": "#FF0000",
+            "anim": {
+                "duration_ms": 100,
+                "delay_ms": 50,
+                "speed_permille": 1000,
+                "color": [
+                    {"time_ms": 0, "value": "#FF0000"},
+                    {"time_ms": 100, "value": "#0000FF"}
+                ],
+                "rotate": [[0, 0], [100, 90]]
+            }
+        }"##,
+    )
+    .unwrap();
+    session.set_scene(scene).unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    // Before the delay: red and wide.
+    assert!(device.render_scene());
+    assert_eq!(
+        device.pixel_rgb565(7, 1),
+        Some(0xF800),
+        "red wide bar at t=0"
+    );
+    assert_eq!(device.hit_test(7, 1).as_deref(), Some("bar"));
+
+    // After the delay and at the end of the track: blue and tall.
+    device.clock.tick = 150;
+    assert!(device.render_scene());
+    assert_eq!(
+        device.pixel_rgb565(1, 7),
+        Some(0x001F),
+        "blue tall bar at t=150"
+    );
+    assert_eq!(device.pixel_rgb565(7, 1), Some(0), "the wide edge is gone");
+    assert_eq!(device.hit_test(1, 7).as_deref(), Some("bar"));
+    assert!(device.hit_test(7, 1).is_none());
+}
+
+#[test]
 fn http_mirror_serves_a_device_frame_to_a_loopback_client() {
     use mdc_core::{ConnectionState, Session};
     use mdc_simulator::{BoardProfile, FakeDevice};
@@ -4855,6 +4922,10 @@ fn focus_animation_changes_the_device_frame() {
             opacity: Vec::new(),
             rect: Vec::new(),
             focus: vec![[0, 0, 0], [100, 100, 100]],
+            delay_ms: None,
+            speed_permille: None,
+            color: Vec::new(),
+            rotate: Vec::new(),
             easing: None,
         }),
         rotate: None,
