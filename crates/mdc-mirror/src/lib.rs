@@ -4787,6 +4787,47 @@ mod tests {
         assert!(head_stale.starts_with("HTTP/1.1 200"), "{head_stale}");
         assert!(!head_stale.contains("Content-Length: 2"), "{head_stale}");
 
+        // N810: `weak=1` makes If-Range return the full 200 body. A strong
+        // If-Range can still return 206. 412 is still chosen before 304.
+        let weak_ok = fetch(
+            &mut server,
+            "GET /frame.ppm?weak=1 HTTP/1.1\r\nHost: x\r\n\r\n".into(),
+        );
+        assert!(weak_ok.starts_with("HTTP/1.1 200"), "{weak_ok}");
+        let weak_tag = etag_of(&weak_ok);
+        assert!(weak_tag.starts_with("W/"), "{weak_tag}");
+        let weak_body = weak_ok.split("\r\n\r\n").nth(1).unwrap_or("");
+        assert!(weak_body.starts_with("P6"), "full PPM");
+        let weak_range = fetch(
+            &mut server,
+            format!(
+                "GET /frame.ppm?weak=1 HTTP/1.1\r\nHost: x\r\nRange: bytes=0-1\r\n\
+                 If-Range: {weak_tag}\r\n\r\n"
+            ),
+        );
+        assert!(weak_range.starts_with("HTTP/1.1 200"), "{weak_range}");
+        assert_eq!(
+            weak_range.split("\r\n\r\n").nth(1).unwrap_or(""),
+            weak_body,
+            "a weak If-Range keeps the full representation"
+        );
+        let strong_range = fetch(
+            &mut server,
+            format!(
+                "GET /frame.ppm HTTP/1.1\r\nHost: x\r\nRange: bytes=0-1\r\n\
+                 If-Range: {ppm_tag}\r\n\r\n"
+            ),
+        );
+        assert!(strong_range.starts_with("HTTP/1.1 206"), "{strong_range}");
+        let before_304 = fetch(
+            &mut server,
+            format!(
+                "GET /frame.ppm HTTP/1.1\r\nHost: x\r\nIf-Match: \"other\"\r\n\
+                 If-None-Match: {ppm_tag}\r\n\r\n"
+            ),
+        );
+        assert!(before_304.starts_with("HTTP/1.1 412"), "{before_304}");
+
         let health_ok = fetch(
             &mut server,
             "GET /health HTTP/1.1\r\nHost: x\r\n\r\n".into(),
