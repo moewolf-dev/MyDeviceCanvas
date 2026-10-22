@@ -326,6 +326,11 @@ impl WeightedSharedScheduler {
         self.served.get(&surface).copied().unwrap_or(0)
     }
 
+    /// N797: forget every surface's served count so the next plans reconverge.
+    pub fn reset_served(&mut self) {
+        self.served.clear();
+    }
+
     /// Plan one tick. `budget == 0` is unlimited. A zero weight is treated as 1.
     /// Credit outranks `priority`: the long-run counts follow the weights.
     pub fn plan(&mut self, budget: u64, demands: &[SurfaceDemand]) -> SharedDecision {
@@ -660,6 +665,22 @@ mod tests {
         assert_eq!(counts, [30, 10]);
         assert_eq!(scheduler.served(1), 30);
         assert_eq!(scheduler.served(2), 10);
+        // N797: reset clears the snapshot; the same calls converge again.
+        scheduler.reset_served();
+        assert_eq!(scheduler.served(1), 0);
+        assert_eq!(scheduler.served(2), 0);
+        let mut again = [0u32; 2];
+        for _ in 0..40 {
+            let decision = scheduler.plan(10, &demands);
+            if !decision.selection(1).unwrap().selected.is_empty() {
+                again[0] += 1;
+            }
+            if !decision.selection(2).unwrap().selected.is_empty() {
+                again[1] += 1;
+            }
+        }
+        assert_eq!(again, [30, 10]);
+        assert_eq!(scheduler.served(1), 30);
         // One larger tick follows the same ratio (3 then 1).
         let fresh = {
             let mut scheduler = WeightedSharedScheduler::new();
