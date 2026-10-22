@@ -134,6 +134,9 @@ equal to the opaque tag (no `W/`) still returns `206` on that same `weak=1`
 URL. A failing `If-Match` is still `412` before `304`. A weak `If-Range` does
 not satisfy the check, including when both sides are weak. `If-Match` stays a
 strong comparison and still rejects the opaque form of a weak tag.
+N820: a date-form `If-Range` is independent of the validator's strength. On a
+`weak=1` response, a date at or after `Last-Modified` still returns `206`; an
+older date returns the full `200` and so does the weak `W/` token form.
 
 ## Guarantees
 

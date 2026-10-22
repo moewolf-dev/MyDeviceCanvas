@@ -4612,6 +4612,26 @@ mod tests {
             &weak,
             stamp
         ));
+        // N820: on a weak validator, a date If-Range still selects the range
+        // (206); a stale date falls back to the full 200, and the weak token
+        // form stays a 200 as well.
+        let fresh = http_date(stamp);
+        assert!(if_range_matches(
+            request(&format!("If-Range: {fresh}\r\n")).as_bytes(),
+            &weak,
+            stamp
+        ));
+        let stale = http_date(stamp - 1);
+        assert!(!if_range_matches(
+            request(&format!("If-Range: {stale}\r\n")).as_bytes(),
+            &weak,
+            stamp
+        ));
+        assert!(!if_range_matches(
+            request(&format!("If-Range: {weak}\r\n")).as_bytes(),
+            &weak,
+            stamp
+        ));
         let strong = frame_etag("/frame.bmp", "scale=2", 4);
         assert!(strong.starts_with('"'), "{strong}");
         assert!(!frame_etag("/frame.bmp", "weak=0", 4).starts_with("W/"));
