@@ -4391,15 +4391,32 @@ fn cmd_texture_report(args: &[String]) -> Result<(), Box<dyn std::error::Error>>
     if args.iter().any(|arg| arg == "--batch") {
         return cmd_texture_report_batch(args);
     }
-    let path = args.first().cloned().ok_or("texture-report <image>")?;
+    let path = args
+        .iter()
+        .find(|arg| !arg.starts_with("--"))
+        .cloned()
+        .ok_or("texture-report <image>")?;
     let json = args.iter().any(|arg| arg == "--json");
+    let out = args
+        .iter()
+        .position(|arg| arg == "--out")
+        .and_then(|index| args.get(index + 1))
+        .cloned();
+    if out.is_some() && !json {
+        return Err("texture-report --out requires --json".into());
+    }
     let (report, fully_transparent) = texture_report_value(&path)?;
     let report = if json {
         texture_report_item(report)
     } else {
         report
     };
-    println!("{}", serde_json::to_string_pretty(&report)?);
+    let pretty = serde_json::to_string_pretty(&report)?;
+    if let Some(path) = out {
+        // N801: the archived body is the same document printed on stdout.
+        write_bytes_atomic(std::path::Path::new(&path), pretty.as_bytes())?;
+    }
+    println!("{pretty}");
     if fully_transparent {
         std::process::exit(1);
     }
@@ -4477,7 +4494,7 @@ fn cmd_texture_report_batch(args: &[String]) -> Result<(), Box<dyn std::error::E
         .and_then(|index| args.get(index + 1))
         .cloned();
     if out.is_some() && !json {
-        return Err("texture-report --out requires --batch --json".into());
+        return Err("texture-report --out requires --json".into());
     }
     if json {
         let pretty = serde_json::to_string_pretty(&texture_report_batch_body(&batch))?;
@@ -4810,7 +4827,7 @@ motion <motion3.json> [--param ID] [--samples N]|\
 render-package <file.mdcpkg> [--frame N] [--clip NAME] [--time T] [--mip N] [--smooth] --out f.ppm|\
 scene <file.json>|scene clear|scene-render <file.json> [--time MS] --out f.ppm|scene-lint <file.json>|raster-demo|preview-mesh|inspect [--watch --count N --interval MS] [--rss] [--defaults|--defaults-only [--key K]]|\
 asset put <dir> <file> [--max-entry N] [--max-total N]|asset ls <dir>|asset get <dir> <key> [--out FILE]|asset prune <dir> [--max-total N]|asset verify <dir>|\
-model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg> [--strict]|diff <a.mdcpkg> <b.mdcpkg>|texture-report <image> [--json]|texture-report --batch <dir> [--json] [--out FILE] [--min-coverage F] [--sort name|coverage|trimmable]"
+model-info <model.json|.gltf|.glb>|validate <model.json|.gltf|.glb> [--strict]|verify <file.mdcpkg> [--strict]|diff <a.mdcpkg> <b.mdcpkg>|texture-report <image> [--json] [--out FILE]|texture-report --batch <dir> [--json] [--out FILE] [--min-coverage F] [--sort name|coverage|trimmable]"
     );
 }
 
@@ -5361,6 +5378,36 @@ mod tests {
             texture_report_item(report)["kind"],
             serde_json::json!("texture")
         );
+        // N801: a single `--json --out` archives that same document atomically.
+        let out = dir.join("one.json");
+        cmd_texture_report(&[
+            path.to_string_lossy().into_owned(),
+            "--json".into(),
+            "--out".into(),
+            out.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        let archived: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        let (report, _) = texture_report_value(&path.to_string_lossy()).unwrap();
+        assert_eq!(archived, texture_report_item(report));
+        assert_eq!(archived["kind"], "texture");
+        assert!(cmd_texture_report(&[
+            path.to_string_lossy().into_owned(),
+            "--out".into(),
+            out.to_string_lossy().into_owned(),
+        ])
+        .is_err());
+        let blocked = dir.join("blocked");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(write_bytes_atomic(&blocked, b"{}").is_err());
+        assert!(std::fs::read_dir(&dir).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        }));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
