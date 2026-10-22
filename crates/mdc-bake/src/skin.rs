@@ -3470,6 +3470,44 @@ mod tests {
         assert!(shrunk.alpha.is_empty());
         assert_eq!(shrunk.sample(0.25, 0.25), 0xF800);
         assert_eq!(shrunk.sample(0.75, 0.25), 0x07E0);
+
+        // N809: an equidistant box keeps the smaller palette index. A box whose
+        // average is nearer a minority colour keeps that colour, and alpha is
+        // still the level-0 any-opaque resample.
+        let tie = mdc_model::TextureBlob {
+            width: 2,
+            height: 2,
+            rgb565: Vec::new(),
+            alpha: vec![0b0001],
+            palette: vec![0xF800, 0x001F],
+            indices: vec![0, 0, 1, 1],
+            mips: Vec::new(),
+        };
+        assert!(tie.validate());
+        let tied = texture_for_target(&tie, (1, 1));
+        assert_eq!((tied.width, tied.height), (1, 1));
+        assert!(tied.validate());
+        assert_eq!(tied.indices, vec![0], "smaller index wins a tie");
+        assert!(tied.alpha_at(0.5, 0.5), "any opaque source texel stays");
+        let majority = mdc_model::TextureBlob {
+            width: 2,
+            height: 2,
+            rgb565: Vec::new(),
+            alpha: Vec::new(),
+            // Index 1 appears twice. The average green sits closer to index 0.
+            palette: vec![0x0640, 0x0000, 0x06E0],
+            indices: vec![1, 1, 0, 2],
+            mips: Vec::new(),
+        };
+        assert!(majority.validate());
+        let closer = texture_for_target(&majority, (1, 1));
+        assert!(closer.validate());
+        assert_eq!(
+            closer.indices,
+            vec![0],
+            "the closer average colour beats the raw majority"
+        );
+        assert!(closer.alpha.is_empty());
     }
 
     use super::*;
@@ -4795,6 +4833,50 @@ mod tests {
             (blended[0][0] - mixed[0]).abs() < 1e-3 && (blended[0][1] - mixed[1]).abs() < 1e-3,
             "blend {:?} expect {:?}",
             blended[0],
+            mixed
+        );
+        // N805: tangents use the same blended inverse-transpose and keep `w`.
+        let tangent = [1.0, 1.0, 0.0, -1.0];
+        let skin_tangent = |weights: [f32; 4]| {
+            skin_tangents_multi_with_mode(
+                &[[0, 1, 0, 0]],
+                &[weights],
+                &[],
+                &[],
+                &[tangent],
+                &skeleton,
+                &[world_a, world_b],
+                SkinMode::Dqs,
+            )
+        };
+        let only_t = skin_tangent([1.0, 0.0, 0.0, 0.0]);
+        assert!(
+            only_t[0].iter().all(|value| value.is_finite()),
+            "{:?}",
+            only_t[0]
+        );
+        assert!((only_t[0][3] + 1.0).abs() < 1e-6, "w kept {:?}", only_t[0]);
+        assert!(
+            (only_t[0][0] - single[0]).abs() < 1e-3 && (only_t[0][1] - single[1]).abs() < 1e-3,
+            "weight 1 tangent {:?} expect {:?}",
+            only_t[0],
+            single
+        );
+        let blend_t = skin_tangent([0.75, 0.25, 0.0, 0.0]);
+        assert!(
+            blend_t[0].iter().all(|value| value.is_finite()),
+            "{:?}",
+            blend_t[0]
+        );
+        assert!(
+            (blend_t[0][3] + 1.0).abs() < 1e-6,
+            "w kept {:?}",
+            blend_t[0]
+        );
+        assert!(
+            (blend_t[0][0] - mixed[0]).abs() < 1e-3 && (blend_t[0][1] - mixed[1]).abs() < 1e-3,
+            "blend tangent {:?} expect {:?}",
+            blend_t[0],
             mixed
         );
     }
