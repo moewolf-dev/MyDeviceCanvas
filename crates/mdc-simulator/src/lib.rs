@@ -1631,6 +1631,8 @@ fn draw_line(
     alpha: u8,
     // N497: 0 draws a solid line; otherwise this is the dash length in pixels.
     dash: u16,
+    // N813: pixel offset into the dash period (0 = start on a dash segment).
+    phase: u16,
     stroke: u8,
 ) {
     let (mut x0, mut y0) = (i64::from(rect[0]), i64::from(rect[1]));
@@ -1648,8 +1650,9 @@ fn draw_line(
     let mut samples = Vec::new();
     loop {
         // N497: in a dashed line, only the first `dash` pixels of each period
-        // are painted.
-        let paint = dash == 0 || step % (2 * u32::from(dash)) < u32::from(dash);
+        // are painted. N813: `phase` shifts the period before that decision.
+        let offset = step.saturating_add(u32::from(phase));
+        let paint = dash == 0 || offset % (2 * u32::from(dash)) < u32::from(dash);
         samples.push((x0, y0, paint));
         step = step.saturating_add(1);
         if x0 == x1 && y0 == y1 {
@@ -2133,6 +2136,7 @@ fn fill_scene(
                         color,
                         alpha,
                         0,
+                        0,
                         1,
                     );
                 }
@@ -2240,6 +2244,7 @@ fn fill_scene(
                 node.color_rgb565(),
                 alpha,
                 dash,
+                0,
                 1,
             );
             *drew = true;
@@ -2280,6 +2285,7 @@ fn fill_scene(
                         ],
                         color,
                         alpha,
+                        0,
                         0,
                         1,
                     );
@@ -2335,6 +2341,7 @@ fn fill_scene(
         // gap pixels of that same Bresenham step before the stamp is applied.
         let stroke = node.stroke_width();
         let dash = node.stroke_dash();
+        let phase = node.stroke_phase();
         if let Some(commands) = node.path_commands() {
             let mut current: Option<(f32, f32)> = None;
             let mut start_point: Option<(f32, f32)> = None;
@@ -2356,6 +2363,7 @@ fn fill_scene(
                     color,
                     alpha,
                     dash,
+                    phase,
                     stroke,
                 );
             };
@@ -2607,6 +2615,7 @@ fn fill_scene(
                     color,
                     alpha,
                     dash,
+                    phase,
                     stroke,
                 );
                 previous = current;
@@ -7435,6 +7444,43 @@ mod tests {
             Some(0),
             "a solid path keeps the gap pixel"
         );
+        // N813: `phase` shifts the dash period. With dash 4, phase 4 starts in
+        // the gap; phase 6 starts mid-gap and the on-segment begins at x=6.
+        render_mode(&mut device, "dash=4,phase=4");
+        assert_eq!(
+            device.pixel_rgb565(4, 8),
+            Some(0),
+            "phase 4 starts on a gap"
+        );
+        assert_ne!(device.pixel_rgb565(8, 8), Some(0), "the next period is on");
+        render_mode(&mut device, "dash=4,phase=6");
+        assert_eq!(
+            device.pixel_rgb565(4, 8),
+            Some(0),
+            "mid-gap start stays clear"
+        );
+        assert_eq!(device.pixel_rgb565(5, 8), Some(0), "gap still clear");
+        assert_ne!(
+            device.pixel_rgb565(6, 8),
+            Some(0),
+            "on-segment after the mid-gap phase"
+        );
+        // The width stamp follows the shifted segment but never covers a gap
+        // sample centre.
+        render_mode(&mut device, "dash=4,phase=6,width=3");
+        assert_eq!(
+            device.pixel_rgb565(5, 8),
+            Some(0),
+            "width leaves the gap sample clear"
+        );
+        assert_ne!(
+            device.pixel_rgb565(6, 9),
+            Some(0),
+            "the shifted on-segment is stamped thick"
+        );
+        // An invalid phase keeps the unshifted dash.
+        render_mode(&mut device, "dash=4,phase=nope");
+        assert_ne!(device.pixel_rgb565(4, 8), Some(0), "dash starts on");
     }
 
     #[test]
@@ -7695,6 +7741,54 @@ mod tests {
             device.pixel_rgb565(4, 10),
             Some(0),
             "axis-aligned box outside the lean"
+        );
+        // N818: a sprite child of the sheared clip is masked the same way; an
+        // axis-aligned clip still composites the sprite's own rect.
+        device.atlas = Some(mdc_model::AtlasBlob {
+            sprite_width: 1,
+            sprite_height: 1,
+            frames: 1,
+            columns: 1,
+            rows: 1,
+            rgb565: vec![0x00, 0xF8],
+            clips: Vec::new(),
+            mips: Vec::new(),
+        });
+        show(
+            &mut device,
+            r##"{"name":"g","kind":"group","value2":"1000,0","children":[
+                 {"name":"c","kind":"clip","rect":[0,0,4,12],"children":[
+                   {"name":"sp","kind":"sprite","rect":[0,0,16,16],"value":"0"}]}]}"##,
+        );
+        assert_eq!(
+            device.pixel_rgb565(12, 10),
+            Some(0xF800),
+            "sprite pixel inside the parallelogram"
+        );
+        assert_eq!(
+            device.pixel_rgb565(16, 10),
+            Some(0),
+            "sprite pixel outside the parallelogram"
+        );
+        assert_eq!(
+            device.pixel_rgb565(4, 10),
+            Some(0),
+            "sprite outside the lean stays clear"
+        );
+        show(
+            &mut device,
+            r##"{"name":"c","kind":"clip","rect":[0,0,8,8],"children":[
+                 {"name":"sp","kind":"sprite","rect":[0,0,8,8],"value":"0"}]}"##,
+        );
+        assert_eq!(
+            device.pixel_rgb565(4, 4),
+            Some(0xF800),
+            "axis-aligned sprite is unchanged"
+        );
+        assert_eq!(
+            device.pixel_rgb565(9, 4),
+            Some(0),
+            "axis-aligned clip bounds the sprite"
         );
     }
 

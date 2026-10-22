@@ -159,6 +159,11 @@ A device that accepts a scene rasterizes it locally:
   is itself a gap sample, so the first off-phase pixel stays clear. A missing
   or invalid dash stays solid. An invalid width stays 1 pixel and does not
   clear a valid dash.
+  N813: `mode` may also include `phase=N` (0..=64), a pixel offset into the
+  dash period. It shifts where the first on-segment starts; the dash length
+  and width stamp are unchanged. `dash=4,phase=6` starts with two gap samples
+  and then paints x=6 onward. A missing or invalid phase stays 0 and does not
+  clear a valid phase.
 - N744: `mask` composites its children only inside the polygon from `value2`
   (same point syntax as `polygon`); children keep absolute coordinates and the
   node is clipped to the framebuffer. A missing/short polygon draws nothing.
@@ -192,6 +197,9 @@ A device that accepts a scene rasterizes it locally:
   N808: an `image` child of a sheared `clip` is copied back only inside that
   parallelogram. Image pixels that fall in the bounding box but outside the
   lean stay clear. The axis-aligned image path is unchanged.
+  N818: a `sprite` child is masked the same way. Its pixels outside the
+  parallelogram stay clear, and an axis-aligned clip still composites only the
+  sprite's own rect.
 - `render_scene` clears the framebuffer first (N137), so repeated renders are
   deterministic rather than accumulating.
 - A clip `fade_in_ms` darkens the atlas frame until that many virtual milliseconds pass.

@@ -820,6 +820,25 @@ impl SceneNode {
         dash
     }
 
+    /// N813: dash phase from a `mode` token `phase=N` (0..=64). The phase is a
+    /// pixel offset into the dash period; it shifts where the first on-segment
+    /// starts without changing the dash length. A missing or invalid token stays
+    /// at 0, and a later invalid token does not clear an earlier phase.
+    pub fn stroke_phase(&self) -> u16 {
+        let mut phase = 0u16;
+        for token in self.mode.as_deref().unwrap_or("").split(',') {
+            let Some(value) = token.trim().strip_prefix("phase=") else {
+                continue;
+            };
+            if let Ok(parsed) = value.trim().parse::<u16>() {
+                if parsed <= 64 {
+                    phase = parsed;
+                }
+            }
+        }
+        phase
+    }
+
     /// N450: whether the node is visible (default true).
     pub fn is_visible(&self) -> bool {
         self.visible.unwrap_or(true)
@@ -3269,6 +3288,22 @@ mod tests {
         path.mode = Some("dash=8,dash=nope".into());
         assert_eq!(path.stroke_dash(), 8);
         assert_eq!(path.stroke_width(), 1);
+        // N813: `phase=N` is 0..=64; missing/invalid stays 0 and a later
+        // invalid token does not clear an earlier phase.
+        assert_eq!(path.stroke_phase(), 0);
+        path.mode = Some("dash=4,phase=6".into());
+        assert_eq!(path.stroke_phase(), 6);
+        assert_eq!(path.stroke_dash(), 4);
+        path.mode = Some("phase=64,dash=4".into());
+        assert_eq!(path.stroke_phase(), 64);
+        path.mode = Some("phase=65".into());
+        assert_eq!(path.stroke_phase(), 0);
+        path.mode = Some("phase=nope".into());
+        assert_eq!(path.stroke_phase(), 0);
+        path.mode = Some("phase=6,phase=nope".into());
+        assert_eq!(path.stroke_phase(), 6);
+        path.mode = Some("phase=0".into());
+        assert_eq!(path.stroke_phase(), 0);
     }
 
     #[test]
