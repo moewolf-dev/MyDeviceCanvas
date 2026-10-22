@@ -857,6 +857,35 @@ fn mix_rgb565(dst: &mut [u8], src: &[u8], quarters: u8) {
     }
 }
 
+/// N836: weighted average of several full-frame RGB565 buffers (same length).
+/// `total` is the sum of the weights; the result replaces `dst`.
+fn blend_weighted_frames(frames: &[(Vec<u8>, u16)], total: u32, dst: &mut [u8]) {
+    if frames.is_empty() || total == 0 {
+        return;
+    }
+    let n = dst.len() / 2 * 2;
+    let half = total / 2;
+    for i in (0..n).step_by(2) {
+        let mut r = 0u32;
+        let mut g = 0u32;
+        let mut b = 0u32;
+        for (frame, weight) in frames {
+            let Some(bytes) = frame.get(i..i + 2) else {
+                continue;
+            };
+            let value = u16::from_le_bytes([bytes[0], bytes[1]]);
+            let weight = u32::from(*weight);
+            r += u32::from((value >> 11) & 0x1f) * weight;
+            g += u32::from((value >> 5) & 0x3f) * weight;
+            b += u32::from(value & 0x1f) * weight;
+        }
+        let value = ((((r + half) / total) as u16) << 11)
+            | ((((g + half) / total) as u16) << 5)
+            | (((b + half) / total) as u16);
+        dst[i..i + 2].copy_from_slice(&value.to_le_bytes());
+    }
+}
+
 fn mix_atlas_frame(
     pixels: &mut [u8],
     atlas: &mdc_model::AtlasBlob,
@@ -2945,6 +2974,8 @@ impl Default for BoardProfile {
                 "wifi_password".into(),
                 // N71: atlas animation control (only meaningful with a baked atlas).
                 "animation".into(),
+                // N834: weighted animation blending (`clip:weight,...`).
+                "animation_blend".into(),
                 // N347: device texture sampling filter.
                 "filtering".into(),
                 // N586: tolerated unacknowledged tiles before a full frame.
@@ -3143,6 +3174,10 @@ pub struct FakeDevice {
     anim_prev_frame: Option<u32>,
     anim_crossfade_ms: u32,
     anim_blend_start: u64,
+    /// N834: weighted atlas clips (`animation_blend`), resolved at set time.
+    anim_blend: Vec<(String, u16)>,
+    /// N836: weighted mesh package clips (`animation_blend`).
+    mesh_blend: Vec<(mdc_bake::SceneClip, u16)>,
     /// First accepted mesh preview, in framebuffer pixels.
     preview_xy: Vec<(i16, i16)>,
     preview_indices: Vec<u16>,
@@ -3222,6 +3257,8 @@ impl FakeDevice {
             anim_prev_frame: None,
             anim_crossfade_ms: 0,
             anim_blend_start: 0,
+            anim_blend: Vec::new(),
+            mesh_blend: Vec::new(),
             preview_xy: Vec::new(),
             preview_indices: Vec::new(),
             boot_id: 0x4D44_0001,
@@ -4029,12 +4066,17 @@ impl FakeDevice {
     /// N71: the atlas frame currently selected by the running clip, if any.
     /// N730: `mode` selects loop/once/ping-pong and `speed_permille` scales fps.
     pub fn current_atlas_frame(&self) -> Option<u32> {
+        self.atlas_frame_for(self.anim_clip.as_deref()?, self.anim_start_tick)
+    }
+
+    /// N834: frame `time` for one named clip at `start_tick`.
+    fn atlas_frame_for(&self, clip_name: &str, start_tick: u64) -> Option<u32> {
         let atlas = self.atlas.as_ref()?;
-        let clip = atlas.clip(self.anim_clip.as_deref()?)?;
+        let clip = atlas.clip(clip_name)?;
         if clip.frames == 0 {
             return Some(clip.start);
         }
-        let elapsed_ms = self.clock.tick.saturating_sub(self.anim_start_tick);
+        let elapsed_ms = self.clock.tick.saturating_sub(start_tick);
         let speed = u64::from(clip.speed_permille.unwrap_or(1000));
         let local = elapsed_ms
             .saturating_mul(u64::from(clip.fps))
@@ -4128,6 +4170,30 @@ impl FakeDevice {
         if let Some(scene) = self.mesh_scene.clone() {
             if scene.meshes.iter().any(|m| m.geometry.is_some()) {
                 let seconds = self.clock.tick as f32 / 1000.0;
+                if !self.mesh_blend.is_empty() {
+                    let mut frames: Vec<(Vec<u8>, u16)> = Vec::new();
+                    let mut total = 0u32;
+                    for (clip, weight) in self.mesh_blend.clone() {
+                        if let Ok(frame) = mdc_bake::render_package_scene_clip_skinned(
+                            &scene,
+                            clip,
+                            seconds,
+                            (width, height),
+                            self.texture_filter,
+                            mdc_bake::ShadeMode::Flat,
+                            self.skin_mode,
+                        ) {
+                            total = total.saturating_add(u32::from(weight));
+                            frames.push((frame.rgb565, weight));
+                        }
+                    }
+                    if total > 0 && !frames.is_empty() {
+                        let len = frames[0].0.len().min(self.pixels.len());
+                        blend_weighted_frames(&frames, total, &mut self.pixels[..len]);
+                        self.apply_mesh_crossfade(len);
+                        return true;
+                    }
+                }
                 if let Ok(frame) = mdc_bake::render_package_scene_clip_skinned(
                     &scene,
                     self.mesh_clip,
@@ -4139,22 +4205,7 @@ impl FakeDevice {
                 ) {
                     let len = frame.rgb565.len().min(self.pixels.len());
                     self.pixels[..len].copy_from_slice(&frame.rgb565[..len]);
-                    // N330: cross-fade the frame frozen at the last clip change.
-                    if self.mesh_crossfade_ms > 0 {
-                        let elapsed = self.clock.tick.saturating_sub(self.mesh_blend_start);
-                        if elapsed >= u64::from(self.mesh_crossfade_ms) {
-                            self.mesh_crossfade_ms = 0;
-                            self.mesh_prev_pixels.clear();
-                        } else if self.mesh_prev_pixels.len() >= len {
-                            let progress = (elapsed.saturating_mul(4)
-                                / u64::from(self.mesh_crossfade_ms))
-                            .min(4) as u8;
-                            let quarters = 4u8.saturating_sub(progress);
-                            let previous = std::mem::take(&mut self.mesh_prev_pixels);
-                            mix_rgb565(&mut self.pixels[..len], &previous[..len], quarters);
-                            self.mesh_prev_pixels = previous;
-                        }
-                    }
+                    self.apply_mesh_crossfade(len);
                     return true;
                 }
             }
@@ -4217,6 +4268,10 @@ impl FakeDevice {
     /// N72: draw the current atlas frame into the local framebuffer (top-left).
     /// Returns true when a frame was drawn.
     pub fn render_atlas_frame(&mut self) -> bool {
+        // N835: a weighted blend takes precedence over the single clip.
+        if !self.anim_blend.is_empty() {
+            return self.render_atlas_blend();
+        }
         let Some(index) = self.current_atlas_frame() else {
             return false;
         };
@@ -4275,6 +4330,61 @@ impl FakeDevice {
         }
         true
     }
+    /// N835: weighted average of several atlas frames. Each clip uses the same
+    /// device start tick, so their local times stay aligned.
+    fn render_atlas_blend(&mut self) -> bool {
+        let Some(atlas) = self.atlas.clone() else {
+            return false;
+        };
+        let sprite_w = atlas.sprite_width as usize;
+        let sprite_h = atlas.sprite_height as usize;
+        let dst_row_bytes = self.profile.width as usize * 2;
+        let atlas_row_bytes = (atlas.columns as usize) * sprite_w * 2;
+        if sprite_w == 0 || sprite_h == 0 || dst_row_bytes == 0 {
+            return false;
+        }
+        let selected: Vec<(u32, u16)> = self
+            .anim_blend
+            .iter()
+            .filter_map(|(name, weight)| {
+                self.atlas_frame_for(name, self.anim_start_tick)
+                    .map(|index| (index, *weight))
+            })
+            .collect();
+        let total: u32 = selected.iter().map(|(_, weight)| u32::from(*weight)).sum();
+        if selected.is_empty() || total == 0 {
+            return false;
+        }
+        let rows = sprite_h.min(self.pixels.len() / dst_row_bytes);
+        for y in 0..rows {
+            let dst = y * dst_row_bytes;
+            for x in 0..sprite_w.min(self.profile.width as usize) {
+                let mut r = 0u32;
+                let mut g = 0u32;
+                let mut b = 0u32;
+                for (index, weight) in &selected {
+                    let Some(offset) = atlas.frame_offset(*index) else {
+                        continue;
+                    };
+                    let src = offset + y * atlas_row_bytes + x * 2;
+                    let Some(bytes) = atlas.rgb565.get(src..src + 2) else {
+                        continue;
+                    };
+                    let value = u16::from_le_bytes([bytes[0], bytes[1]]);
+                    let weight = u32::from(*weight);
+                    r += u32::from((value >> 11) & 0x1f) * weight;
+                    g += u32::from((value >> 5) & 0x3f) * weight;
+                    b += u32::from(value & 0x1f) * weight;
+                }
+                let half = total / 2;
+                let value = ((((r + half) / total) as u16) << 11)
+                    | ((((g + half) / total) as u16) << 5)
+                    | (((b + half) / total) as u16);
+                self.pixels[dst + x * 2..dst + x * 2 + 2].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        true
+    }
     /// N54: accept a vector scene within the advertised limits.
     fn handle_scene(&mut self, packet: Packet) -> Result<(), SimError> {
         let command: mdc_protocol::SceneCommand =
@@ -4317,6 +4427,10 @@ impl FakeDevice {
         // N71: "animation" is handled by the atlas runtime, not the config map.
         if command.key == "animation" {
             return self.handle_animation_config(&packet, &command);
+        }
+        // N834: weighted animation blending is device state, not a plain string.
+        if command.key == "animation_blend" {
+            return self.handle_animation_blend_config(&packet, &command);
         }
         // N347: "filtering" selects the device texture sampler.
         if command.key == "filtering" {
@@ -4417,6 +4531,9 @@ impl FakeDevice {
                 if !has_clip {
                     return self.reply_config("animation", false, None, Some("E_VALUE"));
                 }
+                // N834: a single clip replaces any weighted blend.
+                self.anim_blend.clear();
+                self.mesh_blend.clear();
                 // N154: cross-fade from the frame frozen when the clip changes.
                 let previous = self.current_atlas_frame();
                 if self.anim_clip.as_deref() != Some(value.as_str()) {
@@ -4431,11 +4548,124 @@ impl FakeDevice {
             _ => self.reply_config("animation", false, None, Some("E_ACTION")),
         }
     }
+    /// N834: `config animation_blend "idle:700,wave:300"` stores weighted clips.
+    /// `off`/empty clears both the blend and any single clip. For a mesh package
+    /// the names resolve like `animation` (`index`/`name`/`default`).
+    fn handle_animation_blend_config(
+        &mut self,
+        _packet: &Packet,
+        command: &ConfigCommand,
+    ) -> Result<(), SimError> {
+        let mesh_mode = self
+            .mesh_scene
+            .as_ref()
+            .is_some_and(|scene| scene.meshes.iter().any(|mesh| mesh.geometry.is_some()));
+        let names: Vec<String> = self
+            .mesh_scene
+            .as_ref()
+            .map(|scene| scene.animations.iter().map(|a| a.name.clone()).collect())
+            .unwrap_or_default();
+        match command.action.as_str() {
+            "get" => {
+                let entries: Vec<(String, u16)> = if mesh_mode {
+                    self.mesh_blend
+                        .iter()
+                        .map(|(clip, weight)| (Self::mesh_clip_label_for(*clip, &names), *weight))
+                        .collect()
+                } else {
+                    self.anim_blend.clone()
+                };
+                let value = mdc_core::format_animation_blend(&entries);
+                self.reply_config("animation_blend", true, Some(value), None)
+            }
+            "set" => {
+                let value = command.value.clone().unwrap_or_default();
+                let Some(entries) = mdc_core::parse_animation_blend(&value) else {
+                    return self.reply_config("animation_blend", false, None, Some("E_VALUE"));
+                };
+                if entries.is_empty() {
+                    self.stop_animation();
+                    return self.reply_config("animation_blend", true, Some("off".into()), None);
+                }
+                if mesh_mode {
+                    let mut resolved = Vec::new();
+                    for (name, weight) in &entries {
+                        let clip = if name == "default" {
+                            Some(mdc_bake::SceneClip::First)
+                        } else if let Ok(index) = name.parse::<usize>() {
+                            (index < names.len()).then_some(mdc_bake::SceneClip::Index(index))
+                        } else {
+                            names
+                                .iter()
+                                .position(|candidate| candidate == name)
+                                .map(mdc_bake::SceneClip::Index)
+                        };
+                        let Some(clip) = clip else {
+                            return self.reply_config(
+                                "animation_blend",
+                                false,
+                                None,
+                                Some("E_VALUE"),
+                            );
+                        };
+                        resolved.push((clip, *weight));
+                    }
+                    self.stop_animation();
+                    self.mesh_blend = resolved;
+                } else {
+                    let Some(atlas) = self.atlas.as_ref() else {
+                        return self.reply_config(
+                            "animation_blend",
+                            false,
+                            None,
+                            Some("E_UNSUPPORTED"),
+                        );
+                    };
+                    if entries.iter().any(|(name, _)| atlas.clip(name).is_none()) {
+                        return self.reply_config("animation_blend", false, None, Some("E_VALUE"));
+                    }
+                    self.stop_animation();
+                    self.anim_blend = entries;
+                    self.anim_start_tick = self.clock.tick;
+                }
+                let shown = mdc_core::format_animation_blend(
+                    &self
+                        .anim_blend
+                        .iter()
+                        .cloned()
+                        .chain(self.mesh_blend.iter().map(|(clip, weight)| {
+                            (Self::mesh_clip_label_for(*clip, &names), *weight)
+                        }))
+                        .collect::<Vec<_>>(),
+                );
+                self.reply_config("animation_blend", true, Some(shown), None)
+            }
+            _ => self.reply_config("animation_blend", false, None, Some("E_ACTION")),
+        }
+    }
+
+    /// N834: a mesh clip label for the `animation_blend` reply.
+    fn mesh_clip_label_for(clip: mdc_bake::SceneClip, names: &[String]) -> String {
+        match clip {
+            mdc_bake::SceneClip::Static => "off".to_string(),
+            mdc_bake::SceneClip::First => {
+                names.first().cloned().unwrap_or_else(|| "default".into())
+            }
+            mdc_bake::SceneClip::Index(index) => names
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| index.to_string()),
+        }
+    }
+
     /// N154: stop the running clip and clear any cross-fade state.
     pub fn stop_animation(&mut self) {
         self.anim_clip = None;
         self.anim_prev_frame = None;
         self.anim_crossfade_ms = 0;
+        // N834: stopping also clears a weighted blend.
+        self.anim_blend.clear();
+        self.mesh_blend.clear();
         // N315: a new package resets the mesh clip selection to the default.
         self.mesh_clip = mdc_bake::SceneClip::First;
         // N330: and clears any in-flight mesh cross-fade.
@@ -4449,6 +4679,14 @@ impl FakeDevice {
     /// N315: the mesh package animation currently selected.
     pub fn mesh_clip(&self) -> mdc_bake::SceneClip {
         self.mesh_clip
+    }
+    /// N834: the resolved atlas blend (`clip, weight`), empty when not blending.
+    pub fn animation_blend(&self) -> &[(String, u16)] {
+        &self.anim_blend
+    }
+    /// N836: the resolved mesh-package blend, empty when not blending.
+    pub fn mesh_animation_blend(&self) -> &[(mdc_bake::SceneClip, u16)] {
+        &self.mesh_blend
     }
     /// N347: `config filtering <nearest|linear>` selects the device sampler.
     fn handle_filtering_config(
@@ -4545,6 +4783,24 @@ impl FakeDevice {
         self.mesh_prev_pixels = self.pixels.clone();
         self.mesh_crossfade_ms = MESH_CROSSFADE_MS;
         self.mesh_blend_start = self.clock.tick;
+    }
+    /// N330: blend the frame frozen at the last clip change over `len` bytes.
+    fn apply_mesh_crossfade(&mut self, len: usize) {
+        if self.mesh_crossfade_ms == 0 {
+            return;
+        }
+        let elapsed = self.clock.tick.saturating_sub(self.mesh_blend_start);
+        if elapsed >= u64::from(self.mesh_crossfade_ms) {
+            self.mesh_crossfade_ms = 0;
+            self.mesh_prev_pixels.clear();
+        } else if self.mesh_prev_pixels.len() >= len {
+            let progress =
+                (elapsed.saturating_mul(4) / u64::from(self.mesh_crossfade_ms)).min(4) as u8;
+            let quarters = 4u8.saturating_sub(progress);
+            let previous = std::mem::take(&mut self.mesh_prev_pixels);
+            mix_rgb565(&mut self.pixels[..len], &previous[..len], quarters);
+            self.mesh_prev_pixels = previous;
+        }
     }
     /// N263: the negotiated mirror mode ("full-frame" | "dirty-region").
     pub fn mirror_mode(&self) -> &str {
@@ -5144,6 +5400,213 @@ mod tests {
             device.pixel_rgb565(0, 0),
             Some(0x07E0),
             "new frame after blend"
+        );
+    }
+
+    #[test]
+    fn animation_blend_averages_atlas_clips() {
+        // N834/N835: two weighted one-frame clips mix their RGB565 pixels, an
+        // unknown name is refused, and a single clip clears the blend.
+        let (host, mut device) = FakeDevice::pair(BoardProfile::default());
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+        let atlas = mdc_model::AtlasBlob {
+            sprite_width: 1,
+            sprite_height: 1,
+            frames: 2,
+            columns: 2,
+            rows: 1,
+            rgb565: vec![0x00, 0xF8, 0xE0, 0x07],
+            clips: vec![
+                mdc_model::AtlasClip {
+                    name: "idle".into(),
+                    start: 0,
+                    frames: 1,
+                    fps: 1,
+                    looping: true,
+                    fade_in_ms: 0,
+                    fade_out_ms: 0,
+                    mode: None,
+                    speed_permille: None,
+                },
+                mdc_model::AtlasClip {
+                    name: "wave".into(),
+                    start: 1,
+                    frames: 1,
+                    fps: 1,
+                    looping: true,
+                    fade_in_ms: 0,
+                    fade_out_ms: 0,
+                    mode: None,
+                    speed_permille: None,
+                },
+            ],
+            mips: Vec::new(),
+        };
+        let package = mdc_model::DevicePackage {
+            target: "esp32-plane".into(),
+            mode: mdc_model::PackageMode::BakedSprites,
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            textures: Vec::new(),
+            materials: Vec::new(),
+            lights: Vec::new(),
+            skeletons: Vec::new(),
+            animations: Vec::new(),
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 8,
+            atlas: Some(atlas),
+            texture: None,
+            texture_blobs: Vec::new(),
+        };
+        session
+            .install_package(
+                &mdc_model::MdcPackage::seal(package)
+                    .unwrap()
+                    .to_bytes()
+                    .unwrap(),
+            )
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+
+        session.set_animation_blend("idle:500,wave:500").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.animation_blend().len(), 2);
+        assert_eq!(session.active_animation_blend(), Some("idle:500,wave:500"));
+        assert!(device.render_atlas_frame());
+        assert_eq!(
+            device.pixel_rgb565(0, 0),
+            Some(0x8400),
+            "red + green at equal weights"
+        );
+
+        // An unknown clip keeps the previous blend.
+        session.set_config("animation_blend", "nope:500").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.animation_blend().len(), 2, "old blend survives");
+
+        // A single clip replaces the blend.
+        session.set_animation("idle").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.animation_blend().is_empty());
+        assert_eq!(device.active_clip(), Some("idle"));
+
+        // `off` clears both.
+        session.set_animation_blend("idle:500,wave:500").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        session.stop_animation_blend().unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.animation_blend().is_empty());
+        assert_eq!(session.active_animation_blend(), None);
+    }
+
+    #[test]
+    fn animation_blend_averages_mesh_package_clips() {
+        // N836: two package clips pose the same mesh in different places; the
+        // weighted frame contains pixels from both, not just one.
+        use mdc_model::{Animation, AnimationTrack, Mesh, MeshGeometry, Node};
+        let geometry = MeshGeometry {
+            positions: vec![[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]],
+            indices: vec![0, 1, 2],
+            ..MeshGeometry::default()
+        };
+        let mesh = Mesh {
+            name: "tri".into(),
+            vertices: 3,
+            indices: 3,
+            geometry: Some(geometry),
+            ..Mesh::default()
+        };
+        let clip = |name: &str, x: f32| Animation {
+            name: name.into(),
+            channels: 1,
+            tracks: vec![AnimationTrack {
+                node: 0,
+                path: "translation".into(),
+                interpolation: "LINEAR".into(),
+                times: vec![0.0, 1.0],
+                values: vec![x, 0.0, 0.0, x, 0.0, 0.0],
+            }],
+        };
+        let package = mdc_model::DevicePackage {
+            target: "linux-mesh".into(),
+            mode: mdc_model::PackageMode::Mesh,
+            nodes: vec![Node {
+                name: "root".into(),
+                mesh: Some(0),
+                ..Node::default()
+            }],
+            meshes: vec![mesh],
+            textures: Vec::new(),
+            materials: Vec::new(),
+            lights: Vec::new(),
+            skeletons: Vec::new(),
+            animations: vec![clip("left", -0.6), clip("right", 0.6)],
+            sprites: Vec::new(),
+            layers: Vec::new(),
+            estimated_bytes: 64,
+            atlas: None,
+            texture: None,
+            texture_blobs: Vec::new(),
+        };
+        let (host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 16,
+            height: 16,
+            renderer_mesh2d: true,
+            renderer_max_vertices: 4096,
+            ..BoardProfile::default()
+        });
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        device.poll().unwrap();
+        assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+        session
+            .install_package(
+                &mdc_model::MdcPackage::seal(package)
+                    .unwrap()
+                    .to_bytes()
+                    .unwrap(),
+            )
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert!(device.package_ready());
+
+        let lit = |device: &FakeDevice| {
+            (0..16)
+                .flat_map(|y| (0..16).map(move |x| (x, y)))
+                .filter(|(x, y)| device.pixel_rgb565(*x, *y).unwrap_or(0) != 0)
+                .count()
+        };
+        session.set_animation("left").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        // Let the clip-change cross-fade finish before counting the frame.
+        device.clock.advance(u64::from(MESH_CROSSFADE_MS) + 1);
+        assert!(device.render_preview());
+        let left = lit(&device);
+        assert!(left > 0, "the single clip draws");
+        assert!(device.mesh_animation_blend().is_empty());
+
+        session.set_animation_blend("left:500,right:500").unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        assert_eq!(device.mesh_animation_blend().len(), 2);
+        assert!(device.render_preview());
+        let blended = lit(&device);
+        assert!(
+            blended > left,
+            "the blended frame covers both poses ({blended} vs {left})"
         );
     }
 
