@@ -1635,6 +1635,61 @@ pub unsafe extern "C" fn mdc_set_config(
     }
 }
 
+/// # Safety
+/// `session` alive; `blend` NUL-terminated. N838: set a weighted animation
+/// blend (`"clip:weight,clip:weight"`; `off` clears). 0 on success, -1 session,
+/// -2 bad args, -3 device rejected.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_set_animation_blend(
+    session: *mut MdcSession,
+    blend: *const c_char,
+) -> c_int {
+    let Some(session) = session.as_mut() else {
+        return -1;
+    };
+    if blend.is_null() {
+        return -2;
+    }
+    let blend = CStr::from_ptr(blend).to_string_lossy().to_string();
+    match session.session.set_animation_blend(&blend) {
+        Ok(_) => {
+            let _ = pump(session);
+            0
+        }
+        Err(_) => -3,
+    }
+}
+
+/// # Safety
+/// `session` alive; `out` receives a NUL-terminated blend when non-null and
+/// `out_len > 0`. N838: read the accepted blend. Returns its length, -1 session,
+/// -2 bad args, or -4 buffer too small.
+#[no_mangle]
+pub unsafe extern "C" fn mdc_animation_blend(
+    session: *mut MdcSession,
+    out: *mut c_char,
+    out_len: usize,
+) -> c_int {
+    let Some(session) = session.as_mut() else {
+        return -1;
+    };
+    if out.is_null() || out_len == 0 {
+        return -2;
+    }
+    let value = session
+        .session
+        .active_animation_blend()
+        .unwrap_or("off")
+        .to_string();
+    let bytes = value.as_bytes();
+    if bytes.len() + 1 > out_len {
+        return -4;
+    }
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), out as *mut u8, bytes.len());
+    *out.add(bytes.len()) = 0;
+    bytes.len() as c_int
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2565,6 +2620,20 @@ mod tests {
             let bad = [1u8, 2, 3];
             assert_eq!(mdc_install_package(session, bad.as_ptr(), bad.len()), 0);
             assert_eq!(mdc_package_ready(session), 0);
+            // N838: without an installed atlas the device rejects the blend, so
+            // the C read stays at "off"; bad arguments are also rejected.
+            let blend = std::ffi::CString::new("idle:500,wave:500").unwrap();
+            assert_eq!(mdc_set_animation_blend(session, blend.as_ptr()), 0);
+            let n = mdc_animation_blend(session, out.as_mut_ptr(), out.len());
+            assert!(n > 0);
+            let text = std::ffi::CStr::from_ptr(out.as_ptr()).to_string_lossy();
+            assert_eq!(text, "off");
+            assert_eq!(mdc_set_animation_blend(session, std::ptr::null()), -2);
+            assert_eq!(mdc_animation_blend(session, std::ptr::null_mut(), 8), -2);
+            assert_eq!(
+                mdc_set_animation_blend(std::ptr::null_mut(), blend.as_ptr()),
+                -1
+            );
             assert_eq!(mdc_install_package(session, std::ptr::null(), 0), -2);
             assert_eq!(
                 mdc_install_package(std::ptr::null_mut(), bad.as_ptr(), bad.len()),

@@ -246,6 +246,12 @@ int mdc_get_config(MdcSession* session, const char* key, char* out, size_t out_l
 /** N244: write a config value. Returns 0, -1 bad session, -2 bad args, -3 rejected. */
 int mdc_set_config(MdcSession* session, const char* key, const char* value);
 
+/** N838: set a weighted animation blend (`"clip:weight,..."`; `off` clears). */
+int mdc_set_animation_blend(MdcSession* session, const char* blend);
+
+/** N838: read the accepted blend into `out`. Returns length or a negative error. */
+int mdc_animation_blend(MdcSession* session, char* out, size_t out_len);
+
 /** Free a heap buffer returned by future helpers (no-op placeholder for symmetry). */
 void mdc_free(void* ptr);
 
