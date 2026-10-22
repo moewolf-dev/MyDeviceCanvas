@@ -125,14 +125,15 @@ stay strong: a `W/` validator does not satisfy them, and a failing `If-Match`
 returns `412` before any `304`. Generated frame tags remain strong unless the
 request query contains `weak=1` (N800). That response ETag is prefixed with
 `W/`. `If-None-Match` still matches it weakly (including the opaque form without
-`W/`) and can return `304`. `If-Match` and `If-Range` stay strong comparisons, so
-a weak validator on either side does not satisfy them and a failing `If-Match`
-still returns `412` first. `weak=0` and every other query keep a strong tag.
+`W/`) and can return `304`. `If-Match` stays a strong comparison, so a weak
+validator does not satisfy it and a failing `If-Match` still returns `412`
+first. `weak=0` and every other query keep a strong tag.
 N810: when the generated tag is weak (`weak=1`), sending that `W/` value as
 `If-Range` returns the full `200` body instead of `206`. A strong `If-Range`
-on a strong tag can still return `206`. A failing `If-Match` is still `412`
-before `304`. Weak validators do not satisfy `If-Range` even when both sides
-are weak.
+equal to the opaque tag (no `W/`) still returns `206` on that same `weak=1`
+URL. A failing `If-Match` is still `412` before `304`. A weak `If-Range` does
+not satisfy the check, including when both sides are weak. `If-Match` stays a
+strong comparison and still rejects the opaque form of a weak tag.
 
 ## Guarantees
 

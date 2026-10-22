@@ -2913,8 +2913,12 @@ fn if_range_matches(request: &[u8], etag: &str, last_modified: u64) -> bool {
     };
     let value = value.trim();
     if value.starts_with('"') || value.starts_with("W/") {
-        // Strong comparison: a weak validator on either side does not match.
-        return !validator_is_weak(value) && !validator_is_weak(etag) && value == etag;
+        // N810: a weak If-Range never matches. A strong If-Range matches the
+        // opaque tag, including when the response validator itself is weak.
+        if validator_is_weak(value) {
+            return false;
+        }
+        return value == validator_opaque(etag);
     }
     parse_http_date(value).is_some_and(|since| last_modified <= since)
 }
@@ -4571,8 +4575,9 @@ mod tests {
             !if_range_matches(request("If-Range: W/\"abc\"\r\n").as_bytes(), etag, stamp),
             "If-Range stays a strong comparison"
         );
-        // N800: `weak=1` emits a weak validator. 304 still compares weakly;
-        // 412 and If-Range stay strong, including against the opaque form.
+        // N800: `weak=1` emits a weak validator. 304 still compares weakly.
+        // 412 stays strong, including against the opaque form. N810: If-Range
+        // rejects a weak token, but a strong token matches that opaque form.
         let weak = frame_etag("/frame.bmp", "weak=1", 4);
         assert!(weak.starts_with("W/"), "{weak}");
         let opaque = validator_opaque(&weak).to_string();
@@ -4601,7 +4606,8 @@ mod tests {
             &weak,
             stamp
         ));
-        assert!(!if_range_matches(
+        // N810: a strong If-Range matches the opaque tag of a weak response.
+        assert!(if_range_matches(
             request(&format!("If-Range: {opaque}\r\n")).as_bytes(),
             &weak,
             stamp
@@ -4810,6 +4816,27 @@ mod tests {
             weak_range.split("\r\n\r\n").nth(1).unwrap_or(""),
             weak_body,
             "a weak If-Range keeps the full representation"
+        );
+        let opaque = weak_tag.trim_start_matches("W/").trim();
+        let strong_on_weak = fetch(
+            &mut server,
+            format!(
+                "GET /frame.ppm?weak=1 HTTP/1.1\r\nHost: x\r\nRange: bytes=0-1\r\n\
+                 If-Range: {opaque}\r\n\r\n"
+            ),
+        );
+        assert!(
+            strong_on_weak.starts_with("HTTP/1.1 206"),
+            "{strong_on_weak}"
+        );
+        assert!(
+            strong_on_weak.contains("Content-Range: bytes 0-1/"),
+            "{strong_on_weak}"
+        );
+        assert_ne!(
+            strong_on_weak.split("\r\n\r\n").nth(1).unwrap_or(""),
+            weak_body,
+            "a strong If-Range on weak=1 is a partial body"
         );
         let strong_range = fetch(
             &mut server,
