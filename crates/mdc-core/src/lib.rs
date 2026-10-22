@@ -6406,6 +6406,63 @@ mod tests {
     }
 
     #[test]
+    fn multi_tap_window_from_the_setter_splits_chains() {
+        // N804: the window stored by `set_gesture_config` decides whether the
+        // next tap escalates. A tap inside it is a double-tap; a tap outside it
+        // starts a new chain. The radius already on the session stays put.
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        let manager = std::sync::Arc::new(std::sync::Mutex::new(DeviceManager::new()));
+        session.set_manager(manager.clone());
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        let mut config = session.gesture_config();
+        let radius = config.multi_tap_radius;
+        config.multi_tap_ms = 100;
+        session.set_gesture_config(config);
+        assert_eq!(session.gesture_config().multi_tap_ms, 100);
+        assert_eq!(session.gesture_config().multi_tap_radius, radius);
+        let input = |phase: &str| mdc_protocol::InputEvent {
+            surface_id: "main".into(),
+            pointer_id: 1,
+            phase: phase.into(),
+            x: 4,
+            y: 5,
+            node: None,
+        };
+        let mut request = 1u32;
+        let mut tap_at = |at: u64| {
+            session.tick(at).unwrap();
+            for phase in ["down", "up"] {
+                device
+                    .write(
+                        &Packet {
+                            version: VERSION,
+                            kind: MessageType::Input,
+                            flags: 0,
+                            request_id: request,
+                            payload: encode_control(&input(phase)).unwrap(),
+                        }
+                        .encode(4096)
+                        .unwrap(),
+                    )
+                    .unwrap();
+                request += 1;
+            }
+            session.poll().unwrap();
+            let events: Vec<ManagerEvent> = manager.lock().unwrap().drain_events().collect();
+            events.into_iter().find_map(|event| match event {
+                ManagerEvent::Gesture { gesture, .. } => Some(gesture.kind),
+                _ => None,
+            })
+        };
+        assert_eq!(tap_at(0), Some(GestureKind::Tap));
+        assert_eq!(tap_at(100), Some(GestureKind::DoubleTap));
+        assert_eq!(tap_at(201), Some(GestureKind::Tap));
+        assert_eq!(tap_at(250), Some(GestureKind::DoubleTap));
+    }
+
+    #[test]
     fn gestures_reach_the_manager_event_queue() {
         // N473: down+up inside the tap window becomes a `Gesture` event.
         let (host, mut device) = MemoryLink::pair();
