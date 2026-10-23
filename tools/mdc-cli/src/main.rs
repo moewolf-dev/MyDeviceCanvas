@@ -5124,6 +5124,35 @@ mod tests {
     }
 
     #[test]
+    fn scene_lint_counts_and_checks_transform_tracks() {
+        // N848: scale/offset keys count toward `anim_keys`; invalid bounds and
+        // duplicate times become warnings.
+        let node: mdc_protocol::SceneNode = serde_json::from_value(serde_json::json!({
+            "name": "box", "kind": "rect", "rect": [0, 0, 4, 4], "value": "#fff",
+            "anim": {
+                "duration_ms": 10,
+                "scale": [[0, 150], [0, 999]],
+                "offset": [{"time_ms": 0, "dx": 900, "dy": 0}]
+            }
+        }))
+        .unwrap();
+        let report = node.lint();
+        assert_eq!(report.anim_keys, 3);
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("scale key 999 is clamped")));
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("offset key (900,0) is clamped")));
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("duplicate scale key times")));
+    }
+
+    #[test]
     fn validate_json_field_order_is_stable() {
         // N640: the report's key order is a contract (serde_json sorts keys).
         let gltf = br#"{"asset":{"version":"2.0"},
