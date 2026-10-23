@@ -6444,6 +6444,8 @@ mod tests {
                 color: Vec::new(),
                 rotate: Vec::new(),
                 easing: None,
+                scale: Vec::new(),
+                offset: Vec::new(),
             }),
             children: Vec::new(),
         };

@@ -607,6 +607,23 @@ pub struct SceneColorKey {
     pub value: String,
 }
 
+/// N844: one signed offset keyframe. `dx`/`dy` are pixels relative to the
+/// animated rect, clamped to [`SCENE_MAX_OFFSET`] in both directions.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneOffsetKey {
+    /// Keyframe time in milliseconds.
+    pub time_ms: u16,
+    /// Horizontal offset in pixels.
+    pub dx: i16,
+    /// Vertical offset in pixels.
+    pub dy: i16,
+}
+
+/// N843: the largest scale percentage a `scale` track may request.
+pub const SCENE_MAX_SCALE_PERCENT: u16 = 400;
+/// N844: the largest absolute `offset` value in pixels on either axis.
+pub const SCENE_MAX_OFFSET: i16 = 512;
+
 /// N463: a keyframed scene animation. Keyframes are `[time_ms, value]` and are
 /// interpolated; `duration_ms` bounds the clip.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -643,6 +660,13 @@ pub struct SceneAnim {
     /// to the nearest multiple of 90 (0/90/180/270).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rotate: Vec<[u16; 2]>,
+    /// N843: scale keyframes `[time_ms, percent]` (1..=400), applied about the
+    /// rect centre after the `rect` track.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scale: Vec<[u16; 2]>,
+    /// N844: signed pixel-offset keyframes, applied after `scale`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offset: Vec<SceneOffsetKey>,
     /// N724: segment easing (`linear` default, `ease-in`, `ease-out`,
     /// `ease-in-out`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -782,6 +806,58 @@ impl SceneAnim {
         )
         .map(|value| ((value.saturating_add(45) / 90) % 4 * 90) as u16)
     }
+
+    /// N843: the sampled scale percentage at `time_ms`, clamped to
+    /// `1..=SCENE_MAX_SCALE_PERCENT`. Returns `None` when there are no keys.
+    pub fn scale_at(&self, time_ms: u64) -> Option<u16> {
+        let t = self.local_time(time_ms);
+        sample_keys(
+            &self.scale,
+            t,
+            |k, value| (u32::from(k), u32::from(value)),
+            self.easing(),
+        )
+        .map(|value| value.clamp(1, u32::from(SCENE_MAX_SCALE_PERCENT)) as u16)
+    }
+
+    /// N844: the sampled signed offset at `time_ms`, clamped to
+    /// `-SCENE_MAX_OFFSET..=SCENE_MAX_OFFSET` per axis. Returns `None` when there
+    /// are no offset keys.
+    pub fn offset_at(&self, time_ms: u64) -> Option<[i16; 2]> {
+        if self.offset.is_empty() {
+            return None;
+        }
+        let mut frames: Vec<(u32, i16, i16)> = self
+            .offset
+            .iter()
+            .map(|key| {
+                (
+                    u32::from(key.time_ms),
+                    key.dx.clamp(-SCENE_MAX_OFFSET, SCENE_MAX_OFFSET),
+                    key.dy.clamp(-SCENE_MAX_OFFSET, SCENE_MAX_OFFSET),
+                )
+            })
+            .collect();
+        frames.sort_by_key(|(time, _, _)| *time);
+        let t = self.local_time(time_ms);
+        if t <= frames[0].0 {
+            return Some([frames[0].1, frames[0].2]);
+        }
+        let channel = |a: i16, b: i16, f: f32| -> i16 {
+            (f32::from(a) + (f32::from(b) - f32::from(a)) * f)
+                .round()
+                .clamp(f32::from(-SCENE_MAX_OFFSET), f32::from(SCENE_MAX_OFFSET)) as i16
+        };
+        for pair in frames.windows(2) {
+            let ((t0, x0, y0), (t1, x1, y1)) = (pair[0], pair[1]);
+            if t <= t1 && t1 > t0 {
+                let span = f32::from((t1 - t0) as u16);
+                let f = self.easing().apply(f32::from((t - t0) as u16) / span);
+                return Some([channel(x0, x1, f), channel(y0, y1, f)]);
+            }
+        }
+        frames.last().map(|(_, dx, dy)| [*dx, *dy])
+    }
 }
 
 /// N723: parse `"x,y;x,y;..."` into bounded integer points.
@@ -865,6 +941,38 @@ pub fn apply_scene_animation(node: &mut SceneNode, time_ms: u64) {
         // N827: rotate tracks feed the existing quarter-turn handling.
         if let Some(rotate) = anim.rotate_at(time_ms) {
             node.rotate = Some(rotate);
+        }
+        // N843: scale about the (possibly animated) rect centre. A zero extent
+        // keeps its "do not scale this axis" meaning for groups.
+        if let Some(percent) = anim.scale_at(time_ms) {
+            if percent != 100 {
+                if let Some([x, y, w, h]) = node.rect {
+                    let scaled = |value: u16| -> u16 {
+                        if value == 0 {
+                            0
+                        } else {
+                            (u32::from(value) * u32::from(percent) / 100)
+                                .clamp(1, u32::from(u16::MAX)) as u16
+                        }
+                    };
+                    let new_w = scaled(w);
+                    let new_h = scaled(h);
+                    let recenter = |origin: u16, old: u16, new: u16| -> u16 {
+                        (i32::from(origin) + (i32::from(old) - i32::from(new)) / 2)
+                            .clamp(0, i32::from(u16::MAX)) as u16
+                    };
+                    node.rect = Some([recenter(x, w, new_w), recenter(y, h, new_h), new_w, new_h]);
+                }
+            }
+        }
+        // N844: translate after scaling so the offset is not itself scaled.
+        if let Some([dx, dy]) = anim.offset_at(time_ms) {
+            if let Some([x, y, w, h]) = node.rect {
+                let shift = |value: u16, delta: i16| -> u16 {
+                    (i32::from(value) + i32::from(delta)).clamp(0, i32::from(u16::MAX)) as u16
+                };
+                node.rect = Some([shift(x, dx), shift(y, dy), w, h]);
+            }
         }
     }
     for child in &mut node.children {
@@ -1073,6 +1181,8 @@ impl SceneNode {
                     || anim.focus.iter().any(|key| late(key[0]))
                     || anim.color.iter().any(|key| late(key.time_ms))
                     || anim.rotate.iter().any(|key| late(key[0]))
+                    || anim.scale.iter().any(|key| late(key[0]))
+                    || anim.offset.iter().any(|key| late(key.time_ms))
                 {
                     report.warnings.push(format!(
                         "node '{}' has keyframes after its {} ms duration",
@@ -1096,6 +1206,43 @@ impl SceneNode {
                     ));
                 }
             }
+            for key in &anim.scale {
+                if key[1] == 0 || key[1] > SCENE_MAX_SCALE_PERCENT {
+                    report.warnings.push(format!(
+                        "node '{}' scale key {} is clamped to 1..={}",
+                        self.name, key[1], SCENE_MAX_SCALE_PERCENT
+                    ));
+                }
+            }
+            for key in &anim.offset {
+                if key.dx.abs() > SCENE_MAX_OFFSET || key.dy.abs() > SCENE_MAX_OFFSET {
+                    report.warnings.push(format!(
+                        "node '{}' offset key ({},{}) is clamped to ±{}",
+                        self.name, key.dx, key.dy, SCENE_MAX_OFFSET
+                    ));
+                }
+            }
+            let tracks: [(&str, Vec<u16>); 7] = [
+                ("opacity", anim.opacity.iter().map(|key| key[0]).collect()),
+                ("rect", anim.rect.iter().map(|key| key[0]).collect()),
+                ("focus", anim.focus.iter().map(|key| key[0]).collect()),
+                ("colour", anim.color.iter().map(|key| key.time_ms).collect()),
+                ("rotate", anim.rotate.iter().map(|key| key[0]).collect()),
+                ("scale", anim.scale.iter().map(|key| key[0]).collect()),
+                (
+                    "offset",
+                    anim.offset.iter().map(|key| key.time_ms).collect(),
+                ),
+            ];
+            for (track, mut times) in tracks {
+                times.sort_unstable();
+                if times.windows(2).any(|pair| pair[0] == pair[1]) {
+                    report.warnings.push(format!(
+                        "node '{}' has duplicate {track} key times",
+                        self.name
+                    ));
+                }
+            }
         }
         for child in &self.children {
             child.lint_into(report, names);
@@ -1113,7 +1260,9 @@ impl SceneNode {
                     + anim.rect.len()
                     + anim.focus.len()
                     + anim.color.len()
-                    + anim.rotate.len()) as u32
+                    + anim.rotate.len()
+                    + anim.scale.len()
+                    + anim.offset.len()) as u32
             })
             .unwrap_or(0);
         self.children
@@ -3190,6 +3339,8 @@ mod tests {
             color: Vec::new(),
             rotate: Vec::new(),
             easing: None,
+            scale: Vec::new(),
+            offset: Vec::new(),
         };
         assert_eq!(anim.focus_at(0), Some([0, 100]));
         assert_eq!(anim.focus_at(50), Some([50, 50]));
@@ -3216,6 +3367,8 @@ mod tests {
             color: Vec::new(),
             rotate: Vec::new(),
             easing: None,
+            scale: Vec::new(),
+            offset: Vec::new(),
         });
         apply_scene_animation(&mut untouched, 5);
         assert_eq!(untouched.focus.as_deref(), Some("10,20"));
@@ -3235,6 +3388,8 @@ mod tests {
             color: Vec::new(),
             rotate: Vec::new(),
             easing: Some(easing.into()),
+            scale: Vec::new(),
+            offset: Vec::new(),
         };
         let linear = anim("linear");
         assert_eq!(linear.opacity_at(0), Some(0));
@@ -3279,6 +3434,8 @@ mod tests {
             color: Vec::new(),
             rotate: Vec::new(),
             easing: None,
+            scale: Vec::new(),
+            offset: Vec::new(),
         };
         let delayed = anim(Some(50), Some(2000));
         assert_eq!(delayed.opacity_at(0), Some(0));
@@ -3358,6 +3515,8 @@ mod tests {
             ],
             rotate: Vec::new(),
             easing: None,
+            scale: Vec::new(),
+            offset: Vec::new(),
         };
         assert_eq!(anim.color_at(0), Some([0, 0, 0]));
         assert_eq!(anim.color_at(50), Some([128, 128, 128]));
@@ -3424,6 +3583,8 @@ mod tests {
             color: Vec::new(),
             rotate: vec![[0, 0], [100, 360]],
             easing: None,
+            scale: Vec::new(),
+            offset: Vec::new(),
         };
         assert_eq!(anim.rotate_at(0), Some(0));
         assert_eq!(anim.rotate_at(25), Some(90));
@@ -3434,6 +3595,86 @@ mod tests {
         rect.anim = Some(anim);
         apply_scene_animation(&mut rect, 50);
         assert_eq!(rect.rotate, Some(180));
+    }
+
+    #[test]
+    fn scene_scale_and_offset_tracks_transform_the_rect() {
+        // N843/N844: scale is centred on the rect, then the signed offset moves
+        // it. Values are clamped to the documented bounds.
+        let anim = SceneAnim {
+            duration_ms: 100,
+            looping: false,
+            opacity: Vec::new(),
+            rect: Vec::new(),
+            focus: Vec::new(),
+            delay_ms: None,
+            speed_permille: None,
+            color: Vec::new(),
+            rotate: Vec::new(),
+            easing: None,
+            scale: vec![[0, 100], [100, 200]],
+            offset: vec![
+                SceneOffsetKey {
+                    time_ms: 0,
+                    dx: 0,
+                    dy: 0,
+                },
+                SceneOffsetKey {
+                    time_ms: 100,
+                    dx: 20,
+                    dy: -10,
+                },
+            ],
+        };
+        assert_eq!(anim.scale_at(0), Some(100));
+        assert_eq!(anim.scale_at(50), Some(150));
+        assert_eq!(anim.scale_at(500), Some(200));
+        assert_eq!(anim.offset_at(50), Some([10, -5]));
+        assert_eq!(anim.offset_at(500), Some([20, -10]));
+
+        let clamped = SceneAnim {
+            duration_ms: 10,
+            scale: vec![[0, 0], [10, 999]],
+            offset: vec![SceneOffsetKey {
+                time_ms: 0,
+                dx: 1000,
+                dy: -1000,
+            }],
+            ..SceneAnim::default()
+        };
+        assert_eq!(clamped.scale_at(0), Some(1));
+        assert_eq!(clamped.scale_at(10), Some(SCENE_MAX_SCALE_PERCENT));
+        assert_eq!(
+            clamped.offset_at(0),
+            Some([SCENE_MAX_OFFSET, -SCENE_MAX_OFFSET])
+        );
+
+        let mut node = plain_node("r", "rect");
+        node.rect = Some([10, 10, 8, 8]);
+        node.anim = Some(SceneAnim {
+            duration_ms: 10,
+            scale: vec![[0, 200]],
+            offset: vec![SceneOffsetKey {
+                time_ms: 0,
+                dx: 2,
+                dy: -4,
+            }],
+            ..SceneAnim::default()
+        });
+        apply_scene_animation(&mut node, 0);
+        assert_eq!(node.rect, Some([8, 2, 16, 16]));
+        assert_eq!(node.anim_keys(), 2, "both transform tracks count");
+
+        // A zero-extent group axis keeps its "do not scale" meaning.
+        let mut group = plain_node("g", "group");
+        group.rect = Some([0, 0, 0, 4]);
+        group.anim = Some(SceneAnim {
+            duration_ms: 100,
+            scale: vec![[0, 150]],
+            ..SceneAnim::default()
+        });
+        apply_scene_animation(&mut group, 0);
+        assert_eq!(group.rect, Some([0, 0, 0, 6]));
     }
 
     #[test]
@@ -3456,9 +3697,15 @@ mod tests {
             }],
             rotate: vec![[0, 45]],
             easing: None,
+            scale: vec![[0, 0]],
+            offset: vec![SceneOffsetKey {
+                time_ms: 0,
+                dx: 1000,
+                dy: 0,
+            }],
         });
         let report = node.lint();
-        assert_eq!(report.anim_keys, 3);
+        assert_eq!(report.anim_keys, 5);
         assert!(
             report
                 .warnings
@@ -3482,6 +3729,41 @@ mod tests {
                 .any(|warning| warning.contains("after its 10 ms duration")),
             "{:?}",
             report.warnings
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("scale key 0 is clamped")),
+            "{:?}",
+            report.warnings
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("offset key (1000,0) is clamped")),
+            "{:?}",
+            report.warnings
+        );
+
+        // Duplicate times in one track are ambiguous, so lint reports them.
+        let mut duplicate = plain_node("d", "rect");
+        duplicate.rect = Some([0, 0, 2, 2]);
+        duplicate.value = Some("#FFFFFF".into());
+        duplicate.anim = Some(SceneAnim {
+            duration_ms: 10,
+            opacity: vec![[0, 10], [0, 20]],
+            ..SceneAnim::default()
+        });
+        assert!(
+            duplicate
+                .lint()
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("duplicate opacity key times")),
+            "{:?}",
+            duplicate.lint().warnings
         );
 
         let mut over = plain_node("r", "rect");
