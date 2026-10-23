@@ -2,6 +2,20 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.100] — negotiated capabilities on the Node SDK (APP-R03)
+
+### Added
+
+- Node `capabilities()` returns the device's negotiated frame/tile/touch/OTA
+  limits, mirror modes/FPS/bandwidth, config keys, scene limits and boot/run ids.
+- The app prefers these values over the simulator board map for mirror/tile
+  decisions.
+
+### Notes
+
+- Host/simulator only; real board id and protocol version are still not exposed,
+  so package compatibility remains conservative for unknown devices.
+
 ## [0.1.99] — public serial SDK (APP-R03)
 
 ### Added
