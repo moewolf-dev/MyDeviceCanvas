@@ -1785,6 +1785,345 @@ fn changed_ranges(previous: &[u8], current: &[u8], max_gap: usize) -> Vec<(usize
     ranges
 }
 
+/// N857: even-odd point test for a closed polygon in surface pixels.
+fn point_in_polygon(points: &[(i32, i32)], x: f32, y: f32) -> bool {
+    if points.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut previous = points[points.len() - 1];
+    for &current in points {
+        let (x0, y0) = (previous.0 as f32, previous.1 as f32);
+        let (x1, y1) = (current.0 as f32, current.1 as f32);
+        if (y0 > y) != (y1 > y) {
+            let at_x = x0 + (y - y0) * (x1 - x0) / (y1 - y0);
+            if x < at_x {
+                inside = !inside;
+            }
+        }
+        previous = current;
+    }
+    inside
+}
+
+/// N857: squared distance from a point to a line segment, in pixel units.
+fn segment_distance_sq(a: (f32, f32), b: (f32, f32), x: f32, y: f32) -> f32 {
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq <= f32::EPSILON {
+        let px = x - a.0;
+        let py = y - a.1;
+        return px * px + py * py;
+    }
+    let t = (((x - a.0) * dx + (y - a.1) * dy) / len_sq).clamp(0.0, 1.0);
+    let px = x - (a.0 + t * dx);
+    let py = y - (a.1 + t * dy);
+    px * px + py * py
+}
+
+fn polyline_hit(points: &[(f32, f32)], closed: bool, x: f32, y: f32, tolerance: f32) -> bool {
+    if points.len() < 2 {
+        return false;
+    }
+    let limit = tolerance * tolerance;
+    let mut hit = points
+        .windows(2)
+        .any(|pair| segment_distance_sq(pair[0], pair[1], x, y) <= limit);
+    if !hit && closed && points.len() > 2 {
+        hit = segment_distance_sq(points[points.len() - 1], points[0], x, y) <= limit;
+    }
+    hit
+}
+
+/// N858: flatten a command-stream `path` (or its legacy 3/4-point bezier) into
+/// surface-space vertices for an exact stroke hit-test. Curve flattening mirrors
+/// the rasteriser, including `H`/`V` (which carry one local axis).
+fn path_hit_points(
+    node: &mdc_protocol::SceneNode,
+    transform: SceneTransform,
+) -> Option<(Vec<(f32, f32)>, bool)> {
+    let map = |point: [i32; 2]| {
+        let (x, y) = transform.point(point);
+        (x as f32, y as f32)
+    };
+    if let Some(commands) = node.path_commands() {
+        let mut vertices: Vec<(f32, f32)> = Vec::new();
+        let mut current: Option<[i32; 2]> = None;
+        let mut start: Option<[i32; 2]> = None;
+        let mut last_control: Option<[i32; 2]> = None;
+        let mut last_cubic_control: Option<[i32; 2]> = None;
+        let mut line = |from: (f32, f32), to: (f32, f32)| {
+            if vertices.last().copied() != Some(from) {
+                vertices.push(from);
+            }
+            vertices.push(to);
+        };
+        for command in commands {
+            match command {
+                mdc_protocol::PathCommand::Move(point) => {
+                    current = Some(point);
+                    start = Some(point);
+                    last_control = None;
+                    last_cubic_control = None;
+                }
+                mdc_protocol::PathCommand::Line(point) => {
+                    if let Some(previous) = current {
+                        line(map(previous), map(point));
+                    }
+                    current = Some(point);
+                    last_control = None;
+                    last_cubic_control = None;
+                }
+                mdc_protocol::PathCommand::Quad(control, point) => {
+                    if let Some(previous) = current {
+                        let from = map(previous);
+                        let control_xy = map(control);
+                        let to = map(point);
+                        let at = |t: f32| {
+                            let u = 1.0 - t;
+                            (
+                                u * u * from.0 + 2.0 * u * t * control_xy.0 + t * t * to.0,
+                                u * u * from.1 + 2.0 * u * t * control_xy.1 + t * t * to.1,
+                            )
+                        };
+                        for step in 1..=16 {
+                            line(at((step - 1) as f32 / 16.0), at(step as f32 / 16.0));
+                        }
+                    }
+                    current = Some(point);
+                    last_control = Some(control);
+                    last_cubic_control = None;
+                }
+                mdc_protocol::PathCommand::SmoothQuad(point) => {
+                    if let Some(previous) = current {
+                        let from = map(previous);
+                        let control_local = last_control
+                            .map(|control| {
+                                [2 * previous[0] - control[0], 2 * previous[1] - control[1]]
+                            })
+                            .unwrap_or(previous);
+                        let (cx, cy) = transform.point(control_local);
+                        let control = (cx as f32, cy as f32);
+                        let to = map(point);
+                        let at = |t: f32| {
+                            let u = 1.0 - t;
+                            (
+                                u * u * from.0 + 2.0 * u * t * control.0 + t * t * to.0,
+                                u * u * from.1 + 2.0 * u * t * control.1 + t * t * to.1,
+                            )
+                        };
+                        for step in 1..=16 {
+                            line(at((step - 1) as f32 / 16.0), at(step as f32 / 16.0));
+                        }
+                        last_control = Some(control_local);
+                    }
+                    current = Some(point);
+                    last_cubic_control = None;
+                }
+                mdc_protocol::PathCommand::Cubic(control1, control2, point) => {
+                    if let Some(previous) = current {
+                        let from = map(previous);
+                        let control1 = map(control1);
+                        let control2 = map(control2);
+                        let to = map(point);
+                        let at = |t: f32| {
+                            let u = 1.0 - t;
+                            (
+                                u * u * u * from.0
+                                    + 3.0 * u * u * t * control1.0
+                                    + 3.0 * u * t * t * control2.0
+                                    + t * t * t * to.0,
+                                u * u * u * from.1
+                                    + 3.0 * u * u * t * control1.1
+                                    + 3.0 * u * t * t * control2.1
+                                    + t * t * t * to.1,
+                            )
+                        };
+                        for step in 1..=24 {
+                            line(at((step - 1) as f32 / 24.0), at(step as f32 / 24.0));
+                        }
+                    }
+                    current = Some(point);
+                    last_control = None;
+                    last_cubic_control = Some(control2);
+                }
+                mdc_protocol::PathCommand::Arc {
+                    rx,
+                    ry,
+                    rotation,
+                    large_arc,
+                    sweep,
+                    end,
+                } => {
+                    if let Some(previous) = current {
+                        let from = map(previous);
+                        let to = map(end);
+                        let points = flatten_arc(
+                            from,
+                            rx as f32,
+                            ry as f32,
+                            rotation as f32,
+                            large_arc,
+                            sweep,
+                            to,
+                        );
+                        let mut at = from;
+                        for next in points {
+                            line(at, next);
+                            at = next;
+                        }
+                    }
+                    current = Some(end);
+                    last_control = None;
+                    last_cubic_control = None;
+                }
+                mdc_protocol::PathCommand::SmoothCubic(control2, point) => {
+                    if let Some(previous) = current {
+                        let from = map(previous);
+                        let control2 = map(control2);
+                        let to = map(point);
+                        let control1 = last_cubic_control
+                            .map(|control| {
+                                let local =
+                                    [2 * previous[0] - control[0], 2 * previous[1] - control[1]];
+                                let (x, y) = transform.point(local);
+                                (x as f32, y as f32)
+                            })
+                            .unwrap_or(from);
+                        let at = |t: f32| {
+                            let u = 1.0 - t;
+                            (
+                                u * u * u * from.0
+                                    + 3.0 * u * u * t * control1.0
+                                    + 3.0 * u * t * t * control2.0
+                                    + t * t * t * to.0,
+                                u * u * u * from.1
+                                    + 3.0 * u * u * t * control1.1
+                                    + 3.0 * u * t * t * control2.1
+                                    + t * t * t * to.1,
+                            )
+                        };
+                        for step in 1..=24 {
+                            line(at((step - 1) as f32 / 24.0), at(step as f32 / 24.0));
+                        }
+                    }
+                    current = Some(point);
+                    last_control = None;
+                    last_cubic_control = Some(control2);
+                }
+                mdc_protocol::PathCommand::Horizontal(x) => {
+                    let local = [x, current.map(|p| p[1]).unwrap_or(0)];
+                    if let Some(previous) = current {
+                        line(map(previous), map(local));
+                    }
+                    current = Some(local);
+                    last_control = None;
+                    last_cubic_control = None;
+                }
+                mdc_protocol::PathCommand::Vertical(y) => {
+                    let local = [current.map(|p| p[0]).unwrap_or(0), y];
+                    if let Some(previous) = current {
+                        line(map(previous), map(local));
+                    }
+                    current = Some(local);
+                    last_control = None;
+                    last_cubic_control = None;
+                }
+                mdc_protocol::PathCommand::Close => {
+                    if let (Some(previous), Some(first)) = (current, start) {
+                        line(map(previous), map(first));
+                    }
+                    current = start;
+                    last_control = None;
+                    last_cubic_control = None;
+                }
+            }
+        }
+        if vertices.len() >= 2 {
+            return Some((vertices, false));
+        }
+        return None;
+    }
+    let points = node.bezier()?;
+    let transformed: Vec<(f32, f32)> = points.iter().map(|point| map(*point)).collect();
+    let steps = 32u32;
+    let at = |t: f32| -> (f32, f32) {
+        if transformed.len() == 4 {
+            let u = 1.0 - t;
+            let [p0, p1, p2, p3] = [
+                transformed[0],
+                transformed[1],
+                transformed[2],
+                transformed[3],
+            ];
+            (
+                u * u * u * p0.0
+                    + 3.0 * u * u * t * p1.0
+                    + 3.0 * u * t * t * p2.0
+                    + t * t * t * p3.0,
+                u * u * u * p0.1
+                    + 3.0 * u * u * t * p1.1
+                    + 3.0 * u * t * t * p2.1
+                    + t * t * t * p3.1,
+            )
+        } else {
+            let u = 1.0 - t;
+            let [p0, p1, p2] = [transformed[0], transformed[1], transformed[2]];
+            (
+                u * u * p0.0 + 2.0 * u * t * p1.0 + t * t * p2.0,
+                u * u * p0.1 + 2.0 * u * t * p1.1 + t * t * p2.1,
+            )
+        }
+    };
+    let mut vertices = vec![at(0.0)];
+    for step in 1..=steps {
+        vertices.push(at(step as f32 / steps as f32));
+    }
+    Some((vertices, false))
+}
+
+/// N857/N858: exact hit-testing for point-borne geometry. Returns `None` when
+/// the kind uses a rect (the caller keeps the historical rect test).
+fn hit_test_point_geometry(
+    node: &mdc_protocol::SceneNode,
+    transform: SceneTransform,
+    x: u16,
+    y: u16,
+) -> Option<bool> {
+    let px = f32::from(x) + 0.5;
+    let py = f32::from(y) + 0.5;
+    match node.kind.as_str() {
+        "polygon" | "mask" => {
+            let points = node.points()?;
+            let mapped: Vec<(i32, i32)> =
+                points.iter().map(|point| transform.point(*point)).collect();
+            Some(point_in_polygon(&mapped, px, py))
+        }
+        "polyline" => {
+            let points = node.points()?;
+            let mapped: Vec<(f32, f32)> = points
+                .iter()
+                .map(|point| {
+                    let (x, y) = transform.point(*point);
+                    (x as f32, y as f32)
+                })
+                .collect();
+            let closed = node
+                .mode
+                .as_deref()
+                .is_some_and(|mode| mode.split(',').any(|token| token.trim() == "closed"));
+            Some(polyline_hit(&mapped, closed, px, py, 2.0))
+        }
+        "path" => {
+            let (points, closed) = path_hit_points(node, transform)?;
+            let tolerance = f32::from(node.stroke_width()) / 2.0 + 1.0;
+            Some(polyline_hit(&points, closed, px, py, tolerance))
+        }
+        _ => None,
+    }
+}
+
 /// N418: the topmost scene node whose (transformed) rect contains the point.
 fn hit_test_node(
     node: &mdc_protocol::SceneNode,
@@ -1824,6 +2163,14 @@ fn hit_test_node(
         }
     }
     if drawable {
+        // N857/N858: point-borne kinds test their actual points, not the
+        // bounding rect, so empty corners do not capture input.
+        if let Some(hit) = hit_test_point_geometry(node, transform, x, y) {
+            if hit {
+                return Some(node.name.clone());
+            }
+            return None;
+        }
         if let Some(rect) = node.rect {
             // N475: hit-test against the rotated geometry.
             let rect = match node.rotate.unwrap_or(0) % 360 {
@@ -6973,6 +7320,7 @@ mod tests {
                 easing: None,
                 scale: Vec::new(),
                 offset: Vec::new(),
+                frame: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -7676,6 +8024,7 @@ mod tests {
                 easing: None,
                 scale: Vec::new(),
                 offset: Vec::new(),
+                frame: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -7730,6 +8079,7 @@ mod tests {
                 easing: None,
                 scale: Vec::new(),
                 offset: Vec::new(),
+                frame: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -7801,6 +8151,7 @@ mod tests {
                 easing: None,
                 scale: Vec::new(),
                 offset: Vec::new(),
+                frame: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -7852,6 +8203,7 @@ mod tests {
                 easing: None,
                 scale: Vec::new(),
                 offset: Vec::new(),
+                frame: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -7918,6 +8270,7 @@ mod tests {
                         dy: -2,
                     },
                 ],
+                frame: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -7941,6 +8294,158 @@ mod tests {
         assert_eq!(device.pixel_rgb565(5, 5), Some(0), "left of the moved box");
         assert_eq!(device.hit_test(10, 5).as_deref(), Some("box"));
         assert!(device.hit_test(5, 5).is_none());
+    }
+
+    #[test]
+    fn sprite_frame_animation_swaps_the_rendered_atlas_frame() {
+        // N855/N856: a sprite frame track changes the atlas index on the device
+        // clock without touching any other payload.
+        use mdc_protocol::{SceneAnim, SceneNode};
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 8,
+            height: 8,
+            ..BoardProfile::default()
+        });
+        let mut rgb565 = vec![0u8; 8 * 4 * 2];
+        for y in 0..4u32 {
+            for x in 0..8u32 {
+                let value: u16 = if x < 4 { 0xF800 } else { 0x07E0 };
+                let offset = ((y * 8 + x) * 2) as usize;
+                rgb565[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        device.atlas = Some(mdc_model::AtlasBlob {
+            sprite_width: 4,
+            sprite_height: 4,
+            frames: 2,
+            columns: 2,
+            rows: 1,
+            rgb565,
+            clips: Vec::new(),
+            mips: Vec::new(),
+        });
+        device.scene = Some(SceneNode {
+            name: "face".into(),
+            kind: "sprite".into(),
+            rect: Some([0, 0, 4, 4]),
+            value: Some("0".into()),
+            value2: None,
+            opacity: None,
+            visible: None,
+            anim: Some(SceneAnim {
+                duration_ms: 100,
+                frame: vec![[0, 1], [50, 0]],
+                ..Default::default()
+            }),
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: None,
+            focus: None,
+            children: Vec::new(),
+        });
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(1, 1), Some(0x07E0), "frame 1");
+        device.clock.tick = 50;
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(1, 1), Some(0xF800), "frame 0");
+        assert_eq!(device.hit_test(2, 2).as_deref(), Some("face"));
+    }
+
+    #[test]
+    fn point_geometry_hit_tests_ignore_empty_bounding_box_corners() {
+        // N857: polygon and polyline hits use the actual points, not the rect.
+        use mdc_protocol::SceneNode;
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 8,
+            height: 8,
+            ..BoardProfile::default()
+        });
+        let node = |kind: &str, value2: &str| SceneNode {
+            name: kind.into(),
+            kind: kind.into(),
+            rect: Some([0, 0, 8, 8]),
+            value: Some("#FFFFFF".into()),
+            value2: Some(value2.into()),
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: None,
+            focus: None,
+            children: Vec::new(),
+        };
+        device.scene = Some(node("polygon", "0,0;8,0;0,8"));
+        assert!(device.render_scene());
+        assert_eq!(device.hit_test(1, 1).as_deref(), Some("polygon"));
+        assert!(device.hit_test(6, 6).is_none(), "outside the triangle");
+        assert!(
+            device.hit_test(7, 1).is_none(),
+            "inside the rect but outside the triangle"
+        );
+
+        device.scene = Some(node("polyline", "1,4;7,4"));
+        assert!(device.render_scene());
+        assert_eq!(device.hit_test(4, 4).as_deref(), Some("polyline"));
+        assert!(
+            device.hit_test(4, 7).is_none(),
+            "the bounding box is not a hit"
+        );
+    }
+
+    #[test]
+    fn path_hit_tests_follow_the_stroke_and_scaled_points() {
+        // N854/N858: a path hit follows its flattened stroke, and the point
+        // geometry is transformed by the scale/offset tracks before the test.
+        use mdc_protocol::{SceneAnim, SceneNode};
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 16,
+            height: 16,
+            ..BoardProfile::default()
+        });
+        device.scene = Some(SceneNode {
+            name: "stroke".into(),
+            kind: "path".into(),
+            rect: Some([0, 0, 16, 16]),
+            value: Some("#FFFFFF".into()),
+            value2: Some("M0,0;L8,0;Q12,0 12,8".into()),
+            opacity: None,
+            visible: None,
+            anim: Some(SceneAnim {
+                duration_ms: 100,
+                scale: vec![[0, 100], [100, 200]],
+                offset: vec![mdc_protocol::SceneOffsetKey {
+                    time_ms: 0,
+                    dx: 4,
+                    dy: 4,
+                }],
+                ..Default::default()
+            }),
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: None,
+            focus: None,
+            children: Vec::new(),
+        });
+        assert!(device.render_scene());
+        assert_eq!(device.hit_test(12, 4).as_deref(), Some("stroke"));
+        assert!(device.hit_test(4, 12).is_none(), "away from the stroke");
+
+        device.clock.tick = 100;
+        assert!(device.render_scene());
+        // 200% about (8,8) plus +4/+4 moves the curve; its midpoint is (18,0).
+        // The old horizontal segment at y=4 no longer hits.
+        assert!(device.hit_test(12, 4).is_none());
+        assert_eq!(device.hit_test(18, 0).as_deref(), Some("stroke"));
     }
 
     #[test]

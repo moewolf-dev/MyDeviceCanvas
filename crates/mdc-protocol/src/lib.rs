@@ -667,6 +667,11 @@ pub struct SceneAnim {
     /// N844: signed pixel-offset keyframes, applied after `scale`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub offset: Vec<SceneOffsetKey>,
+    /// N853: step keyframes `[time_ms, frame_index]` for a `sprite`. Frame
+    /// indices are not interpolated; the last key at or before the sampled time
+    /// wins. Other kinds ignore the track.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frame: Vec<[u16; 2]>,
     /// N724: segment easing (`linear` default, `ease-in`, `ease-out`,
     /// `ease-in-out`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -858,6 +863,30 @@ impl SceneAnim {
         }
         frames.last().map(|(_, dx, dy)| [*dx, *dy])
     }
+
+    /// N853: the sampled sprite frame at `time_ms`. Frame indices are discrete,
+    /// so this is a step sample (no interpolation); the last key at or before
+    /// the sampled time wins, and the first key is held before it starts.
+    pub fn frame_at(&self, time_ms: u64) -> Option<u16> {
+        if self.frame.is_empty() {
+            return None;
+        }
+        let mut frames: Vec<(u32, u16)> = self
+            .frame
+            .iter()
+            .map(|key| (u32::from(key[0]), key[1]))
+            .collect();
+        frames.sort_by_key(|(time, _)| *time);
+        let t = self.local_time(time_ms);
+        let mut selected = frames[0].1;
+        for (time, frame) in frames {
+            if time > t {
+                break;
+            }
+            selected = frame;
+        }
+        Some(selected)
+    }
 }
 
 /// N723: parse `"x,y;x,y;..."` into bounded integer points.
@@ -918,6 +947,181 @@ fn kind_uses_colour_value(kind: &str) -> bool {
     )
 }
 
+fn clamp_i32(value: f64) -> i32 {
+    value
+        .round()
+        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+}
+
+/// N853: map an absolute point through a rect-centred uniform scale and an
+/// unscaled pixel offset. The rect is the one after the `rect` track and before
+/// `scale`, matching the rect fill order.
+fn animated_point(point: [i32; 2], rect: [u16; 4], percent: u16, offset: [i16; 2]) -> [i32; 2] {
+    let cx = f64::from(rect[0]) + f64::from(rect[2]) / 2.0;
+    let cy = f64::from(rect[1]) + f64::from(rect[3]) / 2.0;
+    let scale = f64::from(percent) / 100.0;
+    [
+        clamp_i32(cx + (f64::from(point[0]) - cx) * scale + f64::from(offset[0])),
+        clamp_i32(cy + (f64::from(point[1]) - cy) * scale + f64::from(offset[1])),
+    ]
+}
+
+/// N853: scale one absolute axis coordinate, then add the unscaled offset.
+fn animated_coord(value: i32, centre: f64, percent: u16, offset: i16) -> i32 {
+    let scale = f64::from(percent) / 100.0;
+    clamp_i32(centre + (f64::from(value) - centre) * scale + f64::from(offset))
+}
+
+fn format_point_list(points: &[[i32; 2]]) -> String {
+    points
+        .iter()
+        .map(|point| format!("{},{}", point[0], point[1]))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+/// N854: serialize a command back to the absolute scene-path syntax. The input
+/// parser never emits relative commands, so writing absolute forms is lossless
+/// for the geometry that `path_commands` exposes.
+fn format_path_commands(commands: &[PathCommand]) -> String {
+    commands
+        .iter()
+        .map(|command| match command {
+            PathCommand::Move(point) => format!("M{},{}", point[0], point[1]),
+            PathCommand::Line(point) => format!("L{},{}", point[0], point[1]),
+            PathCommand::Quad(control, point) => {
+                format!("Q{},{} {},{}", control[0], control[1], point[0], point[1])
+            }
+            PathCommand::Cubic(control1, control2, point) => format!(
+                "C{},{} {},{} {},{}",
+                control1[0], control1[1], control2[0], control2[1], point[0], point[1]
+            ),
+            PathCommand::Arc {
+                rx,
+                ry,
+                rotation,
+                large_arc,
+                sweep,
+                end,
+            } => format!(
+                "A{},{},{},{},{} {},{}",
+                rx,
+                ry,
+                rotation,
+                u8::from(*large_arc),
+                u8::from(*sweep),
+                end[0],
+                end[1]
+            ),
+            PathCommand::SmoothQuad(point) => format!("T{},{}", point[0], point[1]),
+            PathCommand::SmoothCubic(control2, point) => {
+                format!("S{},{} {},{}", control2[0], control2[1], point[0], point[1])
+            }
+            PathCommand::Horizontal(x) => format!("H{x}"),
+            PathCommand::Vertical(y) => format!("V{y}"),
+            PathCommand::Close => "Z".to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+fn transform_path_commands(
+    commands: &[PathCommand],
+    rect: [u16; 4],
+    percent: u16,
+    offset: [i16; 2],
+) -> Vec<PathCommand> {
+    let cx = f64::from(rect[0]) + f64::from(rect[2]) / 2.0;
+    let cy = f64::from(rect[1]) + f64::from(rect[3]) / 2.0;
+    let radius = |value: i32| -> i32 {
+        let scaled = f64::from(value.unsigned_abs()) * f64::from(percent) / 100.0;
+        scaled.round().clamp(1.0, f64::from(i32::MAX)) as i32
+    };
+    commands
+        .iter()
+        .map(|command| match command {
+            PathCommand::Move(point) => {
+                PathCommand::Move(animated_point(*point, rect, percent, offset))
+            }
+            PathCommand::Line(point) => {
+                PathCommand::Line(animated_point(*point, rect, percent, offset))
+            }
+            PathCommand::Quad(control, point) => PathCommand::Quad(
+                animated_point(*control, rect, percent, offset),
+                animated_point(*point, rect, percent, offset),
+            ),
+            PathCommand::Cubic(control1, control2, point) => PathCommand::Cubic(
+                animated_point(*control1, rect, percent, offset),
+                animated_point(*control2, rect, percent, offset),
+                animated_point(*point, rect, percent, offset),
+            ),
+            PathCommand::Arc {
+                rx,
+                ry,
+                rotation,
+                large_arc,
+                sweep,
+                end,
+            } => PathCommand::Arc {
+                rx: radius(*rx),
+                ry: radius(*ry),
+                rotation: *rotation,
+                large_arc: *large_arc,
+                sweep: *sweep,
+                end: animated_point(*end, rect, percent, offset),
+            },
+            PathCommand::SmoothQuad(point) => {
+                PathCommand::SmoothQuad(animated_point(*point, rect, percent, offset))
+            }
+            PathCommand::SmoothCubic(control2, point) => PathCommand::SmoothCubic(
+                animated_point(*control2, rect, percent, offset),
+                animated_point(*point, rect, percent, offset),
+            ),
+            PathCommand::Horizontal(x) => {
+                PathCommand::Horizontal(animated_coord(*x, cx, percent, offset[0]))
+            }
+            PathCommand::Vertical(y) => {
+                PathCommand::Vertical(animated_coord(*y, cy, percent, offset[1]))
+            }
+            PathCommand::Close => PathCommand::Close,
+        })
+        .collect()
+}
+
+/// N853/N854: apply `scale`/`offset` to point-borne geometry as well as the
+/// node rect. Polygon, polyline, mask and both path forms carry absolute points
+/// in `value2`; rewriting them keeps the device rasteriser and exact hit-test
+/// in the same coordinate space as the animated rect.
+fn transform_scene_geometry(node: &mut SceneNode, rect: [u16; 4], percent: u16, offset: [i16; 2]) {
+    if percent == 100 && offset == [0, 0] {
+        return;
+    }
+    match node.kind.as_str() {
+        "polygon" | "polyline" | "mask" => {
+            if let Some(points) = node.points() {
+                let mapped: Vec<[i32; 2]> = points
+                    .iter()
+                    .map(|point| animated_point(*point, rect, percent, offset))
+                    .collect();
+                node.value2 = Some(format_point_list(&mapped));
+            }
+        }
+        "path" => {
+            if let Some(commands) = node.path_commands() {
+                let mapped = transform_path_commands(&commands, rect, percent, offset);
+                node.value2 = Some(format_path_commands(&mapped));
+            } else if let Some(points) = node.bezier() {
+                let mapped: Vec<[i32; 2]> = points
+                    .iter()
+                    .map(|point| animated_point(*point, rect, percent, offset))
+                    .collect();
+                node.value2 = Some(format_point_list(&mapped));
+            }
+        }
+        _ => {}
+    }
+}
+
 /// N463: apply a node's animation (in place) at `time_ms`, recursively.
 pub fn apply_scene_animation(node: &mut SceneNode, time_ms: u64) {
     if let Some(anim) = node.anim.clone() {
@@ -932,7 +1136,8 @@ pub fn apply_scene_animation(node: &mut SceneNode, time_ms: u64) {
             node.focus = Some(format!("{cx},{cy}"));
         }
         // N825: colour tracks only rewrite `value` for colour-bearing kinds, so
-        // text glyphs, image hex and sprite indices are never overwritten.
+        // text glyphs and image hex are never overwritten. N853: sprite frames
+        // use their own discrete track below.
         if let Some([r, g, b]) = anim.color_at(time_ms) {
             if kind_uses_colour_value(&node.kind) {
                 node.value = Some(format!("#{r:02X}{g:02X}{b:02X}"));
@@ -942,9 +1147,21 @@ pub fn apply_scene_animation(node: &mut SceneNode, time_ms: u64) {
         if let Some(rotate) = anim.rotate_at(time_ms) {
             node.rotate = Some(rotate);
         }
+        // N853: a sprite frame track drives the atlas frame index; frame numbers
+        // are discrete so there is no interpolation.
+        if node.kind == "sprite" {
+            if let Some(frame) = anim.frame_at(time_ms) {
+                node.value = Some(frame.to_string());
+            }
+        }
+        // The point transform uses the rect after the rect track, before scale.
+        let base_rect = node.rect;
+        let mut percent = 100u16;
+        let mut offset = [0i16; 2];
         // N843: scale about the (possibly animated) rect centre. A zero extent
         // keeps its "do not scale this axis" meaning for groups.
-        if let Some(percent) = anim.scale_at(time_ms) {
+        if let Some(value) = anim.scale_at(time_ms) {
+            percent = value;
             if percent != 100 {
                 if let Some([x, y, w, h]) = node.rect {
                     let scaled = |value: u16| -> u16 {
@@ -967,12 +1184,16 @@ pub fn apply_scene_animation(node: &mut SceneNode, time_ms: u64) {
         }
         // N844: translate after scaling so the offset is not itself scaled.
         if let Some([dx, dy]) = anim.offset_at(time_ms) {
+            offset = [dx, dy];
             if let Some([x, y, w, h]) = node.rect {
                 let shift = |value: u16, delta: i16| -> u16 {
                     (i32::from(value) + i32::from(delta)).clamp(0, i32::from(u16::MAX)) as u16
                 };
                 node.rect = Some([shift(x, dx), shift(y, dy), w, h]);
             }
+        }
+        if let Some(rect) = base_rect {
+            transform_scene_geometry(node, rect, percent, offset);
         }
     }
     for child in &mut node.children {
@@ -1183,6 +1404,7 @@ impl SceneNode {
                     || anim.rotate.iter().any(|key| late(key[0]))
                     || anim.scale.iter().any(|key| late(key[0]))
                     || anim.offset.iter().any(|key| late(key.time_ms))
+                    || anim.frame.iter().any(|key| late(key[0]))
                 {
                     report.warnings.push(format!(
                         "node '{}' has keyframes after its {} ms duration",
@@ -1222,7 +1444,7 @@ impl SceneNode {
                     ));
                 }
             }
-            let tracks: [(&str, Vec<u16>); 7] = [
+            let tracks: [(&str, Vec<u16>); 8] = [
                 ("opacity", anim.opacity.iter().map(|key| key[0]).collect()),
                 ("rect", anim.rect.iter().map(|key| key[0]).collect()),
                 ("focus", anim.focus.iter().map(|key| key[0]).collect()),
@@ -1233,6 +1455,7 @@ impl SceneNode {
                     "offset",
                     anim.offset.iter().map(|key| key.time_ms).collect(),
                 ),
+                ("frame", anim.frame.iter().map(|key| key[0]).collect()),
             ];
             for (track, mut times) in tracks {
                 times.sort_unstable();
@@ -1249,8 +1472,8 @@ impl SceneNode {
         }
     }
 
-    /// N477/N546/N829: animation keyframes across the tree (opacity + rect +
-    /// focus + colour + rotate).
+    /// N477/N546/N829/N853: animation keyframes across the tree (opacity +
+    /// rect + focus + colour + rotate + scale + offset + frame).
     pub fn anim_keys(&self) -> u32 {
         let own = self
             .anim
@@ -1262,7 +1485,8 @@ impl SceneNode {
                     + anim.color.len()
                     + anim.rotate.len()
                     + anim.scale.len()
-                    + anim.offset.len()) as u32
+                    + anim.offset.len()
+                    + anim.frame.len()) as u32
             })
             .unwrap_or(0);
         self.children
@@ -3341,6 +3565,7 @@ mod tests {
             easing: None,
             scale: Vec::new(),
             offset: Vec::new(),
+            frame: Vec::new(),
         };
         assert_eq!(anim.focus_at(0), Some([0, 100]));
         assert_eq!(anim.focus_at(50), Some([50, 50]));
@@ -3369,6 +3594,7 @@ mod tests {
             easing: None,
             scale: Vec::new(),
             offset: Vec::new(),
+            frame: Vec::new(),
         });
         apply_scene_animation(&mut untouched, 5);
         assert_eq!(untouched.focus.as_deref(), Some("10,20"));
@@ -3390,6 +3616,7 @@ mod tests {
             easing: Some(easing.into()),
             scale: Vec::new(),
             offset: Vec::new(),
+            frame: Vec::new(),
         };
         let linear = anim("linear");
         assert_eq!(linear.opacity_at(0), Some(0));
@@ -3436,6 +3663,7 @@ mod tests {
             easing: None,
             scale: Vec::new(),
             offset: Vec::new(),
+            frame: Vec::new(),
         };
         let delayed = anim(Some(50), Some(2000));
         assert_eq!(delayed.opacity_at(0), Some(0));
@@ -3521,6 +3749,7 @@ mod tests {
             easing: None,
             scale: Vec::new(),
             offset: Vec::new(),
+            frame: Vec::new(),
         };
         assert_eq!(anim.color_at(0), Some([0, 0, 0]));
         assert_eq!(anim.color_at(50), Some([128, 128, 128]));
@@ -3589,6 +3818,7 @@ mod tests {
             easing: None,
             scale: Vec::new(),
             offset: Vec::new(),
+            frame: Vec::new(),
         };
         assert_eq!(anim.rotate_at(0), Some(0));
         assert_eq!(anim.rotate_at(25), Some(90));
@@ -3629,6 +3859,7 @@ mod tests {
                     dy: -10,
                 },
             ],
+            frame: Vec::new(),
         };
         assert_eq!(anim.scale_at(0), Some(100));
         assert_eq!(anim.scale_at(50), Some(150));
@@ -3707,6 +3938,7 @@ mod tests {
                 dx: 1000,
                 dy: 0,
             }],
+            frame: Vec::new(),
         });
         let report = node.lint();
         assert_eq!(report.anim_keys, 5);
@@ -4025,6 +4257,133 @@ mod tests {
         assert_eq!(group.skew(), Some((2000, -2000)));
         group.value2 = Some("nope".into());
         assert_eq!(group.skew(), None);
+    }
+
+    #[test]
+    fn scene_scale_and_offset_transform_point_geometry() {
+        // N853/N854: polygon/polyline/mask points and both path forms use the
+        // same rect-centred scale and unscaled offset as the rect.
+        let anim = SceneAnim {
+            duration_ms: 100,
+            scale: vec![[0, 200]],
+            offset: vec![
+                SceneOffsetKey {
+                    time_ms: 0,
+                    dx: 0,
+                    dy: 0,
+                },
+                SceneOffsetKey {
+                    time_ms: 100,
+                    dx: 10,
+                    dy: 0,
+                },
+            ],
+            ..Default::default()
+        };
+        let mut polygon = plain_node("p", "polygon");
+        polygon.rect = Some([0, 0, 10, 10]);
+        polygon.value2 = Some("0,0;10,0;10,10;0,10".into());
+        polygon.anim = Some(anim.clone());
+        let mut scaled = polygon.clone();
+        apply_scene_animation(&mut scaled, 0);
+        assert_eq!(
+            scaled.points(),
+            Some(vec![[-5, -5], [15, -5], [15, 15], [-5, 15]])
+        );
+        apply_scene_animation(&mut polygon, 100);
+        assert_eq!(
+            polygon.points(),
+            Some(vec![[5, -5], [25, -5], [25, 15], [5, 15]])
+        );
+
+        let mut path = plain_node("c", "path");
+        path.rect = Some([0, 0, 10, 10]);
+        path.value2 = Some("M0,0;L10,0;H10;V10;A2,2,0,0,1,5,5;Z".into());
+        path.anim = Some(anim);
+        apply_scene_animation(&mut path, 100);
+        let commands = path.path_commands().expect("transformed command stream");
+        assert_eq!(commands[0], PathCommand::Move([5, -5]));
+        assert_eq!(commands[1], PathCommand::Line([25, -5]));
+        assert_eq!(commands[2], PathCommand::Horizontal(25));
+        assert_eq!(commands[3], PathCommand::Vertical(15));
+        assert_eq!(
+            commands[4],
+            PathCommand::Arc {
+                rx: 4,
+                ry: 4,
+                rotation: 0,
+                large_arc: false,
+                sweep: true,
+                end: [15, 5],
+            }
+        );
+        assert_eq!(commands[5], PathCommand::Close);
+    }
+
+    #[test]
+    fn sprite_frame_keys_are_stepwise_and_do_not_touch_other_payloads() {
+        // N853: frame indices are discrete; the last key at or before the time wins.
+        let anim = SceneAnim {
+            duration_ms: 100,
+            frame: vec![[0, 2], [50, 3], [100, 1]],
+            ..Default::default()
+        };
+        assert_eq!(anim.frame_at(0), Some(2));
+        assert_eq!(anim.frame_at(49), Some(2));
+        assert_eq!(anim.frame_at(50), Some(3));
+        assert_eq!(anim.frame_at(99), Some(3));
+        assert_eq!(anim.frame_at(100), Some(1));
+        assert_eq!(anim.frame_at(500), Some(1));
+
+        let mut sprite = plain_node("s", "sprite");
+        sprite.value = Some("2".into());
+        sprite.anim = Some(anim.clone());
+        apply_scene_animation(&mut sprite, 50);
+        assert_eq!(sprite.value.as_deref(), Some("3"));
+        assert_eq!(sprite.anim_keys(), 3);
+
+        let mut label = plain_node("t", "text");
+        label.value = Some("hi".into());
+        label.anim = Some(anim);
+        apply_scene_animation(&mut label, 50);
+        assert_eq!(label.value.as_deref(), Some("hi"));
+
+        let mut late = plain_node("late", "sprite");
+        late.rect = Some([0, 0, 4, 4]);
+        late.value = Some("0".into());
+        late.anim = Some(SceneAnim {
+            duration_ms: 10,
+            frame: vec![[20, 1], [20, 2]],
+            ..Default::default()
+        });
+        let report = late.lint();
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("keyframes after")));
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("duplicate frame key times")));
+    }
+
+    #[test]
+    fn scene_frame_track_is_additive_on_the_wire() {
+        // N853: a CBOR payload authored before the frame track still decodes.
+        use serde_cbor::Value;
+        let mut map = std::collections::BTreeMap::new();
+        map.insert(Value::Text("duration_ms".into()), Value::Integer(100));
+        map.insert(Value::Text("looping".into()), Value::Bool(false));
+        map.insert(
+            Value::Text("opacity".into()),
+            Value::Array(vec![Value::Array(vec![
+                Value::Integer(0),
+                Value::Integer(255),
+            ])]),
+        );
+        let anim: SceneAnim = serde_cbor::value::from_value(Value::Map(map)).expect("old payload");
+        assert!(anim.frame.is_empty());
+        assert_eq!(anim.opacity_at(0), Some(255));
     }
 
     fn config_command_vector() -> Capabilities {

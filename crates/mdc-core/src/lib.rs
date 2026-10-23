@@ -6446,6 +6446,7 @@ mod tests {
                 easing: None,
                 scale: Vec::new(),
                 offset: Vec::new(),
+                frame: Vec::new(),
             }),
             children: Vec::new(),
         };
