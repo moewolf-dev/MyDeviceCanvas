@@ -6971,6 +6971,8 @@ mod tests {
                 color: Vec::new(),
                 rotate: Vec::new(),
                 easing: None,
+                scale: Vec::new(),
+                offset: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -7672,6 +7674,8 @@ mod tests {
                 color: Vec::new(),
                 rotate: Vec::new(),
                 easing: None,
+                scale: Vec::new(),
+                offset: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -7724,6 +7728,8 @@ mod tests {
                 color: Vec::new(),
                 rotate: Vec::new(),
                 easing: None,
+                scale: Vec::new(),
+                offset: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -7793,6 +7799,8 @@ mod tests {
                 ],
                 rotate: Vec::new(),
                 easing: None,
+                scale: Vec::new(),
+                offset: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -7842,6 +7850,8 @@ mod tests {
                 color: Vec::new(),
                 rotate: vec![[0, 0], [100, 90]],
                 easing: None,
+                scale: Vec::new(),
+                offset: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -7864,6 +7874,73 @@ mod tests {
             device.hit_test(7, 1).is_none(),
             "hit-test follows the rotate"
         );
+    }
+
+    #[test]
+    fn scene_scale_and_offset_animation_reach_the_device() {
+        // N846/N847: scale and offset tracks change rasterisation and the hit
+        // test together, on the device clock.
+        use mdc_protocol::{SceneAnim, SceneNode, SceneOffsetKey};
+        let (_host, mut device) = FakeDevice::pair(BoardProfile {
+            width: 16,
+            height: 16,
+            ..BoardProfile::default()
+        });
+        device.scene = Some(SceneNode {
+            name: "box".into(),
+            kind: "rect".into(),
+            rect: Some([4, 4, 4, 4]),
+            value: Some("#FFFFFF".into()),
+            value2: None,
+            opacity: None,
+            visible: None,
+            anim: Some(SceneAnim {
+                duration_ms: 100,
+                looping: false,
+                opacity: Vec::new(),
+                rect: Vec::new(),
+                focus: Vec::new(),
+                delay_ms: None,
+                speed_permille: None,
+                color: Vec::new(),
+                rotate: Vec::new(),
+                easing: None,
+                scale: vec![[0, 100], [100, 200]],
+                offset: vec![
+                    SceneOffsetKey {
+                        time_ms: 0,
+                        dx: 0,
+                        dy: 0,
+                    },
+                    SceneOffsetKey {
+                        time_ms: 100,
+                        dx: 4,
+                        dy: -2,
+                    },
+                ],
+            }),
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: None,
+            focus: None,
+            children: Vec::new(),
+        });
+        assert!(device.render_scene());
+        assert_eq!(device.pixel_rgb565(4, 4), Some(0xFFFF), "authored box");
+        assert_eq!(device.pixel_rgb565(2, 2), Some(0), "not scaled yet");
+        assert_eq!(device.hit_test(5, 5).as_deref(), Some("box"));
+
+        device.clock.tick = 100;
+        assert!(device.render_scene());
+        // 200% about the centre gives [2,2,8,8], then +4/-2 gives [6,0,8,8].
+        assert_eq!(device.pixel_rgb565(6, 0), Some(0xFFFF), "scaled and moved");
+        assert_eq!(device.pixel_rgb565(10, 5), Some(0xFFFF));
+        assert_eq!(device.pixel_rgb565(5, 5), Some(0), "left of the moved box");
+        assert_eq!(device.hit_test(10, 5).as_deref(), Some("box"));
+        assert!(device.hit_test(5, 5).is_none());
     }
 
     #[test]
