@@ -2946,6 +2946,8 @@ fn animated_scene_reaches_the_mirror() {
                 color: Vec::new(),
                 rotate: Vec::new(),
                 easing: None,
+                scale: Vec::new(),
+                offset: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -4562,6 +4564,61 @@ fn scene_colour_rotate_and_delay_reach_the_device() {
 }
 
 #[test]
+fn scene_scale_and_offset_reach_the_device() {
+    // N849: scale/offset tracks arrive through the real SCENE path and move
+    // both the rendered box and its hit region.
+    use mdc_core::{ConnectionState, Session};
+    use mdc_protocol::SceneNode;
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 16,
+        height: 16,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+    let scene: SceneNode = serde_json::from_str(
+        r##"{
+            "name": "box",
+            "kind": "rect",
+            "rect": [4, 4, 4, 4],
+            "value": "#FFFFFF",
+            "anim": {
+                "duration_ms": 100,
+                "scale": [[0, 100], [100, 200]],
+                "offset": [
+                    {"time_ms": 0, "dx": 0, "dy": 0},
+                    {"time_ms": 100, "dx": 4, "dy": -2}
+                ]
+            }
+        }"##,
+    )
+    .unwrap();
+    session.set_scene(scene).unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    assert!(device.render_scene());
+    assert_eq!(device.pixel_rgb565(4, 4), Some(0xFFFF), "authored box");
+    assert_eq!(device.hit_test(5, 5).as_deref(), Some("box"));
+
+    device.clock.tick = 100;
+    assert!(device.render_scene());
+    assert_eq!(
+        device.pixel_rgb565(6, 0),
+        Some(0xFFFF),
+        "scaled and offset box"
+    );
+    assert_eq!(device.pixel_rgb565(5, 5), Some(0), "box moved away");
+    assert_eq!(device.hit_test(10, 5).as_deref(), Some("box"));
+    assert!(device.hit_test(5, 5).is_none());
+}
+
+#[test]
 fn animated_blend_reaches_the_device() {
     // N839: a weighted blend installed over the real PACKAGE/CONFIG path mixes
     // two atlas clips and reports the accepted value back to the host.
@@ -5005,6 +5062,8 @@ fn focus_animation_changes_the_device_frame() {
             color: Vec::new(),
             rotate: Vec::new(),
             easing: None,
+            scale: Vec::new(),
+            offset: Vec::new(),
         }),
         rotate: None,
         blend: None,

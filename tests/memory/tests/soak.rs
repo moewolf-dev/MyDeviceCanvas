@@ -1571,6 +1571,8 @@ fn animated_scene_rendering_stays_bounded() {
                     color: Vec::new(),
                     rotate: Vec::new(),
                     easing: None,
+                    scale: Vec::new(),
+                    offset: Vec::new(),
                 }),
                 rotate: Some(90),
                 blend: Some("additive".to_string()),
@@ -2483,6 +2485,8 @@ fn focus_animation_render_soak_is_bounded() {
                 color: Vec::new(),
                 rotate: Vec::new(),
                 easing: None,
+                scale: Vec::new(),
+                offset: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -2803,6 +2807,8 @@ fn delayed_colour_and_rotate_scene_soak_stays_bounded() {
                 ],
                 rotate: vec![[0, 0], [100, 90], [200, 180]],
                 easing: None,
+                scale: Vec::new(),
+                offset: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -2822,6 +2828,77 @@ fn delayed_colour_and_rotate_scene_soak_stays_bounded() {
         assert!(device.render_scene());
         assert_eq!(device.metrics_snapshot().pixel_bytes, bytes);
     }
+    assert!(device.pixel_rgb565(0, 0).is_some());
+}
+
+#[test]
+fn scaled_and_offset_scene_soak_stays_bounded() {
+    // N850: 5000 ticks of scale/offset tracks keep the framebuffer size constant
+    // and still land on the sampled rect.
+    use mdc_protocol::{SceneAnim, SceneNode, SceneOffsetKey};
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 32,
+        height: 16,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    let _ = session.poll();
+    session
+        .set_scene(SceneNode {
+            name: "box".into(),
+            kind: "rect".into(),
+            rect: Some([4, 4, 8, 4]),
+            value: Some("#FFFFFF".into()),
+            value2: None,
+            opacity: None,
+            visible: None,
+            anim: Some(SceneAnim {
+                duration_ms: 100,
+                looping: false,
+                opacity: Vec::new(),
+                rect: Vec::new(),
+                focus: Vec::new(),
+                delay_ms: None,
+                speed_permille: None,
+                color: Vec::new(),
+                rotate: Vec::new(),
+                easing: None,
+                scale: vec![[0, 100], [100, 200]],
+                offset: vec![
+                    SceneOffsetKey {
+                        time_ms: 0,
+                        dx: 0,
+                        dy: 0,
+                    },
+                    SceneOffsetKey {
+                        time_ms: 100,
+                        dx: 4,
+                        dy: 2,
+                    },
+                ],
+            }),
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: None,
+            focus: None,
+            children: Vec::new(),
+        })
+        .unwrap();
+    device.poll().unwrap();
+    let bytes = device.metrics_snapshot().pixel_bytes;
+    assert_eq!(bytes, 32 * 16 * 2);
+    for tick in 0..5000u64 {
+        device.clock.tick = tick;
+        assert!(device.render_scene());
+        assert_eq!(device.metrics_snapshot().pixel_bytes, bytes);
+    }
+    device.clock.tick = 100;
+    assert!(device.hit_test(12, 8).as_deref() == Some("box"));
     assert!(device.pixel_rgb565(0, 0).is_some());
 }
 
