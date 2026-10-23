@@ -239,8 +239,9 @@ test("native dual-sim lists overlay and disconnect cancel keeps the pointer", { 
   assert.ok(stats.bytesSent >= 0);
   statsSession.dispose();
 
-  // N430: connectSerial rejects an unusable path cleanly.
+  // N430/APP-R03: the public SDK rejects an unusable path cleanly.
   const serial = await MyDeviceCanvas.create();
-  assert.throws(() => serial._native.connectSerial("/no/such/port", 115200));
+  await assert.rejects(serial.connectSerial("   "), /non-empty/);
+  await assert.rejects(serial.connectSerial("/no/such/port", 115200));
   serial.dispose();
 });

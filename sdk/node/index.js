@@ -76,6 +76,23 @@ export class MyDeviceCanvas {
     }
     return this._native.connectTcp(address);
   }
+  /**
+   * N430/APP-R03: open a named serial port and perform HELLO.
+   * `baud` is a positive integer or 0 for the native default (115200).
+   */
+  async connectSerial(path, baud = 115200) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof path !== "string" || path.trim().length === 0) {
+      throw new TypeError("serial path must be a non-empty string");
+    }
+    if (!Number.isInteger(baud) || baud < 0 || baud > 4_000_000) {
+      throw new RangeError("serial baud must be an integer in 0..4000000");
+    }
+    if (typeof this._native.connectSerial !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.connectSerial(path.trim(), baud);
+  }
   /** N340: connect over WebSocket (`ws://host:port`). */
   async connectWebSocket(url) {
     if (this._disposed) throw new Error("manager is disposed");

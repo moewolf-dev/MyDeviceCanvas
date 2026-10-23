@@ -84,6 +84,29 @@ test("connectTcp forwards the address to the native binding", async () => {
   assert.equal(seen, "127.0.0.1:9");
 });
 
+test("connectSerial trims the path and defaults to 115200", async () => {
+  const seen = [];
+  const mdc = new MyDeviceCanvas({
+    connectSerial(path, baud) {
+      seen.push([path, baud]);
+      return Promise.resolve();
+    },
+  });
+  await mdc.connectSerial("  /dev/tty.usbserial-1  ");
+  await mdc.connectSerial("/dev/tty.usbserial-2", 921600);
+  assert.deepEqual(seen, [
+    ["/dev/tty.usbserial-1", 115200],
+    ["/dev/tty.usbserial-2", 921600],
+  ]);
+  await assert.rejects(mdc.connectSerial(""), /non-empty/);
+  await assert.rejects(mdc.connectSerial("   "), /non-empty/);
+  await assert.rejects(mdc.connectSerial(3), /non-empty/);
+  await assert.rejects(mdc.connectSerial("/dev/x", 1.5), /RangeError|integer/);
+  await assert.rejects(mdc.connectSerial("/dev/x", -1), /RangeError|integer/);
+  const missing = new MyDeviceCanvas({});
+  await assert.rejects(missing.connectSerial("/dev/x"), /原生 SDK/);
+});
+
 test("nativeLoaded reflects a bound sendFrame", () => {
   const bare = new MyDeviceCanvas({});
   assert.equal(bare.nativeLoaded(), false);
