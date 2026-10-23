@@ -2,6 +2,22 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.99] — public serial SDK (APP-R03)
+
+### Added
+
+- Node SDK `connectSerial(path, baud = 115200)` with path trimming, baud
+  validation and TypeScript declarations (R03)
+- public-method native smoke for an unusable serial path
+
+### Notes
+
+- Host/API only. An automated PTY round-trip test is not in place; the local
+  macOS PTY attempt reported `Not a typewriter` and was removed rather than
+  claiming a false green.
+- DTR/RTS timing, hot-plug, FPS/heap and board identity still need physical
+  validation (`Core:D05`).
+
 ## [0.1.98] — point-geometry animation and sprite frame tracks (N853–N862)
 
 ### Added
