@@ -540,6 +540,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | Transform lint keys/warnings (N848) | sim-verified (report/budget) | n/a |
 | Scale/offset fixture (N849) | sim-verified (SCENE path) | physical: pending |
 | Scale/offset soak (N850) | sim-verified (constant buffer) | n/a |
+| Point-list scale/offset (N853) | sim-verified (polygon/polyline/mask) | physical: pending |
+| Path scale/offset (N854) | sim-verified (command stream + bezier) | physical: pending |
+| Sprite frame track (N855) | sim-verified (step sample, lint/keys) | physical: pending |
+| Device sprite frame render (N856) | sim-verified (atlas pixels) | physical: pending |
+| Polygon/polyline hit-test (N857) | sim-verified (points, not bounding box) | physical: pending |
+| Path hit-test (N858) | sim-verified (flattened stroke tolerance) | physical: pending |
+| Point animation fixture (N859) | sim-verified (SCENE path) | physical: pending |
+| Point animation soak (N860) | sim-verified (constant buffer) | n/a |
 
 Rows marked `sim-verified` describe host/simulator behaviour only. The KTX2 row
 is also emitted by `mdc verify` as `compatibility_row`, generated from the same

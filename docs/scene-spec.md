@@ -95,11 +95,21 @@ A device that accepts a scene rasterizes it locally:
   `[[time_ms, percent]...]` (1..=400) applied about the animated rect's centre;
   a zero group extent keeps its "do not scale this axis" meaning. N844: `offset`
   is `[{time_ms, dx, dy}...]` with signed pixel deltas clamped to ±512, applied
-  after `scale` (the offset is not scaled). Both are rect-based: `path`,
-  `polygon` and `polyline` keep their absolute points, so those kinds use the
-  tracks only for their bounding rect. N829: all tracks count toward the scene
-  animation-key budget (`mdc scene-lint` reports `anim_keys`); N848 lint also
-  warns on zero/over-limit scale, over-limit offset and duplicate key times.
+  after `scale` (the offset is not scaled). N853/N854: the same transform is
+  applied to point geometry — `polygon`, `polyline`, `mask`, a `path` command
+  stream (absolute and relative forms are parsed first) and the legacy 3/4-point
+  bezier. Path arcs scale their radii; `H`/`V` transform the one absolute axis.
+  N853: `frame` is `[[time_ms, frame_index]...]` for a `sprite` only. Frames are
+  step-sampled (the last key at or before the sampled time wins), never
+  interpolated; other kinds ignore the track. N829/N853: all tracks count toward
+  the scene animation-key budget (`mdc scene-lint` reports `anim_keys`); N848
+  lint also warns on zero/over-limit scale, over-limit offset and duplicate key
+  times.
+- N855/N856: hit-testing for point-borne kinds uses the points, not the
+  bounding rect. `polygon` and `mask` use the even-odd rule; `polyline` accepts
+  pixels within 2 px of a segment (and the closing edge with `mode: closed`);
+  `path` uses the flattened stroke with a tolerance of `width/2 + 1` px. A
+  malformed point list does not capture input.
 - N546: `anim.focus: [[time_ms, cx%, cy%]...]` animates the radial `gradient`
   centre (same percent semantics as `focus`); values are clamped to `0..=100`.
 - N475: `rotate: 90|180|270` swaps the rect axes for axis-aligned fills; a rotated

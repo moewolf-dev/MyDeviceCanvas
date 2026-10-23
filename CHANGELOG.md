@@ -2,6 +2,27 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.98] — point-geometry animation and sprite frame tracks (N853–N862)
+
+### Added
+
+- `scale`/`offset` tracks now transform `polygon`, `polyline` and `mask` points instead of only their bounding rect (N853)
+- command-stream and legacy-bezier `path` geometry follows the same tracks; arcs scale their radii and `H`/`V` transform their absolute axis (N854)
+- `SceneAnim.frame` (`[[time_ms, frame_index]...]`) step-samples a `sprite` frame index on the device clock; it is counted by `anim_keys` and lint checks late/duplicate keys (N855)
+- device rendering applies the selected sprite frame before blitting (N856)
+- hit-testing for `polygon`/`mask` uses the even-odd rule, `polyline` uses a 2 px segment tolerance, and `path` uses the flattened stroke with `width/2 + 1` px (N857/N858)
+- a real `SCENE`-path fixture and a 5,000-tick point-animation soak (N859/N860)
+
+### Notes
+
+- Host/simulator only. D05, G03 and H06 remain open until physical hardware is
+  measured; no board is claimed working.
+- The point transform is rect-centred, matching the rect track, and accumulates
+  when an already-animated node is applied again (the device animates a clone).
+- A malformed point list or path draws nothing and does not capture input.
+- Frame indices are discrete. Other payloads (text, image hex) are never replaced
+  by the frame track.
+
 ## [0.1.97] — scaled and offset scene animation tracks (N843–N852)
 
 ### Added

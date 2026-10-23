@@ -93,8 +93,12 @@ bounding box. `arc`/`pie` (N733) read `"start,end"` degrees and `path` (N734)
 reads three/four bezier points; N743 also accepts a bounded `M/L/Q/C/Z` command
 stream. `mask` (N744) clips children to its polygon. `text` `mode` tokens (N740) add `ellipsis` and
 `valign=top|middle|bottom`. `SceneAnim.easing` (N724) is an optional `linear`/`ease-in`/
-`ease-out`/`ease-in-out` token shaping each keyframe segment. Both fields are
-additive; nodes without them behave as before.
+`ease-out`/`ease-in-out` token shaping each keyframe segment. N853 adds
+`SceneAnim.frame` (`[[time_ms, frame_index]...]`), a step-sampled atlas-frame
+track applied only to `sprite`. N853/N854 also apply the existing `scale` and
+`offset` tracks to point geometry (`polygon`, `polyline`, `mask`, path command
+streams and the legacy bezier), not only to `rect`. Both fields are additive;
+nodes without them behave as before.
 
 ## OTA chunk ranges (N737)
 

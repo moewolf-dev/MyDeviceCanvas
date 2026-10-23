@@ -115,6 +115,7 @@ Do not mark physical verification from host-only or simulator tests.
 | 101 | N823–N832: delayed/speeded scene clocks, animated colours and quarter turns, lint animation keys, device fixture and soak | sim-verified |
 | 102 | N833–N842: weighted animation blending for atlas/mesh packages, Node/C surfaces, fixture and soak | sim-verified |
 | 103 | N843–N852: scaled/offset scene animation tracks, device render + hit-test, lint keys/warnings, fixture and soak | sim-verified |
+| 104 | N853–N862: point-geometry scale/offset, sprite frame track, exact polygon/polyline/path hit-testing, SCENE fixture and soak | sim-verified |
 | 87 | N683–N692: verbatim partial-group cases, sprite fit/pad on a shared fit box, package_order report, inspect --defaults alias, configurable WS kind limit, archive --json alias, verify manifest locality | sim-verified |
 
 Waves **3–14** are marked **sim-verified architecture complete**: host FakeDevice / MemoryLink / C++ SimDisplay / `mdc_linux_peer` / SDK paths exercise the design. Physical board work remains `physical: pending`. D05, G03, and H06 stay unchecked until a physical board is measured.
