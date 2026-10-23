@@ -1573,6 +1573,7 @@ fn animated_scene_rendering_stays_bounded() {
                     easing: None,
                     scale: Vec::new(),
                     offset: Vec::new(),
+                    frame: Vec::new(),
                 }),
                 rotate: Some(90),
                 blend: Some("additive".to_string()),
@@ -2487,6 +2488,7 @@ fn focus_animation_render_soak_is_bounded() {
                 easing: None,
                 scale: Vec::new(),
                 offset: Vec::new(),
+                frame: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -2809,6 +2811,7 @@ fn delayed_colour_and_rotate_scene_soak_stays_bounded() {
                 easing: None,
                 scale: Vec::new(),
                 offset: Vec::new(),
+                frame: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -2878,6 +2881,7 @@ fn scaled_and_offset_scene_soak_stays_bounded() {
                         dy: 2,
                     },
                 ],
+                frame: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -2900,6 +2904,89 @@ fn scaled_and_offset_scene_soak_stays_bounded() {
     device.clock.tick = 100;
     assert!(device.hit_test(12, 8).as_deref() == Some("box"));
     assert!(device.pixel_rgb565(0, 0).is_some());
+}
+
+#[test]
+fn point_animation_soak_stays_bounded() {
+    // N860: 5000 ticks of a scaled polygon and a scaled path keep the
+    // framebuffer size constant.
+    use mdc_protocol::{SceneAnim, SceneNode, SceneOffsetKey};
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 32,
+        height: 16,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    let _ = session.poll();
+    let anim = SceneAnim {
+        duration_ms: 100,
+        scale: vec![[0, 100], [100, 200]],
+        offset: vec![
+            SceneOffsetKey {
+                time_ms: 0,
+                dx: 0,
+                dy: 0,
+            },
+            SceneOffsetKey {
+                time_ms: 100,
+                dx: 2,
+                dy: 1,
+            },
+        ],
+        ..Default::default()
+    };
+    let node = |name: &str, kind: &str, value2: &str| SceneNode {
+        name: name.into(),
+        kind: kind.into(),
+        rect: Some([2, 2, 12, 8]),
+        value: Some("#FFFFFF".into()),
+        value2: Some(value2.into()),
+        opacity: None,
+        visible: None,
+        anim: Some(anim.clone()),
+        rotate: None,
+        blend: None,
+        align: None,
+        z: None,
+        wrap: None,
+        mode: None,
+        focus: None,
+        children: Vec::new(),
+    };
+    session
+        .set_scene(SceneNode {
+            name: "root".into(),
+            kind: "group".into(),
+            rect: Some([0, 0, 0, 0]),
+            value: None,
+            value2: None,
+            opacity: None,
+            visible: None,
+            anim: None,
+            rotate: None,
+            blend: None,
+            align: None,
+            z: None,
+            wrap: None,
+            mode: None,
+            focus: None,
+            children: vec![
+                node("shape", "polygon", "2,2;14,2;14,10;2,10"),
+                node("stroke", "path", "M2,10;L8,4;Q12,4 12,10"),
+            ],
+        })
+        .unwrap();
+    device.poll().unwrap();
+    let bytes = device.metrics_snapshot().pixel_bytes;
+    for tick in 0..5000u64 {
+        device.clock.tick = tick;
+        assert!(device.render_scene());
+        assert_eq!(device.metrics_snapshot().pixel_bytes, bytes);
+    }
+    device.clock.tick = 100;
+    assert!(device.hit_test(12, 8).as_deref() == Some("shape"));
 }
 
 #[test]

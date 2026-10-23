@@ -2948,6 +2948,7 @@ fn animated_scene_reaches_the_mirror() {
                 easing: None,
                 scale: Vec::new(),
                 offset: Vec::new(),
+                frame: Vec::new(),
             }),
             rotate: None,
             blend: None,
@@ -4619,6 +4620,144 @@ fn scene_scale_and_offset_reach_the_device() {
 }
 
 #[test]
+fn animated_point_geometry_and_sprite_frames_reach_the_device() {
+    // N857: a polygon's points follow the scale track and a sprite's frame
+    // follows its discrete track, both through the real SCENE path.
+    use mdc_core::{ConnectionState, Session};
+    use mdc_protocol::SceneNode;
+    use mdc_simulator::{BoardProfile, FakeDevice};
+
+    let (host, mut device) = FakeDevice::pair(BoardProfile {
+        width: 16,
+        height: 16,
+        ..BoardProfile::default()
+    });
+    let mut session = Session::new(host);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+    let mut rgb565 = vec![0u8; 8 * 4 * 2];
+    for y in 0..4u32 {
+        for x in 0..8u32 {
+            let value: u16 = if x < 4 { 0xF800 } else { 0x07E0 };
+            let offset = ((y * 8 + x) * 2) as usize;
+            rgb565[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    let package = mdc_model::DevicePackage {
+        target: "esp32-plane".into(),
+        mode: mdc_model::PackageMode::BakedSprites,
+        nodes: Vec::new(),
+        meshes: Vec::new(),
+        textures: Vec::new(),
+        materials: Vec::new(),
+        lights: Vec::new(),
+        skeletons: Vec::new(),
+        animations: Vec::new(),
+        sprites: Vec::new(),
+        layers: Vec::new(),
+        estimated_bytes: 64,
+        atlas: Some(mdc_model::AtlasBlob {
+            sprite_width: 4,
+            sprite_height: 4,
+            frames: 2,
+            columns: 2,
+            rows: 1,
+            rgb565,
+            clips: Vec::new(),
+            mips: Vec::new(),
+        }),
+        texture: None,
+        texture_blobs: Vec::new(),
+    };
+    let sealed = mdc_model::MdcPackage::seal(package).unwrap();
+    session
+        .install_package(&sealed.to_bytes().unwrap())
+        .unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    let scene = SceneNode {
+        name: "root".into(),
+        kind: "group".into(),
+        rect: Some([0, 0, 0, 0]),
+        value: None,
+        value2: None,
+        opacity: None,
+        visible: None,
+        anim: None,
+        rotate: None,
+        blend: None,
+        align: None,
+        z: None,
+        wrap: None,
+        mode: None,
+        focus: None,
+        children: vec![
+            SceneNode {
+                name: "shape".into(),
+                kind: "polygon".into(),
+                rect: Some([0, 0, 4, 4]),
+                value: Some("#FFFFFF".into()),
+                value2: Some("0,0;4,0;4,4;0,4".into()),
+                opacity: None,
+                visible: None,
+                anim: Some(mdc_protocol::SceneAnim {
+                    duration_ms: 100,
+                    scale: vec![[0, 100], [100, 200]],
+                    ..Default::default()
+                }),
+                rotate: None,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: None,
+                focus: None,
+                children: Vec::new(),
+            },
+            SceneNode {
+                name: "face".into(),
+                kind: "sprite".into(),
+                rect: Some([8, 0, 4, 4]),
+                value: Some("0".into()),
+                value2: None,
+                opacity: None,
+                visible: None,
+                anim: Some(mdc_protocol::SceneAnim {
+                    duration_ms: 100,
+                    frame: vec![[0, 1], [100, 0]],
+                    ..Default::default()
+                }),
+                rotate: None,
+                blend: None,
+                align: None,
+                z: None,
+                wrap: None,
+                mode: None,
+                focus: None,
+                children: Vec::new(),
+            },
+        ],
+    };
+    session.set_scene(scene).unwrap();
+    device.poll().unwrap();
+    session.poll().unwrap();
+
+    assert!(device.render_scene());
+    assert_eq!(device.pixel_rgb565(5, 1), Some(0), "polygon not scaled yet");
+    assert_eq!(device.pixel_rgb565(8, 0), Some(0x07E0), "frame 1");
+    assert_eq!(device.hit_test(8, 0).as_deref(), Some("face"));
+
+    device.clock.tick = 100;
+    assert!(device.render_scene());
+    assert_eq!(device.pixel_rgb565(5, 1), Some(0xFFFF), "polygon scaled");
+    assert_eq!(device.pixel_rgb565(8, 0), Some(0xF800), "frame 0");
+    assert_eq!(device.hit_test(9, 1).as_deref(), Some("face"));
+}
+
+#[test]
 fn animated_blend_reaches_the_device() {
     // N839: a weighted blend installed over the real PACKAGE/CONFIG path mixes
     // two atlas clips and reports the accepted value back to the host.
@@ -5064,6 +5203,7 @@ fn focus_animation_changes_the_device_frame() {
             easing: None,
             scale: Vec::new(),
             offset: Vec::new(),
+            frame: Vec::new(),
         }),
         rotate: None,
         blend: None,
