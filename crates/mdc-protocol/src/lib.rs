@@ -3450,8 +3450,8 @@ mod tests {
 
     #[test]
     fn scene_animation_new_fields_are_additive() {
-        // N823/N825/N827: an old CBOR animation payload decodes unchanged and
-        // the new tracks stay absent on the wire when unset.
+        // N823/N825/N827/N843/N844: an old CBOR animation payload decodes
+        // unchanged and the new tracks stay absent on the wire when unset.
         #[derive(Serialize)]
         struct OldAnim {
             duration_ms: u32,
@@ -3469,11 +3469,15 @@ mod tests {
         assert!(old.speed_permille.is_none());
         assert!(old.color.is_empty());
         assert!(old.rotate.is_empty());
+        assert!(old.scale.is_empty());
+        assert!(old.offset.is_empty());
         assert_eq!(old.opacity_at(5), Some(255));
         let wire = String::from_utf8_lossy(&serde_cbor::to_vec(&old).unwrap()).into_owned();
         assert!(!wire.contains("delay_ms"));
         assert!(!wire.contains("color"));
         assert!(!wire.contains("rotate"));
+        assert!(!wire.contains("scale"));
+        assert!(!wire.contains("offset"));
 
         let new = SceneAnim {
             duration_ms: 10,
