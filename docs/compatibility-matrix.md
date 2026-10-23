@@ -532,6 +532,14 @@ States: `architecture` | `sim-verified` | `physical: pending`
 | C animation blend (N838) | sim-verified (C ABI) | n/a |
 | Blend package fixture (N839) | sim-verified (CONFIG path) | physical: pending |
 | Blend soak (N840) | sim-verified (constant buffer) | n/a |
+| Scene scale track (N843) | sim-verified (sampled rect) | physical: pending |
+| Scene offset track (N844) | sim-verified (sampled rect) | physical: pending |
+| Scale/offset composition (N845) | sim-verified (rect → scale → offset) | physical: pending |
+| Device scale/offset render (N846) | sim-verified (device pixels) | physical: pending |
+| Scale/offset hit-test (N847) | sim-verified (device hit region) | physical: pending |
+| Transform lint keys/warnings (N848) | sim-verified (report/budget) | n/a |
+| Scale/offset fixture (N849) | sim-verified (SCENE path) | physical: pending |
+| Scale/offset soak (N850) | sim-verified (constant buffer) | n/a |
 
 Rows marked `sim-verified` describe host/simulator behaviour only. The KTX2 row
 is also emitted by `mdc verify` as `compatibility_row`, generated from the same

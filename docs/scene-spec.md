@@ -91,8 +91,15 @@ A device that accepts a scene rasterizes it locally:
   interpolate and drive `value` for `rect`/`circle`/`line`/`gradient`/
   `rounded-rect`/`polygon`/`polyline`/`arc`/`pie`/`path`, while `text`, `image`
   and `sprite` keep their payload. N827: `rotate` is `[[time_ms, degrees]...]`
-  and snaps to the nearest quarter turn (0/90/180/270). N829: these tracks count
-  toward the scene animation-key budget (`mdc scene-lint` reports `anim_keys`).
+  and snaps to the nearest quarter turn (0/90/180/270). N843: `scale` is
+  `[[time_ms, percent]...]` (1..=400) applied about the animated rect's centre;
+  a zero group extent keeps its "do not scale this axis" meaning. N844: `offset`
+  is `[{time_ms, dx, dy}...]` with signed pixel deltas clamped to ±512, applied
+  after `scale` (the offset is not scaled). Both are rect-based: `path`,
+  `polygon` and `polyline` keep their absolute points, so those kinds use the
+  tracks only for their bounding rect. N829: all tracks count toward the scene
+  animation-key budget (`mdc scene-lint` reports `anim_keys`); N848 lint also
+  warns on zero/over-limit scale, over-limit offset and duplicate key times.
 - N546: `anim.focus: [[time_ms, cx%, cy%]...]` animates the radial `gradient`
   centre (same percent semantics as `focus`); values are clamped to `0..=100`.
 - N475: `rotate: 90|180|270` swaps the rect axes for axis-aligned fills; a rotated

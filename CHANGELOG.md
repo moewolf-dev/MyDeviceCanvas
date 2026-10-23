@@ -2,6 +2,27 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.97] — scaled and offset scene animation tracks (N843–N852)
+
+### Added
+
+- `SceneAnim.scale` keyframes (`[time_ms, percent]`, 1..=400) scale a node's rect about its centre (N843)
+- `SceneAnim.offset` keyframes (`{time_ms, dx, dy}`, ±512 per axis) translate the node after scaling (N844)
+- `apply_scene_animation` applies rect → scale → offset in that order for rendering and hit-testing; zero group extents keep their "do not scale this axis" meaning (N845)
+- device rendering and hit-testing follow both tracks on the device clock (N846/N847)
+- `scene-lint` counts both tracks in `anim_keys` and warns on zero/over-limit scale, over-limit offset and duplicate key times in any track (N848)
+- a real `SCENE`-path fixture and a 5,000-tick scale/offset soak (N849/N850)
+
+### Notes
+
+- Host/simulator only. D05, G03 and H06 remain open until physical hardware is
+  measured; no board is claimed working.
+- The two tracks are rect-based. `path`, `polygon` and `polyline` keep their
+  absolute points; only their bounding rect is transformed.
+- A scale track applies after the `rect` track, then the offset; offsets are not
+  scaled. The authored rect is not restored between calls, matching the existing
+  animation behavior (callers apply tracks to a clone).
+
 ## [0.1.96] — weighted animation blending for atlas and mesh packages (N833–N842)
 
 ### Added
