@@ -84,6 +84,38 @@ test("connectTcp forwards the address to the native binding", async () => {
   assert.equal(seen, "127.0.0.1:9");
 });
 
+test("capabilities forwards the negotiated capability DTO", async () => {
+  const dto = {
+    deviceId: "dev",
+    firmware: "1",
+    surfaces: [],
+    frame: true,
+    tile: false,
+    touch: true,
+    ota: false,
+    maxMessage: 4096,
+    maxChunk: 1024,
+    maxInFlight: 1,
+    maxFps: 30,
+    mirror: true,
+    mirrorModes: ["full-frame"],
+    mirrorMaxFps: 15,
+    localDisplayFps: 30,
+    mirrorFps: 15,
+    mirrorBandwidth: 1000,
+    configKeys: ["brightness"],
+    scene: true,
+    sceneMaxNodes: 32,
+    sceneMaxDepth: 4,
+    bootId: 0,
+    runId: 0,
+  };
+  const mdc = new MyDeviceCanvas({ capabilities: async () => dto });
+  assert.deepEqual(await mdc.capabilities(), dto);
+  const missing = new MyDeviceCanvas({});
+  await assert.rejects(missing.capabilities(), /原生 SDK/);
+});
+
 test("connectSerial trims the path and defaults to 115200", async () => {
   const seen = [];
   const mdc = new MyDeviceCanvas({

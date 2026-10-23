@@ -17,6 +17,29 @@ export interface DeviceInfo {
   firmware: string;
   surfaces: SurfaceInfo[];
 }
+/** APP-R03: negotiated capabilities for the active session. */
+export interface CapabilitiesInfo extends DeviceInfo {
+  frame: boolean;
+  tile: boolean;
+  touch: boolean;
+  ota: boolean;
+  maxMessage: number;
+  maxChunk: number;
+  maxInFlight: number;
+  maxFps: number;
+  mirror: boolean;
+  mirrorModes: string[];
+  mirrorMaxFps: number;
+  localDisplayFps: number;
+  mirrorFps: number;
+  mirrorBandwidth: number;
+  configKeys: string[];
+  scene: boolean;
+  sceneMaxNodes: number;
+  sceneMaxDepth: number;
+  bootId: number;
+  runId: number;
+}
 export interface TileRequest {
   x: number;
   y: number;
@@ -112,6 +135,7 @@ export declare class MyDeviceCanvas {
   /** N340: connect over WebSocket (`ws://host:port`). */
   connectWebSocket(url: string): Promise<void>;
   devices(): Promise<Device[]>;
+  capabilities(): Promise<CapabilitiesInfo>;
   /** N349: emit a simulator metric; returns the queue length. */
   emitMetric(name: string, value: number, unit?: string | null): Promise<number>;
   /** N349: drain diagnostics (metrics, boot info, telemetry). */

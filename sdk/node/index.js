@@ -107,6 +107,14 @@ export class MyDeviceCanvas {
       (d) => new Device(this._native, d),
     );
   }
+  /** APP-R03: negotiated capabilities (mirror/config/scene) for the active session. */
+  async capabilities() {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.capabilities !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.capabilities();
+  }
   /** N349: emit a metric on the simulator device's diagnostics channel. */
   async emitMetric(name, value, unit) {
     if (this._disposed) throw new Error("manager is disposed");

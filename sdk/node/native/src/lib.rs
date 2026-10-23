@@ -31,6 +31,48 @@ pub struct DeviceInfo {
 }
 
 #[napi(object)]
+pub struct CapabilitiesInfo {
+    #[napi(js_name = "deviceId")]
+    pub device_id: String,
+    pub firmware: String,
+    pub surfaces: Vec<SurfaceInfo>,
+    pub frame: bool,
+    pub tile: bool,
+    pub touch: bool,
+    pub ota: bool,
+    #[napi(js_name = "maxMessage")]
+    pub max_message: u32,
+    #[napi(js_name = "maxChunk")]
+    pub max_chunk: u32,
+    #[napi(js_name = "maxInFlight")]
+    pub max_in_flight: u16,
+    #[napi(js_name = "maxFps")]
+    pub max_fps: u16,
+    pub mirror: bool,
+    #[napi(js_name = "mirrorModes")]
+    pub mirror_modes: Vec<String>,
+    #[napi(js_name = "mirrorMaxFps")]
+    pub mirror_max_fps: u16,
+    #[napi(js_name = "localDisplayFps")]
+    pub local_display_fps: u16,
+    #[napi(js_name = "mirrorFps")]
+    pub mirror_fps: u16,
+    #[napi(js_name = "mirrorBandwidth")]
+    pub mirror_bandwidth: f64,
+    #[napi(js_name = "configKeys")]
+    pub config_keys: Vec<String>,
+    pub scene: bool,
+    #[napi(js_name = "sceneMaxNodes")]
+    pub scene_max_nodes: u32,
+    #[napi(js_name = "sceneMaxDepth")]
+    pub scene_max_depth: u32,
+    #[napi(js_name = "bootId")]
+    pub boot_id: f64,
+    #[napi(js_name = "runId")]
+    pub run_id: f64,
+}
+
+#[napi(object)]
 pub struct TileRequest {
     pub x: u16,
     pub y: u16,
@@ -1207,6 +1249,67 @@ impl NativeManager {
             missing: report.missing() as i64,
             bytes_sent: report.bytes_sent as i64,
             consistent: report.consistent,
+        })
+    }
+
+    /// APP-R03: the negotiated device capabilities, including mirror/config/scene.
+    #[napi(js_name = "capabilities")]
+    pub fn capabilities(&self) -> Result<CapabilitiesInfo> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        let sim = state
+            .sim
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("no active session"))?;
+        let device = sim
+            .session
+            .device
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("device is not ready"))?;
+        let caps = &device.capabilities;
+        let surfaces = caps
+            .surfaces
+            .iter()
+            .map(|surface| SurfaceInfo {
+                id: surface.id.clone(),
+                width: surface.width,
+                height: surface.height,
+                pixel_format: surface.pixel_format.to_string(),
+                implemented: surface.pixel_format.is_implemented(),
+                stride: surface.stride,
+                rotation: surface.rotation,
+            })
+            .collect();
+        let mirror_modes = caps.mirror.mode.clone();
+        Ok(CapabilitiesInfo {
+            device_id: caps.device_id.clone(),
+            firmware: caps.firmware.clone(),
+            surfaces,
+            frame: caps.frame,
+            tile: caps.tile,
+            touch: caps.touch,
+            ota: caps.ota,
+            max_message: caps.max_message,
+            max_chunk: caps.max_chunk,
+            max_in_flight: u16::from(caps.max_in_flight),
+            max_fps: caps.max_fps,
+            mirror: !mirror_modes.is_empty() && caps.mirror_fps > 0,
+            mirror_modes,
+            mirror_max_fps: caps.mirror.max_fps,
+            local_display_fps: caps.local_display_fps,
+            mirror_fps: caps.mirror_fps,
+            mirror_bandwidth: caps.mirror_bandwidth as f64,
+            config_keys: caps.config.keys.clone(),
+            scene: !caps.scene.is_disabled(),
+            scene_max_nodes: caps.scene.max_nodes,
+            scene_max_depth: caps.scene.max_depth,
+            boot_id: caps.boot_id as f64,
+            run_id: caps.run_id as f64,
         })
     }
 
