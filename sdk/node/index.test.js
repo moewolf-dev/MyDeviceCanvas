@@ -84,6 +84,13 @@ test("connectTcp forwards the address to the native binding", async () => {
   assert.equal(seen, "127.0.0.1:9");
 });
 
+test("serialPorts forwards endpoint hints", async () => {
+  const ports = [{ path: "/dev/tty.usbserial-1", manufacturer: "FTDI" }];
+  const mdc = new MyDeviceCanvas({ serialPorts: async () => ports });
+  assert.deepEqual(await mdc.serialPorts(), ports);
+  await assert.rejects(new MyDeviceCanvas({}).serialPorts(), /原生 SDK/);
+});
+
 test("capabilities forwards the negotiated capability DTO", async () => {
   const dto = {
     deviceId: "dev",

@@ -17,6 +17,13 @@ export interface DeviceInfo {
   firmware: string;
   surfaces: SurfaceInfo[];
 }
+/** APP-R03: one serial endpoint hint. */
+export interface SerialPortInfo {
+  path: string;
+  manufacturer?: string;
+  product?: string;
+  serialNumber?: string;
+}
 /** APP-R03: negotiated capabilities for the active session. */
 export interface CapabilitiesInfo extends DeviceInfo {
   boardId: string;
@@ -138,6 +145,7 @@ export declare class MyDeviceCanvas {
   connectWebSocket(url: string): Promise<void>;
   devices(): Promise<Device[]>;
   capabilities(): Promise<CapabilitiesInfo>;
+  serialPorts(): Promise<SerialPortInfo[]>;
   /** N349: emit a simulator metric; returns the queue length. */
   emitMetric(name: string, value: number, unit?: string | null): Promise<number>;
   /** N349: drain diagnostics (metrics, boot info, telemetry). */

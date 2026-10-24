@@ -77,6 +77,15 @@ pub struct CapabilitiesInfo {
 }
 
 #[napi(object)]
+pub struct SerialPortDto {
+    pub path: String,
+    pub manufacturer: Option<String>,
+    pub product: Option<String>,
+    #[napi(js_name = "serialNumber")]
+    pub serial_number: Option<String>,
+}
+
+#[napi(object)]
 pub struct TileRequest {
     pub x: u16,
     pub y: u16,
@@ -1254,6 +1263,23 @@ impl NativeManager {
             bytes_sent: report.bytes_sent as i64,
             consistent: report.consistent,
         })
+    }
+
+    /// APP-R03: enumerate host serial ports. A port is only an endpoint hint;
+    /// identity is confirmed by the subsequent HELLO.
+    #[napi(js_name = "serialPorts")]
+    pub fn serial_ports(&self) -> Result<Vec<SerialPortDto>> {
+        let ports = mdc_transport::available_serial_ports()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(ports
+            .into_iter()
+            .map(|port| SerialPortDto {
+                path: port.path,
+                manufacturer: port.manufacturer,
+                product: port.product,
+                serial_number: port.serial_number,
+            })
+            .collect())
     }
 
     /// APP-R03: the negotiated device capabilities, including mirror/config/scene.

@@ -2,6 +2,19 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.103] — serial port enumeration (APP-R03)
+
+### Added
+
+- `mdc-transport::available_serial_ports()` returns path/manufacturer/product/
+  serial-number hints.
+- Node `serialPorts()` and the app Devices page scan button + datalist.
+
+### Notes
+
+- Enumeration is a hint only; the device identity is still confirmed by HELLO.
+- No hardware hot-plug test yet.
+
 ## [0.1.102] — serial DTR/RTS reset option (APP-R03)
 
 ### Added

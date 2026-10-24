@@ -210,6 +210,40 @@ impl Transport for TcpTransport {
     }
 }
 
+/// One serial port discovered by the host. This is an endpoint hint only; the
+/// device identity is still confirmed by HELLO.
+#[cfg(feature = "serial")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SerialPortDescriptor {
+    pub path: String,
+    pub manufacturer: Option<String>,
+    pub product: Option<String>,
+    pub serial_number: Option<String>,
+}
+
+#[cfg(feature = "serial")]
+pub fn available_serial_ports() -> Result<Vec<SerialPortDescriptor>, TransportError> {
+    use serialport::SerialPortType;
+    let ports = serialport::available_ports().map_err(|e| TransportError::Io(e.to_string()))?;
+    Ok(ports
+        .into_iter()
+        .map(|port| match port.port_type {
+            SerialPortType::UsbPort(info) => SerialPortDescriptor {
+                path: port.port_name,
+                manufacturer: info.manufacturer,
+                product: info.product,
+                serial_number: info.serial_number,
+            },
+            _ => SerialPortDescriptor {
+                path: port.port_name,
+                manufacturer: None,
+                product: None,
+                serial_number: None,
+            },
+        })
+        .collect())
+}
+
 #[cfg(feature = "serial")]
 pub struct SerialTransport {
     port: Box<dyn serialport::SerialPort>,

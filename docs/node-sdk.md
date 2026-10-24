@@ -43,6 +43,7 @@ is idempotent and cancels listeners; every method rejects after dispose.
 | `connectTcp(address)` | remote peer instead of the in-process simulator |
 | `connectSerial(path, baud = 115200, resetOnOpen = false)` | N430/APP-R03: open a named serial port and perform HELLO; path is trimmed, baud 0 uses the native default, `resetOnOpen` applies DTR/RTS before HELLO |
 | `capabilities()` | APP-R03: negotiated frame/tile/touch/OTA limits, mirror modes/FPS, config keys and scene limits |
+| `serialPorts()` | APP-R03: enumerate host serial endpoint hints; identity still comes from HELLO |
 | `connectWebSocket(url)` | N340: WebSocket peer (`ws://host:port`) |
 | `emitMetric(name, value, unit)` / `takeDiagnostics()` / `diagnosticCount()` | N349: simulator diagnostics channel (metrics, boot info, telemetry) |
 

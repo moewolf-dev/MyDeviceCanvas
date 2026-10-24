@@ -110,6 +110,14 @@ export class MyDeviceCanvas {
       (d) => new Device(this._native, d),
     );
   }
+  /** APP-R03: enumerate host serial ports; identity still comes from HELLO. */
+  async serialPorts() {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.serialPorts !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.serialPorts();
+  }
   /** APP-R03: negotiated capabilities (mirror/config/scene) for the active session. */
   async capabilities() {
     if (this._disposed) throw new Error("manager is disposed");
