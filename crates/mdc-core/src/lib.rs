@@ -223,9 +223,9 @@ pub struct SessionConfig {
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            connect_timeout_ms: 5_000,
-            ack_timeout_ms: 3_000,
-            heartbeat_ms: 1_000,
+            connect_timeout_ms: 20_000,
+            ack_timeout_ms: 5_000,
+            heartbeat_ms: 5_000,
             reconnect: true,
         }
     }
@@ -1602,6 +1602,8 @@ pub struct Session<T: Transport> {
     max_message: usize,
     max_chunk: usize,
     pending_requests: std::collections::BTreeSet<u32>,
+    /// SIM-R04: per-request virtual deadline (milliseconds).
+    request_deadlines: BTreeMap<u32, u64>,
     /// Control messages only. Frame and Tile stay on the surface queue.
     pending_control: std::collections::BTreeSet<u32>,
     frame_sent_at: BTreeMap<u32, std::time::Instant>,
@@ -1694,6 +1696,7 @@ impl<T: Transport> Session<T> {
             max_message: MAX_FRAME_BYTES,
             max_chunk: mdc_protocol::DEFAULT_MAX_CHUNK,
             pending_requests: std::collections::BTreeSet::new(),
+            request_deadlines: BTreeMap::new(),
             pending_control: std::collections::BTreeSet::new(),
             frame_sent_at: BTreeMap::new(),
             frame_received_at: BTreeMap::new(),
@@ -1823,6 +1826,7 @@ impl<T: Transport> Session<T> {
         self.held_frames.clear();
         self.request_floor = self.next_request_id;
         self.pending_requests.clear();
+        self.request_deadlines.clear();
         self.pending_control.clear();
         self.pending_frames.clear();
         self.finished_acks.clear();
@@ -2076,8 +2080,10 @@ impl<T: Transport> Session<T> {
             }
             ConnectionState::Ready => {
                 if self.config.ack_timeout_ms > 0
-                    && !self.pending_requests.is_empty()
-                    && virtual_ms.saturating_sub(self.last_send_ms) >= self.config.ack_timeout_ms
+                    && self
+                        .request_deadlines
+                        .values()
+                        .any(|deadline| *deadline <= virtual_ms)
                 {
                     let _ = self.mark_transport_failure();
                     return Err(CoreError::AckTimeout);
@@ -2248,6 +2254,7 @@ impl<T: Transport> Session<T> {
     }
     fn release_request(&mut self, id: u32) {
         self.pending_requests.remove(&id);
+        self.request_deadlines.remove(&id);
         self.pending_control.remove(&id);
     }
     fn release_held(&mut self, surface_id: &str, frame_id: u64) {
@@ -2476,6 +2483,12 @@ impl<T: Transport> Session<T> {
             self.frame_sent_at
                 .insert(request_id, std::time::Instant::now());
             self.pending_requests.insert(request_id);
+            if self.config.ack_timeout_ms > 0 {
+                self.request_deadlines.insert(
+                    request_id,
+                    self.virtual_ms.saturating_add(self.config.ack_timeout_ms),
+                );
+            }
             self.frame_tx = Some(FrameTransaction {
                 surface_id: surface_id.to_string(),
                 frame_id,
@@ -3362,6 +3375,10 @@ impl<T: Transport> Session<T> {
         let write_result = self.write_bytes(&bytes);
         if matches!(write_result, Ok(()) | Err(CoreError::ShortWrite)) && track {
             self.pending_requests.insert(id);
+            if self.config.ack_timeout_ms > 0 {
+                self.request_deadlines
+                    .insert(id, self.virtual_ms.saturating_add(self.config.ack_timeout_ms));
+            }
             self.last_send_ms = self.virtual_ms;
         }
         write_result
@@ -4220,6 +4237,34 @@ mod tests {
             height: 2,
             bytes: bytes.to_vec(),
         }
+    }
+
+    #[test]
+    fn per_request_deadline_is_not_extended_by_a_new_request() {
+        // SIM-R04/SIM-T06.
+        let (host_link, mut device_link) = MemoryLink::pair();
+        let mut session = Session::with_config(
+            host_link,
+            SessionConfig {
+                connect_timeout_ms: 100,
+                ack_timeout_ms: 100,
+                heartbeat_ms: 0,
+                reconnect: true,
+            },
+        );
+        session.connect().unwrap();
+        handshake(&mut session, &mut device_link);
+        session.tick(0).unwrap();
+        session.send_frame(frame(&[1; 8])).unwrap();
+        session.tick(90).unwrap();
+        session
+            .write_packet(MessageType::Config, encode_control(&mdc_protocol::ConfigCommand {
+                action: "get".into(),
+                key: "brightness".into(),
+                value: None,
+            }).unwrap())
+            .unwrap();
+        assert_eq!(session.tick(100), Err(CoreError::AckTimeout));
     }
 
     #[test]
