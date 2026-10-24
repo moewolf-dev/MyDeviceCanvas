@@ -126,9 +126,15 @@ class SessionDispatcher {
   FrameStore store_;
   bool transport_busy_ = false;
   std::uint64_t current_frame_id_ = 0;
+  struct ChunkRange {
+    std::uint32_t start = 0;
+    std::uint32_t end = 0;
+  };
   std::vector<std::uint8_t> chunk_staging_;
+  std::vector<ChunkRange> chunk_ranges_;
   std::uint32_t chunk_expected_ = 0;
-  std::uint32_t chunk_filled_ = 0;
+  bool add_chunk_range(std::uint32_t offset, std::uint32_t length);
+  bool chunk_complete() const;
   bool render_frozen_ = false;
   /// Form B: true after a host MirrorCtrl start; cleared by stop.
   bool mirror_active_ = false;

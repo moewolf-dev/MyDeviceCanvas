@@ -137,6 +137,89 @@ int main() {
   assert(display.pixels()[0] == 0xAB);
   assert(replies.back().type == mdc::MessageType::Ack);
 
+  // SIM-A01: mirror/package types must pass the byte parser, not only dispatch.
+  for (const auto type : {mdc::MessageType::MirrorFrame, mdc::MessageType::MirrorCtrl,
+                          mdc::MessageType::Package}) {
+    auto wire = mdc::encode_packet(type, 44, {1, 2, 3});
+    mdc::Parser type_parser;
+    mdc::Packet typed;
+    assert(type_parser.feed(wire.data(), wire.size(), typed) == mdc::ParseResult::Packet);
+    assert(typed.type == type);
+    assert(typed.request_id == 44);
+  }
+
+  // SIM-A02: chunk coverage, duplicates, overlap and declared length.
+  const auto begin_payload = [](const std::string& surface, std::uint64_t frame_id,
+                                std::uint32_t total) {
+    std::vector<std::uint8_t> payload{1, static_cast<std::uint8_t>(surface.size())};
+    payload.insert(payload.end(), surface.begin(), surface.end());
+    for (int i = 0; i < 8; ++i) payload.push_back(static_cast<std::uint8_t>(frame_id >> (8 * i)));
+    payload.push_back(2);
+    payload.push_back(0);
+    payload.push_back(2);
+    payload.push_back(0);
+    for (int i = 0; i < 4; ++i) payload.push_back(static_cast<std::uint8_t>(total >> (8 * i)));
+    return payload;
+  };
+  const auto chunk_payload = [](std::uint64_t frame_id, std::uint32_t offset,
+                                const std::vector<std::uint8_t>& data) {
+    std::vector<std::uint8_t> payload{2};
+    for (int i = 0; i < 8; ++i) payload.push_back(static_cast<std::uint8_t>(frame_id >> (8 * i)));
+    for (int i = 0; i < 4; ++i) payload.push_back(static_cast<std::uint8_t>(offset >> (8 * i)));
+    payload.insert(payload.end(), data.begin(), data.end());
+    return payload;
+  };
+  const auto commit_payload = [](std::uint64_t frame_id) {
+    std::vector<std::uint8_t> payload{3};
+    for (int i = 0; i < 8; ++i) payload.push_back(static_cast<std::uint8_t>(frame_id >> (8 * i)));
+    return payload;
+  };
+  auto send = [&](mdc::MessageType type, std::uint32_t request,
+                  const std::vector<std::uint8_t>& payload) {
+    mdc::Packet packet;
+    packet.type = type;
+    packet.request_id = request;
+    packet.payload = payload;
+    return dispatcher.handle(packet);
+  };
+
+  // A duplicate identical chunk is idempotent but cannot cover the missing half.
+  replies.clear();
+  assert(send(mdc::MessageType::Frame, 30, begin_payload("main", 30, 8)));
+  assert(send(mdc::MessageType::Frame, 31, chunk_payload(30, 0, {0x11, 0x11, 0x11, 0x11})));
+  assert(send(mdc::MessageType::Frame, 32, chunk_payload(30, 0, {0x11, 0x11, 0x11, 0x11})));
+  assert(send(mdc::MessageType::Frame, 33, commit_payload(30)));
+  assert(replies.back().type == mdc::MessageType::Error);
+  assert(display.pixels()[0] == 0xAB);
+
+  // Out-of-order but complete chunks commit exactly once.
+  replies.clear();
+  assert(send(mdc::MessageType::Frame, 40, begin_payload("main", 40, 8)));
+  assert(send(mdc::MessageType::Frame, 41, chunk_payload(40, 4, {0x22, 0x22, 0x22, 0x22})));
+  assert(send(mdc::MessageType::Frame, 42, chunk_payload(40, 0, {0x33, 0x33, 0x33, 0x33})));
+  assert(send(mdc::MessageType::Frame, 43, commit_payload(40)));
+  assert(replies.back().type == mdc::MessageType::Ack);
+  assert(display.pixels()[0] == 0x33 && display.pixels()[4] == 0x22);
+
+  // Partial overlap is rejected instead of silently zero-filling.
+  replies.clear();
+  assert(send(mdc::MessageType::Frame, 50, begin_payload("main", 50, 8)));
+  assert(send(mdc::MessageType::Frame, 51, chunk_payload(50, 0, {1, 1, 1, 1})));
+  assert(send(mdc::MessageType::Frame, 52, chunk_payload(50, 2, {2, 2, 2, 2})));
+  assert(replies.back().type == mdc::MessageType::Error);
+  assert(display.pixels()[0] == 0x33);
+
+  // Declared length must match geometry before allocation.
+  replies.clear();
+  assert(send(mdc::MessageType::Frame, 60, begin_payload("main", 60, 999999)));
+  assert(replies.back().type == mdc::MessageType::Error);
+
+  // Unknown surface is rejected.
+  replies.clear();
+  assert(send(mdc::MessageType::Frame, 70, begin_payload("other", 70, 8)));
+  assert(replies.back().type == mdc::MessageType::Error);
+
+  // Dual-transport lock
   // Dual-transport lock
   dispatcher.set_transport_busy(true);
   assert(!dispatcher.handle(frame_pkt));

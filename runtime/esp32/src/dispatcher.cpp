@@ -1,4 +1,5 @@
 #include "mdc_runtime.hpp"
+#include <algorithm>
 #include <cstring>
 
 namespace mdc {
@@ -46,8 +47,8 @@ void SessionDispatcher::sync_geometry() {
     store_ = FrameStore(display_.width(), display_.height());
   }
   chunk_staging_.clear();
+  chunk_ranges_.clear();
   chunk_expected_ = 0;
-  chunk_filled_ = 0;
   current_frame_id_ = 0;
 }
 
@@ -124,6 +125,10 @@ bool SessionDispatcher::handle_frame(const Packet& packet) {
       send_error(packet.request_id, "E_DIM", "geometry mismatch");
       return true;
     }
+    if (pix_len != static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 2u) {
+      send_error(packet.request_id, "E_DIM", "legacy frame length mismatch");
+      return true;
+    }
     current_frame_id_ = u64le(p);
     if (!store_.stage(pixels, pix_len)) return false;
     if (!store_.commit()) return false;
@@ -138,6 +143,12 @@ bool SessionDispatcher::handle_frame(const Packet& packet) {
     const auto id_len = packet.payload[1];
     const std::size_t need = 2 + id_len + 8 + 2 + 2 + 4;
     if (packet.payload.size() < need) return false;
+    const std::string surface(packet.payload.begin() + 2,
+                              packet.payload.begin() + 2 + id_len);
+    if (surface != "main") {
+      send_error(packet.request_id, "E_SURFACE", "unknown surface");
+      return true;
+    }
     const auto* p = packet.payload.data() + 2 + id_len;
     const auto w = u16le(p + 8);
     const auto h = u16le(p + 10);
@@ -145,10 +156,16 @@ bool SessionDispatcher::handle_frame(const Packet& packet) {
       send_error(packet.request_id, "E_DIM", "geometry mismatch");
       return true;
     }
+    const auto declared = u32le(p + 12);
+    const std::size_t expected = static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 2u;
+    if (expected == 0 || expected > kMaxPayload || declared != expected) {
+      send_error(packet.request_id, "E_CHUNK", "invalid frame length");
+      return true;
+    }
     current_frame_id_ = u64le(p);
-    chunk_expected_ = u32le(p + 12);
-    chunk_filled_ = 0;
-    chunk_staging_.assign(chunk_expected_, 0);
+    chunk_expected_ = static_cast<std::uint32_t>(expected);
+    chunk_ranges_.clear();
+    chunk_staging_.assign(expected, 0);
     return true;
   }
   if (phase == 2) {
@@ -163,9 +180,22 @@ bool SessionDispatcher::handle_frame(const Packet& packet) {
     const auto* data = p + 12;
     const auto data_len = packet.payload.size() - (1 + 8 + 4);
     if (frame_id != current_frame_id_) return false;
-    if (static_cast<std::size_t>(offset) + data_len > chunk_staging_.size()) return false;
+    if (data_len == 0 ||
+        static_cast<std::size_t>(offset) + data_len > chunk_staging_.size()) {
+      send_error(packet.request_id, "E_CHUNK", "chunk outside frame");
+      chunk_expected_ = 0;
+      chunk_ranges_.clear();
+      chunk_staging_.clear();
+      return true;
+    }
+    if (!add_chunk_range(offset, static_cast<std::uint32_t>(data_len))) {
+      send_error(packet.request_id, "E_CHUNK", "overlapping chunk");
+      chunk_expected_ = 0;
+      chunk_ranges_.clear();
+      chunk_staging_.clear();
+      return true;
+    }
     std::memcpy(chunk_staging_.data() + offset, data, data_len);
-    chunk_filled_ += static_cast<std::uint32_t>(data_len);
     return true;
   }
   if (phase == 3) {
@@ -176,7 +206,7 @@ bool SessionDispatcher::handle_frame(const Packet& packet) {
     if (packet.payload.size() < 1 + 8) return false;
     const auto frame_id = u64le(packet.payload.data() + 1);
     if (frame_id != current_frame_id_) return false;
-    if (chunk_filled_ != chunk_expected_) {
+    if (!chunk_complete()) {
       send_error(packet.request_id, "E_INCOMPLETE", "incomplete frame");
       return true;
     }
@@ -188,11 +218,40 @@ bool SessionDispatcher::handle_frame(const Packet& packet) {
     if (!display_.present()) return false;
     send_ack(packet.request_id, current_frame_id_, true);
     chunk_staging_.clear();
+    chunk_ranges_.clear();
     chunk_expected_ = 0;
-    chunk_filled_ = 0;
     return true;
   }
   return false;
+}
+
+bool SessionDispatcher::add_chunk_range(std::uint32_t offset, std::uint32_t length) {
+  if (length == 0) return true;
+  const ChunkRange incoming{offset, offset + length};
+  for (const auto& range : chunk_ranges_) {
+    if (incoming.end <= range.start || incoming.start >= range.end) continue;
+    // Identical duplicate is idempotent; any partial overlap is ambiguous.
+    if (incoming.start == range.start && incoming.end == range.end) return true;
+    return false;
+  }
+  chunk_ranges_.push_back(incoming);
+  std::sort(chunk_ranges_.begin(), chunk_ranges_.end(),
+            [](const ChunkRange& a, const ChunkRange& b) { return a.start < b.start; });
+  std::vector<ChunkRange> merged;
+  for (const auto& range : chunk_ranges_) {
+    if (!merged.empty() && range.start <= merged.back().end) {
+      merged.back().end = std::max(merged.back().end, range.end);
+    } else {
+      merged.push_back(range);
+    }
+  }
+  chunk_ranges_.swap(merged);
+  return true;
+}
+
+bool SessionDispatcher::chunk_complete() const {
+  return chunk_expected_ > 0 && chunk_ranges_.size() == 1 &&
+         chunk_ranges_[0].start == 0 && chunk_ranges_[0].end == chunk_expected_;
 }
 
 bool SessionDispatcher::handle_tile(const Packet& packet) {

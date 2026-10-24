@@ -1,0 +1,164 @@
+# Communication Contract (SIM-R01)
+
+Status: **baseline drafted; R02 is implemented, R03–R10 remain open.**
+This is the host/simulator reliability contract from Core TODO §108. It is not a
+hardware claim and does not replace `Core:D05/G03/H06`.
+
+## 1. API success semantics
+
+| Stage | Meaning |
+|---|---|
+| queued | bytes are in a local bounded queue; nothing is on the wire yet |
+| written | the transport accepted the complete packet (not necessarily a peer ACK) |
+| received | the peer returned `ACK(received=true)` |
+| displayed / ready | the peer returned `ACK(displayed=true)` or `package_ready` |
+
+- A returned request ID means "accepted locally", not "displayed".
+- Every job completes exactly once. Errors carry the device/session generation
+  and request ID.
+- A zero pending count has a typed empty state; it is never confused with a
+  request that has not been sent.
+- Public Rust/Node/C APIs use these four stages; current gaps are tracked in
+  SIM-R03/R04/R05.
+
+## 2. Time
+
+- Defaults are frozen as: connect/HELLO 20 s, per-request ACK 5 s, heartbeat 5 s,
+  reconnect backoff 1/2/4/8/16/30 s with injectable jitter.
+- Each request stores its own send time and deadline. A newer request must not
+  extend an older request's deadline.
+- Production uses a monotonic clock; tests inject a virtual clock. The same state
+  machine consumes both.
+- Reconnect exhaustion reaches a terminal error, never an indefinite wait.
+
+Current gap: SIM-R04 (per-request deadline and Node tick owner).
+
+## 3. Send and backpressure
+
+- Per Surface: at most one in-flight full frame and one pending full frame.
+- Control queue: at most 32 in-flight requests.
+- All packets for a session use one serial writer. A short write resumes only the
+  unaccepted tail; other packets cannot interleave inside a packet.
+- Frame/Tile/control/package transactions save phase, packet offset, remaining
+  chunks and deadline. Unknown written-prefix errors close the old link and
+  rebuild the transaction rather than guessing an offset.
+- A full queue is a retryable condition with an explicit error; it cannot be
+  reported as success.
+
+Current gap: SIM-R03 (transaction resume beyond the current packet).
+
+## 4. Lengths and budgets
+
+- Control payload: 4 KiB maximum; checked before CBOR decode.
+- Frame: 1 MiB maximum.
+- Chunk: `min(local, negotiated max_chunk)` minus this packet's metadata overhead.
+- Runtime package: 16 MiB wire maximum (aligned with the C++ runtime); the app's
+  local file cap must not be mistaken for a larger wire allowance.
+- All offset/length arithmetic is checked. BEGIN lengths must match the declared
+  surface geometry before allocation.
+
+Current gap: SIM-R07 (receive budgets and all growing containers).
+
+## 5. Receive fairness
+
+- Target per poll: at most 64 KiB or 32 packets, whichever comes first.
+- RX buffering is bounded; a burst cannot force one poll to consume an unbounded
+  stream before parsing or ticking.
+- Oversized control messages are rejected by length before allocation/decoding.
+
+Current gap: SIM-R07 (Rust BurstTransport currently returns 4 MiB in one poll).
+
+## 6. Integrity
+
+- Frame/Package BEGIN declares a length; it must match the legal object and local
+  cap before allocation.
+- Chunks track covered byte ranges. Identical duplicate chunks are idempotent;
+  partial overlaps are rejected.
+- COMMIT succeeds only when ranges cover the full expected length. A missing
+  chunk never displays zero-filled data.
+- Conflicting/oversized chunks clear the transaction and require a new BEGIN.
+
+Implemented in R02: C++ parser types `0x12/0x31/0x32`, BEGIN geometry/length,
+range coverage, duplicate/overlap behavior, unknown surface rejection.
+
+## 7. Lifecycle
+
+- `cancel`, `close`, `dispose` are idempotent.
+- After cancel, no business frame or old result is delivered.
+- On disconnect/replace, clear transactions, mirror base/inbox, input gestures,
+  unfinished requests, config cache and old capabilities as specified.
+- Events carry a session generation; an old generation cannot update the new
+  session.
+
+Current gap: SIM-R04/R06.
+
+## 8. SDK execution
+
+- Node must not block the JS event loop while waiting for native I/O.
+- Under a silent TCP peer, a 10 ms timer must not be delayed more than 100 ms;
+  cancellation must settle within 500 ms.
+- N-API exposes the same capability DTO and typed errors as Rust; a failed
+  connection must not auto-create a FakeDevice.
+- The app must use only the public SDK.
+
+Current gap: SIM-R05 (the 12.2 s synchronous block is still reproduced).
+
+## 9. Capabilities and identity
+
+- Missing/zero/duplicate/contradictory device or surface fields have explicit
+  rejection rules.
+- Effective limits are the intersection of both peers.
+- The host never infers a capability from a board name.
+- Unknown optional features return `Unsupported`, never a false success.
+- `device_id` and `board_id` are distinct: a serial pathname or IP address is not
+  an identity.
+
+## 10. Network trust boundary
+
+- Simulator services listen on loopback by default.
+- The FNV checksum detects transport corruption, not authentication.
+- Exposing a non-loopback listener requires a separate pairing/auth threat model;
+  this contract makes no network-security claim.
+
+## 11. Multi-device
+
+- Each Session has its own budget; the Manager also has a total device/budget cap.
+- A slow device A never blocks device B; cancelling A does not close B.
+- The current Node Manager owns one active Session; multi-device aggregation is
+  the caller's responsibility until a shared scheduler is implemented.
+
+## 12. Message support matrix
+
+| Type | Parser | Dispatcher | Notes |
+|---|---|---|---|
+| HELLO/CAPABILITIES/PING/PONG/ACK/ERROR | yes | yes | baseline |
+| FRAME/TILE | yes | yes | range-covered chunk assembly (R02) |
+| MIRRORFRAME 0x12 | yes (R02) | device→host, no device handler | mirror emit path tested separately |
+| MIRRORCTRL 0x31 | yes (R02) | yes, capability-gated | |
+| PACKAGE 0x32 | yes (R02) | yes | package handler remains |
+| INPUT/OTA | yes | limited/stateful | |
+| TELEMETRY/METRIC/CRASH/BOOTINFO | yes | payload decoding incomplete | reserved |
+
+## 13. Test IDs
+
+| ID | Expected behavior | Status / test |
+|---|---|---|
+| SIM-T01 | 0x12/0x31/0x32 survive Parser | implemented `runtime/esp32/tests/parser_test.cpp` |
+| SIM-T02 | duplicate half frame cannot display | implemented same test |
+| SIM-T03 | oversized BEGIN rejected before allocation | implemented same test |
+| SIM-T04 | short write resumes BEGIN+CHUNK+COMMIT | open (R03) |
+| SIM-T05 | large package upload stays within window | open (R03) |
+| SIM-T06 | per-request deadline | open (R04) |
+| SIM-T07 | Node silent peer does not block timer | open (R05) |
+| SIM-T08 | receive burst budget | open (R07) |
+| SIM-T09 | control decode >4 KiB rejected before decode | open (R07) |
+| SIM-T10 | peer close converges state | open (R04) |
+| SIM-T11 | disconnect drops old mirror frames | open (R04) |
+| SIM-T12 | unsolicited Capabilities cannot set Ready | open (R04) |
+| SIM-T13 | 100000 ACKs do not grow history | open (R07) |
+| SIM-T14 | close/cancel/limits across transports | open (R06) |
+| SIM-T15 | multi-device isolation | open (R08) |
+| SIM-T16 | Rust/C++ differential byte boundaries | partial shared vectors; open (R02/R08) |
+
+This contract is additive to `docs/protocol.md`; a protocol change must update
+both files and the shared vectors.

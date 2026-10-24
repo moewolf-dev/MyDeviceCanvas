@@ -18,8 +18,11 @@ bool known_type(std::uint8_t type) {
     case 2:
     case 0x10:
     case 0x11:
+    case 0x12:
     case 0x20:
     case 0x30:
+    case 0x31:
+    case 0x32:
     case 0x40:
     case 0x41:
     case 0x50:
