@@ -2,6 +2,19 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.102] — serial DTR/RTS reset option (APP-R03)
+
+### Added
+
+- Node `connectSerial(path, baud, resetOnOpen)` exposes the existing
+  `SerialConfig.reset_on_open` DTR/RTS sequence; default stays off.
+- App serial target accepts `resetOnOpen` and the Devices page exposes a
+  checkbox.
+
+### Notes
+
+- Host/API only; DTR/RTS timing and hot-plug still need a real board.
+
 ## [0.1.101] — serial PTY integration test (APP-R03)
 
 ### Added
