@@ -2,6 +2,21 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.101] — serial PTY integration test (APP-R03)
+
+### Added
+
+- `SerialTransport` falls back to baud 0 when macOS rejects the IOSSIOSPEED
+  ioctl on a pseudo-terminal (`ENOTTY`), while real serial ports keep the
+  requested baud.
+- `sdk/node/pty_bridge.py` bridges a PTY to `mdc-sim-peer`; native smoke now
+  connects through the public `connectSerial` API and completes HELLO.
+
+### Notes
+
+- Host PTY only. DTR/RTS, hot-plug, real USB serial hardware and board identity
+  remain `physical: pending`.
+
 ## [0.1.100] — negotiated capabilities on the Node SDK (APP-R03)
 
 ### Added

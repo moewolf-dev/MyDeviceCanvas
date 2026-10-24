@@ -251,6 +251,16 @@ impl SerialTransport {
         let mut port = serialport::new(path, config.baud)
             .timeout(config.timeout)
             .open()
+            .or_else(|error| {
+                // macOS pseudo-terminals reject the IOSSIOSPEED ioctl with ENOTTY.
+                // Retry with baud 0 (no speed ioctl) so PTY integration tests and
+                // diagnostic loops still work; real serial ports never hit this.
+                if config.baud != 0 && error.to_string().contains("Not a typewriter") {
+                    serialport::new(path, 0).timeout(config.timeout).open()
+                } else {
+                    Err(error)
+                }
+            })
             .map_err(|e| TransportError::Io(e.to_string()))?;
         if config.reset_on_open {
             port.write_request_to_send(false)
