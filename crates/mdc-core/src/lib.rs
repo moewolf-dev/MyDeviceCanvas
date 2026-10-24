@@ -1570,6 +1570,29 @@ pub struct DisplayTiming {
     pub e2e_us: u128,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FrameTxStage {
+    Begin,
+    Chunks,
+    Commit,
+    Done,
+}
+
+/// SIM-R03: a frame transaction that can resume after a short write at any
+/// BEGIN/CHUNK/COMMIT boundary. The pixels are retained until the transaction
+/// finishes; the request id stays in the normal pending set.
+struct FrameTransaction {
+    surface_id: String,
+    frame_id: u64,
+    width: u16,
+    height: u16,
+    pixels: Vec<u8>,
+    max_chunk: usize,
+    request_id: u32,
+    stage: FrameTxStage,
+    next_offset: usize,
+}
+
 pub struct Session<T: Transport> {
     transport: T,
     pub state: ConnectionState,
@@ -1593,6 +1616,8 @@ pub struct Session<T: Transport> {
     finished_acks: std::collections::BTreeSet<u32>,
     /// Tail of a packet that a short write did not accept.
     unsent: Option<Vec<u8>>,
+    /// SIM-R03: resumable frame transaction.
+    frame_tx: Option<FrameTransaction>,
     copy_limit: usize,
     copy_budget: HostCopyBudget,
     /// (surface id, frame id) -> pixel bytes held in the copy budget.
@@ -1678,6 +1703,7 @@ impl<T: Transport> Session<T> {
             request_floor: 0,
             finished_acks: std::collections::BTreeSet::new(),
             unsent: None,
+            frame_tx: None,
             copy_limit: MAX_FRAME_BYTES * 3,
             copy_budget: HostCopyBudget::new(MAX_FRAME_BYTES * 3),
             held_frames: BTreeMap::new(),
@@ -2248,10 +2274,86 @@ impl<T: Transport> Session<T> {
         &mut self.transport
     }
     pub fn resume_write(&mut self) -> Result<(), CoreError> {
-        let Some(rest) = self.unsent.take() else {
+        if let Some(rest) = self.unsent.take() {
+            self.write_bytes(&rest)?;
+        }
+        if self.frame_tx.is_some() {
+            self.drive_frame_tx()?;
+        }
+        Ok(())
+    }
+
+    fn drive_frame_tx(&mut self) -> Result<(), CoreError> {
+        let Some(mut tx) = self.frame_tx.take() else {
             return Ok(());
         };
-        self.write_bytes(&rest)
+        loop {
+            match tx.stage {
+                FrameTxStage::Begin => {
+                    let begin = encode_frame_begin(&tx.surface_id, tx.frame_id, tx.width, tx.height, tx.pixels.len() as u32)
+                        .map_err(|e| CoreError::Protocol(e.to_string()))?;
+                    // Mark the stage before writing: a short write leaves the
+                    // BEGIN tail in `unsent`, so resume must continue with chunks.
+                    tx.stage = FrameTxStage::Chunks;
+                    tx.next_offset = 0;
+                    match self.write_packet_with_id(MessageType::Frame, begin, tx.request_id, true) {
+                        Ok(()) => {}
+                        Err(CoreError::ShortWrite) => {
+                            self.frame_tx = Some(tx);
+                            return Err(CoreError::ShortWrite);
+                        }
+                        Err(error) => {
+                            self.pending_requests.remove(&tx.request_id);
+                            self.pending_frames.remove(&tx.request_id);
+                            return Err(error);
+                        }
+                    }
+                }
+                FrameTxStage::Chunks => {
+                    if tx.next_offset >= tx.pixels.len() {
+                        tx.stage = FrameTxStage::Commit;
+                        continue;
+                    }
+                    let end = (tx.next_offset + tx.max_chunk).min(tx.pixels.len());
+                    let chunk = encode_frame_chunk(
+                        tx.frame_id,
+                        tx.next_offset as u32,
+                        &tx.pixels[tx.next_offset..end],
+                    );
+                    // Advance before writing so a short chunk is not re-sent.
+                    tx.next_offset = end;
+                    match self.write_packet_with_id(MessageType::Frame, chunk, tx.request_id, false) {
+                        Ok(()) => {}
+                        Err(CoreError::ShortWrite) => {
+                            self.frame_tx = Some(tx);
+                            return Err(CoreError::ShortWrite);
+                        }
+                        Err(error) => {
+                            self.pending_requests.remove(&tx.request_id);
+                            self.pending_frames.remove(&tx.request_id);
+                            return Err(error);
+                        }
+                    }
+                }
+                FrameTxStage::Commit => {
+                    let commit = encode_frame_commit(tx.frame_id);
+                    tx.stage = FrameTxStage::Done;
+                    match self.write_packet_with_id(MessageType::Frame, commit, tx.request_id, false) {
+                        Ok(()) => return Ok(()),
+                        Err(CoreError::ShortWrite) => {
+                            self.frame_tx = Some(tx);
+                            return Err(CoreError::ShortWrite);
+                        }
+                        Err(error) => {
+                            self.pending_requests.remove(&tx.request_id);
+                            self.pending_frames.remove(&tx.request_id);
+                            return Err(error);
+                        }
+                    }
+                }
+                FrameTxStage::Done => return Ok(()),
+            }
+        }
     }
     pub fn send_frame(&mut self, frame: Frame) -> Result<u32, CoreError> {
         self.stats.frames_sent = self.stats.frames_sent.saturating_add(1);
@@ -2369,34 +2471,32 @@ impl<T: Transport> Session<T> {
         let write_result = if legacy.len() <= max_chunk {
             self.write_packet_with_id(MessageType::Frame, legacy, request_id, true)
         } else {
-            let begin =
-                encode_frame_begin(surface_id, frame_id, width, height, pixels.len() as u32)
-                    .map_err(|e| CoreError::Protocol(e.to_string()))?;
-            let mut result = self.write_packet_with_id(MessageType::Frame, begin, request_id, true);
-            if result.is_ok() {
-                let mut offset = 0u32;
-                while (offset as usize) < pixels.len() {
-                    let end = ((offset as usize) + max_chunk).min(pixels.len());
-                    let chunk = encode_frame_chunk(frame_id, offset, &pixels[offset as usize..end]);
-                    result =
-                        self.write_packet_with_id(MessageType::Frame, chunk, request_id, false);
-                    if result.is_err() {
-                        break;
-                    }
-                    offset = end as u32;
-                }
-            }
-            if result.is_ok() {
-                let commit = encode_frame_commit(frame_id);
-                result = self.write_packet_with_id(MessageType::Frame, commit, request_id, false);
-            }
-            result
-        };
-        if matches!(write_result, Ok(()) | Err(CoreError::ShortWrite)) {
             self.pending_frames
                 .insert(request_id, (surface_id.to_string(), frame_id));
             self.frame_sent_at
                 .insert(request_id, std::time::Instant::now());
+            self.pending_requests.insert(request_id);
+            self.frame_tx = Some(FrameTransaction {
+                surface_id: surface_id.to_string(),
+                frame_id,
+                width,
+                height,
+                pixels: pixels.to_vec(),
+                max_chunk,
+                request_id,
+                stage: FrameTxStage::Begin,
+                next_offset: 0,
+            });
+            self.drive_frame_tx()
+        };
+        if matches!(write_result, Ok(()) | Err(CoreError::ShortWrite)) {
+            // Legacy path: chunked path already recorded the transaction.
+            self.pending_frames
+                .entry(request_id)
+                .or_insert_with(|| (surface_id.to_string(), frame_id));
+            self.frame_sent_at
+                .entry(request_id)
+                .or_insert_with(std::time::Instant::now);
         }
         write_result?;
         Ok(request_id)
@@ -2860,18 +2960,49 @@ impl<T: Transport> Session<T> {
         if bytes.is_empty() {
             return Err(CoreError::Protocol("empty package".into()));
         }
+        const MAX_PACKAGE_BYTES: usize = 16 * 1024 * 1024;
+        if bytes.len() > MAX_PACKAGE_BYTES {
+            return Err(CoreError::TooLarge);
+        }
         let total = u32::try_from(bytes.len()).map_err(|_| CoreError::TooLarge)?;
         let checksum = package_checksum(bytes);
-        let request_id =
-            self.write_packet(MessageType::Package, encode_package_begin(total, checksum))?;
+        let request_id = self.alloc_request_id()?;
+        // SIM-R03: BEGIN/chunks are not individual control requests. Only the
+        // final COMMIT occupies the bounded control window; the device ACKs the
+        // package after commit, not every chunk.
+        self.write_packet_with_id(
+            MessageType::Package,
+            encode_package_begin(total, checksum),
+            request_id,
+            false,
+        )?;
+        let chunk_size = self
+            .negotiated_max_chunk()
+            .min(self.max_message.saturating_sub(32))
+            .max(1);
         let mut offset: u32 = 0;
-        for chunk in bytes.chunks(mdc_protocol::DEFAULT_MAX_CHUNK) {
-            self.write_packet(MessageType::Package, encode_package_chunk(offset, chunk))?;
+        for chunk in bytes.chunks(chunk_size) {
+            self.write_packet_with_id(
+                MessageType::Package,
+                encode_package_chunk(offset, chunk),
+                request_id,
+                false,
+            )?;
             offset = offset
                 .checked_add(chunk.len() as u32)
                 .ok_or(CoreError::TooLarge)?;
         }
-        self.write_packet(MessageType::Package, encode_package_commit())?;
+        if self.pending_control.len() >= MAX_CONTROL_IN_FLIGHT {
+            return Err(CoreError::ControlQueueFull);
+        }
+        self.write_packet_with_id(
+            MessageType::Package,
+            encode_package_commit(),
+            request_id,
+            true,
+        )?;
+        self.pending_control.insert(request_id);
+        self.last_send_ms = self.virtual_ms;
         self.packages_sent = self.packages_sent.saturating_add(1);
         Ok(request_id)
     }
@@ -3867,6 +3998,35 @@ mod tests {
     }
 
     #[test]
+    fn large_package_upload_stays_in_the_control_window() {
+        // SIM-R03/SIM-A04: 600 KiB would exceed the 32-entry control window if
+        // BEGIN/chunks were tracked individually.
+        struct Sink {
+            writes: usize,
+        }
+        impl mdc_transport::Transport for Sink {
+            fn write(&mut self, bytes: &[u8]) -> Result<(), mdc_transport::TransportError> {
+                self.writes += 1;
+                assert!(!bytes.is_empty());
+                Ok(())
+            }
+            fn read(&mut self) -> Result<Option<Vec<u8>>, mdc_transport::TransportError> {
+                Ok(None)
+            }
+            fn close(&mut self) {}
+        }
+        let mut capability = caps();
+        capability.renderer = Some(mdc_protocol::RendererCapability::sprite_only(512));
+        let mut session = Session::new(Sink { writes: 0 });
+        session.state = ConnectionState::Ready;
+        session.device = Some(Device::new(capability));
+        let bytes = vec![0x5a; 600 * 1024];
+        session.install_package(&bytes).unwrap();
+        assert_eq!(session.pending_control.len(), 1);
+        assert!(session.transport_mut().writes > 1);
+    }
+
+    #[test]
     fn install_package_requires_a_renderer_capability() {
         let (host, mut device) = MemoryLink::pair();
         let mut session = Session::new(host);
@@ -4148,6 +4308,59 @@ mod tests {
         assert_eq!(packet.kind, MessageType::Frame);
         assert!(packet.payload.windows(8).any(|window| window == [2; 8]));
         assert!(!packet.payload.windows(8).any(|window| window == [3; 8]));
+    }
+
+    #[test]
+    fn chunked_frame_resumes_begin_chunks_and_commit() {
+        // SIM-R03: a short BEGIN must resume the whole transaction, not just the
+        // current packet.
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(mdc_transport::ShortWriteLink::new(host));
+        session.connect().unwrap();
+        let hello = Packet::decode(&device.read().unwrap().unwrap(), 4096).unwrap().0;
+        let mut capabilities = caps();
+        capabilities.max_chunk = 4;
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: hello.request_id,
+                    payload: encode_control(&capabilities).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        session.transport_mut().arm(5);
+        assert_eq!(session.send_frame(frame(&[7; 8])), Err(CoreError::ShortWrite));
+        session.resume_write().unwrap();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = device.read().unwrap() {
+            bytes.extend(chunk);
+        }
+        let mut phases = Vec::new();
+        let mut offsets = Vec::new();
+        let mut remaining = &bytes[..];
+        while !remaining.is_empty() {
+            let (packet, consumed) = Packet::decode(remaining, 4096).unwrap();
+            assert_eq!(packet.kind, MessageType::Frame);
+            phases.push(packet.payload[0]);
+            if packet.payload[0] == 2 {
+                offsets.push(u32::from_le_bytes([
+                    packet.payload[9],
+                    packet.payload[10],
+                    packet.payload[11],
+                    packet.payload[12],
+                ]));
+            }
+            remaining = &remaining[consumed..];
+        }
+        assert_eq!(phases, vec![1, 2, 2, 3]);
+        assert_eq!(offsets, vec![0, 4]);
+        assert_eq!(session.pending_request_count(), 1);
     }
 
     #[test]
