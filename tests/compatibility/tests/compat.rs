@@ -16,6 +16,8 @@ fn major_version_mismatch_is_rejected_at_decode() {
         request_id: 1,
         payload: encode_control(&Capabilities {
             device_id: "x".into(),
+            board_id: String::new(),
+            protocol_version: 0,
             firmware: "0".into(),
             surfaces: vec![Surface {
                 id: "main".into(),

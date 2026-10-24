@@ -403,6 +403,15 @@ impl RendererCapability {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Capabilities {
     pub device_id: String,
+    /// Board profile identity reported by the device, when known. Additive and
+    /// omitted when empty so pre-R03 peers remain byte-identical.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub board_id: String,
+    /// Protocol major version implemented by the device. The packet version is
+    /// negotiated separately; this field is the device's advertised build
+    /// target. Additive and omitted when zero.
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub protocol_version: u16,
     pub firmware: String,
     pub surfaces: Vec<Surface>,
     pub frame: bool,
@@ -3013,6 +3022,8 @@ mod tests {
     fn negotiate_mirror_intersects_mode_fps_and_format() {
         let mut caps = Capabilities {
             device_id: "gpu".into(),
+            board_id: String::new(),
+            protocol_version: 0,
             firmware: "1.0.0".into(),
             surfaces: vec![Surface {
                 id: "main".into(),
@@ -3067,6 +3078,8 @@ mod tests {
     fn renderer_capability_is_optional_and_round_trips() {
         let mut caps = Capabilities {
             device_id: "sim-linux-virt".into(),
+            board_id: String::new(),
+            protocol_version: 0,
             firmware: "0.1.0-linux".into(),
             surfaces: vec![Surface {
                 id: "main".into(),
@@ -3115,6 +3128,8 @@ mod tests {
         // An empty config capability is omitted entirely (map count unchanged).
         let mut caps = Capabilities {
             device_id: "cfg".into(),
+            board_id: String::new(),
+            protocol_version: 0,
             firmware: "1".into(),
             surfaces: vec![Surface {
                 id: "main".into(),
@@ -3326,6 +3341,8 @@ mod tests {
     fn scene_capability_and_command_round_trip() {
         let mut caps = Capabilities {
             device_id: "dev1".into(),
+            board_id: String::new(),
+            protocol_version: 0,
             firmware: "1".into(),
             surfaces: vec![Surface {
                 id: "main".into(),
@@ -4389,6 +4406,8 @@ mod tests {
     fn config_command_vector() -> Capabilities {
         Capabilities {
             device_id: "vector".into(),
+            board_id: String::new(),
+            protocol_version: 0,
             firmware: "1".into(),
             surfaces: vec![Surface {
                 id: "main".into(),

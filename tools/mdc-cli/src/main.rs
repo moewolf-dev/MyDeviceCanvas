@@ -6656,6 +6656,8 @@ mod tests {
             request_id: 1,
             payload: encode_control(&Capabilities {
                 device_id: "pty".into(),
+                board_id: String::new(),
+                protocol_version: 0,
                 firmware: "1.0.0".into(),
                 surfaces: vec![Surface {
                     id: "main".into(),
@@ -6736,6 +6738,8 @@ mod tests {
                                     if packet.kind == MessageType::Hello {
                                         let caps = Capabilities {
                                             device_id: "ws-silent".into(),
+                                            board_id: String::new(),
+                                            protocol_version: 0,
                                             firmware: "1".into(),
                                             surfaces: vec![Surface {
                                                 id: "main".into(),

@@ -3973,6 +3973,8 @@ impl FakeDevice {
         }
         Capabilities {
             device_id: self.profile.device_id.clone(),
+            board_id: self.profile.device_id.clone(),
+            protocol_version: 1,
             firmware: self.firmware.clone(),
             surfaces,
             frame: true,

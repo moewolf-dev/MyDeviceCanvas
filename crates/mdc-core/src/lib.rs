@@ -3598,6 +3598,8 @@ mod tests {
     fn caps() -> Capabilities {
         Capabilities {
             device_id: "hb".into(),
+            board_id: String::new(),
+            protocol_version: 0,
             firmware: "1".into(),
             surfaces: vec![s()],
             frame: true,
@@ -3736,6 +3738,8 @@ mod tests {
     fn surface_geometry_writeback_updates_caps_and_queue() {
         let caps = Capabilities {
             device_id: "x".into(),
+            board_id: String::new(),
+            protocol_version: 0,
             firmware: "0".into(),
             surfaces: vec![s()],
             frame: true,
@@ -3767,6 +3771,8 @@ mod tests {
     fn tile_bounds_checked() {
         let c = Capabilities {
             device_id: "x".into(),
+            board_id: String::new(),
+            protocol_version: 0,
             firmware: "0".into(),
             surfaces: vec![s()],
             frame: true,
@@ -4404,6 +4410,8 @@ mod tests {
     fn manager_merges_stable_identity_and_bounds_events() {
         let caps = Capabilities {
             device_id: "device".into(),
+            board_id: String::new(),
+            protocol_version: 0,
             firmware: "1".into(),
             surfaces: vec![
                 s(),
@@ -4552,6 +4560,8 @@ mod tests {
         let mut manager = DeviceManager::new();
         let mut caps = Capabilities {
             device_id: "".into(),
+            board_id: String::new(),
+            protocol_version: 0,
             firmware: "1".into(),
             surfaces: vec![s()],
             frame: true,
@@ -4614,6 +4624,8 @@ mod tests {
                     request_id: hello.request_id,
                     payload: encode_control(&Capabilities {
                         device_id: "sw".into(),
+                        board_id: String::new(),
+                        protocol_version: 0,
                         firmware: "1".into(),
                         surfaces: vec![s()],
                         frame: true,
@@ -4657,6 +4669,8 @@ mod tests {
                     request_id: hello2.request_id,
                     payload: encode_control(&Capabilities {
                         device_id: "sw".into(),
+                        board_id: String::new(),
+                        protocol_version: 0,
                         firmware: "1".into(),
                         surfaces: vec![s()],
                         frame: true,
@@ -4761,6 +4775,8 @@ mod tests {
         assert_eq!(hello.kind, MessageType::Hello);
         let caps = Capabilities {
             device_id: "sim-1".into(),
+            board_id: String::new(),
+            protocol_version: 0,
             firmware: "simulator".into(),
             surfaces: vec![s()],
             frame: true,
@@ -4862,6 +4878,8 @@ mod tests {
         let (hello, _) = Packet::decode(&hello_bytes, 4096).unwrap();
         let caps = Capabilities {
             device_id: "sim-tick".into(),
+            board_id: String::new(),
+            protocol_version: 0,
             firmware: "simulator".into(),
             surfaces: vec![s()],
             frame: true,
@@ -4950,6 +4968,8 @@ mod tests {
                     request_id: hello_pkt.request_id,
                     payload: encode_control(&Capabilities {
                         device_id: "re".into(),
+                        board_id: String::new(),
+                        protocol_version: 0,
                         firmware: "1".into(),
                         surfaces: vec![s()],
                         frame: true,
@@ -5004,6 +5024,8 @@ mod tests {
                     request_id: hello2_pkt.request_id,
                     payload: encode_control(&Capabilities {
                         device_id: "re".into(),
+                        board_id: String::new(),
+                        protocol_version: 0,
                         firmware: "1".into(),
                         surfaces: vec![s()],
                         frame: true,
@@ -5074,6 +5096,8 @@ mod tests {
         let (hello, _) = Packet::decode(&hello_bytes, 4096).unwrap();
         let caps = Capabilities {
             device_id: "sim-dirty".into(),
+            board_id: String::new(),
+            protocol_version: 0,
             firmware: "simulator".into(),
             surfaces: vec![Surface {
                 id: "main".into(),
@@ -5195,6 +5219,8 @@ mod tests {
         let (hello, _) = Packet::decode(&hello_bytes, 4096).unwrap();
         let caps = Capabilities {
             device_id: "sim-plan".into(),
+            board_id: String::new(),
+            protocol_version: 0,
             firmware: "simulator".into(),
             surfaces: vec![Surface {
                 id: "main".into(),
@@ -5386,6 +5412,8 @@ mod tests {
         let (hello, _) = Packet::decode(&hello_bytes, 4096).unwrap();
         let caps = Capabilities {
             device_id: "sim-tile".into(),
+            board_id: String::new(),
+            protocol_version: 0,
             firmware: "simulator".into(),
             surfaces: vec![s()],
             frame: true,
@@ -5594,6 +5622,8 @@ mod tests {
             let (hello, _) = Packet::decode(&hello_bytes, 4096).unwrap();
             let caps = Capabilities {
                 device_id: "loop".into(),
+                board_id: String::new(),
+                protocol_version: 0,
                 firmware: "simulator".into(),
                 surfaces: vec![s()],
                 frame: true,
@@ -5642,6 +5672,8 @@ mod tests {
         let (hello, _) = Packet::decode(&hello_bytes, 4096).unwrap();
         let caps = Capabilities {
             device_id: "sim-chunk".into(),
+            board_id: String::new(),
+            protocol_version: 0,
             firmware: "simulator".into(),
             surfaces: vec![Surface {
                 id: "main".into(),

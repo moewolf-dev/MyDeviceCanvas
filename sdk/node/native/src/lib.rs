@@ -34,6 +34,10 @@ pub struct DeviceInfo {
 pub struct CapabilitiesInfo {
     #[napi(js_name = "deviceId")]
     pub device_id: String,
+    #[napi(js_name = "boardId")]
+    pub board_id: String,
+    #[napi(js_name = "protocolVersion")]
+    pub protocol_version: u16,
     pub firmware: String,
     pub surfaces: Vec<SurfaceInfo>,
     pub frame: bool,
@@ -1288,6 +1292,8 @@ impl NativeManager {
         let mirror_modes = caps.mirror.mode.clone();
         Ok(CapabilitiesInfo {
             device_id: caps.device_id.clone(),
+            board_id: caps.board_id.clone(),
+            protocol_version: caps.protocol_version,
             firmware: caps.firmware.clone(),
             surfaces,
             frame: caps.frame,

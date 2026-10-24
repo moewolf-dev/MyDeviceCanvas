@@ -19,6 +19,8 @@ export interface DeviceInfo {
 }
 /** APP-R03: negotiated capabilities for the active session. */
 export interface CapabilitiesInfo extends DeviceInfo {
+  boardId: string;
+  protocolVersion: number;
   frame: boolean;
   tile: boolean;
   touch: boolean;

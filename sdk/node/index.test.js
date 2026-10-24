@@ -87,6 +87,8 @@ test("connectTcp forwards the address to the native binding", async () => {
 test("capabilities forwards the negotiated capability DTO", async () => {
   const dto = {
     deviceId: "dev",
+    boardId: "board-a",
+    protocolVersion: 1,
     firmware: "1",
     surfaces: [],
     frame: true,
