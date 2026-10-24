@@ -121,17 +121,18 @@ test("capabilities forwards the negotiated capability DTO", async () => {
 test("connectSerial trims the path and defaults to 115200", async () => {
   const seen = [];
   const mdc = new MyDeviceCanvas({
-    connectSerial(path, baud) {
-      seen.push([path, baud]);
+    connectSerial(path, baud, reset) {
+      seen.push([path, baud, reset]);
       return Promise.resolve();
     },
   });
   await mdc.connectSerial("  /dev/tty.usbserial-1  ");
-  await mdc.connectSerial("/dev/tty.usbserial-2", 921600);
+  await mdc.connectSerial("/dev/tty.usbserial-2", 921600, true);
   assert.deepEqual(seen, [
-    ["/dev/tty.usbserial-1", 115200],
-    ["/dev/tty.usbserial-2", 921600],
+    ["/dev/tty.usbserial-1", 115200, false],
+    ["/dev/tty.usbserial-2", 921600, true],
   ]);
+  await assert.rejects(mdc.connectSerial("/dev/x", 115200, "yes"), /boolean/);
   await assert.rejects(mdc.connectSerial(""), /non-empty/);
   await assert.rejects(mdc.connectSerial("   "), /non-empty/);
   await assert.rejects(mdc.connectSerial(3), /non-empty/);

@@ -1321,7 +1321,7 @@ impl NativeManager {
 
     /// N430: replace the session with a serial connection (`/dev/...`).
     #[napi(js_name = "connectSerial")]
-    pub fn connect_serial(&self, path: String, baud: u32) -> Result<()> {
+    pub fn connect_serial(&self, path: String, baud: u32, reset_on_open: Option<bool>) -> Result<()> {
         let mut state = self
             .state
             .lock()
@@ -1329,10 +1329,13 @@ impl NativeManager {
         if state.disposed {
             return Err(Error::from_reason("manager is disposed"));
         }
-        let serial = mdc_transport::SerialTransport::open(
+        let serial = mdc_transport::SerialTransport::open_with_config(
             path.trim(),
-            if baud == 0 { 115_200 } else { baud },
-            Duration::from_millis(400),
+            mdc_transport::SerialConfig {
+                baud: if baud == 0 { 115_200 } else { baud },
+                timeout: Duration::from_millis(400),
+                reset_on_open: reset_on_open.unwrap_or(false),
+            },
         )
         .map_err(|e| Error::from_reason(e.to_string()))?;
         connect_transport(&mut state, Box::new(serial), path.trim(), "serial")

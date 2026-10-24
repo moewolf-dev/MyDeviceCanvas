@@ -80,7 +80,7 @@ export class MyDeviceCanvas {
    * N430/APP-R03: open a named serial port and perform HELLO.
    * `baud` is a positive integer or 0 for the native default (115200).
    */
-  async connectSerial(path, baud = 115200) {
+  async connectSerial(path, baud = 115200, resetOnOpen = false) {
     if (this._disposed) throw new Error("manager is disposed");
     if (typeof path !== "string" || path.trim().length === 0) {
       throw new TypeError("serial path must be a non-empty string");
@@ -91,7 +91,10 @@ export class MyDeviceCanvas {
     if (typeof this._native.connectSerial !== "function") {
       throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
     }
-    return this._native.connectSerial(path.trim(), baud);
+    if (typeof resetOnOpen !== "boolean") {
+      throw new TypeError("resetOnOpen must be a boolean");
+    }
+    return this._native.connectSerial(path.trim(), baud, resetOnOpen);
   }
   /** N340: connect over WebSocket (`ws://host:port`). */
   async connectWebSocket(url) {

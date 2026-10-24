@@ -133,7 +133,7 @@ export declare class MyDeviceCanvas {
   currentFrameId(): Promise<number>;
   connectTcp(address: string): Promise<void>;
   /** N430/APP-R03: open a named serial port and perform HELLO. */
-  connectSerial(path: string, baud?: number): Promise<void>;
+  connectSerial(path: string, baud?: number, resetOnOpen?: boolean): Promise<void>;
   /** N340: connect over WebSocket (`ws://host:port`). */
   connectWebSocket(url: string): Promise<void>;
   devices(): Promise<Device[]>;

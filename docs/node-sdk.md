@@ -41,7 +41,7 @@ is idempotent and cancels listeners; every method rejects after dispose.
 | `installPackage(bytes)` | N234: upload `.mdcpkg` bytes (`Uint8Array`); resolves `true` when ready |
 | `packageReady()` | N238: whether the last accepted package is render-ready |
 | `connectTcp(address)` | remote peer instead of the in-process simulator |
-| `connectSerial(path, baud = 115200)` | N430/APP-R03: open a named serial port and perform HELLO; path is trimmed, baud 0 uses the native default |
+| `connectSerial(path, baud = 115200, resetOnOpen = false)` | N430/APP-R03: open a named serial port and perform HELLO; path is trimmed, baud 0 uses the native default, `resetOnOpen` applies DTR/RTS before HELLO |
 | `capabilities()` | APP-R03: negotiated frame/tile/touch/OTA limits, mirror modes/FPS, config keys and scene limits |
 | `connectWebSocket(url)` | N340: WebSocket peer (`ws://host:port`) |
 | `emitMetric(name, value, unit)` / `takeDiagnostics()` / `diagnosticCount()` | N349: simulator diagnostics channel (metrics, boot info, telemetry) |
