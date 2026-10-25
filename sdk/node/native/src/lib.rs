@@ -1347,7 +1347,12 @@ impl NativeManager {
 
     /// N430: replace the session with a serial connection (`/dev/...`).
     #[napi(js_name = "connectSerial")]
-    pub fn connect_serial(&self, path: String, baud: u32, reset_on_open: Option<bool>) -> Result<()> {
+    pub fn connect_serial(
+        &self,
+        path: String,
+        baud: u32,
+        reset_on_open: Option<bool>,
+    ) -> Result<()> {
         let mut state = self
             .state
             .lock()
