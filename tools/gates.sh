@@ -111,6 +111,23 @@ node_smoke() {
   rm -f sdk/node/mdc-node-native.node
 }
 
+board_validation() {
+  local board
+  for board in \
+    boards/sim/esp32-jc3248w535-sim/board.yaml \
+    boards/sim/linux-virt/board.yaml \
+    boards/linux/pi4-hdmi/board.yaml \
+    boards/linux/waveshare-eink/board.yaml \
+    boards/esp32/test-valid/board.yaml \
+    boards/arduino/uno-r4-ili9341/board.yaml \
+    boards/arduino/uno-tft/board.yaml \
+    boards/rockchip/rk3399-nanopc-t4/board.yaml \
+    boards/nvidia/jetson-orin-nano/board.yaml \
+    boards/esp32/esp32s3-box-3/board.yaml; do
+    python3 tools/validate_board.py "$board"
+  done
+}
+
 fault_matrix() {
   "$CARGO_BIN" test -p mdc-sim-peer --test faults
 }
@@ -120,12 +137,18 @@ cxx_peer() {
 }
 
 long_soak() {
-  MDC_LONG_SOAK=1 \
+  MDC_SOAK_REPORT="$RUN_DIR/long-soak.json" MDC_LONG_SOAK=1 \
     MDC_SOAK_WARMUP_SECS="${MDC_SOAK_WARMUP_SECS:-300}" \
     MDC_SOAK_SECS="${MDC_SOAK_SECS:-3600}" \
     MDC_SOAK_IDLE_SECS="${MDC_SOAK_IDLE_SECS:-60}" \
     MDC_RSS_BUDGET_KIB="${MDC_RSS_BUDGET_KIB:-10240}" \
     "$CARGO_BIN" test -p mdc-memory-tests --test long_soak -- --nocapture
+}
+
+validate_long_report() {
+  python3 tools/validate-long-report.py "$MDC_LONG_REPORT" \
+    --require-commit "$(git rev-parse HEAD)" --allow-ancestor \
+    --output "$RUN_DIR/long-soak.json"
 }
 
 clean_tree() {
@@ -172,10 +195,10 @@ fi
 
 if [[ "$MODE" == "quick" || "$MODE" == "all" || "$MODE" == "rc" ]]; then
   run_step fmt "$CARGO_BIN" fmt --all -- --check
-  run_step clippy "$CARGO_BIN" clippy -p mdc-core -p mdc-protocol -p mdc-transport \
-    -p mdc-simulator -p mdc-sim-peer -p mdc-memory-tests --all-targets -- -D warnings
-  run_step rust-tests "$CARGO_BIN" test -p mdc-core -p mdc-protocol -p mdc-transport \
-    -p mdc-simulator -p mdc-memory-tests
+  run_step clippy "$CARGO_BIN" clippy --workspace --all-targets -- -D warnings
+  run_step rust-tests "$CARGO_BIN" test --workspace
+  run_step python-tools python3 -m unittest discover -s tools -p 'test_*.py'
+  run_step board-validation board_validation
   run_step cpp-tests cpp_tests
   run_step node-sdk node_smoke
 fi
@@ -186,8 +209,14 @@ if [[ "$MODE" == "cross" || "$MODE" == "all" || "$MODE" == "rc" ]]; then
   run_step native-smoke node_smoke
 fi
 
-if [[ "$MODE" == "long" || "$MODE" == "all" || "$MODE" == "rc" ]]; then
+if [[ "$MODE" == "long" || "$MODE" == "all" ]]; then
   run_step long-soak long_soak
+elif [[ "$MODE" == "rc" ]]; then
+  if [[ -n "${MDC_LONG_REPORT:-}" ]]; then
+    run_step long-soak validate_long_report
+  else
+    run_step long-soak long_soak
+  fi
 fi
 
 if [[ "$MODE" == "rc" ]]; then
@@ -237,6 +266,17 @@ for line in pathlib.Path(steps_tsv).read_text().splitlines():
 
 peak = {}
 skipped = []
+long = None
+long_path = run_dir / "long-soak.json"
+if long_path.exists():
+    long = json.loads(long_path.read_text())
+    growth = long.get("rss_growth_kib")
+    if growth is not None:
+        peak["rss_growth_kib"] = growth
+    end = (long.get("samples") or {}).get("end") or {}
+    if end.get("transactions") is not None:
+        peak["transactions"] = end["transactions"]
+
 for step in steps:
     text = (run_dir / step["log"]).read_text(errors="replace") if (run_dir / step["log"]).exists() else ""
     match = re.search(r"RSS growth (\d+) KiB", text)
@@ -278,6 +318,7 @@ report = {
         "rss_growth_kib": 10 * 1024,
     },
     "peak": peak or None,
+    "long": long,
     "skipped_steps": skipped,
     "steps": steps,
 }

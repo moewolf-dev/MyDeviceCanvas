@@ -1,0 +1,63 @@
+name: simulator-gates
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly long soak (Sunday 03:00 UTC).
+    - cron: "0 3 * * 0"
+
+jobs:
+  quick:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: quick gate
+        run: tools/gates.sh quick
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-quick
+          path: target/gates
+
+  cross:
+    needs: quick
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: cross-process gate
+        run: tools/gates.sh cross
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-cross
+          path: target/gates
+
+  long:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: long soak gate
+        run: tools/gates.sh long
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-long
+          path: target/gates
