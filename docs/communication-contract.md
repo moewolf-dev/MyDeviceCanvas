@@ -105,6 +105,9 @@ instead of resuming against an unknown written prefix.
 - Bounded containers (R07): Manager events 128 (move coalescing/critical
   eviction), diagnostics 64, finished-ACK window 4096, displayed timings 256,
   active pointers 16, config requests by the 32-slot control window.
+- `Session::container_counts()` reports every bounded container for soaks
+  (SIM-R09); the long-run gate samples RSS/threads/FDs and requires owned
+  allocations to return to baseline after idle.
 
 Implemented in R04/R06: disconnect/replace/switch clear transactions, mirror
 inbox and base, gestures, config cache and deadlines through one

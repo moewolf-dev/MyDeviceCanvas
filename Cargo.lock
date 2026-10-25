@@ -445,6 +445,7 @@ dependencies = [
  "mdc-protocol",
  "mdc-schedule",
  "mdc-simulator",
+ "mdc-transport",
 ]
 
 [[package]]

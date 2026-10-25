@@ -3094,3 +3094,85 @@ fn shared_surface_plan_converges_under_a_low_budget() {
     }
     panic!("the shared plan did not converge: {remaining:?}");
 }
+
+#[test]
+fn completed_transactions_keep_containers_bounded() {
+    use mdc_core::{
+        DeviceManager, Frame, Session, Tile, MAX_DIAGNOSTICS, MAX_DISPLAY_TIMINGS,
+        MAX_FINISHED_ACKS, MAX_MANAGER_EVENTS,
+    };
+    use std::sync::{Arc, Mutex};
+
+    let iters: u64 = std::env::var("MDC_TRANSACTION_SOAK_ITERS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(2_000);
+    let profile = BoardProfile {
+        width: 2,
+        height: 2,
+        ..BoardProfile::default()
+    };
+    let (host, mut device) = FakeDevice::pair(profile);
+    let manager = Arc::new(Mutex::new(DeviceManager::new()));
+    let mut session = Session::new(host);
+    session.set_manager(manager);
+    session.connect().unwrap();
+    device.poll().unwrap();
+    assert_eq!(session.poll().unwrap(), ConnectionState::Ready);
+
+    for index in 0..iters {
+        session
+            .send_frame(Frame {
+                surface_id: "main".into(),
+                width: 2,
+                height: 2,
+                bytes: vec![(index & 0xff) as u8; 8],
+            })
+            .unwrap();
+        device.poll().unwrap();
+        session.poll().unwrap();
+        if index.is_multiple_of(50) {
+            session
+                .send_tile(Tile {
+                    surface_id: "main".into(),
+                    base_frame_id: index + 1,
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                    bytes: vec![0x11, 0x22],
+                })
+                .unwrap();
+            device.poll().unwrap();
+            session.poll().unwrap();
+        }
+        if index.is_multiple_of(100) {
+            let counts = session.container_counts();
+            assert_eq!(counts.rx_bytes, 0);
+            assert_eq!(counts.pending_requests, 0);
+            assert_eq!(counts.pending_control, 0);
+            assert_eq!(counts.pending_frames, 0);
+            assert_eq!(counts.held_frames, 0);
+            assert_eq!(counts.frame_transactions, 0);
+            assert!(counts.finished_acks <= MAX_FINISHED_ACKS);
+            assert!(counts.displayed_timings <= MAX_DISPLAY_TIMINGS);
+            assert!(counts.diagnostics <= MAX_DIAGNOSTICS);
+            assert!(counts.manager_events <= MAX_MANAGER_EVENTS);
+            assert_eq!(counts.devices, 1);
+        }
+    }
+
+    let counts = session.container_counts();
+    assert_eq!(counts.pending_requests, 0);
+    assert_eq!(counts.held_frames, 0);
+    let completed = (iters + iters / 50) as usize;
+    assert_eq!(counts.finished_acks, MAX_FINISHED_ACKS.min(completed));
+    assert_eq!(
+        counts.displayed_timings,
+        MAX_DISPLAY_TIMINGS.min(iters as usize)
+    );
+    assert_eq!(counts.active_pointers, 0);
+    assert_eq!(counts.mirror_inbox_frames, 0);
+    assert_eq!(counts.mirror_base_frames, 0);
+    assert_eq!(session.copy_outstanding(), 0);
+}

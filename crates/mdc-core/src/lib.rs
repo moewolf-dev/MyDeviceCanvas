@@ -774,6 +774,29 @@ pub struct SessionStats {
     pub tiles_missing: u64,
 }
 
+/// SIM-R09: bounded container occupancies. A soak samples this to prove that
+/// completed transactions do not grow history or input/mirror state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ContainerCounts {
+    pub rx_bytes: usize,
+    pub pending_requests: usize,
+    pub pending_control: usize,
+    pub pending_frames: usize,
+    pub request_deadlines: usize,
+    pub finished_acks: usize,
+    pub displayed_timings: usize,
+    pub held_frames: usize,
+    pub diagnostics: usize,
+    pub config_cache: usize,
+    pub pending_configs: usize,
+    pub active_pointers: usize,
+    pub mirror_inbox_frames: usize,
+    pub mirror_base_frames: usize,
+    pub frame_transactions: usize,
+    pub manager_events: usize,
+    pub devices: usize,
+}
+
 /// N547: the metric name a device uses to report applied partial-update tiles.
 pub const TILES_RECEIVED_METRIC: &str = "tiles_received";
 
@@ -1457,6 +1480,10 @@ impl DeviceManager {
     }
     pub fn drain_events(&mut self) -> impl Iterator<Item = ManagerEvent> + '_ {
         self.events.drain(..)
+    }
+    /// SIM-R09: queued event count for soak/container assertions.
+    pub fn event_count(&self) -> usize {
+        self.events.len()
     }
     /// Store the single active session endpoint for `device_id` (replaces any prior).
     /// Returns the previous endpoint if this is a switch.
@@ -2318,6 +2345,35 @@ impl<T: Transport> Session<T> {
     }
     pub fn displayed_timings(&self) -> &[DisplayTiming] {
         &self.displayed_timings
+    }
+    /// SIM-R09: take a cheap snapshot of every growing container. Locks the
+    /// manager only for the event/device counts.
+    pub fn container_counts(&self) -> ContainerCounts {
+        let (manager_events, devices) = self
+            .manager
+            .as_ref()
+            .and_then(|manager| manager.lock().ok())
+            .map(|manager| (manager.event_count(), manager.devices().count()))
+            .unwrap_or((0, 0));
+        ContainerCounts {
+            rx_bytes: self.rx.len(),
+            pending_requests: self.pending_requests.len(),
+            pending_control: self.pending_control.len(),
+            pending_frames: self.pending_frames.len(),
+            request_deadlines: self.request_deadlines.len(),
+            finished_acks: self.finished_acks.len(),
+            displayed_timings: self.displayed_timings.len(),
+            held_frames: self.held_frames.len(),
+            diagnostics: self.diagnostics.len(),
+            config_cache: self.config_cache.len(),
+            pending_configs: self.pending_configs.len(),
+            active_pointers: self.gestures.pointers.len(),
+            mirror_inbox_frames: usize::from(self.mirror_inbox.is_some()),
+            mirror_base_frames: usize::from(self.mirror_last.is_some()),
+            frame_transactions: usize::from(self.frame_tx.is_some()),
+            manager_events,
+            devices,
+        }
     }
     /// SIM-R07: remember a displayed ACK in a fixed-size window. An evicted id
     /// is harmless: its request and frame were already released, so a replay
@@ -4223,7 +4279,7 @@ mod tests {
             writes: 0,
             fail_at: 2,
         });
-        let error = session.install_package(&vec![0x33; 64]).unwrap_err();
+        let error = session.install_package(&[0x33; 64]).unwrap_err();
         assert!(matches!(error, CoreError::Transport(_)), "{error:?}");
         assert_eq!(session.packages_sent(), 0);
         assert_eq!(session.pending_request_count(), 0);
@@ -4235,7 +4291,7 @@ mod tests {
     fn package_short_write_abandons_the_link() {
         let mut session = ready_package_session(ShortAtLink::new(2));
         assert_eq!(
-            session.install_package(&vec![0x44; 64]),
+            session.install_package(&[0x44; 64]),
             Err(CoreError::ShortWrite)
         );
         assert!(session.unsent.is_none());
