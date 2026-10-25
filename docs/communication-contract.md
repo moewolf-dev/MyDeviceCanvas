@@ -189,7 +189,7 @@ does not fall back to a FakeDevice; the next call reports `no active connection`
 | SIM-T11 | disconnect drops old mirror frames | implemented `disconnect_drops_the_mirror_inbox_and_base` (R04) |
 | SIM-T12 | unsolicited Capabilities cannot set Ready | implemented `unsolicited_capabilities_do_not_make_a_session_ready`; Node events also stamp `generation` (R04) |
 | SIM-T13 | 100000 ACKs do not grow history | implemented `finished_ack_history_is_bounded` (R07) |
-| SIM-T14 | close/cancel/limits across transports | partial: memory/TCP/WS/serial close idempotence, post-close rejection, accepted-stream timeouts, WebSocket limit (R06); Serial PTY close injection and out-of-order ACK remain (R08) |
+| SIM-T14 | close/cancel/limits across transports | partial: memory/TCP/WS/serial close idempotence, post-close rejection, accepted-stream timeouts, WebSocket limit (R06); Serial PTY peer-exit and Node cancel covered (R08); C++ runtime close injection remains |
 | SIM-T15 | multi-device isolation | implemented `one_device_exiting_does_not_close_another` (R08, two processes) |
 | SIM-T16 | Rust/C++ differential byte boundaries | partial shared vectors; open (R02/R08) |
 
@@ -207,15 +207,19 @@ and byte-level outcomes:
 | corrupt ACK | `--corrupt-after N` | `Protocol` rejection, no display |
 | duplicate ACK | `--duplicate-after N` | one ACK, one timing sample |
 | split outbound packet | `--split-after N` | reassembled, one ACK |
+| split every write | `--split-all` | full frame still reassembles |
+| out-of-order ACKs | `--swap-next-acks` | both surfaces complete once |
+| mid-link capability change | `--recaps-after-ms N --recaps-fps F` | new value adopted, link stays Ready |
 | peer exit | `--exit-after-ms N` | `Transport` error, leaves Ready |
 | half-open/stall | `--stall-after-ms N` | `AckTimeout` |
 | device reboot | `--reboot-after-ms N` | new boot/run id, frame recovers |
 | multi-device A/B | two peers | A exit leaves B Ready and interactive |
 
-Node drives the same TCP/WebSocket/PTY paths; its silent-peer timer/cancel and
-peer-exit cases live in `sdk/node/native-smoke.test.js`. Still open for R08:
-out-of-order ACKs, mid-link capability change, and fault injection through the
-Serial PTY bridge.
+Node drives the same TCP/WebSocket/PTY paths; its silent-peer timer/cancel,
+TCP peer-exit and Serial PTY peer-exit cases live in
+`sdk/node/native-smoke.test.js`. Still open for R08: a C++ Linux runtime in a
+separate process paired with a Rust host, and transport-level short-write
+injection below the packet boundary.
 
 This contract is additive to `docs/protocol.md`; a protocol change must update
 both files and the shared vectors.

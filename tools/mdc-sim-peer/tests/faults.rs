@@ -26,12 +26,16 @@ fn reserve_port() -> u16 {
 }
 
 fn spawn_peer(flags: &[&str]) -> Peer {
+    spawn_peer_board("esp32-jc3248w535-sim", flags)
+}
+
+fn spawn_peer_board(board: &str, flags: &[&str]) -> Peer {
     let port = reserve_port();
     let addr = format!("127.0.0.1:{port}");
     let mut command = Command::new(env!("CARGO_BIN_EXE_mdc-sim-peer"));
     command
         .arg(&addr)
-        .arg("esp32-jc3248w535-sim")
+        .arg(board)
         .args(flags)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -227,6 +231,91 @@ fn split_outbound_packets_still_round_trip() {
     session.send_frame(full_frame()).expect("send frame");
     wait_ack(&mut session);
     assert_eq!(session.stats().acks_received, 1);
+}
+
+#[test]
+fn out_of_order_acks_release_both_surfaces() {
+    // Two frames on the dual-surface board: the peer emits their ACKs in
+    // reverse order. Both requests must still complete exactly once.
+    let peer = spawn_peer_board("dual-sim", &["--swap-next-acks"]);
+    let mut session = connect_tcp(&peer.addr, config(1_000, 0));
+    wait_ready(&mut session);
+    let surfaces: Vec<(String, u16, u16)> = session
+        .device
+        .as_ref()
+        .unwrap()
+        .capabilities
+        .surfaces
+        .iter()
+        .map(|surface| (surface.id.clone(), surface.width, surface.height))
+        .collect();
+    for (id, width, height) in &surfaces {
+        session
+            .send_frame(Frame {
+                surface_id: id.clone(),
+                width: *width,
+                height: *height,
+                bytes: vec![0x5a; usize::from(*width) * usize::from(*height) * 2],
+            })
+            .expect("send frame");
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline && session.stats().acks_received < surfaces.len() as u64 {
+        let _ = session.poll();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(session.stats().acks_received, surfaces.len() as u64);
+    assert_eq!(session.pending_request_count(), 0);
+}
+
+#[test]
+fn split_all_writes_round_trip_a_full_frame() {
+    // Every outbound packet is written in two pieces, including the 307 KiB
+    // frame ACK path; Core must reassemble across transport reads.
+    let peer = spawn_peer(&["--split-all"]);
+    let mut session = connect_tcp(&peer.addr, config(1_000, 0));
+    wait_ready(&mut session);
+    session.send_frame(full_frame()).expect("send frame");
+    wait_ack(&mut session);
+    assert_eq!(session.stats().acks_received, 1);
+}
+
+#[test]
+fn mid_link_capability_change_updates_the_session() {
+    let peer = spawn_peer(&["--recaps-after-ms", "600", "--recaps-fps", "7"]);
+    let mut session = connect_tcp(&peer.addr, config(0, 0));
+    wait_ready(&mut session);
+    let before = session
+        .device
+        .as_ref()
+        .unwrap()
+        .capabilities
+        .local_display_fps;
+    assert_eq!(before, 30);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        let _ = session.poll();
+        let fps = session
+            .device
+            .as_ref()
+            .map(|device| device.capabilities.local_display_fps);
+        if fps == Some(7) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        session
+            .device
+            .as_ref()
+            .unwrap()
+            .capabilities
+            .local_display_fps,
+        7
+    );
+    assert_eq!(session.state, ConnectionState::Ready);
+    session.send_frame(full_frame()).expect("send frame");
+    wait_ack(&mut session);
 }
 
 #[test]

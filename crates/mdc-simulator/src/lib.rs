@@ -3644,6 +3644,15 @@ impl FakeDevice {
     pub fn current_frame_id(&self) -> u64 {
         self.current_frame_id
     }
+    /// SIM-R08: advertise a changed local display FPS on an existing link.
+    pub fn set_advertised_local_fps(&mut self, fps: u16) {
+        self.profile.local_display_fps = fps;
+    }
+    /// SIM-R08: push a fresh Capabilities packet without a new HELLO.
+    pub fn announce_capabilities(&mut self) -> Result<(), SimError> {
+        let caps = self.capabilities();
+        self.write_control(MessageType::Capabilities, 0, &caps)
+    }
     /// N304: the boot identity reported in Capabilities.
     pub fn boot_id(&self) -> u64 {
         self.boot_id

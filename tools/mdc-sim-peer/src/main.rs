@@ -8,9 +8,12 @@
 //! - `--delay-ticks N`: defer processing of the next packet by N ticks.
 //! - `--corrupt-after N` / `--duplicate-after N` / `--split-after N`: corrupt,
 //!   duplicate or split one outbound packet after N clean writes.
+//! - `--split-all`: split every outbound write in two.
+//! - `--swap-next-acks`: buffer two ACKs and emit them in reverse order.
 //! - `--exit-after-ms N`: close the process N ms after accept.
 //! - `--stall-after-ms N`: keep the socket open but stop servicing it.
 //! - `--reboot-after-ms N`: restart the fake device once and emit BootInfo.
+//! - `--recaps-after-ms N --recaps-fps F`: send changed Capabilities on a live link.
 use mdc_simulator::{BoardProfile, FakeDevice};
 use mdc_transport::{TcpTransport, Transport, TransportError, WebSocketTransport};
 use std::net::TcpListener;
@@ -21,6 +24,8 @@ enum OutboundFault {
     Corrupt,
     Duplicate,
     Split,
+    SplitAll,
+    ReorderAcks,
 }
 
 struct FaultLink {
@@ -29,6 +34,8 @@ struct FaultLink {
     armed: bool,
     done: bool,
     fault: OutboundFault,
+    buffered_acks: Vec<Vec<u8>>,
+    swaps: u32,
 }
 
 impl FaultLink {
@@ -39,12 +46,34 @@ impl FaultLink {
             armed: clean_writes == 0,
             done: false,
             fault,
+            buffered_acks: Vec::new(),
+            swaps: 1,
         }
     }
 }
 
 impl Transport for FaultLink {
     fn write(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+        if matches!(self.fault, OutboundFault::ReorderAcks)
+            && self.swaps > 0
+            && bytes.len() >= 5
+            && bytes[4] == 0x50
+        {
+            self.buffered_acks.push(bytes.to_vec());
+            if self.buffered_acks.len() == 2 {
+                let second = self.buffered_acks.pop().unwrap();
+                let first = self.buffered_acks.pop().unwrap();
+                self.swaps = 0;
+                self.inner.write(&second)?;
+                return self.inner.write(&first);
+            }
+            return Ok(());
+        }
+        if matches!(self.fault, OutboundFault::SplitAll) {
+            let middle = bytes.len() / 2;
+            self.inner.write(&bytes[..middle])?;
+            return self.inner.write(&bytes[middle..]);
+        }
         if !self.done && self.armed {
             self.done = true;
             match self.fault {
@@ -64,6 +93,9 @@ impl Transport for FaultLink {
                     let middle = bytes.len() / 2;
                     self.inner.write(&bytes[..middle])?;
                     return self.inner.write(&bytes[middle..]);
+                }
+                OutboundFault::SplitAll | OutboundFault::ReorderAcks => {
+                    return self.inner.write(bytes);
                 }
             }
         }
@@ -94,9 +126,13 @@ fn main() {
     let mut corrupt_after = None;
     let mut duplicate_after = None;
     let mut split_after = None;
+    let mut split_all = false;
+    let mut swap_acks = false;
     let mut exit_after_ms = None;
     let mut stall_after_ms = None;
     let mut reboot_after_ms = None;
+    let mut recaps_after_ms = None;
+    let mut recaps_fps = 10u16;
     let mut ws = false;
     let mut positionals = Vec::new();
     let mut args = std::env::args().skip(1);
@@ -117,9 +153,13 @@ fn main() {
             "--corrupt-after" => corrupt_after = Some(value("--corrupt-after") as u32),
             "--duplicate-after" => duplicate_after = Some(value("--duplicate-after") as u32),
             "--split-after" => split_after = Some(value("--split-after") as u32),
+            "--split-all" => split_all = true,
+            "--swap-next-acks" => swap_acks = true,
             "--exit-after-ms" => exit_after_ms = Some(value("--exit-after-ms")),
             "--stall-after-ms" => stall_after_ms = Some(value("--stall-after-ms")),
             "--reboot-after-ms" => reboot_after_ms = Some(value("--reboot-after-ms")),
+            "--recaps-after-ms" => recaps_after_ms = Some(value("--recaps-after-ms")),
+            "--recaps-fps" => recaps_fps = value("--recaps-fps") as u16,
             _ => positionals.push(arg),
         }
     }
@@ -159,7 +199,11 @@ fn main() {
                 }
             }
         };
-        let fault = if let Some(clean) = corrupt_after {
+        let fault = if swap_acks {
+            Some((0, OutboundFault::ReorderAcks))
+        } else if split_all {
+            Some((0, OutboundFault::SplitAll))
+        } else if let Some(clean) = corrupt_after {
             Some((clean, OutboundFault::Corrupt))
         } else if let Some(clean) = duplicate_after {
             Some((clean, OutboundFault::Duplicate))
@@ -191,6 +235,7 @@ fn main() {
         println!("peer connected; serving FakeDevice {}", profile.device_id);
         let start = Instant::now();
         let mut rebooted = false;
+        let mut recapped = false;
         loop {
             if let Some(ms) = stall_after_ms {
                 if start.elapsed() >= Duration::from_millis(ms) {
@@ -210,6 +255,14 @@ fn main() {
                     let _ = device.emit_boot_info();
                     rebooted = true;
                     println!("peer rebooted boot_id={}", device.boot_id());
+                }
+            }
+            if let Some(ms) = recaps_after_ms {
+                if !recapped && start.elapsed() >= Duration::from_millis(ms) {
+                    device.set_advertised_local_fps(recaps_fps);
+                    let _ = device.announce_capabilities();
+                    recapped = true;
+                    println!("peer recapped local_display_fps={recaps_fps}");
                 }
             }
             let result = if delay_ticks > 0 {
