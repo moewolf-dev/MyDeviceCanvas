@@ -2283,6 +2283,9 @@ impl<T: Transport> Session<T> {
         if !self.reconnect_enabled {
             self.state = ConnectionState::Disconnected;
             self.transport.close();
+            self.device = None;
+            self.held_frames.clear();
+            self.clear_link_state();
             return None;
         }
         self.reconnect_attempt = self.reconnect_attempt.saturating_add(1);

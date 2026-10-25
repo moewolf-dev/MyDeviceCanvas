@@ -98,6 +98,8 @@ instead of resuming against an unknown written prefix.
 - After cancel, no business frame or old result is delivered.
 - On disconnect/replace, clear transactions, mirror base/inbox, input gestures,
   unfinished requests, config cache and old capabilities as specified.
+- With reconnect disabled, a transport failure is terminal: the device and link
+  state are cleared immediately, so the next call cannot read stale capability.
 - Events carry a session generation; an old generation cannot update the new
   session.
 - Bounded containers (R07): Manager events 128 (move coalescing/critical
@@ -121,7 +123,10 @@ tags on queued events and Node async cancellation (R05).
 - The app must use only the public SDK.
 
 Implemented in R05: every public native method now returns a Promise backed by a
-libuv worker task; the JS thread only creates the task. A silent-peer handshake
+libuv worker task; the JS thread only creates the task. The native session also
+owns a real-clock tick (ack/heartbeat deadlines) and disables reconnect, so a
+dead peer becomes a terminal `Transport`/`AckTimeout` error instead of waiting
+for a replacement transport the SDK cannot supply. A silent-peer handshake
 is bounded to 2 s, and `dispose` flips shared atomic flags so an in-flight
 handshake aborts on its next poll (transport reads use a 400 ms timeout).
 Measured by `native-smoke.test.js` "silent peer does not block the JS event loop
@@ -184,9 +189,33 @@ does not fall back to a FakeDevice; the next call reports `no active connection`
 | SIM-T11 | disconnect drops old mirror frames | implemented `disconnect_drops_the_mirror_inbox_and_base` (R04) |
 | SIM-T12 | unsolicited Capabilities cannot set Ready | implemented `unsolicited_capabilities_do_not_make_a_session_ready`; Node events also stamp `generation` (R04) |
 | SIM-T13 | 100000 ACKs do not grow history | implemented `finished_ack_history_is_bounded` (R07) |
-| SIM-T14 | close/cancel/limits across transports | partial: memory/TCP/WS/serial close idempotence, post-close rejection, accepted-stream timeouts, WebSocket limit (R06); Serial PTY close matrix and 500 ms cancel settle open (R05/R08) |
-| SIM-T15 | multi-device isolation | open (R08) |
+| SIM-T14 | close/cancel/limits across transports | partial: memory/TCP/WS/serial close idempotence, post-close rejection, accepted-stream timeouts, WebSocket limit (R06); Serial PTY close injection and out-of-order ACK remain (R08) |
+| SIM-T15 | multi-device isolation | implemented `one_device_exiting_does_not_close_another` (R08, two processes) |
 | SIM-T16 | Rust/C++ differential byte boundaries | partial shared vectors; open (R02/R08) |
+
+## 14. Cross-process fault matrix
+
+`tools/mdc-sim-peer` is the real device process used by
+`tools/mdc-sim-peer/tests/faults.rs`. Each case spawns the binary, drives the
+public Rust `Session` over a real TCP/WebSocket link, and asserts exact state
+and byte-level outcomes:
+
+| Fault | Flag | Expected |
+|---|---|---|
+| lost request / ACK | `--lose-after N` | `AckTimeout`, no `displayed` ACK |
+| delayed request | `--delay-ticks N` | handshake/frame still completes |
+| corrupt ACK | `--corrupt-after N` | `Protocol` rejection, no display |
+| duplicate ACK | `--duplicate-after N` | one ACK, one timing sample |
+| split outbound packet | `--split-after N` | reassembled, one ACK |
+| peer exit | `--exit-after-ms N` | `Transport` error, leaves Ready |
+| half-open/stall | `--stall-after-ms N` | `AckTimeout` |
+| device reboot | `--reboot-after-ms N` | new boot/run id, frame recovers |
+| multi-device A/B | two peers | A exit leaves B Ready and interactive |
+
+Node drives the same TCP/WebSocket/PTY paths; its silent-peer timer/cancel and
+peer-exit cases live in `sdk/node/native-smoke.test.js`. Still open for R08:
+out-of-order ACKs, mid-link capability change, and fault injection through the
+Serial PTY bridge.
 
 This contract is additive to `docs/protocol.md`; a protocol change must update
 both files and the shared vectors.

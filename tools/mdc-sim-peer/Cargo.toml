@@ -12,3 +12,7 @@ path = "src/main.rs"
 [dependencies]
 mdc-simulator = { path = "../../crates/mdc-simulator" }
 mdc-transport = { path = "../../crates/mdc-transport", features = ["websocket"] }
+
+[dev-dependencies]
+mdc-core = { path = "../../crates/mdc-core" }
+mdc-protocol = { path = "../../crates/mdc-protocol" }

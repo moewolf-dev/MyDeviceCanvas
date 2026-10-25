@@ -3222,6 +3222,10 @@ pub struct FaultInjector {
     /// 先放行这么多个包，再丢掉接下来的一个，并清掉未完成的分块重组。
     pub drop_skip: u32,
     pub armed_drop: bool,
+    /// SIM-R08: silently drop one packet after `silent_skip` accepted packets.
+    /// Unlike `armed_drop` this sends no Error, simulating a lost request/ACK.
+    pub silent_skip: u32,
+    pub armed_silent: bool,
     /// Defer processing for this many virtual ticks after enqueue.
     pub delay_ticks: u64,
     pub disconnect: bool,
@@ -3234,6 +3238,11 @@ impl FaultInjector {
     pub fn drop_one_after(&mut self, accept: u32) {
         self.drop_skip = accept;
         self.armed_drop = true;
+    }
+    /// Accept `accept` packets, then silently drop the next one.
+    pub fn drop_silent_after(&mut self, accept: u32) {
+        self.silent_skip = accept;
+        self.armed_silent = true;
     }
     pub fn delay(&mut self, ticks: u64) {
         self.delay_ticks = ticks;
@@ -4101,6 +4110,15 @@ impl FakeDevice {
         self.poll()
     }
     fn enqueue_or_handle(&mut self, packet: Packet) -> Result<(), SimError> {
+        if self.faults.armed_silent {
+            if self.faults.silent_skip > 0 {
+                self.faults.silent_skip -= 1;
+            } else {
+                self.faults.armed_silent = false;
+                self.assembler = None;
+                return Ok(());
+            }
+        }
         if self.faults.armed_drop {
             if self.faults.drop_skip > 0 {
                 self.faults.drop_skip -= 1;
