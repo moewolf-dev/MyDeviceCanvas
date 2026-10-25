@@ -8368,6 +8368,43 @@ mod tests {
     }
 
     #[test]
+    fn late_ack_after_history_eviction_is_harmless() {
+        // SIM-R07: once an ACK leaves the bounded window, a replay must not
+        // relaunch a frame because the request was already released.
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        let request = session.send_frame(frame(&[1; 8])).unwrap();
+        while device.read().unwrap().is_some() {}
+        let ack = |request: u32| Packet {
+            version: VERSION,
+            kind: MessageType::Ack,
+            flags: 0,
+            request_id: request,
+            payload: encode_control(&Ack {
+                received: true,
+                displayed: true,
+                frame_id: request as u64,
+                error: None,
+                run_id: 0,
+                event_seq: 0,
+            })
+            .unwrap(),
+        };
+        device.write(&ack(request).encode(4096).unwrap()).unwrap();
+        session.poll().unwrap();
+        while device.read().unwrap().is_some() {}
+        for id in 0..(MAX_FINISHED_ACKS as u32 + 10) {
+            session.record_finished_ack(id + 100_000);
+        }
+        assert!(!session.finished_acks.contains(&request));
+        device.write(&ack(request).encode(4096).unwrap()).unwrap();
+        session.poll().unwrap();
+        assert!(device.read().unwrap().is_none());
+    }
+
+    #[test]
     fn displayed_timing_history_is_bounded() {
         let (host, _device) = MemoryLink::pair();
         let mut session = Session::new(host);
