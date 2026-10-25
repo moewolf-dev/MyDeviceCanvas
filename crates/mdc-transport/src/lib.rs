@@ -384,7 +384,7 @@ impl Transport for SerialTransport {
 
 #[cfg(feature = "websocket")]
 pub struct WebSocketTransport {
-    socket: tungstenite::WebSocket<std::net::TcpStream>,
+    socket: Option<tungstenite::WebSocket<std::net::TcpStream>>,
     max_message: usize,
 }
 #[cfg(feature = "websocket")]
@@ -411,7 +411,7 @@ impl WebSocketTransport {
         let (socket, _) =
             tungstenite::client(parsed, stream).map_err(|e| TransportError::Io(e.to_string()))?;
         Ok(Self {
-            socket,
+            socket: Some(socket),
             max_message: 1024 * 1024,
         })
     }
@@ -433,7 +433,7 @@ impl WebSocketTransport {
             .map_err(|e| TransportError::Io(e.to_string()))?;
         let socket = tungstenite::accept(stream).map_err(|e| TransportError::Io(e.to_string()))?;
         Ok(Self {
-            socket,
+            socket: Some(socket),
             max_message: 1024 * 1024,
         })
     }
@@ -441,12 +441,14 @@ impl WebSocketTransport {
 #[cfg(feature = "websocket")]
 impl Transport for WebSocketTransport {
     fn write(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
-        self.socket
+        let socket = self.socket.as_mut().ok_or(TransportError::Closed)?;
+        socket
             .send(tungstenite::Message::Binary(bytes.to_vec()))
             .map_err(|e| TransportError::Io(e.to_string()))
     }
     fn read(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
-        match self.socket.read() {
+        let socket = self.socket.as_mut().ok_or(TransportError::Closed)?;
+        match socket.read() {
             Ok(tungstenite::Message::Binary(bytes)) => {
                 if bytes.len() > self.max_message {
                     return Err(TransportError::Io(
@@ -456,7 +458,7 @@ impl Transport for WebSocketTransport {
                 Ok(Some(bytes))
             }
             Ok(tungstenite::Message::Ping(bytes)) => {
-                self.socket
+                socket
                     .send(tungstenite::Message::Pong(bytes))
                     .map_err(|e| TransportError::Io(e.to_string()))?;
                 Ok(None)
@@ -476,7 +478,9 @@ impl Transport for WebSocketTransport {
         }
     }
     fn close(&mut self) {
-        let _ = self.socket.close(None);
+        if let Some(mut socket) = self.socket.take() {
+            let _ = socket.close(None);
+        }
     }
 }
 
@@ -576,6 +580,28 @@ mod tests {
         transport.close();
         transport.cancel();
         assert!(!transport.is_open());
+    }
+
+    #[cfg(feature = "websocket")]
+    #[test]
+    fn websocket_close_is_idempotent_and_rejects_io() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut peer = WebSocketTransport::accept(stream).unwrap();
+            let _ = peer.read();
+            thread::sleep(Duration::from_millis(50));
+        });
+        let mut client =
+            WebSocketTransport::connect(&format!("ws://127.0.0.1:{port}/"), Duration::from_secs(2))
+                .unwrap();
+        client.close();
+        client.close(); // idempotent
+        client.cancel(); // alias
+        assert_eq!(client.write(&[1]), Err(TransportError::Closed));
+        assert_eq!(client.read(), Err(TransportError::Closed));
+        let _ = server.join();
     }
 
     #[cfg(feature = "websocket")]

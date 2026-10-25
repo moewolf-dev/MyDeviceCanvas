@@ -99,7 +99,8 @@ instead of resuming against an unknown written prefix.
 Implemented in R04/R06: disconnect/replace/switch clear transactions, mirror
 inbox and base, gestures, config cache and deadlines through one
 `clear_link_state`; serial `close` drops the OS handle and rejects post-close
-I/O; accepted TCP streams get bounded timeouts. Remaining: session-generation
+I/O; WebSocket close is idempotent and drops the socket; accepted TCP streams get
+bounded timeouts. Remaining: session-generation
 tags on queued events and Node async cancellation (R05).
 
 ## 8. SDK execution
@@ -166,7 +167,7 @@ Current gap: SIM-R05 (the 12.2 s synchronous block is still reproduced).
 | SIM-T11 | disconnect drops old mirror frames | implemented `disconnect_drops_the_mirror_inbox_and_base` (R04) |
 | SIM-T12 | unsolicited Capabilities cannot set Ready | implemented `unsolicited_capabilities_do_not_make_a_session_ready` (R04) |
 | SIM-T13 | 100000 ACKs do not grow history | open (R07) |
-| SIM-T14 | close/cancel/limits across transports | partial: memory/TCP/serial close idempotence, post-close rejection, accepted-stream timeouts, WebSocket limit (R06); 500 ms cancel settle open (R05) |
+| SIM-T14 | close/cancel/limits across transports | partial: memory/TCP/WS/serial close idempotence, post-close rejection, accepted-stream timeouts, WebSocket limit (R06); Serial PTY close matrix and 500 ms cancel settle open (R05/R08) |
 | SIM-T15 | multi-device isolation | open (R08) |
 | SIM-T16 | Rust/C++ differential byte boundaries | partial shared vectors; open (R02/R08) |
 
