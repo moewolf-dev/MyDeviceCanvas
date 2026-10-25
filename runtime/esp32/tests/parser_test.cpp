@@ -219,6 +219,49 @@ int main() {
   assert(send(mdc::MessageType::Frame, 70, begin_payload("other", 70, 8)));
   assert(replies.back().type == mdc::MessageType::Error);
 
+  // SIM-R07: disjoint chunk ranges are capped; a fresh BEGIN recovers.
+  {
+    mdc::SimDisplay big(64, 64);
+    std::vector<mdc::Packet> big_replies;
+    mdc::SessionDispatcher big_dispatcher(
+        big, [&](const mdc::Packet& p) { big_replies.push_back(p); });
+    const auto begin_64 = [](std::uint64_t frame_id, std::uint32_t total) {
+      std::vector<std::uint8_t> payload{1, 4};
+      const std::string surface = "main";
+      payload.insert(payload.end(), surface.begin(), surface.end());
+      for (int i = 0; i < 8; ++i)
+        payload.push_back(static_cast<std::uint8_t>(frame_id >> (8 * i)));
+      payload.push_back(64);
+      payload.push_back(0);
+      payload.push_back(64);
+      payload.push_back(0);
+      for (int i = 0; i < 4; ++i) payload.push_back(static_cast<std::uint8_t>(total >> (8 * i)));
+      return payload;
+    };
+    auto send_big = [&](mdc::MessageType type, std::uint32_t request,
+                        const std::vector<std::uint8_t>& payload) {
+      mdc::Packet packet;
+      packet.type = type;
+      packet.request_id = request;
+      packet.payload = payload;
+      return big_dispatcher.handle(packet);
+    };
+    big_replies.clear();
+    assert(send_big(mdc::MessageType::Frame, 500, begin_64(500, 64 * 64 * 2)));
+    for (std::uint32_t i = 0; i < 256; ++i) {
+      assert(send_big(mdc::MessageType::Frame, 600 + i,
+                      chunk_payload(500, i * 2, {0x11})));
+    }
+    assert(big_replies.empty());
+    assert(send_big(mdc::MessageType::Frame, 900, chunk_payload(500, 512, {0x22})));
+    assert(big_replies.back().type == mdc::MessageType::Error);
+    // A new BEGIN clears the rejected transaction and is accepted again.
+    big_replies.clear();
+    assert(send_big(mdc::MessageType::Frame, 901, begin_64(901, 64 * 64 * 2)));
+    assert(send_big(mdc::MessageType::Frame, 902, chunk_payload(901, 0, {0x33, 0x44})));
+    assert(big_replies.empty());
+  }
+
   // Dual-transport lock
   // Dual-transport lock
   dispatcher.set_transport_busy(true);

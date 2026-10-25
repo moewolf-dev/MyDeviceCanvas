@@ -34,6 +34,9 @@ std::uint64_t fnv1a64(const std::uint8_t* p, std::size_t n) {
   return h;
 }
 constexpr std::size_t kMaxPackage = 16u * 1024u * 1024u;
+// SIM-R07: cap disjoint chunk ranges so alternating chunks cannot grow the
+// coverage list without bound. A later BEGIN starts a fresh transaction.
+constexpr std::size_t kMaxChunkRanges = 256;
 }  // namespace
 
 SessionDispatcher::SessionDispatcher(DisplayBackend& display, ReplyFn reply, PeerIdentity identity)
@@ -183,6 +186,13 @@ bool SessionDispatcher::handle_frame(const Packet& packet) {
     if (data_len == 0 ||
         static_cast<std::size_t>(offset) + data_len > chunk_staging_.size()) {
       send_error(packet.request_id, "E_CHUNK", "chunk outside frame");
+      chunk_expected_ = 0;
+      chunk_ranges_.clear();
+      chunk_staging_.clear();
+      return true;
+    }
+    if (chunk_ranges_.size() >= kMaxChunkRanges) {
+      send_error(packet.request_id, "E_CHUNK", "too many chunk ranges");
       chunk_expected_ = 0;
       chunk_ranges_.clear();
       chunk_staging_.clear();

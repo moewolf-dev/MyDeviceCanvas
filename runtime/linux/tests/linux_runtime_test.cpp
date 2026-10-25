@@ -117,8 +117,11 @@ int main() {
   begin.type = mdc::MessageType::Frame;
   begin.request_id = 5;
   begin.payload.push_back(1);
-  begin.payload.push_back(1);
+  begin.payload.push_back(4);
   begin.payload.push_back('m');
+  begin.payload.push_back('a');
+  begin.payload.push_back('i');
+  begin.payload.push_back('n');
   for (int i = 0; i < 8; ++i) begin.payload.push_back(static_cast<std::uint8_t>(3 >> (8 * i)));
   begin.payload.push_back(2);
   begin.payload.push_back(0);

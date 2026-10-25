@@ -2430,6 +2430,10 @@ pub fn encode_control<T: Serialize>(value: &T) -> Result<Vec<u8>, CodecError> {
         })
 }
 pub fn decode_control<'a, T: Deserialize<'a>>(payload: &'a [u8]) -> Result<T, CodecError> {
+    // SIM-R07: reject by length before CBOR allocates/decodes.
+    if payload.len() > MAX_CONTROL_PAYLOAD {
+        return Err(CodecError::Length(payload.len()));
+    }
     serde_cbor::from_slice(payload).map_err(|_| CodecError::Truncated)
 }
 
@@ -2437,6 +2441,15 @@ pub fn decode_control<'a, T: Deserialize<'a>>(payload: &'a [u8]) -> Result<T, Co
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn oversized_control_is_rejected_before_cbor() {
+        let payload = vec![0u8; MAX_CONTROL_PAYLOAD + 1];
+        assert_eq!(
+            decode_control::<InputEvent>(&payload),
+            Err(CodecError::Length(MAX_CONTROL_PAYLOAD + 1))
+        );
+    }
 
     #[test]
     fn round_trip_and_partial() {

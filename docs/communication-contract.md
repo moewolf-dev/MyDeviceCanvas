@@ -53,7 +53,7 @@ fails mid-flight. Every message type shares `write_packet_with_id` /
 
 ## 4. Lengths and budgets
 
-- Control payload: 4 KiB maximum; checked before CBOR decode.
+- Control payload: 4 KiB maximum; checked by length before CBOR decode.
 - Frame: 1 MiB maximum.
 - Chunk: `min(local, negotiated max_chunk)` minus this packet's metadata overhead.
 - Runtime package: 16 MiB wire maximum (aligned with the C++ runtime); the app's
@@ -61,7 +61,8 @@ fails mid-flight. Every message type shares `write_packet_with_id` /
 - All offset/length arithmetic is checked. BEGIN lengths must match the declared
   surface geometry before allocation.
 
-Current gap: SIM-R07 (receive budgets and all growing containers).
+Implemented in R07: `decode_control` rejects >4 KiB before `serde_cbor`; chunk
+coverage lists are capped at 256 disjoint ranges in both Rust and C++.
 
 ## 5. Receive fairness
 
@@ -70,7 +71,9 @@ Current gap: SIM-R07 (receive budgets and all growing containers).
   stream before parsing or ticking.
 - Oversized control messages are rejected by length before allocation/decoding.
 
-Current gap: SIM-R07 (Rust BurstTransport currently returns 4 MiB in one poll).
+Implemented in R07: `Session::poll` reads at most 64 KiB, parses at most 32
+packets / 64 KiB, and stops reading when the unparsed buffer reaches 2 MiB.
+Reads that arrive larger are parsed over later polls.
 
 ## 6. Integrity
 
@@ -80,6 +83,8 @@ Current gap: SIM-R07 (Rust BurstTransport currently returns 4 MiB in one poll).
   partial overlaps are rejected.
 - COMMIT succeeds only when ranges cover the full expected length. A missing
   chunk never displays zero-filled data.
+- A transaction accepts at most 256 disjoint coverage ranges; the next chunk is
+  rejected (`E_CHUNK` / `TooManyRanges`) and a later BEGIN starts fresh.
 - Conflicting/oversized chunks clear the transaction and require a new BEGIN.
 
 Implemented in R02: C++ parser types `0x12/0x31/0x32`, BEGIN geometry/length,
@@ -95,6 +100,9 @@ instead of resuming against an unknown written prefix.
   unfinished requests, config cache and old capabilities as specified.
 - Events carry a session generation; an old generation cannot update the new
   session.
+- Bounded containers (R07): Manager events 128 (move coalescing/critical
+  eviction), diagnostics 64, finished-ACK window 4096, displayed timings 256,
+  active pointers 16, config requests by the 32-slot control window.
 
 Implemented in R04/R06: disconnect/replace/switch clear transactions, mirror
 inbox and base, gestures, config cache and deadlines through one
@@ -170,12 +178,12 @@ does not fall back to a FakeDevice; the next call reports `no active connection`
 | SIM-T05 | large package upload stays within window | implemented `large_package_upload_stays_in_the_control_window` (R03) |
 | SIM-T06 | per-request deadline | implemented `per_request_deadline_is_not_extended_by_a_new_request`; Pong/Config replies must match an outstanding request (R04) |
 | SIM-T07 | Node silent peer does not block timer | implemented `native-smoke.test.js` silent-peer timer/cancel test (R05) |
-| SIM-T08 | receive burst budget | open (R07) |
-| SIM-T09 | control decode >4 KiB rejected before decode | open (R07) |
+| SIM-T08 | receive burst budget | implemented `poll_handles_at_most_32_packets`, `poll_handles_at_most_64_kib_per_call`, `poll_stops_reading_after_the_read_budget` (R07) |
+| SIM-T09 | control decode >4 KiB rejected before decode | implemented `oversized_control_is_rejected_before_cbor` (R07) |
 | SIM-T10 | peer close converges state | implemented `transport_close_converges_away_from_ready` (R04) |
 | SIM-T11 | disconnect drops old mirror frames | implemented `disconnect_drops_the_mirror_inbox_and_base` (R04) |
 | SIM-T12 | unsolicited Capabilities cannot set Ready | implemented `unsolicited_capabilities_do_not_make_a_session_ready`; Node events also stamp `generation` (R04) |
-| SIM-T13 | 100000 ACKs do not grow history | open (R07) |
+| SIM-T13 | 100000 ACKs do not grow history | implemented `finished_ack_history_is_bounded` (R07) |
 | SIM-T14 | close/cancel/limits across transports | partial: memory/TCP/WS/serial close idempotence, post-close rejection, accepted-stream timeouts, WebSocket limit (R06); Serial PTY close matrix and 500 ms cancel settle open (R05/R08) |
 | SIM-T15 | multi-device isolation | open (R08) |
 | SIM-T16 | Rust/C++ differential byte boundaries | partial shared vectors; open (R02/R08) |

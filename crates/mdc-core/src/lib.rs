@@ -14,7 +14,21 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
+/// SIM-R07: one poll reads at most this many bytes and handles at most this
+/// many packets, so a burst cannot starve timers or cancellation.
+pub const MAX_POLL_BYTES: usize = 64 * 1024;
+pub const MAX_POLL_PACKETS: usize = 32;
+/// Stop reading once the unparsed buffer reaches this size. A transport read
+/// that delivers more is parsed over subsequent polls, not read again.
+pub const MAX_RX_BYTES: usize = MAX_FRAME_BYTES * 2;
 pub const MAX_MANAGER_EVENTS: usize = 128;
+/// SIM-R07: dedup history is a sliding window, not a per-frame log.
+pub const MAX_FINISHED_ACKS: usize = 4096;
+pub const MAX_DISPLAY_TIMINGS: usize = 256;
+/// SIM-R07: an input flood cannot allocate an unbounded pointer map.
+pub const MAX_ACTIVE_POINTERS: usize = 16;
+/// SIM-R07: chunk coverage lists are capped; a later chunk starts a new BEGIN.
+pub const MAX_FRAME_RANGES: usize = 256;
 pub const MAX_CONTROL_IN_FLIGHT: usize = 32;
 /// N40: longest configuration value the host will send (bytes).
 pub const MAX_CONFIG_VALUE_BYTES: usize = 256;
@@ -401,6 +415,11 @@ impl GestureTracker {
     pub fn on_events(&mut self, event: &mdc_protocol::InputEvent, now_ms: u64) -> Vec<Gesture> {
         match event.phase.as_str() {
             "down" => {
+                if self.pointers.len() >= MAX_ACTIVE_POINTERS
+                    && !self.pointers.contains_key(&event.pointer_id)
+                {
+                    return Vec::new();
+                }
                 self.pointers.insert(
                     event.pointer_id,
                     PointerState {
@@ -1065,6 +1084,8 @@ pub enum TransactionNack {
     Incomplete,
     BaseFrameMismatch,
     Expired,
+    /// SIM-R07: the chunk would create more disjoint ranges than allowed.
+    TooManyRanges,
 }
 
 #[derive(Debug)]
@@ -1106,6 +1127,9 @@ impl FrameAssembler {
                 }
                 return Err(TransactionNack::ConflictingDuplicate);
             }
+        }
+        if self.ranges.len() >= MAX_FRAME_RANGES {
+            return Err(TransactionNack::TooManyRanges);
         }
         self.staging[offset..end].copy_from_slice(bytes);
         self.ranges.push((offset, end));
@@ -2058,11 +2082,15 @@ impl<T: Transport> Session<T> {
     }
 
     pub fn poll(&mut self) -> Result<ConnectionState, CoreError> {
-        // 已经进缓冲区的包先处理。对端先写下 cancel 再关闭时，不能让关闭错误吞掉这些包。
-        loop {
+        // SIM-R07: bound both the read and the parse per call. A peer that
+        // floods data must not make one poll unbounded or delay cancellation.
+        let mut read_bytes = 0usize;
+        while read_bytes < MAX_POLL_BYTES && self.rx.len() < MAX_RX_BYTES {
+            // 已经进缓冲区的包先处理。对端先写下 cancel 再关闭时，不能让关闭错误吞掉这些包。
             match self.transport.read() {
                 Ok(Some(bytes)) => {
                     // N436: count inbound bytes.
+                    read_bytes = read_bytes.saturating_add(bytes.len());
                     self.stats.bytes_received =
                         self.stats.bytes_received.saturating_add(bytes.len() as u64);
                     self.rx.extend(bytes)
@@ -2077,10 +2105,14 @@ impl<T: Transport> Session<T> {
                 }
             }
         }
-        loop {
+        let mut packets = 0usize;
+        let mut parsed_bytes = 0usize;
+        while packets < MAX_POLL_PACKETS && parsed_bytes < MAX_POLL_BYTES {
             match mdc_protocol::decode_stream(&self.rx, self.max_message) {
                 mdc_protocol::StreamStep::Packet(packet, consumed) => {
                     self.rx.drain(..consumed);
+                    parsed_bytes = parsed_bytes.saturating_add(consumed);
+                    packets = packets.saturating_add(1);
                     self.handle_packet(packet)?;
                 }
                 mdc_protocol::StreamStep::NeedMore { discard } => {
@@ -2284,6 +2316,15 @@ impl<T: Transport> Session<T> {
     pub fn displayed_timings(&self) -> &[DisplayTiming] {
         &self.displayed_timings
     }
+    /// SIM-R07: remember a displayed ACK in a fixed-size window. An evicted id
+    /// is harmless: its request and frame were already released, so a replay
+    /// cannot launch anything again.
+    fn record_finished_ack(&mut self, id: u32) {
+        if self.finished_acks.len() >= MAX_FINISHED_ACKS {
+            self.finished_acks.pop_first();
+        }
+        self.finished_acks.insert(id);
+    }
     fn release_request(&mut self, id: u32) {
         self.pending_requests.remove(&id);
         self.request_deadlines.remove(&id);
@@ -2303,6 +2344,9 @@ impl<T: Transport> Session<T> {
         let transport = received.saturating_duration_since(sent);
         let e2e = now.saturating_duration_since(sent);
         let render = e2e.saturating_sub(transport);
+        if self.displayed_timings.len() >= MAX_DISPLAY_TIMINGS {
+            self.displayed_timings.remove(0);
+        }
         self.displayed_timings.push(DisplayTiming {
             transport_us: transport.as_micros(),
             render_us: render.as_micros(),
@@ -3551,7 +3595,7 @@ impl<T: Transport> Session<T> {
                             .or_insert_with(std::time::Instant::now);
                         return Ok(());
                     }
-                    self.finished_acks.insert(packet.request_id);
+                    self.record_finished_ack(packet.request_id);
                     self.stats.acks_received = self.stats.acks_received.saturating_add(1);
                     self.note_displayed(packet.request_id);
                     self.release_request(packet.request_id);
@@ -8210,5 +8254,158 @@ mod tests {
         let device = Device::new(c);
         let error = device.validate_frame(&frame(&[0; 8])).unwrap_err();
         assert_eq!(error, CoreError::Format("RGBA8888".into()));
+    }
+
+    struct BurstLink {
+        bytes: Vec<u8>,
+        read_calls: usize,
+    }
+    impl mdc_transport::Transport for BurstLink {
+        fn write(&mut self, _bytes: &[u8]) -> Result<(), mdc_transport::TransportError> {
+            Ok(())
+        }
+        fn read(&mut self) -> Result<Option<Vec<u8>>, mdc_transport::TransportError> {
+            if self.bytes.is_empty() {
+                return Ok(None);
+            }
+            self.read_calls += 1;
+            Ok(Some(std::mem::take(&mut self.bytes)))
+        }
+        fn close(&mut self) {}
+    }
+
+    struct FloodLink {
+        chunk: Vec<u8>,
+        calls: usize,
+    }
+    impl mdc_transport::Transport for FloodLink {
+        fn write(&mut self, _bytes: &[u8]) -> Result<(), mdc_transport::TransportError> {
+            Ok(())
+        }
+        fn read(&mut self) -> Result<Option<Vec<u8>>, mdc_transport::TransportError> {
+            self.calls += 1;
+            Ok(Some(self.chunk.clone()))
+        }
+        fn close(&mut self) {}
+    }
+
+    fn pong_packets(count: u32, payload_len: usize) -> (Vec<u8>, usize) {
+        let mut wire = Vec::new();
+        for id in 0..count {
+            wire.extend(
+                Packet {
+                    version: VERSION,
+                    kind: MessageType::Pong,
+                    flags: 0,
+                    request_id: id + 1,
+                    payload: vec![0; payload_len],
+                }
+                .encode(1 << 20)
+                .unwrap(),
+            );
+        }
+        let packet_len = 20 + payload_len;
+        (wire, packet_len)
+    }
+
+    #[test]
+    fn poll_handles_at_most_32_packets() {
+        // SIM-R07/SIM-T08: a burst is parsed over several polls.
+        let (wire, packet_len) = pong_packets(100, 0);
+        let total = wire.len();
+        let mut session = Session::new(BurstLink {
+            bytes: wire,
+            read_calls: 0,
+        });
+        session.poll().unwrap();
+        assert_eq!(session.transport.read_calls, 1);
+        assert_eq!(total - session.rx.len(), MAX_POLL_PACKETS * packet_len);
+        assert!(!session.rx.is_empty());
+    }
+
+    #[test]
+    fn poll_handles_at_most_64_kib_per_call() {
+        // SIM-R07: large packets hit the byte budget before the packet budget.
+        let (wire, packet_len) = pong_packets(40, 3000);
+        let total = wire.len();
+        let mut session = Session::new(BurstLink {
+            bytes: wire,
+            read_calls: 0,
+        });
+        session.poll().unwrap();
+        let consumed = total - session.rx.len();
+        assert!(consumed >= MAX_POLL_BYTES, "consumed {consumed}");
+        assert!(
+            consumed < MAX_POLL_BYTES + packet_len,
+            "consumed {consumed}"
+        );
+        assert!(session.transport.read_calls <= 1);
+    }
+
+    #[test]
+    fn poll_stops_reading_after_the_read_budget() {
+        // SIM-R07: a peer that always has more noise cannot keep one poll busy.
+        let mut session = Session::new(FloodLink {
+            chunk: vec![0u8; 1024],
+            calls: 0,
+        });
+        session.poll().unwrap();
+        assert_eq!(session.transport.calls, MAX_POLL_BYTES / 1024);
+        assert!(session.rx.len() <= 1);
+    }
+
+    #[test]
+    fn finished_ack_history_is_bounded() {
+        // SIM-R07/SIM-T13: 100000 successful ACKs do not grow history.
+        let (host, _device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        for id in 0..100_000u32 {
+            session.record_finished_ack(id);
+        }
+        assert_eq!(session.finished_acks.len(), MAX_FINISHED_ACKS);
+        assert!(!session.finished_acks.contains(&0));
+        assert!(session.finished_acks.contains(&99_999));
+    }
+
+    #[test]
+    fn displayed_timing_history_is_bounded() {
+        let (host, _device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        for id in 0..(MAX_DISPLAY_TIMINGS as u32 + 50) {
+            session.frame_sent_at.insert(id, std::time::Instant::now());
+            session.note_displayed(id);
+        }
+        assert_eq!(session.displayed_timings.len(), MAX_DISPLAY_TIMINGS);
+    }
+
+    #[test]
+    fn active_pointer_map_is_bounded() {
+        // SIM-R07: missing "up" events cannot allocate an unbounded map.
+        let event = |id: u16| mdc_protocol::InputEvent {
+            surface_id: "main".into(),
+            pointer_id: id,
+            phase: "down".into(),
+            x: 1,
+            y: 1,
+            node: None,
+        };
+        let mut tracker = GestureTracker::default();
+        for id in 0..100u16 {
+            tracker.on_event(&event(id), 0);
+        }
+        assert_eq!(tracker.pointers.len(), MAX_ACTIVE_POINTERS);
+    }
+
+    #[test]
+    fn frame_assembler_rejects_too_many_ranges() {
+        // SIM-R07: alternating one-byte chunks cannot grow the range list without bound.
+        let mut tx = FrameAssembler::begin(1, 1024, 4).unwrap();
+        for index in 0..MAX_FRAME_RANGES {
+            tx.chunk(index * 2, &[1]).unwrap();
+        }
+        assert_eq!(
+            tx.chunk(MAX_FRAME_RANGES * 2, &[1]),
+            Err(TransactionNack::TooManyRanges)
+        );
     }
 }
