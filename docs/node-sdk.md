@@ -36,6 +36,12 @@ the manager without a session. Later calls report `no active connection` instead
 of silently opening an in-process FakeDevice; only a never-connected manager
 defaults to the simulator.
 
+The native session owns a real-clock tick: ACK and heartbeat deadlines are
+checked on every operation, and reconnect is disabled for SDK sessions. A peer
+that exits therefore surfaces a terminal transport error and clears its device;
+`devices()` then rejects with `no active connection` instead of returning stale
+capabilities.
+
 ## API
 
 | Method | Notes |

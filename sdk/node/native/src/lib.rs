@@ -1,5 +1,5 @@
 //! Node native bindings: MemoryLink FakeDevice session (sim path).
-use mdc_core::{ConnectionState, DeviceManager, Frame, ManagerEvent, Session, Tile};
+use mdc_core::{ConnectionState, DeviceManager, Frame, ManagerEvent, Session, SessionConfig, Tile};
 use mdc_protocol::InputEvent;
 use mdc_simulator::{BoardProfile, FakeDevice, SimError};
 use mdc_transport::{TcpTransport, Transport};
@@ -232,6 +232,26 @@ struct SimSession {
     manager: Arc<Mutex<DeviceManager>>,
     /// SIM-R05: set by `dispose`; long handshakes must stop promptly.
     cancelled: Arc<AtomicBool>,
+    /// SIM-R04: real-clock origin for the Session tick owner.
+    created: Instant,
+}
+
+/// SIM-R04/R08: Node drives deadlines from a monotonic clock instead of a
+/// caller-supplied tick. Reconnect is disabled so a dead peer reaches a
+/// terminal error rather than waiting for a transport the SDK cannot supply.
+fn node_session_config() -> SessionConfig {
+    SessionConfig {
+        reconnect: false,
+        ..SessionConfig::default()
+    }
+}
+
+fn tick_session(sim: &mut SimSession) -> Result<()> {
+    let now_ms = sim.created.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    sim.session
+        .tick(now_ms)
+        .map_err(|e| Error::from_reason(e.to_string()))?;
+    Ok(())
 }
 
 /// A peer that never answers HELLO is rejected after this budget instead of
@@ -239,6 +259,7 @@ struct SimSession {
 const HANDSHAKE_BUDGET: Duration = Duration::from_millis(2_000);
 
 fn pump_link(sim: &mut SimSession) -> Result<()> {
+    tick_session(sim)?;
     let rounds = if sim.device.is_some() { 1 } else { 30 };
     let started = Instant::now();
     for _ in 0..rounds {
@@ -304,7 +325,8 @@ fn ensure_sim(state: &mut State) -> Result<()> {
     let profile = BoardProfile::from_board_id(state.board_id.as_deref().unwrap_or("default"));
     let (host, mut device) = FakeDevice::pair(profile);
     let manager = Arc::new(Mutex::new(DeviceManager::new()));
-    let mut session = Session::new(Box::new(host) as Box<dyn Transport>);
+    let mut session =
+        Session::with_config(Box::new(host) as Box<dyn Transport>, node_session_config());
     session.set_manager(manager.clone());
     session
         .connect()
@@ -330,6 +352,7 @@ fn ensure_sim(state: &mut State) -> Result<()> {
         device: Some(device),
         manager,
         cancelled: Arc::new(AtomicBool::new(false)),
+        created: Instant::now(),
     });
     Ok(())
 }
@@ -346,7 +369,7 @@ fn connect_transport(
         previous.session.disconnect();
     }
     let manager = Arc::new(Mutex::new(DeviceManager::new()));
-    let mut session = Session::new(transport);
+    let mut session = Session::with_config(transport, node_session_config());
     session.set_manager(manager.clone());
     session
         .connect()
@@ -356,6 +379,7 @@ fn connect_transport(
         device: None,
         manager,
         cancelled: cancelled.clone(),
+        created: Instant::now(),
     };
     pump_link(&mut live)?;
     if live.session.state != ConnectionState::Ready {
@@ -536,6 +560,9 @@ impl NativeManager {
         }
         ensure_sim(&mut state)?;
         let sim = state.sim.as_ref().unwrap();
+        if sim.session.device.is_none() {
+            return Err(Error::from_reason("no active connection"));
+        }
         let mgr = sim
             .manager
             .lock()
