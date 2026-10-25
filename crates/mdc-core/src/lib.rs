@@ -4277,6 +4277,37 @@ mod tests {
         assert_eq!(session.active_animation(), None);
     }
 
+    struct ShortAtLink {
+        bytes: Vec<u8>,
+        writes: usize,
+        short_at: usize,
+    }
+    impl ShortAtLink {
+        fn new(short_at: usize) -> Self {
+            Self {
+                bytes: Vec::new(),
+                writes: 0,
+                short_at,
+            }
+        }
+    }
+    impl mdc_transport::Transport for ShortAtLink {
+        fn write(&mut self, bytes: &[u8]) -> Result<(), mdc_transport::TransportError> {
+            self.writes += 1;
+            if self.writes == self.short_at {
+                let accepted = (bytes.len() / 2).max(1);
+                self.bytes.extend_from_slice(&bytes[..accepted]);
+                return Err(mdc_transport::TransportError::ShortWrite { accepted });
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(())
+        }
+        fn read(&mut self) -> Result<Option<Vec<u8>>, mdc_transport::TransportError> {
+            Ok(None)
+        }
+        fn close(&mut self) {}
+    }
+
     fn frame(bytes: &[u8]) -> Frame {
         Frame {
             surface_id: "main".into(),
@@ -4486,6 +4517,59 @@ mod tests {
             }
             remaining = &remaining[consumed..];
         }
+        assert_eq!(phases, vec![1, 2, 2, 3]);
+        assert_eq!(offsets, vec![0, 4]);
+        assert_eq!(session.pending_request_count(), 1);
+    }
+
+    fn ready_frame_session(short_at: usize) -> Session<ShortAtLink> {
+        let mut capability = caps();
+        capability.max_chunk = 4;
+        let mut session = Session::new(ShortAtLink::new(short_at));
+        session.state = ConnectionState::Ready;
+        session.max_chunk = 4;
+        session.device = Some(Device::new(capability));
+        session
+    }
+
+    fn frame_packets(session: &Session<ShortAtLink>) -> (Vec<u8>, Vec<u32>) {
+        let mut phases = Vec::new();
+        let mut offsets = Vec::new();
+        let mut remaining = &session.transport.bytes[..];
+        while !remaining.is_empty() {
+            let (packet, consumed) = Packet::decode(remaining, 4096).unwrap();
+            assert_eq!(packet.kind, MessageType::Frame);
+            phases.push(packet.payload[0]);
+            if packet.payload[0] == 2 {
+                offsets.push(u32::from_le_bytes([
+                    packet.payload[9],
+                    packet.payload[10],
+                    packet.payload[11],
+                    packet.payload[12],
+                ]));
+            }
+            remaining = &remaining[consumed..];
+        }
+        (phases, offsets)
+    }
+
+    #[test]
+    fn short_chunk_resumes_the_remaining_chunks_and_commit() {
+        let mut session = ready_frame_session(2);
+        assert_eq!(session.send_frame(frame(&[7; 8])), Err(CoreError::ShortWrite));
+        session.resume_write().unwrap();
+        let (phases, offsets) = frame_packets(&session);
+        assert_eq!(phases, vec![1, 2, 2, 3]);
+        assert_eq!(offsets, vec![0, 4]);
+        assert_eq!(session.pending_request_count(), 1);
+    }
+
+    #[test]
+    fn short_commit_resumes_without_resending_the_frame() {
+        let mut session = ready_frame_session(4);
+        assert_eq!(session.send_frame(frame(&[7; 8])), Err(CoreError::ShortWrite));
+        session.resume_write().unwrap();
+        let (phases, offsets) = frame_packets(&session);
         assert_eq!(phases, vec![1, 2, 2, 3]);
         assert_eq!(offsets, vec![0, 4]);
         assert_eq!(session.pending_request_count(), 1);
