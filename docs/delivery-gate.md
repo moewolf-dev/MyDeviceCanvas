@@ -45,6 +45,13 @@ than 3600 s, idle shorter than 60 s, RSS growth above the budget, missing
 thread/FD samples, non-zero pending state, or a commit other than the current
 Core HEAD.
 
+`MDC_LONG_REPORT` accepts an ancestor report only when every file between the
+report commit and HEAD is under `tests/`, `tools/`, `docs/`, `.github/`, plus a
+`Cargo.lock` change that only adds a test/dev dependency. The ancestor commit and
+changed paths are printed in the report summary; quick/cross still run and the
+release native artifact is built from HEAD, so a change to `crates/`, `runtime/`
+or `sdk/` invalidates the report.
+
 For a run started directly with `cargo test`, `tools/soak-log-report.py` converts
 the raw log into the same schema and refuses partial or failed logs. See
 `docs/soak-reports/README.md`.

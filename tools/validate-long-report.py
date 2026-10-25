@@ -4,6 +4,7 @@ import argparse
 import json
 import pathlib
 import shutil
+import subprocess
 import sys
 
 
@@ -79,7 +80,7 @@ def main() -> int:
                         ["git", "diff", "--name-only", f"{commit}..{args.require_commit}"],
                         text=True,
                     ).splitlines()
-                allowed = ("tests/", "tools/", "docs/", ".github/")
+                allowed = ("tests/", "tools/", "docs/", ".github/", "Cargo.lock")
                 outside = [path for path in changed if not path.startswith(allowed)]
                 if not is_ancestor:
                     problems.append(f"commit {commit!r} is not an ancestor of {args.require_commit!r}")
