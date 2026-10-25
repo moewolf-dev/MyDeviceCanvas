@@ -31,7 +31,8 @@ hardware claim and does not replace `Core:D05/G03/H06`.
   machine consumes both.
 - Reconnect exhaustion reaches a terminal error, never an indefinite wait.
 
-Current gap: SIM-R04 (per-request deadline and Node tick owner).
+Implemented in R04: per-request deadlines. Remaining: the Node SDK still pumps
+synchronously inside request calls (SIM-R05 tick owner).
 
 ## 3. Send and backpressure
 
@@ -45,7 +46,10 @@ Current gap: SIM-R04 (per-request deadline and Node tick owner).
 - A full queue is a retryable condition with an explicit error; it cannot be
   reported as success.
 
-Current gap: SIM-R03 (transaction resume beyond the current packet).
+Implemented in R03: resumable Frame BEGIN/CHUNK/COMMIT transactions, one control
+window slot per PACKAGE (COMMIT only), and link abandonment when a package write
+fails mid-flight. Every message type shares `write_packet_with_id` /
+`write_bytes`; Tile is a single packet and resumes from `unsent`.
 
 ## 4. Lengths and budgets
 
@@ -80,6 +84,8 @@ Current gap: SIM-R07 (Rust BurstTransport currently returns 4 MiB in one poll).
 
 Implemented in R02: C++ parser types `0x12/0x31/0x32`, BEGIN geometry/length,
 range coverage, duplicate/overlap behavior, unknown surface rejection.
+R03 adds host-side package failure handling: a short/IO error abandons the link
+instead of resuming against an unknown written prefix.
 
 ## 7. Lifecycle
 
@@ -90,7 +96,11 @@ range coverage, duplicate/overlap behavior, unknown surface rejection.
 - Events carry a session generation; an old generation cannot update the new
   session.
 
-Current gap: SIM-R04/R06.
+Implemented in R04/R06: disconnect/replace/switch clear transactions, mirror
+inbox and base, gestures, config cache and deadlines through one
+`clear_link_state`; serial `close` drops the OS handle and rejects post-close
+I/O; accepted TCP streams get bounded timeouts. Remaining: session-generation
+tags on queued events and Node async cancellation (R05).
 
 ## 8. SDK execution
 
@@ -146,17 +156,17 @@ Current gap: SIM-R05 (the 12.2 s synchronous block is still reproduced).
 | SIM-T01 | 0x12/0x31/0x32 survive Parser | implemented `runtime/esp32/tests/parser_test.cpp` |
 | SIM-T02 | duplicate half frame cannot display | implemented same test |
 | SIM-T03 | oversized BEGIN rejected before allocation | implemented same test |
-| SIM-T04 | short write resumes BEGIN+CHUNK+COMMIT | open (R03) |
-| SIM-T05 | large package upload stays within window | open (R03) |
-| SIM-T06 | per-request deadline | open (R04) |
+| SIM-T04 | short write resumes BEGIN+CHUNK+COMMIT | implemented `short_chunk_resumes_*`, `short_commit_resumes_*` (R03) |
+| SIM-T05 | large package upload stays within window | implemented `large_package_upload_stays_in_the_control_window` (R03) |
+| SIM-T06 | per-request deadline | implemented `per_request_deadline_is_not_extended_by_a_new_request` (R04) |
 | SIM-T07 | Node silent peer does not block timer | open (R05) |
 | SIM-T08 | receive burst budget | open (R07) |
 | SIM-T09 | control decode >4 KiB rejected before decode | open (R07) |
-| SIM-T10 | peer close converges state | open (R04) |
-| SIM-T11 | disconnect drops old mirror frames | open (R04) |
-| SIM-T12 | unsolicited Capabilities cannot set Ready | open (R04) |
+| SIM-T10 | peer close converges state | implemented `transport_close_converges_away_from_ready` (R04) |
+| SIM-T11 | disconnect drops old mirror frames | implemented `disconnect_drops_the_mirror_inbox_and_base` (R04) |
+| SIM-T12 | unsolicited Capabilities cannot set Ready | implemented `unsolicited_capabilities_do_not_make_a_session_ready` (R04) |
 | SIM-T13 | 100000 ACKs do not grow history | open (R07) |
-| SIM-T14 | close/cancel/limits across transports | open (R06) |
+| SIM-T14 | close/cancel/limits across transports | partial: memory/TCP/serial close idempotence, post-close rejection, accepted-stream timeouts, WebSocket limit (R06); 500 ms cancel settle open (R05) |
 | SIM-T15 | multi-device isolation | open (R08) |
 | SIM-T16 | Rust/C++ differential byte boundaries | partial shared vectors; open (R02/R08) |
 

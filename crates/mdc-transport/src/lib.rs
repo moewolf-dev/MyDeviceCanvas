@@ -172,9 +172,28 @@ impl TcpTransport {
             stream: Some(stream),
         })
     }
+    /// Wrap an accepted stream. Without timeouts a peer that stops reading or
+    /// writing could block the caller forever, so accepted links use the same
+    /// 500 ms poll window as the WebSocket acceptor.
     pub fn from_stream(stream: TcpStream) -> Result<Self, TransportError> {
+        Self::from_stream_with_timeout(stream, Duration::from_millis(500))
+    }
+
+    pub fn from_stream_with_timeout(
+        stream: TcpStream,
+        timeout: Duration,
+    ) -> Result<Self, TransportError> {
         stream
             .set_nonblocking(false)
+            .map_err(|e| TransportError::Io(e.to_string()))?;
+        stream
+            .set_read_timeout(Some(timeout))
+            .map_err(|e| TransportError::Io(e.to_string()))?;
+        stream
+            .set_write_timeout(Some(timeout))
+            .map_err(|e| TransportError::Io(e.to_string()))?;
+        stream
+            .set_nodelay(true)
             .map_err(|e| TransportError::Io(e.to_string()))?;
         Ok(Self {
             stream: Some(stream),
@@ -246,7 +265,9 @@ pub fn available_serial_ports() -> Result<Vec<SerialPortDescriptor>, TransportEr
 
 #[cfg(feature = "serial")]
 pub struct SerialTransport {
-    port: Box<dyn serialport::SerialPort>,
+    /// `None` after close. Dropping the handle releases the OS port so another
+    /// open can take it; every post-close operation returns `Closed`.
+    port: Option<Box<dyn serialport::SerialPort>>,
 }
 #[cfg(feature = "serial")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,22 +323,26 @@ impl SerialTransport {
             port.write_data_terminal_ready(false)
                 .map_err(|e| TransportError::Io(e.to_string()))?;
         }
-        Ok(Self { port })
+        Ok(Self { port: Some(port) })
+    }
+
+    /// True until [`Transport::close`] drops the underlying handle.
+    pub fn is_open(&self) -> bool {
+        self.port.is_some()
     }
 
     /// Execute a DTR/RTS sequence such as [`POST_WRITE_RESET_SEQUENCE`].
     /// Uses real `thread::sleep` for `W` steps (unit tests should call
     /// [`apply_reset_steps`] with a mock sleeper).
     pub fn apply_reset_sequence(&mut self, seq: &str) -> Result<(), TransportError> {
+        let port = self.port.as_mut().ok_or(TransportError::Closed)?;
         let steps = parse_reset_sequence(seq).map_err(TransportError::Io)?;
         for step in steps {
             match step {
-                ResetStep::Dtr(v) => self
-                    .port
+                ResetStep::Dtr(v) => port
                     .write_data_terminal_ready(v)
                     .map_err(|e| TransportError::Io(e.to_string()))?,
-                ResetStep::Rts(v) => self
-                    .port
+                ResetStep::Rts(v) => port
                     .write_request_to_send(v)
                     .map_err(|e| TransportError::Io(e.to_string()))?,
                 ResetStep::WaitMs(ms) => std::thread::sleep(Duration::from_millis(ms)),
@@ -333,13 +358,14 @@ impl SerialTransport {
 #[cfg(feature = "serial")]
 impl Transport for SerialTransport {
     fn write(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
-        self.port
-            .write_all(bytes)
+        let port = self.port.as_mut().ok_or(TransportError::Closed)?;
+        port.write_all(bytes)
             .map_err(|e| TransportError::Io(e.to_string()))
     }
     fn read(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        let port = self.port.as_mut().ok_or(TransportError::Closed)?;
         let mut buffer = [0u8; 16 * 1024];
-        match self.port.read(&mut buffer) {
+        match port.read(&mut buffer) {
             Ok(0) => Ok(None),
             Ok(n) => Ok(Some(buffer[..n].to_vec())),
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Ok(None),
@@ -347,7 +373,12 @@ impl Transport for SerialTransport {
         }
     }
     fn close(&mut self) {
-        let _ = self.port.clear(serialport::ClearBuffer::All);
+        if let Some(port) = self.port.take() {
+            let _ = port.clear(serialport::ClearBuffer::All);
+            // Dropping the boxed handle releases the OS device. `close` stays
+            // idempotent: a second call is a no-op.
+            drop(port);
+        }
     }
 }
 
@@ -508,6 +539,43 @@ mod tests {
         client.close(); // idempotent
         assert_eq!(client.write(&[0]), Err(TransportError::Closed));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn accepted_tcp_stream_gets_bounded_reads() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            // Hold the connection open without sending anything.
+            thread::sleep(Duration::from_millis(600));
+            drop(stream);
+        });
+        let stream = std::net::TcpStream::connect(addr).unwrap();
+        let mut transport =
+            TcpTransport::from_stream_with_timeout(stream, Duration::from_millis(100)).unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(transport.read().unwrap(), None);
+        assert!(started.elapsed() < Duration::from_millis(500));
+        transport.close();
+        server.join().unwrap();
+    }
+
+    #[cfg(feature = "serial")]
+    #[test]
+    fn serial_close_is_idempotent_and_rejects_io() {
+        // The OS handle is absent, which is the state close leaves behind.
+        let mut transport = SerialTransport { port: None };
+        assert!(!transport.is_open());
+        assert_eq!(transport.write(&[1]), Err(TransportError::Closed));
+        assert_eq!(transport.read(), Err(TransportError::Closed));
+        assert_eq!(
+            transport.apply_reset_sequence("D0R0"),
+            Err(TransportError::Closed)
+        );
+        transport.close();
+        transport.cancel();
+        assert!(!transport.is_open());
     }
 
     #[cfg(feature = "websocket")]

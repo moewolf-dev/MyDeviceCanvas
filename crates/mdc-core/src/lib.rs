@@ -1830,21 +1830,35 @@ impl<T: Transport> Session<T> {
         }
         self.diagnostics.push_back(record);
     }
-    /// Drop every outstanding request/held frame from the previous device run.
-    fn discard_run(&mut self) {
-        let held: Vec<usize> = self.held_frames.values().copied().collect();
-        for pixels in held {
-            self.copy_budget.release_frame(pixels);
-        }
-        self.held_frames.clear();
-        self.request_floor = self.next_request_id;
+    /// SIM-R06: every path that abandons a link clears the same state. Keeping
+    /// this in one place prevents a reconnect from inheriting a stale request
+    /// deadline, frame transaction, mirror base or gesture chain.
+    fn clear_link_state(&mut self) {
+        self.rx.clear();
         self.pending_requests.clear();
         self.request_deadlines.clear();
         self.pending_control.clear();
-        self.pending_frames.clear();
-        self.finished_acks.clear();
         self.frame_sent_at.clear();
         self.frame_received_at.clear();
+        self.pending_frames.clear();
+        self.unsent = None;
+        self.frame_tx = None;
+        self.hello_request = None;
+        self.finished_acks.clear();
+        self.mirror_inbox = None;
+        self.mirror_assembler = None;
+        self.mirror_last = None;
+        self.mirror_last_frame_id = 0;
+        self.config_cache.clear();
+        self.gestures.reset();
+        self.copy_budget = HostCopyBudget::new(self.copy_limit);
+    }
+
+    /// Drop every outstanding request/held frame from the previous device run.
+    fn discard_run(&mut self) {
+        self.held_frames.clear();
+        self.clear_link_state();
+        self.request_floor = self.next_request_id;
         self.missed_heartbeats = 0;
         self.heartbeat_outstanding = false;
         self.needs_full_frame = true;
@@ -2195,18 +2209,11 @@ impl<T: Transport> Session<T> {
     pub fn switch_transport(&mut self, transport: T) -> Result<(), CoreError> {
         let reconnect = self.reconnect_enabled;
         self.transport.close();
-        self.rx.clear();
-        self.pending_requests.clear();
-        self.pending_control.clear();
-        self.frame_sent_at.clear();
-        self.frame_received_at.clear();
-        self.pending_frames.clear();
-        self.unsent = None;
-        self.finished_acks.clear();
         self.held_frames.clear();
-        self.copy_budget = HostCopyBudget::new(self.copy_limit);
+        self.clear_link_state();
         self.request_floor = self.next_request_id;
         self.device = None;
+        self.gestures.reset();
         self.awaiting_transport = false;
         self.needs_full_frame = true;
         self.reconnect_ready_ms = None;
@@ -2222,23 +2229,8 @@ impl<T: Transport> Session<T> {
         self.transport.close();
         self.state = ConnectionState::Disconnected;
         self.device = None;
-        self.rx.clear();
-        self.pending_requests.clear();
-        self.pending_control.clear();
-        self.frame_sent_at.clear();
-        self.frame_received_at.clear();
-        self.pending_frames.clear();
-        self.unsent = None;
-        self.frame_tx = None;
-        self.hello_request = None;
-        self.finished_acks.clear();
         self.held_frames.clear();
-        self.copy_budget = HostCopyBudget::new(self.copy_limit);
-        self.mirror_assembler = None;
-        self.mirror_last = None;
-        self.mirror_last_frame_id = 0;
-        self.config_cache.clear();
-        self.gestures.reset();
+        self.clear_link_state();
     }
     pub fn enable_reconnect(&mut self, enabled: bool) {
         self.reconnect_enabled = enabled;
@@ -2326,13 +2318,20 @@ impl<T: Transport> Session<T> {
         loop {
             match tx.stage {
                 FrameTxStage::Begin => {
-                    let begin = encode_frame_begin(&tx.surface_id, tx.frame_id, tx.width, tx.height, tx.pixels.len() as u32)
-                        .map_err(|e| CoreError::Protocol(e.to_string()))?;
+                    let begin = encode_frame_begin(
+                        &tx.surface_id,
+                        tx.frame_id,
+                        tx.width,
+                        tx.height,
+                        tx.pixels.len() as u32,
+                    )
+                    .map_err(|e| CoreError::Protocol(e.to_string()))?;
                     // Mark the stage before writing: a short write leaves the
                     // BEGIN tail in `unsent`, so resume must continue with chunks.
                     tx.stage = FrameTxStage::Chunks;
                     tx.next_offset = 0;
-                    match self.write_packet_with_id(MessageType::Frame, begin, tx.request_id, true) {
+                    match self.write_packet_with_id(MessageType::Frame, begin, tx.request_id, true)
+                    {
                         Ok(()) => {}
                         Err(CoreError::ShortWrite) => {
                             self.frame_tx = Some(tx);
@@ -2358,7 +2357,8 @@ impl<T: Transport> Session<T> {
                     );
                     // Advance before writing so a short chunk is not re-sent.
                     tx.next_offset = end;
-                    match self.write_packet_with_id(MessageType::Frame, chunk, tx.request_id, false) {
+                    match self.write_packet_with_id(MessageType::Frame, chunk, tx.request_id, false)
+                    {
                         Ok(()) => {}
                         Err(CoreError::ShortWrite) => {
                             self.frame_tx = Some(tx);
@@ -2374,7 +2374,12 @@ impl<T: Transport> Session<T> {
                 FrameTxStage::Commit => {
                     let commit = encode_frame_commit(tx.frame_id);
                     tx.stage = FrameTxStage::Done;
-                    match self.write_packet_with_id(MessageType::Frame, commit, tx.request_id, false) {
+                    match self.write_packet_with_id(
+                        MessageType::Frame,
+                        commit,
+                        tx.request_id,
+                        false,
+                    ) {
                         Ok(()) => return Ok(()),
                         Err(CoreError::ShortWrite) => {
                             self.frame_tx = Some(tx);
@@ -3006,9 +3011,29 @@ impl<T: Transport> Session<T> {
         if bytes.len() > MAX_PACKAGE_BYTES {
             return Err(CoreError::TooLarge);
         }
+        // Check the window before BEGIN: bailing out after streaming chunks
+        // would leave a half-written package in the device's staging buffer.
+        if self.pending_control.len() >= MAX_CONTROL_IN_FLIGHT {
+            return Err(CoreError::ControlQueueFull);
+        }
+        let request_id = self.alloc_request_id()?;
+        if let Err(error) = self.send_package_bytes(bytes, request_id) {
+            // A package is atomic. A short write or I/O error leaves an unknown
+            // written prefix, so abandon the link instead of retrying chunks
+            // against a device that may already hold part of the package.
+            self.unsent = None;
+            let _ = self.mark_transport_failure();
+            return Err(error);
+        }
+        self.pending_control.insert(request_id);
+        self.last_send_ms = self.virtual_ms;
+        self.packages_sent = self.packages_sent.saturating_add(1);
+        Ok(request_id)
+    }
+
+    fn send_package_bytes(&mut self, bytes: &[u8], request_id: u32) -> Result<(), CoreError> {
         let total = u32::try_from(bytes.len()).map_err(|_| CoreError::TooLarge)?;
         let checksum = package_checksum(bytes);
-        let request_id = self.alloc_request_id()?;
         // SIM-R03: BEGIN/chunks are not individual control requests. Only the
         // final COMMIT occupies the bounded control window; the device ACKs the
         // package after commit, not every chunk.
@@ -3034,19 +3059,12 @@ impl<T: Transport> Session<T> {
                 .checked_add(chunk.len() as u32)
                 .ok_or(CoreError::TooLarge)?;
         }
-        if self.pending_control.len() >= MAX_CONTROL_IN_FLIGHT {
-            return Err(CoreError::ControlQueueFull);
-        }
         self.write_packet_with_id(
             MessageType::Package,
             encode_package_commit(),
             request_id,
             true,
-        )?;
-        self.pending_control.insert(request_id);
-        self.last_send_ms = self.virtual_ms;
-        self.packages_sent = self.packages_sent.saturating_add(1);
-        Ok(request_id)
+        )
     }
     pub fn packages_sent(&self) -> u64 {
         self.packages_sent
@@ -3405,8 +3423,10 @@ impl<T: Transport> Session<T> {
         if matches!(write_result, Ok(()) | Err(CoreError::ShortWrite)) && track {
             self.pending_requests.insert(id);
             if self.config.ack_timeout_ms > 0 {
-                self.request_deadlines
-                    .insert(id, self.virtual_ms.saturating_add(self.config.ack_timeout_ms));
+                self.request_deadlines.insert(
+                    id,
+                    self.virtual_ms.saturating_add(self.config.ack_timeout_ms),
+                );
             }
             self.last_send_ms = self.virtual_ms;
         }
@@ -3430,9 +3450,7 @@ impl<T: Transport> Session<T> {
             MessageType::Capabilities => {
                 if self.state == ConnectionState::Handshaking {
                     if self.hello_request != Some(packet.request_id) {
-                        return Err(CoreError::Protocol(
-                            "unexpected capabilities reply".into(),
-                        ));
+                        return Err(CoreError::Protocol("unexpected capabilities reply".into()));
                     }
                 } else if self.state == ConnectionState::Ready {
                     // A device may refresh capabilities after the handshake; a
@@ -3441,9 +3459,7 @@ impl<T: Transport> Session<T> {
                         return Ok(());
                     }
                 } else {
-                    return Err(CoreError::Protocol(
-                        "capabilities before handshake".into(),
-                    ));
+                    return Err(CoreError::Protocol("capabilities before handshake".into()));
                 }
                 self.release_request(packet.request_id);
                 self.hello_request = None;
@@ -4090,6 +4106,82 @@ mod tests {
         assert!(session.transport_mut().writes > 1);
     }
 
+    struct FailAtLink {
+        writes: usize,
+        fail_at: usize,
+    }
+    impl mdc_transport::Transport for FailAtLink {
+        fn write(&mut self, _bytes: &[u8]) -> Result<(), mdc_transport::TransportError> {
+            self.writes += 1;
+            if self.writes == self.fail_at {
+                return Err(mdc_transport::TransportError::Io("link lost".into()));
+            }
+            Ok(())
+        }
+        fn read(&mut self) -> Result<Option<Vec<u8>>, mdc_transport::TransportError> {
+            Ok(None)
+        }
+        fn close(&mut self) {}
+    }
+
+    fn ready_package_session<T: mdc_transport::Transport>(transport: T) -> Session<T> {
+        let mut capability = caps();
+        capability.renderer = Some(mdc_protocol::RendererCapability::sprite_only(512));
+        let mut session = Session::with_config(
+            transport,
+            SessionConfig {
+                connect_timeout_ms: 100,
+                ack_timeout_ms: 100,
+                heartbeat_ms: 0,
+                reconnect: true,
+            },
+        );
+        session.state = ConnectionState::Ready;
+        session.device = Some(Device::new(capability));
+        session
+    }
+
+    #[test]
+    fn package_write_failure_abandons_the_link() {
+        // SIM-R03: an interrupted package cannot be resumed chunk-by-chunk.
+        let mut session = ready_package_session(FailAtLink {
+            writes: 0,
+            fail_at: 2,
+        });
+        let error = session.install_package(&vec![0x33; 64]).unwrap_err();
+        assert!(matches!(error, CoreError::Transport(_)), "{error:?}");
+        assert_eq!(session.packages_sent(), 0);
+        assert_eq!(session.pending_request_count(), 0);
+        assert!(session.pending_control.is_empty());
+        assert_eq!(session.state, ConnectionState::Reconnecting);
+    }
+
+    #[test]
+    fn package_short_write_abandons_the_link() {
+        let mut session = ready_package_session(ShortAtLink::new(2));
+        assert_eq!(
+            session.install_package(&vec![0x44; 64]),
+            Err(CoreError::ShortWrite)
+        );
+        assert!(session.unsent.is_none());
+        assert_eq!(session.packages_sent(), 0);
+        assert_eq!(session.pending_request_count(), 0);
+        assert_eq!(session.state, ConnectionState::Reconnecting);
+    }
+
+    #[test]
+    fn full_control_window_rejects_a_package_before_writing() {
+        let mut session = ready_package_session(ShortAtLink::new(usize::MAX));
+        for id in 0..MAX_CONTROL_IN_FLIGHT as u32 {
+            session.pending_control.insert(id);
+        }
+        assert_eq!(
+            session.install_package(&[1, 2, 3]),
+            Err(CoreError::ControlQueueFull)
+        );
+        assert_eq!(session.transport.writes, 0);
+    }
+
     #[test]
     fn install_package_requires_a_renderer_capability() {
         let (host, mut device) = MemoryLink::pair();
@@ -4336,11 +4428,15 @@ mod tests {
         session.send_frame(frame(&[1; 8])).unwrap();
         session.tick(90).unwrap();
         session
-            .write_packet(MessageType::Config, encode_control(&mdc_protocol::ConfigCommand {
-                action: "get".into(),
-                key: "brightness".into(),
-                value: None,
-            }).unwrap())
+            .write_packet(
+                MessageType::Config,
+                encode_control(&mdc_protocol::ConfigCommand {
+                    action: "get".into(),
+                    key: "brightness".into(),
+                    value: None,
+                })
+                .unwrap(),
+            )
             .unwrap();
         assert_eq!(session.tick(100), Err(CoreError::AckTimeout));
     }
@@ -4476,7 +4572,9 @@ mod tests {
         let (host, mut device) = MemoryLink::pair();
         let mut session = Session::new(mdc_transport::ShortWriteLink::new(host));
         session.connect().unwrap();
-        let hello = Packet::decode(&device.read().unwrap().unwrap(), 4096).unwrap().0;
+        let hello = Packet::decode(&device.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
         let mut capabilities = caps();
         capabilities.max_chunk = 4;
         device
@@ -4494,7 +4592,10 @@ mod tests {
             .unwrap();
         session.poll().unwrap();
         session.transport_mut().arm(5);
-        assert_eq!(session.send_frame(frame(&[7; 8])), Err(CoreError::ShortWrite));
+        assert_eq!(
+            session.send_frame(frame(&[7; 8])),
+            Err(CoreError::ShortWrite)
+        );
         session.resume_write().unwrap();
         let mut bytes = Vec::new();
         while let Some(chunk) = device.read().unwrap() {
@@ -4556,7 +4657,10 @@ mod tests {
     #[test]
     fn short_chunk_resumes_the_remaining_chunks_and_commit() {
         let mut session = ready_frame_session(2);
-        assert_eq!(session.send_frame(frame(&[7; 8])), Err(CoreError::ShortWrite));
+        assert_eq!(
+            session.send_frame(frame(&[7; 8])),
+            Err(CoreError::ShortWrite)
+        );
         session.resume_write().unwrap();
         let (phases, offsets) = frame_packets(&session);
         assert_eq!(phases, vec![1, 2, 2, 3]);
@@ -4567,12 +4671,72 @@ mod tests {
     #[test]
     fn short_commit_resumes_without_resending_the_frame() {
         let mut session = ready_frame_session(4);
-        assert_eq!(session.send_frame(frame(&[7; 8])), Err(CoreError::ShortWrite));
+        assert_eq!(
+            session.send_frame(frame(&[7; 8])),
+            Err(CoreError::ShortWrite)
+        );
         session.resume_write().unwrap();
         let (phases, offsets) = frame_packets(&session);
         assert_eq!(phases, vec![1, 2, 2, 3]);
         assert_eq!(offsets, vec![0, 4]);
         assert_eq!(session.pending_request_count(), 1);
+    }
+
+    #[test]
+    fn switch_transport_drops_stale_request_deadlines() {
+        // SIM-R06: a new endpoint must not inherit the old link's deadlines.
+        let (host_a, mut dev_a) = MemoryLink::pair();
+        let mut session = Session::with_config(
+            host_a,
+            SessionConfig {
+                connect_timeout_ms: 100,
+                ack_timeout_ms: 50,
+                heartbeat_ms: 0,
+                reconnect: true,
+            },
+        );
+        session.connect().unwrap();
+        handshake(&mut session, &mut dev_a);
+        session
+            .write_packet(
+                MessageType::Config,
+                encode_control(&mdc_protocol::ConfigCommand {
+                    action: "get".into(),
+                    key: "brightness".into(),
+                    value: None,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(session.pending_request_count(), 1);
+        assert_eq!(session.request_deadlines.len(), 1);
+        let (host_b, mut dev_b) = MemoryLink::pair();
+        session.switch_transport(host_b).unwrap();
+        handshake(&mut session, &mut dev_b);
+        assert_eq!(session.pending_request_count(), 0);
+        assert!(session.request_deadlines.is_empty());
+        // The old deadline would have fired at t=50; the new link is idle.
+        session.tick(10_000).unwrap();
+    }
+
+    #[test]
+    fn disconnect_clears_a_short_written_frame_transaction() {
+        let mut session = ready_frame_session(1);
+        assert_eq!(
+            session.send_frame(frame(&[7; 8])),
+            Err(CoreError::ShortWrite)
+        );
+        assert!(session.frame_tx.is_some());
+        assert!(session.unsent.is_some());
+        assert_eq!(session.pending_request_count(), 1);
+        let written = session.transport.bytes.len();
+        session.disconnect();
+        assert!(session.frame_tx.is_none());
+        assert!(session.unsent.is_none());
+        assert!(session.request_deadlines.is_empty());
+        assert_eq!(session.pending_request_count(), 0);
+        session.resume_write().unwrap();
+        assert_eq!(session.transport.bytes.len(), written);
     }
 
     #[test]
@@ -6532,6 +6696,35 @@ mod tests {
         }
         .encode(4096)
         .unwrap()
+    }
+
+    #[test]
+    fn disconnect_drops_the_mirror_inbox_and_base() {
+        // SIM-R04/SIM-T11.
+        let (host, mut dev) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        let hello = Packet::decode(&dev.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        let caps = mirror_caps();
+        write_caps(&mut dev, hello.request_id, &caps);
+        session.poll().unwrap();
+        session.start_mirror("main", "full-frame", 30).unwrap();
+        let _ = dev.read().unwrap().unwrap();
+        dev.write(&mirror_packet(
+            MessageType::MirrorFrame,
+            encode_frame_payload("main", 1, 2, 2, &[0x11; 8]).unwrap(),
+        ))
+        .unwrap();
+        session.poll().unwrap();
+        assert!(session.mirror_inbox.is_some());
+        assert!(session.mirror_last.is_some());
+        session.disconnect();
+        assert!(session.take_mirror_frame().is_none());
+        assert!(session.mirror_inbox.is_none());
+        assert!(session.mirror_last.is_none());
+        assert!(session.mirror_assembler.is_none());
     }
 
     #[test]
