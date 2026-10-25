@@ -14,6 +14,7 @@
 //! - `--stall-after-ms N`: keep the socket open but stop servicing it.
 //! - `--reboot-after-ms N`: restart the fake device once and emit BootInfo.
 //! - `--recaps-after-ms N --recaps-fps F`: send changed Capabilities on a live link.
+//! - `--dump-path PATH`: write the accepted framebuffer after every poll (tests).
 use mdc_simulator::{BoardProfile, FakeDevice};
 use mdc_transport::{TcpTransport, Transport, TransportError, WebSocketTransport};
 use std::net::TcpListener;
@@ -133,6 +134,7 @@ fn main() {
     let mut reboot_after_ms = None;
     let mut recaps_after_ms = None;
     let mut recaps_fps = 10u16;
+    let mut dump_path: Option<String> = None;
     let mut ws = false;
     let mut positionals = Vec::new();
     let mut args = std::env::args().skip(1);
@@ -160,6 +162,7 @@ fn main() {
             "--reboot-after-ms" => reboot_after_ms = Some(value("--reboot-after-ms")),
             "--recaps-after-ms" => recaps_after_ms = Some(value("--recaps-after-ms")),
             "--recaps-fps" => recaps_fps = value("--recaps-fps") as u16,
+            "--dump-path" => dump_path = Some(args.next().expect("--dump-path needs a value")),
             _ => positionals.push(arg),
         }
     }
@@ -271,7 +274,12 @@ fn main() {
                 device.poll()
             };
             match result {
-                Ok(()) => std::thread::sleep(Duration::from_millis(5)),
+                Ok(()) => {
+                    if let Some(path) = &dump_path {
+                        let _ = std::fs::write(path, device.pixels());
+                    }
+                    std::thread::sleep(Duration::from_millis(5))
+                }
                 Err(mdc_simulator::SimError::Disconnected) => {
                     println!("peer disconnected");
                     break;

@@ -187,6 +187,7 @@ if ! MDC_PAIRING_STORE="$CXX_STORE" ./target/debug/mdc pair sim-linux-virt token
 fi
 kill "$CXX_PID" || true
 rm -f "$CXX_STORE"
+MDC_CXX_PEER_BIN=/tmp/mdc_linux_peer cargo test -p mdc-compatibility-tests --test cxx_peer
 
 if command -v cmake >/dev/null 2>&1; then
   # Host stub only. A configured IDF_PATH would switch this directory into a device project.

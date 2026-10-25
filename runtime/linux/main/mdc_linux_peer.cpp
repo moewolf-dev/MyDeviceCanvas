@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <netinet/in.h>
 #include <string>
 #include <sys/socket.h>
@@ -33,6 +34,15 @@ bool write_all(int fd, const std::uint8_t* data, std::size_t len) {
   return true;
 }
 
+void dump_framebuffer(const mdc::LinuxRuntime& runtime) {
+  const char* path = std::getenv("MDC_CXX_PEER_DUMP");
+  if (path == nullptr || *path == '\0') return;
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  const auto& pixels = runtime.framebuffer();
+  out.write(reinterpret_cast<const char*>(pixels.data()),
+            static_cast<std::streamsize>(pixels.size()));
+}
+
 void flush_replies(int client, mdc::LinuxRuntime& runtime) {
   for (const auto& reply : runtime.replies()) {
     auto bytes = mdc::encode_packet(reply.type, reply.request_id, reply.payload);
@@ -41,6 +51,7 @@ void flush_replies(int client, mdc::LinuxRuntime& runtime) {
     }
   }
   runtime.clear_replies();
+  dump_framebuffer(runtime);
 }
 
 void drain_parser(int client, mdc::Parser& parser, mdc::LinuxRuntime& runtime) {

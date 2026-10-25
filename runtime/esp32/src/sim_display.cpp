@@ -35,6 +35,9 @@ bool SimDisplay::flush_rect(std::uint16_t x, std::uint16_t y, std::uint16_t w, s
 
 bool SimDisplay::present() {
   front_.swap(back_);
+  // Partial updates write only the changed rect into `back_`; keep the rest of
+  // the presented frame so a tile after a full frame preserves other pixels.
+  back_ = front_;
   return true;
 }
 

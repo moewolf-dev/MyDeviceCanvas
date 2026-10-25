@@ -299,6 +299,65 @@ test("native serial PTY peer exit surfaces a transport error", {
   }
 });
 
+test("native serial PTY corrupt ACK is rejected", {
+  skip: !native || !fs.existsSync(peerBin) || process.platform === "win32",
+}, async () => {
+  const port = await reservePort();
+  const address = `127.0.0.1:${port}`;
+  const peer = spawn(peerBin, [address, "--corrupt-after", "1"], { stdio: "ignore" });
+  const bridge = spawn("python3", [path.join(repoRoot, "sdk/node/pty_bridge.py"), address], {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  const mdc = await MyDeviceCanvas.create();
+  try {
+    const ptyPath = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("pty bridge timeout")), 5000);
+      bridge.stdout.once("data", (chunk) => {
+        clearTimeout(timer);
+        resolve(String(chunk).trim().split("\n")[0]);
+      });
+      bridge.once("error", reject);
+    });
+    let connected = false;
+    let last = "not attempted";
+    for (let i = 0; i < 40; i += 1) {
+      try {
+        await mdc.connectSerial(ptyPath, 115200);
+        connected = true;
+        break;
+      } catch (error) {
+        last = error instanceof Error ? error.message : String(error);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    assert.equal(connected, true, last);
+    const devices = await mdc.devices();
+    const surface = devices[0].surface("main");
+    const bytes = new Uint8Array(surface.info.width * surface.info.height * 2);
+    let failure = null;
+    try {
+      await surface.sendFrame(bytes);
+    } catch (error) {
+      failure = error;
+    }
+    for (let i = 0; i < 30 && !failure; i += 1) {
+      try {
+        await mdc.pollEvents();
+      } catch (error) {
+        failure = error;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(failure, "corrupt PTY ACK must be rejected");
+    assert.match(String(failure.message), /protocol|checksum|invalid/i);
+  } finally {
+    bridge.kill();
+    peer.kill();
+    mdc.dispose();
+  }
+});
+
 test("native connectWebSocket sends an RGB565 frame to mdc-sim-peer", {
   skip: !native || !fs.existsSync(peerBin),
 }, async () => {

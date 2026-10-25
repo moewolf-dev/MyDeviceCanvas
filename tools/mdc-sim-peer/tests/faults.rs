@@ -234,6 +234,36 @@ fn split_outbound_packets_still_round_trip() {
 }
 
 #[test]
+fn accepted_frame_pixels_reach_the_peer_exactly() {
+    let dump = std::env::temp_dir().join(format!(
+        "mdc-fault-dump-{}-{}.bin",
+        std::process::id(),
+        Instant::now().elapsed().as_nanos()
+    ));
+    let _ = std::fs::remove_file(&dump);
+    let peer = spawn_peer(&["--dump-path", dump.to_str().unwrap()]);
+    let mut session = connect_tcp(&peer.addr, config(1_000, 0));
+    wait_ready(&mut session);
+    session.send_frame(full_frame()).expect("send frame");
+    wait_ack(&mut session);
+    let expected_len = 480 * 320 * 2;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut pixels = Vec::new();
+    while Instant::now() < deadline {
+        if let Ok(bytes) = std::fs::read(&dump) {
+            if bytes.len() == expected_len {
+                pixels = bytes;
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let _ = std::fs::remove_file(&dump);
+    assert_eq!(pixels.len(), expected_len);
+    assert!(pixels.iter().all(|byte| *byte == 0x33));
+}
+
+#[test]
 fn out_of_order_acks_release_both_surfaces() {
     // Two frames on the dual-surface board: the peer emits their ACKs in
     // reverse order. Both requests must still complete exactly once.
@@ -325,6 +355,17 @@ fn websocket_peer_round_trips_a_frame() {
     wait_ready(&mut session);
     session.send_frame(full_frame()).expect("send frame");
     wait_ack(&mut session);
+}
+
+#[test]
+fn websocket_lost_request_times_out() {
+    let peer = spawn_peer(&["--ws", "--lose-after", "1"]);
+    let mut session = connect_ws(&peer.addr, config(200, 0));
+    wait_ready(&mut session);
+    session.send_frame(full_frame()).expect("send frame");
+    assert_eq!(session.tick(250), Err(CoreError::AckTimeout));
+    assert_ne!(session.state, ConnectionState::Ready);
+    assert_eq!(session.stats().acks_received, 0);
 }
 
 #[test]

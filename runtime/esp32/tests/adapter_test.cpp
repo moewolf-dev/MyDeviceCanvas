@@ -24,5 +24,16 @@ int main() {
 
   // Wrong length rejected
   assert(!adapter.flush_rect(0, 0, 10, 10, full.data(), 3));
+
+  // SIM-R08: a partial update after present must preserve the rest of the frame.
+  mdc::SimDisplay partial(4, 2);
+  std::vector<std::uint8_t> base(16, 0x42);
+  assert(partial.flush_rect(0, 0, 4, 2, base.data(), base.size()));
+  assert(partial.present());
+  std::vector<std::uint8_t> tile(4, 0x77);
+  assert(partial.flush_rect(0, 0, 2, 1, tile.data(), tile.size()));
+  assert(partial.present());
+  assert(partial.pixels()[0] == 0x77 && partial.pixels()[3] == 0x77);
+  assert(partial.pixels()[4] == 0x42 && partial.pixels()[15] == 0x42);
   return 0;
 }

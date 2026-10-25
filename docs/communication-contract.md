@@ -189,9 +189,9 @@ does not fall back to a FakeDevice; the next call reports `no active connection`
 | SIM-T11 | disconnect drops old mirror frames | implemented `disconnect_drops_the_mirror_inbox_and_base` (R04) |
 | SIM-T12 | unsolicited Capabilities cannot set Ready | implemented `unsolicited_capabilities_do_not_make_a_session_ready`; Node events also stamp `generation` (R04) |
 | SIM-T13 | 100000 ACKs do not grow history | implemented `finished_ack_history_is_bounded` (R07) |
-| SIM-T14 | close/cancel/limits across transports | partial: memory/TCP/WS/serial close idempotence, post-close rejection, accepted-stream timeouts, WebSocket limit (R06); Serial PTY peer-exit and Node cancel covered (R08); C++ runtime close injection remains |
+| SIM-T14 | close/cancel/limits across transports | implemented: memory/TCP/WS/serial close idempotence, post-close rejection, bounded accepted reads/timeouts, WebSocket limit (R06), Serial PTY peer-exit, Node cancel and C++ peer exit (R08) |
 | SIM-T15 | multi-device isolation | implemented `one_device_exiting_does_not_close_another` (R08, two processes) |
-| SIM-T16 | Rust/C++ differential byte boundaries | partial shared vectors; open (R02/R08) |
+| SIM-T16 | Rust/C++ differential byte boundaries | shared vectors + `cxx_peer` chunked frame/tile with exact pixel dump (R08) |
 
 ## 14. Cross-process fault matrix
 
@@ -214,12 +214,22 @@ and byte-level outcomes:
 | half-open/stall | `--stall-after-ms N` | `AckTimeout` |
 | device reboot | `--reboot-after-ms N` | new boot/run id, frame recovers |
 | multi-device A/B | two peers | A exit leaves B Ready and interactive |
+| WebSocket lost request | `--ws --lose-after N` | `AckTimeout`, no ACK |
+| Serial PTY corrupt ACK | peer `--corrupt-after N` | `Protocol` rejection on Node |
+| exact frame pixels | `--dump-path PATH` | 307200 bytes, every byte matches |
+| C++ runtime process | `tools/cxx-peer-check.sh` | chunked frame + tile, exact pixels |
+| C++ short BEGIN | `ShortOnce` wrapper | resume completes, one ACK |
+| C++ peer exit | kill child | `Transport` error, leaves Ready |
 
 Node drives the same TCP/WebSocket/PTY paths; its silent-peer timer/cancel,
-TCP peer-exit and Serial PTY peer-exit cases live in
-`sdk/node/native-smoke.test.js`. Still open for R08: a C++ Linux runtime in a
-separate process paired with a Rust host, and transport-level short-write
-injection below the packet boundary.
+TCP peer-exit, Serial PTY peer-exit and PTY corruption cases live in
+`sdk/node/native-smoke.test.js`. The C++ runtime is covered as a separate
+process over `runtime/linux/main/mdc_linux_peer.cpp`.
+
+The matrix exposed and fixed a real C++ display bug: after `present()`, the next
+partial `flush_rect` wrote into a blank back buffer and erased the rest of the
+frame. `SimDisplay::present` now copies the front buffer to the back buffer, and
+the C++ peer test asserts both tile rows and the untouched pixels.
 
 This contract is additive to `docs/protocol.md`; a protocol change must update
 both files and the shared vectors.
