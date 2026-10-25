@@ -125,6 +125,9 @@ does not fall back to a FakeDevice; the next call reports `no active connection`
 - Missing/zero/duplicate/contradictory device or surface fields have explicit
   rejection rules.
 - Effective limits are the intersection of both peers.
+- A Pong only clears a miss when it matches the outstanding Ping request id.
+- A Config reply is applied only when its key has an outstanding request; the
+  original request slot is released on that reply.
 - The host never infers a capability from a board name.
 - Unknown optional features return `Unsupported`, never a false success.
 - `device_id` and `board_id` are distinct: a serial pathname or IP address is not
@@ -165,7 +168,7 @@ does not fall back to a FakeDevice; the next call reports `no active connection`
 | SIM-T03 | oversized BEGIN rejected before allocation | implemented same test |
 | SIM-T04 | short write resumes BEGIN+CHUNK+COMMIT | implemented `short_chunk_resumes_*`, `short_commit_resumes_*` (R03) |
 | SIM-T05 | large package upload stays within window | implemented `large_package_upload_stays_in_the_control_window` (R03) |
-| SIM-T06 | per-request deadline | implemented `per_request_deadline_is_not_extended_by_a_new_request` (R04) |
+| SIM-T06 | per-request deadline | implemented `per_request_deadline_is_not_extended_by_a_new_request`; Pong/Config replies must match an outstanding request (R04) |
 | SIM-T07 | Node silent peer does not block timer | implemented `native-smoke.test.js` silent-peer timer/cancel test (R05) |
 | SIM-T08 | receive burst budget | open (R07) |
 | SIM-T09 | control decode >4 KiB rejected before decode | open (R07) |

@@ -1647,6 +1647,8 @@ pub struct Session<T: Transport> {
     /// Ping sent and not yet answered. Three misses start reconnect.
     missed_heartbeats: u32,
     heartbeat_outstanding: bool,
+    /// SIM-R04: request id of the outstanding Ping; only that Pong counts.
+    heartbeat_request: Option<u32>,
     reconnect_ready_ms: Option<u64>,
     /// After reconnect backoff, host must supply a fresh transport via
     /// [`provide_transport`](Self::provide_transport) before HELLO is resent.
@@ -1668,6 +1670,8 @@ pub struct Session<T: Transport> {
     packages_sent: u64,
     /// N40: configuration values learned from device replies.
     config_cache: BTreeMap<String, String>,
+    /// SIM-R04: key -> request id for config replies that were actually asked for.
+    pending_configs: BTreeMap<String, u32>,
     /// N304: host boot identity advertised in Hello (0 = unset).
     host_boot_id: u64,
     /// N304: the peer's last reported boot identity (None before the first
@@ -1733,6 +1737,7 @@ impl<T: Transport> Session<T> {
             last_heartbeat_ms: 0,
             missed_heartbeats: 0,
             heartbeat_outstanding: false,
+            heartbeat_request: None,
             reconnect_ready_ms: None,
             awaiting_transport: false,
             needs_full_frame: false,
@@ -1746,6 +1751,7 @@ impl<T: Transport> Session<T> {
             mirror_last_frame_id: 0,
             packages_sent: 0,
             config_cache: BTreeMap::new(),
+            pending_configs: BTreeMap::new(),
             host_boot_id: 0,
             device_boot_id: None,
             device_run_id: 0,
@@ -1850,7 +1856,11 @@ impl<T: Transport> Session<T> {
         self.mirror_last = None;
         self.mirror_last_frame_id = 0;
         self.config_cache.clear();
+        self.pending_configs.clear();
         self.gestures.reset();
+        self.missed_heartbeats = 0;
+        self.heartbeat_outstanding = false;
+        self.heartbeat_request = None;
         self.copy_budget = HostCopyBudget::new(self.copy_limit);
     }
 
@@ -2129,6 +2139,7 @@ impl<T: Transport> Session<T> {
                     let id = self.alloc_request_id()?;
                     self.write_packet_with_id(MessageType::Ping, Vec::new(), id, false)?;
                     self.heartbeat_outstanding = true;
+                    self.heartbeat_request = Some(id);
                     self.last_heartbeat_ms = virtual_ms;
                 }
             }
@@ -3083,7 +3094,9 @@ impl<T: Transport> Session<T> {
             value: Some(value.to_string()),
         };
         let payload = encode_control(&command).map_err(|e| CoreError::Protocol(e.to_string()))?;
-        self.write_packet(MessageType::Config, payload)
+        let request_id = self.write_packet(MessageType::Config, payload)?;
+        self.pending_configs.insert(key.to_string(), request_id);
+        Ok(request_id)
     }
 
     /// N40: request a configuration value; the reply lands in `config`.
@@ -3095,7 +3108,9 @@ impl<T: Transport> Session<T> {
             value: None,
         };
         let payload = encode_control(&command).map_err(|e| CoreError::Protocol(e.to_string()))?;
-        self.write_packet(MessageType::Config, payload)
+        let request_id = self.write_packet(MessageType::Config, payload)?;
+        self.pending_configs.insert(key.to_string(), request_id);
+        Ok(request_id)
     }
 
     /// N40: a configuration value learned from the device, if any.
@@ -3164,6 +3179,12 @@ impl<T: Transport> Session<T> {
             Ok(reply) => reply,
             Err(_) => return Ok(()),
         };
+        // SIM-R04: the device replies with request_id 0, so bind the reply to
+        // the pending key instead of trusting any Config packet.
+        let Some(request_id) = self.pending_configs.remove(&reply.key) else {
+            return Ok(());
+        };
+        self.release_request(request_id);
         if reply.ok {
             if let Some(value) = reply.value {
                 // N833: a successful animation reply means the device replaced
@@ -3476,6 +3497,7 @@ impl<T: Transport> Session<T> {
                 }
                 self.missed_heartbeats = 0;
                 self.heartbeat_outstanding = false;
+                self.heartbeat_request = None;
                 // N304: a changed device boot id discards the previous run's
                 // pending ACKs before the new run is adopted.
                 self.adopt_device_identity(&caps);
@@ -3496,7 +3518,13 @@ impl<T: Transport> Session<T> {
                 if packet.request_id < self.request_floor {
                     return Ok(());
                 }
+                // SIM-R04: an unsolicited Pong must not prove a dead peer alive.
+                if !self.heartbeat_outstanding || self.heartbeat_request != Some(packet.request_id)
+                {
+                    return Ok(());
+                }
                 self.heartbeat_outstanding = false;
+                self.heartbeat_request = None;
                 self.missed_heartbeats = 0;
                 Ok(())
             }
@@ -4737,6 +4765,145 @@ mod tests {
         assert_eq!(session.pending_request_count(), 0);
         session.resume_write().unwrap();
         assert_eq!(session.transport.bytes.len(), written);
+    }
+
+    #[test]
+    fn unsolicited_pong_does_not_count_as_liveness() {
+        // SIM-R04: only the Pong for the outstanding Ping may clear a miss.
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::with_config(
+            host,
+            SessionConfig {
+                connect_timeout_ms: 0,
+                ack_timeout_ms: 0,
+                heartbeat_ms: 10,
+                reconnect: true,
+            },
+        );
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        session.tick(10).unwrap();
+        let ping = Packet::decode(&device.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        assert_eq!(ping.kind, MessageType::Ping);
+        for tick in [20, 30] {
+            device
+                .write(
+                    &Packet {
+                        version: VERSION,
+                        kind: MessageType::Pong,
+                        flags: 0,
+                        request_id: ping.request_id + 1_000,
+                        payload: Vec::new(),
+                    }
+                    .encode(4096)
+                    .unwrap(),
+                )
+                .unwrap();
+            session.poll().unwrap();
+            assert_eq!(session.tick(tick).unwrap(), ConnectionState::Ready);
+            let _ = device.read().unwrap();
+        }
+        assert_eq!(session.missed_heartbeats, 2);
+        assert_eq!(session.tick(40), Err(CoreError::HeartbeatMissed));
+    }
+
+    #[test]
+    fn matching_pong_clears_the_miss_count() {
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::with_config(
+            host,
+            SessionConfig {
+                connect_timeout_ms: 0,
+                ack_timeout_ms: 0,
+                heartbeat_ms: 10,
+                reconnect: true,
+            },
+        );
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        session.tick(10).unwrap();
+        let ping = Packet::decode(&device.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Pong,
+                    flags: 0,
+                    request_id: ping.request_id,
+                    payload: Vec::new(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        session.poll().unwrap();
+        assert!(!session.heartbeat_outstanding);
+        assert_eq!(session.missed_heartbeats, 0);
+        assert_eq!(session.tick(20).unwrap(), ConnectionState::Ready);
+        assert_eq!(session.missed_heartbeats, 0);
+    }
+
+    #[test]
+    fn unsolicited_config_reply_is_ignored() {
+        // SIM-R04: a Config packet without a matching request must not fill the
+        // cache or hold a control-window slot.
+        let (host, mut dev) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        let hello = Packet::decode(&dev.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        let mut capability = caps();
+        capability.config = mdc_protocol::ConfigCapability::new(&["brightness"]);
+        dev.write(
+            &Packet {
+                version: VERSION,
+                kind: MessageType::Capabilities,
+                flags: 0,
+                request_id: hello.request_id,
+                payload: encode_control(&capability).unwrap(),
+            }
+            .encode(4096)
+            .unwrap(),
+        )
+        .unwrap();
+        session.poll().unwrap();
+        let reply = mdc_protocol::ConfigReply {
+            key: "brightness".into(),
+            ok: true,
+            value: Some("99".into()),
+            error: None,
+        };
+        let send_reply = |dev: &mut MemoryLink| {
+            dev.write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Config,
+                    flags: 0,
+                    request_id: 0,
+                    payload: encode_control(&reply).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        };
+        send_reply(&mut dev);
+        session.poll().unwrap();
+        assert_eq!(session.config("brightness"), None);
+        session.get_config("brightness").unwrap();
+        let request = Packet::decode(&dev.read().unwrap().unwrap(), 4096)
+            .unwrap()
+            .0;
+        assert_eq!(request.kind, MessageType::Config);
+        send_reply(&mut dev);
+        session.poll().unwrap();
+        assert_eq!(session.config("brightness"), Some("99"));
+        assert_eq!(session.pending_request_count(), 0);
     }
 
     #[test]
