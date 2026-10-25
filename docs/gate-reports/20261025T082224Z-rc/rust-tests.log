@@ -1,0 +1,1190 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
+     Running unittests src/main.rs (target/debug/deps/mdc-b19d7a4c1e7a181e)
+
+running 80 tests
+test tests::cache_mode_labels_the_policy ... ok
+test tests::board_config_defaults_are_exposed ... ok
+test tests::defaults_only_can_select_one_key ... ok
+test tests::default_sources_mark_profile_and_device_conflicts ... ok
+test tests::config_defaults_action_runs_without_a_session ... ok
+test tests::defaults_table_is_shared_between_config_and_inspect ... ok
+test tests::devices_compact_lines_are_json ... ok
+test tests::asset_put_ls_get_prune_round_trip ... ok
+test tests::bayer_dither_spreads_a_flat_grey ... ok
+test tests::downscale_bgra_averages_pixels ... ok
+test tests::asset_verify_detects_a_corrupted_entry ... ok
+test tests::dither_texture_blob_changes_rgb565 ... ok
+test tests::host_rss_bytes_is_positive_on_unix ... ok
+test tests::inspect_defaults_only_skips_the_session ... ok
+test tests::inspect_rejects_an_unknown_source_filter ... ok
+test tests::indexed_blob_samples_its_palette ... ok
+test tests::ktx2_summary_generates_a_compatibility_row ... ok
+test tests::inspect_source_filter_narrows_defaults_and_provenance ... ok
+test tests::inspect_json_omits_pixel_buffers ... ok
+test tests::mip_chain_halves_and_averages ... ok
+test tests::merged_config_defaults_overlay_the_device_values ... ok
+test tests::inspect_watch_streams_a_bounded_number_of_snapshots ... ok
+test tests::inspect_reports_mirror_and_renderer_capability ... ok
+test tests::config_command_sets_and_reads_back ... ok
+test tests::bake_package_installs_on_a_sim_board ... ok
+test tests::bake_command_writes_atlas_and_manifest ... ok
+test tests::model_info_summarizes_an_imported_model ... ok
+test tests::named_clip_selection_falls_back_to_static ... ok
+test tests::diff_reports_identical_and_changed_packages ... ok
+test tests::ota_command_confirms_and_reads_back ... ok
+test tests::bake_mesh_writes_skinned_frames_and_packages ... ok
+test tests::ota_command_rolls_back_on_a_bad_image ... ok
+test tests::motion_command_samples_a_curve ... ok
+test tests::package_cache_misses_sum_over_geometry ... ok
+test tests::package_and_install_round_trip_on_a_sim_board ... ok
+test tests::linux_accept_memory_requires_full_frame_before_tile ... ok
+test tests::package_max_draw_vertices_trims_the_package ... ok
+test tests::package_report_prints_texture_detail ... ok
+test tests::package_mip_level_resamples_the_base_texture ... ok
+test tests::package_tangents_flag_generates_tangents ... ok
+test tests::palette_quantization_is_bounded ... ok
+test tests::parse_globals_board_and_sim ... ok
+test tests::provision_rejects_a_package_the_renderer_cannot_accept ... ok
+test tests::mirror_command_writes_ppm_frames ... ok
+test tests::provision_preflights_installs_and_reads_back ... ok
+test tests::pty_hello_returns_capabilities_and_unknown_port_waits ... ok
+test tests::render_mesh_and_package_write_ppms ... ok
+test tests::mirror_command_accepts_a_flip_flag ... ok
+test tests::mirror_command_drops_frames_over_a_tiny_bandwidth_budget ... ok
+test tests::render_package_mip_writes_a_level ... ok
+test tests::render_package_handles_a_mesh_package ... ok
+test tests::rgb565_is_little_endian_and_bounded ... ok
+test tests::scene_lint_counts_and_checks_transform_tracks ... ok
+test tests::scene_lint_flags_missing_geometry ... ok
+test tests::scene_lint_reports_animation_keys ... ok
+test tests::scene_command_sets_and_clears ... ok
+test tests::scene_render_writes_a_ppm ... ok
+test tests::record_play_verifies_the_sequence ... ok
+test tests::strict_validation_flags_ktx2_notes ... ok
+test tests::scene_render_time_samples_the_animation ... ok
+test tests::record_writes_a_sequence_and_manifest ... ok
+test tests::texture_report_accepts_an_rgba_image ... ok
+test tests::record_play_render_replays_onto_a_device ... ok
+test tests::texture_report_batch_reads_a_directory ... ok
+test tests::validate_flags_out_of_range_references ... ok
+test tests::texture_report_measures_coverage_and_bounds ... ok
+test tests::validate_json_field_order_is_stable ... ok
+test tests::verify_accepts_a_fresh_package_and_rejects_tampering ... ok
+test tests::validate_strict_flags_warnings_as_failures ... ok
+test tests::verify_report_carries_the_manifest_locality ... ok
+test tests::verify_strict_flags_cache_mismatch ... ok
+test tests::verify_runs_and_reports_locality ... ok
+test tests::mirror_sequence_names_are_numbered ... ok
+test tests::record_play_render_paces_at_the_requested_fps ... ok
+test tests::ota_command_rejects_a_tcp_target_that_is_not_listening ... ok
+test tests::revoke_blocks_the_next_frame_on_the_same_tcp_session ... ok
+test tests::tcp_scripted_input_reaches_manager ... ok
+test tests::tcp_reconnect_blocks_tile_until_full_frame ... ok
+test tests::sim_accept_failed_ota_keeps_firmware ... ok
+test tests::ota_confirm_installs_pending_firmware ... ok
+
+test result: ok. 80 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.96s
+
+     Running unittests src/lib.rs (target/debug/deps/mdc_assets-97f05b8500befdad)
+
+running 18 tests
+test tests::hash_key_stable ... ok
+test tests::lru_evicts_under_quota ... ok
+test tests::abort_drops_partial_chunks_and_jpeg_falls_back_to_rgb565 ... ok
+test tests::chunk_store_dedupes_across_blobs_and_releases ... ok
+test tests::chunk_store_rejects_quota_before_mutating ... ok
+test tests::lz_lazy_match_prefers_the_longer_next_copy ... ok
+test tests::lz_hash_chain_prefers_the_longer_earlier_copy ... ok
+test tests::rejects_oversized_before_insert ... ok
+test tests::disk_cache_put_list_prune ... ok
+test tests::lz_compression_ratios_are_documented ... ok
+test tests::lz_round_trips_and_rejects_decompression_bombs ... ok
+test tests::lz_decoder_survives_a_mutation_corpus ... ok
+test tests::disk_chunk_store_rejects_quota_without_writing ... ok
+test tests::disk_chunked_upload_spools_and_finishes ... ok
+test tests::named_upload_resumes_from_its_offset ... ok
+test tests::disk_chunk_store_persists_dedupes_and_cleans_up ... ok
+test tests::disk_chunk_store_compacts_orphans_and_missing_blobs ... ok
+test tests::rle_round_trips_and_quota_counts_compressed_bytes ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running unittests src/lib.rs (target/debug/deps/mdc_bake-241624afbf5b5c70)
+
+running 95 tests
+test skin::tests::apply_morphs_adds_weighted_deltas ... ok
+test skin::tests::cubicspline_uses_in_out_tangents ... ok
+test skin::tests::dqs_normalises_weights_and_handles_eight_influences ... ok
+test skin::tests::dqs_handles_opposing_rotations_without_collapsing ... ok
+test skin::tests::directional_light_darkens_a_facing_surface ... ok
+test skin::tests::dqs_preserves_non_uniform_scale ... ok
+test skin::tests::dqs_preserves_uniform_scale ... ok
+test skin::tests::dqs_normals_and_tangents_use_the_blended_rotation ... ok
+test skin::tests::dqs_normals_use_inverse_transpose_scale ... ok
+test skin::tests::animation_span_and_pose_differ_over_time ... ok
+test skin::tests::dqs_tangents_keep_rotation_with_non_uniform_scale ... ok
+test skin::tests::blended_material_is_translucent ... ok
+test skin::tests::dqs_two_joints_blend_inverse_transpose_scales ... ok
+test n779_tests::device_render_selects_a_coarser_packed_mip ... ok
+test skin::tests::blob_for_target_selects_a_coarser_level ... ok
+test skin::tests::eight_influence_skinning_uses_both_sets ... ok
+test skin::tests::faces_tilted_away_from_the_light_are_shaded ... ok
+test skin::tests::generated_tangents_are_orthonormal ... ok
+test skin::tests::geometry_morphs_animate_with_the_weights ... ok
+test skin::tests::anisotropy_stretches_the_highlight ... ok
+test skin::tests::looped_sampling_wraps_into_the_span ... ok
+test skin::tests::material_atlas_pack_remaps_uvs ... ok
+test skin::tests::dispersion_widens_the_iridescent_highlight ... ok
+test skin::tests::material_uv_set_selects_the_second_uv_channel ... ok
+test skin::tests::iridescence_tints_the_highlight ... ok
+test skin::tests::morph_bake_frames_move_with_the_weights ... ok
+test skin::tests::morph_weights_sample_over_time ... ok
+test skin::tests::mesh_render_mode_shades_per_pixel ... ok
+test skin::tests::nearer_mesh_is_drawn_over_a_farther_one ... ok
+test skin::tests::render_frame_at_poses_a_single_frame ... ok
+test skin::tests::roughness_raises_the_ambient_floor ... ok
+test skin::tests::package_mesh_render_draws_textured_geometry ... ok
+test skin::tests::package_scene_render_animates_node_transforms ... ok
+test skin::tests::multi_clip_atlas_package_has_one_clip_per_animation ... ok
+test skin::tests::scene_clip_selects_between_package_animations ... ok
+test skin::tests::skin_normals_rotate_with_the_joint ... ok
+test skin::tests::skin_tangents_rotate_with_the_joint ... ok
+test skin::tests::skinned_bake_frames_are_not_copies ... ok
+test skin::tests::skinned_bake_refuses_a_model_without_skin ... ok
+test skin::tests::skinning_rotates_a_weighted_vertex ... ok
+test skin::tests::textured_bake_samples_the_texture_not_the_fallback ... ok
+test skin::tests::trs_and_multiplication_compose_translations ... ok
+test skin::tests::transmission_fades_the_surface ... ok
+test skin::tests::unlit_material_ignores_shading ... ok
+test skin::tests::uv_transform_offsets_texture_sampling ... ok
+test skin::tests::vertex_colours_multiply_the_fill ... ok
+test skin::tests::volume_thickness_fades_like_transmission ... ok
+test tests::bake_sprites_requires_a_source ... ok
+test skin::tests::textured_bake_to_package_round_trips ... ok
+test skin::tests::geometry_render_draws_the_full_mesh ... ok
+test tests::attach_model_textures_uses_each_material_cutoff ... ok
+test tests::auto_texture_resolution_prefers_override_then_model ... ok
+test tests::compact_geometry_keeps_vertices_that_differ_in_any_attribute ... ok
+test tests::compact_package_geometry_updates_the_mesh_counts ... ok
+test skin::tests::package_carries_per_material_textures ... ok
+test skin::tests::skinned_bake_to_package_round_trips_and_gates_on_sprite_capability ... ok
+test tests::compact_geometry_merges_duplicates_and_drops_unreferenced ... ok
+test tests::displaced_mesh_frames_are_not_copies ... ok
+test tests::combined_optimization_compacts_then_reorders ... ok
+test tests::frame_count_and_size_mismatches_are_rejected ... ok
+test tests::geometry_optimization_reports_hits_and_savings ... ok
+test tests::bake_to_package_round_trips_as_a_runtime_package ... ok
+test tests::index_cache_stats_complement_the_miss_metric ... ok
+test tests::bake_sprites_cycles_sources_and_produces_a_manifest ... ok
+test tests::decodes_resizes_and_packs_rgb565 ... ok
+test tests::index_order_optimization_reduces_cache_misses ... ok
+test skin::tests::scene_render_draws_every_mesh_with_its_material ... ok
+test tests::index_order_report_improves_locality ... ok
+test tests::linear_mips_are_brighter_for_black_white ... ok
+test tests::input_and_output_budgets_are_enforced ... ok
+test tests::mip_level_selection_matches_the_target ... ok
+test tests::mix_quarters_blends_red_toward_green ... ok
+test tests::material_cutoff_changes_the_mask_threshold ... ok
+test tests::packs_frames_left_to_right_top_to_bottom ... ok
+test tests::package_order_report_summarises_before_and_after ... ok
+test tests::triangle_fan_covers_the_origin_pixel ... ok
+test tests::mipped_package_carries_a_bounded_mip_chain ... ok
+test tests::trimming_rebuilds_the_mip_chain ... ok
+test tests::vertex_budget_trims_later_meshes ... ok
+test tests::trimming_a_texture_keeps_the_rendered_pixels ... ok
+test texture::tests::alpha_mask_cuts_out_transparent_texels ... ok
+test tests::package_order_report_reconciles_with_the_sealed_manifest ... ok
+test texture::tests::alpha_value_prefers_the_8bit_channel ... ok
+test tests::larger_cache_never_increases_misses ... ok
+test texture::tests::bilinear_samples_blend_neighbouring_texels ... ok
+test texture::tests::blend_rgb565_is_source_over ... ok
+test texture::tests::clamp_wrap_repeats_the_edge_texel ... ok
+test texture::tests::from_rgb565_validates_and_samples_nearest_texels ... ok
+test texture::tests::missing_texture_or_uv_falls_back_to_solid ... ok
+test texture::tests::srgb_linear_filtering_is_brighter_for_black_white ... ok
+test texture::tests::textured_raster_applies_the_tint ... ok
+test texture::tests::textured_raster_samples_within_the_triangle ... ok
+test texture::tests::tint_multiplies_channels_and_identity_is_white ... ok
+test tests::texture_blob_mips_are_bounded ... ok
+test tests::oversized_source_dimensions_are_refused_before_decode ... ok
+
+test result: ok. 95 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/mdc_compatibility_tests-0e8176cc8833f544)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/compat.rs (target/debug/deps/compat-fa089044870131ad)
+
+running 102 tests
+test baked_package_needs_sprite_support ... ok
+test baked_package_with_a_wrong_pixel_size_is_rejected ... ok
+test cubicspline_sampling_is_deterministic_and_bounded ... ok
+test clearcoat_adds_a_second_highlight ... ok
+test board_advertises_its_config_default ... ok
+test device_diagnostics_reach_the_host_channel ... ok
+test config_rejects_unknown_key_oversize_and_device_invalid_value ... ok
+test board_tile_threshold_default_is_negotiated ... ok
+test device_reboot_drops_the_previous_run_over_the_simulator ... ok
+test device_tiles_snapshot_reconciles_end_to_end ... ok
+test dirty_tiles_reconcile_with_the_device ... ok
+test dual_quaternion_skinning_changes_the_package_frame ... ok
+test fake_device_rejects_hello_with_foreign_major ... ok
+test focus_animation_changes_the_device_frame ... ok
+test compacted_geometry_installs_and_keeps_the_triangles ... ok
+test animated_blend_reaches_the_device ... ok
+test animation_requires_a_baked_atlas_and_a_known_clip ... ok
+test animated_point_geometry_and_sprite_frames_reach_the_device ... ok
+test full_frame_receiver_refuses_a_dirty_region_commit ... ok
+test full_geometry_reaches_the_device_and_renders ... ok
+test generated_tangents_enable_normal_mapping ... ok
+test gpu_instancing_imports_and_reaches_a_device ... ok
+test image_fit_align_with_rotate90_on_the_device ... ok
+test image_fit_alignment_on_the_device ... ok
+test image_fit_composes_with_transforms_on_the_device ... ok
+test health_kind_filter_reaches_an_http_client ... ok
+test image_fit_letterboxes_on_the_device ... ok
+test image_fit_pad_composes_with_rotate_on_the_device ... ok
+test image_fit_per_side_padding_renders_on_the_device ... ok
+test image_fit_padding_renders_on_the_device ... ok
+test image_fit_valign_renders_on_the_device ... ok
+test image_fit_quarter_turn_on_the_device ... ok
+test image_node_scales_on_the_device ... ok
+test image_node_flip_and_rotate_on_the_device ... ok
+test ktx2_array_and_cube_containers_import_without_transcoding ... ok
+test ktx2_texture_reports_metadata_without_transcoding ... ok
+test indexed_texture_blob_renders_on_the_device ... ok
+test live2d_motion_curve_sampling_is_deterministic ... ok
+test major_version_mismatch_is_rejected_at_decode ... ok
+test low_max_message_and_chunk_are_honored ... ok
+test masked_material_cuts_out_transparent_texels ... ok
+test material_atlas_trims_transparent_margins ... ok
+test material_colour_tints_the_package_texture_on_the_device ... ok
+test merged_multi_primitive_geometry_renders_every_triangle ... ok
+test meshopt_truncations_are_errors_not_panics ... ok
+test meshopt_compressed_model_bakes_and_installs ... ok
+test mirror_websocket_ignores_reserved_compression_bit_end_to_end ... ok
+test device_renders_an_animated_mesh_package_scene ... ok
+test mirror_websocket_reassembles_client_fragments ... ok
+test mirror_websocket_rejects_reserved_bit_with_close_1002 ... ok
+test morph_weight_edge_cases_are_bounded ... ok
+test animated_scene_reaches_the_mirror ... ok
+test multi_stop_gradient_and_reserved_extension_diagnostics ... ok
+test multi_mesh_scene_bakes_and_reaches_a_device ... ok
+test device_renders_a_morph_animated_geometry_package ... ok
+test non_rect_scene_kinds_are_recorded_but_not_rasterized ... ok
+test occlusion_is_sampled_per_pixel ... ok
+test device_mesh_package_selects_a_named_clip ... ok
+test optimized_index_order_installs_on_a_device ... ok
+test out_of_bounds_rects_are_clipped_without_panicking ... ok
+test oversized_frame_rejected_by_core ... ok
+test package_capability_gate_follows_the_device_renderer ... ok
+test package_order_summary_survives_a_round_trip ... ok
+test package_rejects_bad_magic_and_oversized_headers ... ok
+test packaged_masked_texture_cuts_out_on_render ... ok
+test imported_directional_light_reaches_the_device_render ... ok
+test per_material_alpha_cutoff_matches_on_the_device ... ok
+test radial_gradient_renders_on_the_device ... ok
+test roughness_texture_modulates_shading_per_texel ... ok
+test scene_align_z_wrap_and_dash_render_deterministically ... ok
+test scene_arc_mask_and_group_skew_reach_the_device ... ok
+test scene_circle_and_line_edge_cases_do_not_panic ... ok
+test scene_colour_rotate_and_delay_reach_the_device ... ok
+test scene_group_geometry_and_named_colour_reach_the_device ... ok
+test scene_over_the_depth_limit_is_refused ... ok
+test scene_scale_and_offset_reach_the_device ... ok
+test scheduler_bounds_a_simulated_mirror_bandwidth ... ok
+test secondary_maps_can_use_a_second_uv_set ... ok
+test sheen_adds_a_rim_highlight ... ok
+test smooth_shading_gradients_across_a_triangle ... ok
+test smooth_specular_adds_a_highlight ... ok
+test specular_factor_scales_the_highlight ... ok
+test sprite_fit_and_pad_on_the_device ... ok
+test sprite_linear_filter_reaches_the_device ... ok
+test surface_pixel_format_and_display_profile_are_exposed ... ok
+test textured_bake_refuses_an_over_budget_texture ... ok
+test textured_geometry_package_renders_on_the_device ... ok
+test textured_skinned_bake_reaches_a_sim_device ... ok
+test tile_missing_threshold_is_negotiated ... ok
+test tile_reconciliation_threshold_requests_a_full_frame ... ok
+test tile_threshold_clears_after_a_full_frame ... ok
+test http_mirror_serves_a_device_frame_to_a_loopback_client ... ok
+test vertex_budget_trim_installs_on_a_device ... ok
+test packed_material_atlas_renders_on_the_device ... ok
+test multi_texture_mesh_package_renders_on_the_device ... ok
+test emissive_texture_adds_light_on_the_device ... ok
+test unlit_material_and_vertex_colours_render_on_the_device ... ok
+test occlusion_texture_darkens_the_shadowed_triangles ... ok
+test normal_map_perturbs_per_pixel_shading ... ok
+test full_pbr_material_renders_on_the_device ... ok
+test mirror_http_stream_pushes_device_frames ... ok
+test mirror_websocket_pushes_device_frames ... ok
+
+test result: ok. 102 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.67s
+
+     Running tests/cxx_peer.rs (target/debug/deps/cxx_peer-19be8c6c3f869ecc)
+
+running 3 tests
+test cxx_runtime_resumes_after_a_short_begin_write ... ok
+test cxx_peer_exit_converges_away_from_ready ... ok
+test cxx_runtime_reassembles_a_chunked_frame_and_tile ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/mdc_core-c7c52ba0a99e7bc2)
+
+running 107 tests
+test ledger::tests::copy_budget_counts_three_buffers_and_returns_to_zero ... ok
+test ledger::tests::heap_reserve_refuses_a_second_framebuffer ... ok
+test ledger::tests::short_soak_returns_outstanding_to_zero ... ok
+test tests::adaptive_dirty_threshold_follows_the_measured_link ... ok
+test tests::active_pointer_map_is_bounded ... ok
+test tests::animation_blend_config_parser_is_bounded ... ok
+test tests::device_tiles_received_folds_into_the_stats_snapshot ... ok
+test tests::control_queue_stops_at_32_without_counting_frames ... ok
+test tests::dirty_region_mirror_patches_the_last_frame ... ok
+test tests::device_reboot_discards_the_previous_run ... ok
+test tests::chunked_frame_resumes_begin_chunks_and_commit ... ok
+test tests::copy_budget_counts_both_surfaces_and_releases_on_display ... ok
+test tests::dirty_tracker_accumulates_and_escalates ... ok
+test tests::dirty_tiles_merge_and_send_only_the_changed_area ... ok
+test tests::config_ops_are_capability_gated_and_cached ... ok
+test tests::animation_helpers_drive_the_device_config ... ok
+test tests::disconnect_clears_a_short_written_frame_transaction ... ok
+test tests::diagnostics_stay_apart_from_the_frame_path ... ok
+test tests::disconnect_drops_the_mirror_inbox_and_base ... ok
+test tests::double_and_triple_taps_share_a_window ... ok
+test tests::drag_and_long_press_break_the_tap_chain ... ok
+test tests::displayed_timing_history_is_bounded ... ok
+test tests::frame_transaction_rejects_conflicts_and_incomplete_commit ... ok
+test tests::frame_transaction_accepts_out_of_order_and_idempotent_chunks ... ok
+test tests::full_control_window_rejects_a_package_before_writing ... ok
+test tests::frame_pacing_drops_a_frame_over_the_byte_budget ... ok
+test tests::frame_pacing_clamps_fps_and_can_be_cleared ... ok
+test tests::gesture_tracker_recognises_a_two_pointer_pinch ... ok
+test tests::gesture_config_tunes_the_tap_window ... ok
+test tests::gesture_tracker_recognises_tap_drag_and_long_press ... ok
+test tests::gestures_reach_the_manager_event_queue ... ok
+test tests::install_package_requires_a_renderer_capability ... ok
+test tests::input_before_the_new_handshake_is_dropped ... ok
+test tests::latest_unsent_frame_replaces_pending_slot ... ok
+test tests::manager_connect_session_stores_single_endpoint ... ok
+test tests::joint_streaming_tuning_updates_both_knobs ... ok
+test tests::manager_merges_stable_identity_and_bounds_events ... ok
+test tests::matching_pong_clears_the_miss_count ... ok
+test tests::manager_rejects_missing_identity ... ok
+test tests::mirror_chunked_frame_assembles_and_rejects_bad_geometry ... ok
+test tests::mirror_frames_are_bounded_to_latest ... ok
+test tests::frame_assembler_rejects_too_many_ranges ... ok
+test tests::multi_tap_requires_the_same_node_and_nearby_position ... ok
+test tests::moves_coalesce_and_a_full_queue_keeps_down ... ok
+test tests::mirror_start_is_rejected_without_capability ... ok
+test tests::mirror_frames_emit_a_metadata_event_and_stats ... ok
+test tests::ota_chunk_ranges_and_missing_ranges ... ok
+test tests::ota_freezes_rendering_and_rejects_missing_slot ... ok
+test tests::ota_chunked_resume_plan_skips_acknowledged_chunks ... ok
+test tests::multi_tap_window_from_the_setter_splits_chains ... ok
+test tests::ota_phase_checkpoint_resumes_across_reconnect ... ok
+test tests::package_write_failure_abandons_the_link ... ok
+test tests::per_request_deadline_is_not_extended_by_a_new_request ... ok
+test tests::package_short_write_abandons_the_link ... ok
+test tests::pinch_reaches_the_manager_event_queue ... ok
+test tests::poll_handles_at_most_32_packets ... ok
+test tests::preferred_tile_size_drives_the_host_cut ... ok
+test tests::reconnect_policy_is_bounded_and_explicit_disconnect_wins ... ok
+test tests::received_ack_holds_the_next_frame_until_displayed ... ok
+test tests::replayed_displayed_ack_launches_the_pending_frame_once ... ok
+test tests::install_package_chunks_over_the_link_and_reassembles ... ok
+test tests::scene_api_stays_unsupported_on_v1 ... ok
+test tests::send_dirty_update_chooses_tiles_or_a_frame ... ok
+test tests::poll_stops_reading_after_the_read_budget ... ok
+test tests::send_input_requires_the_touch_capability ... ok
+test tests::session_adapts_frame_pacing_to_the_measured_rate ... ok
+test tests::poll_handles_at_most_64_kib_per_call ... ok
+test tests::session_chunks_when_payload_exceeds_max_chunk ... ok
+test tests::session_stats_count_frames_and_acks ... ok
+test tests::session_measures_bitrate_and_adapts ... ok
+test tests::session_handshake_reaches_ready ... ok
+test tests::session_provide_transport_rehandshakes_after_reconnect ... ok
+test tests::session_send_tile_writes_tile_packet ... ok
+test tests::session_tick_heartbeat_and_ack_timeout ... ok
+test tests::late_ack_after_history_eviction_is_harmless ... ok
+test tests::set_scene_gates_on_the_animation_budget ... ok
+test tests::short_chunk_resumes_the_remaining_chunks_and_commit ... ok
+test tests::short_commit_resumes_without_resending_the_frame ... ok
+test tests::shared_surface_plan_fairly_advances_two_displays ... ok
+test tests::short_write_resumes_one_frame_and_blocks_the_next ... ok
+test tests::surface_weight_config_parser_is_bounded ... ok
+test tests::stale_run_ack_is_ignored ... ok
+test tests::surface_geometry_writeback_updates_caps_and_queue ... ok
+test tests::stale_ack_keeps_the_new_frame_in_flight ... ok
+test tests::switch_transport_blocks_tiles_until_full_frame_acked ... ok
+test tests::three_pointer_swipe_reports_direction ... ok
+test tests::three_missed_heartbeats_reconnect_and_block_tiles ... ok
+test tests::telemetry_also_emits_a_manager_event ... ok
+test tests::switch_transport_drops_stale_request_deadlines ... ok
+test tests::tile_counters_reconcile_with_the_device ... ok
+test tests::tile_bounds_checked ... ok
+test tests::tile_reconciliation_threshold_forces_a_full_frame ... ok
+test tests::two_pointer_move_emits_pan_and_pinch_together ... ok
+test tests::tile_requires_current_base_frame ... ok
+test tests::touch_rotation_is_bounded ... ok
+test tests::transport_close_converges_away_from_ready ... ok
+test tests::unimplemented_pixel_format_is_rejected_explicitly ... ok
+test tests::unsolicited_capabilities_do_not_make_a_session_ready ... ok
+test tests::unsolicited_config_reply_is_ignored ... ok
+test tests::unsolicited_pong_does_not_count_as_liveness ... ok
+test tests::validates_frame ... ok
+test tests::write_without_pong_disconnects_on_virtual_clock ... ok
+test tests::large_package_upload_stays_in_the_control_window ... ok
+test tests::connect_disconnect_loop_is_cheap ... ok
+test tests::thousand_sessions_and_frames_return_the_ledger_to_zero ... ok
+test tests::repeated_transactions_release_owned_staging ... ok
+test tests::finished_ack_history_is_bounded ... ok
+
+test result: ok. 107 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running unittests src/lib.rs (target/debug/deps/mdc_discovery-32be5a868b758124)
+
+running 18 tests
+test mdns::tests::name_compression_pointers_are_followed ... ok
+test mdns::tests::malformed_packets_are_ignored ... ok
+test mdns::tests::query_packet_has_one_ptr_question ... ok
+test mdns::tests::provider_turns_injected_packets_into_a_candidate ... ok
+test mdns::tests::response_parses_into_an_endpoint ... ok
+test pairing::tests::provision_log_hides_password_and_token ... ok
+test serial_scan::tests::cancel_empties ... ok
+test tests::cancellation_is_empty ... ok
+test serial_scan::tests::filters_candidates_and_denylists_foreign ... ok
+test pairing::tests::network_requires_pair_serial_does_not ... ok
+test tests::merges_same_identity ... ok
+test ws_discovery::tests::ws_discovery_dedupes_and_stays_anonymous ... ok
+test tests::mock_mdns_returns_seeded_candidates ... ok
+test ws_discovery::tests::combined_merges_serial_ws_and_mdns ... ok
+test pairing::tests::json_round_trip ... ok
+test pairing::tests::concurrent_distinct_paths_do_not_clobber ... ok
+test mdns::tests::loopback_responder_round_trips ... ok
+test mdns::tests::live_query_is_best_effort_and_does_not_hang ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running unittests src/lib.rs (target/debug/deps/mdc_flasher-272f3c40368a60cf)
+
+running 9 tests
+test tests::post_write_reset_matches_agentdeck ... ok
+test esptool::tests::flags_for_ips35_board_ids ... ok
+test tests::sim_flasher_install_succeeds ... ok
+test esptool::tests::fake_runner_drives_flash_and_reports_failures ... ok
+test esptool::tests::dry_run_install_with_identity ... ok
+test esptool::tests::version_lock_accepts_and_rejects ... ok
+test esptool::tests::argv_is_stubless_merged_at_zero ... ok
+test esptool::tests::live_flash_enforces_the_version_lock_before_writing ... ok
+test file_lease::tests::acquire_release_and_expiry ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/mdc_inspector-f05f390894aee351)
+
+running 21 tests
+test tests::archive_json_is_the_pretty_default ... ok
+test tests::archive_file_kinds_classify_live_and_rotated ... ok
+test tests::archive_check_exit_code_follows_the_report ... ok
+test tests::archive_report_compact_is_one_line ... ok
+test tests::prune_archive_keeps_the_requested_copies ... ok
+test tests::heap_peak_reports_a_bounded_growth ... ok
+test tests::prune_archive_refreshes_the_manifest ... ok
+test tests::rss_snapshot_is_well_formed ... ok
+test tests::heap_peak_clamps_the_probe_bounds ... ok
+test tests::verdict_line_is_one_jsonl_record ... ok
+test tests::jsonl_series_is_one_bounded_sample_per_tick ... ok
+test tests::watch_summary_reports_the_peak_and_diagnostics ... ok
+test tests::heap_timeline_reports_a_peak_per_tick ... ok
+test tests::verdict_is_the_final_line_of_the_jsonl_series ... ok
+test tests::jsonl_samples_carry_a_bounded_rss_reading ... ok
+test tests::jsonl_sink_writes_a_series_to_a_file ... ok
+test tests::zero_count_produces_no_lines ... ok
+test tests::archive_report_top_level_keys_are_stable ... ok
+test tests::jsonl_sink_archives_into_a_directory ... ok
+test tests::jsonl_sink_appends_and_rotates ... ok
+test tests::rss_delta_is_bounded_and_well_formed ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.76s
+
+     Running unittests src/lib.rs (target/debug/deps/mdc_memory_tests-5b78fa85d41d2669)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/long_soak.rs (target/debug/deps/long_soak-d595938d17019c57)
+
+running 1 test
+test long_soak_keeps_resources_flat ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/soak.rs (target/debug/deps/soak-9958b5770ad34bbe)
+
+running 64 tests
+test adaptive_cache_size_tracks_mesh_scale ... ok
+test combined_geometry_optimization_soak_is_bounded ... ok
+test atlas_animation_soak_is_bounded ... ok
+test animated_scene_rendering_stays_bounded ... ok
+test blended_atlas_soak_stays_bounded ... ok
+test diagnostics_and_text_wrap_stay_bounded ... ok
+test bake_soak_stays_bounded ... ok
+test dirty_tracker_pending_stays_bounded ... ok
+test delayed_colour_and_rotate_scene_soak_stays_bounded ... ok
+test completed_transactions_keep_containers_bounded ... ok
+test baked_package_soak_is_bounded ... ok
+test geometry_compaction_soak_is_bounded ... ok
+test cubicspline_sampling_soak_is_bounded ... ok
+test geometry_morph_render_soak_is_bounded ... ok
+test http_mirror_publish_soak_is_bounded ... ok
+test http_stream_scale_requests_stay_bounded ... ok
+test geometry_render_soak_is_bounded ... ok
+test index_order_optimization_soak_is_bounded ... ok
+test generated_tangents_and_skinning_stay_bounded ... ok
+test focus_animation_render_soak_is_bounded ... ok
+test jpeg_encoder_round_trips_through_the_image_crate ... ok
+test material_atlas_pack_stays_within_the_page ... ok
+test indexed_texture_blobs_survive_a_package_round_trip ... ok
+test mirror_receiver_soak_is_bounded ... ok
+test motion_curve_sampling_soak_is_bounded ... ok
+test multi_mesh_scene_render_soak_is_bounded ... ok
+test multi_primitive_geometry_soak_is_bounded ... ok
+test morph_bake_soak_is_bounded ... ok
+test multi_texture_package_soak_is_bounded ... ok
+test package_order_summary_soak_is_bounded ... ok
+test png_encoder_round_trips_through_the_image_crate ... ok
+test chunk_store_dedup_stays_bounded ... ok
+test mipped_package_round_trips_stay_bounded ... ok
+test render_frame_soak_is_bounded ... ok
+test quantized_import_stays_bounded ... ok
+test scaled_and_offset_scene_soak_stays_bounded ... ok
+test scaled_image_render_soak_is_bounded ... ok
+test linear_filter_render_soak_is_bounded ... ok
+test pbr_textured_rendering_stays_bounded ... ok
+test scene_primitive_soak_is_bounded ... ok
+test scene_render_soak_is_bounded ... ok
+test shared_surface_plan_converges_under_a_low_budget ... ok
+test dirty_region_mirror_soak_is_bounded ... ok
+test smooth_mesh_rendering_stays_bounded ... ok
+test textured_bake_soak_is_bounded ... ok
+test texture_mip_packages_stay_bounded ... ok
+test textured_mesh_package_soak_is_bounded ... ok
+test variant_selection_stays_bounded ... ok
+test point_animation_soak_stays_bounded ... ok
+test websocket_client_fragments_stay_bounded ... ok
+test atlas_post_processing_stays_bounded ... ok
+test websocket_heartbeat_stays_bounded ... ok
+test websocket_note_counts_stay_consistent_under_rotation ... ok
+test websocket_note_kinds_stay_bounded ... ok
+test websocket_note_log_stays_bounded ... ok
+test disk_chunked_upload_stays_bounded ... ok
+test websocket_client_buffers_stay_bounded ... ok
+test websocket_fragmented_messages_stay_bounded ... ok
+test shadow_framebuffer_soak_is_bounded ... ok
+test disk_asset_cache_stays_within_quota ... ok
+test websocket_control_frames_stay_bounded ... ok
+test device_mesh_scene_render_soak_is_bounded ... ok
+test rle_chunk_store_soak_stays_under_its_compressed_quota ... ok
+test session_mirror_and_package_soak_returns_to_zero ... ok
+
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.32s
+
+     Running unittests src/lib.rs (target/debug/deps/mdc_mirror-05488a251aeebaf9)
+
+running 56 tests
+test jpeg::tests::magnitude_matches_the_jpeg_amplitude_categories ... ok
+test tests::crop_bgra_selects_a_sub_rectangle ... ok
+test tests::a_held_lease_keeps_the_frame_available_across_many_writes ... ok
+test tests::bmp_encoder_writes_a_valid_header_and_rows ... ok
+test tests::flip_bgra_mirrors_axes ... ok
+test tests::dirty_region_patches_only_the_changed_pixels ... ok
+test tests::full_frame_mode_drops_a_dirty_commit ... ok
+test tests::dirty_before_base_and_misaligned_ranges_are_dropped ... ok
+test jpeg::tests::jpeg_has_soi_markers_and_an_eoi ... ok
+test tests::health_filters_entries_by_kind ... ok
+test tests::frame_and_health_honor_if_none_match ... ok
+test tests::health_escapes_custom_ws_notes ... ok
+test tests::if_match_and_if_unmodified_since_preconditions ... ok
+test tests::if_modified_since_parses_dates_and_etag_wins ... ok
+test tests::if_range_gates_a_partial_response ... ok
+test tests::leased_buffer_is_not_overwritten_and_busy_writes_are_dropped ... ok
+test tests::mirror_server_fans_out_to_a_loopback_client ... ok
+test tests::mirror_server_keeps_only_the_newest_frame_for_a_slow_client ... ok
+test tests::png_encoder_emits_a_valid_structure ... ok
+test tests::ppm_directory_sink_writes_atomically_and_rotates ... ok
+test tests::ppm_encodes_bgra_as_rgb ... ok
+test tests::ppm_sink_encodes_each_published_frame ... ok
+test tests::publish_queue_is_bounded_and_latest_wins ... ok
+test tests::publish_queue_rejects_a_frame_larger_than_its_byte_cap ... ok
+test tests::pump_reads_a_memory_link_end_to_end ... ok
+test tests::queue_sink_decouples_and_paces_the_consumer ... ok
+test tests::receiver_drops_wrong_geometry_and_corrupt_payloads ... ok
+test tests::receiver_publishes_full_and_chunked_frames ... ok
+test tests::rgb565_converts_to_bgra_with_alpha ... ok
+test tests::rotate_bgra_swaps_axes_for_90_degrees ... ok
+test tests::sha1_and_base64_match_the_rfc_vectors ... ok
+test tests::shadow_budget_rejects_oversized_geometry_before_allocating ... ok
+test tests::unknown_mode_is_rejected ... ok
+test tests::weak_etags_use_weak_comparison_for_304_and_strong_for_412 ... ok
+test tests::websocket_answers_ping_and_close ... ok
+test tests::websocket_declines_extensions_and_can_reject_reserved_bit ... ok
+test tests::websocket_endpoint_streams_binary_frames ... ok
+test tests::websocket_fragments_a_large_message ... ok
+test tests::websocket_fragments_and_heartbeat_do_not_interleave ... ok
+test tests::websocket_heartbeat_pings_and_drops_a_silent_peer ... ok
+test tests::websocket_ignores_reserved_compression_bit ... ok
+test tests::websocket_log_counts_summarize_each_kind ... ok
+test tests::websocket_log_redacts_extension_parameters ... ok
+test tests::websocket_note_details_are_bounded ... ok
+test tests::websocket_reassembles_fragmented_client_messages ... ok
+test tests::ws_log_kind_limit_is_configurable ... ok
+test tests::ws_log_kinds_and_kind_length_are_bounded ... ok
+test tests::http_jpeg_stream_pushes_jpeg_parts ... ok
+test tests::http_stream_png_serves_png_parts ... ok
+test tests::http_stream_scale_downscales_parts ... ok
+test tests::http_live_stream_pushes_multipart_parts ... ok
+test tests::http_health_reports_counters ... ok
+test tests::health_reports_the_note_kinds ... ok
+test tests::http_scale_query_downscales_and_quality_parses ... ok
+test tests::http_flip_query_mirrors_the_frame ... ok
+test tests::http_server_serves_the_latest_frame_and_routes ... ok
+
+test result: ok. 56 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.02s
+
+     Running unittests src/lib.rs (target/debug/deps/mdc_model-0daae94887f55331)
+
+running 127 tests
+test atlas::tests::unknown_sprite_size_and_empty_motions_are_rejected ... ok
+test atlas::tests::frame_and_byte_budgets_are_enforced ... ok
+test atlas::tests::atlas_larger_than_the_texture_limit_is_rejected ... ok
+test atlas::tests::sprite_is_clamped_before_the_grid_check ... ok
+test atlas::tests::bakes_a_deterministic_grid ... ok
+test gltf::tests::accessor_overrunning_its_bufferview_is_rejected ... ok
+test backend::tests::linux_backend_refuses_a_device_without_mesh2d ... ok
+test backend::tests::linux_backend_keeps_mesh_and_skeleton ... ok
+test gltf::tests::animation_channels_import_timed_tracks ... ok
+test backend::tests::weak_texture_limit_clamps_metadata_without_touching_data ... ok
+test backend::tests::auto_selection_follows_capability_not_board_id ... ok
+test backend::tests::weak_device_bakes_sprites_strong_device_keeps_mesh ... ok
+test backend::tests::compile_auto_reads_a_device_advertised_renderer_capability ... ok
+test gltf::tests::cameras_are_imported ... ok
+test backend::tests::skeleton_survives_only_on_skeleton_capable_devices ... ok
+test gltf::tests::bufferview_overrunning_its_buffer_is_rejected ... ok
+test gltf::tests::base64_data_uri_buffer_probes_jpeg_dimensions ... ok
+test gltf::tests::default_scene_selects_which_nodes_draw ... ok
+test gltf::tests::embedded_positions_become_preview_pixels ... ok
+test gltf::tests::decode_bomb_is_rejected_before_allocation ... ok
+test gltf::tests::emissive_texture_and_slot_transforms_import ... ok
+test gltf::tests::gpu_instancing_expands_into_instance_children ... ok
+test gltf::tests::glb_container_imports_and_probes_png_dimensions ... ok
+test gltf::tests::ext_texture_webp_source_resolves ... ok
+test gltf::tests::full_mesh_geometry_is_imported ... ok
+test gltf::tests::image_bytes_over_budget_are_not_retained ... ok
+test gltf::tests::ktx2_size_mismatch_is_a_validation_problem ... ok
+test gltf::tests::malformed_glb_containers_are_rejected ... ok
+test gltf::tests::imports_gltf_into_ir ... ok
+test gltf::tests::ktx2_dimensions_come_from_the_header ... ok
+test gltf::tests::interleaved_accessors_are_de_strided ... ok
+test gltf::tests::material_variants_are_imported ... ok
+test gltf::tests::material_base_colour_factor_imports ... ok
+test gltf::tests::multiple_primitives_merge_into_one_geometry ... ok
+test gltf::tests::per_slot_tex_coord_selects_the_uv_set ... ok
+test gltf::tests::meshopt_compressed_positions_are_decoded ... ok
+test gltf::tests::punctual_lights_are_imported ... ok
+test gltf::tests::morph_targets_and_weights_are_imported ... ok
+test gltf::tests::material_alpha_mode_and_cutoff_import ... ok
+test gltf::tests::quantized_attributes_decode ... ok
+test gltf::tests::node_transforms_and_skin_weights_are_imported ... ok
+test gltf::tests::normals_import_in_f32_and_normalized_forms ... ok
+test gltf::tests::sampler_wrap_is_recorded_on_the_texture ... ok
+test gltf::tests::skins_import_as_skeletons_and_bad_joints_are_rejected ... ok
+test gltf::tests::specular_glossiness_converts_to_metallic_roughness ... ok
+test gltf::tests::specular_extension_and_slot_transforms_import ... ok
+test gltf::tests::texture_transform_tex_coord_overrides_the_slot ... ok
+test gltf::tests::texture_coordinates_import_as_preview_uv ... ok
+test gltf::tests::reserved_extensions_are_detected_and_rejected ... ok
+test gltf::tests::webp_headers_are_probed_and_sniffed ... ok
+test gltf::tests::variant_mappings_swap_materials ... ok
+test gltf::tests::sparse_accessors_override_base_values ... ok
+test gltf::tests::vrm_humanoid_extension_adds_a_skeleton ... ok
+test ir::tests::vertex_cache_reports_misses_and_evicts_fifo ... ok
+test gltf::tests::vrm_meta_and_expressions_are_imported ... ok
+test gltf::tests::webp_texture_dimensions_come_from_the_header ... ok
+test ir::tests::cache_misses_counts_a_fifo_walk ... ok
+test ir::tests::vertex_cache_tracks_hits_and_misses ... ok
+test ktx2::tests::header_fields_are_read_from_the_fixed_layout ... ok
+test ktx2::tests::layer_face_depth_and_mip_counts_are_reported ... ok
+test ktx2::tests::short_or_foreign_bytes_are_not_ktx2 ... ok
+test backend::tests::packages_round_trip_as_json ... ok
+test ktx2::tests::vk_format_is_named_when_known ... ok
+test live2d::tests::bad_motions_are_rejected ... ok
+test live2d::tests::bundle_records_physics_and_pose_metadata ... ok
+test live2d::tests::imports_a_motion_with_meta_and_curves ... ok
+test live2d::tests::imports_model3_into_ir ... ok
+test live2d::tests::motion_curves_parse_and_sample ... ok
+test live2d::tests::live2d_weak_target_degrades_to_sprites ... ok
+test live2d::tests::part_budget_is_enforced ... ok
+test live2d::tests::bundle_replaces_group_stubs_with_real_channels ... ok
+test live2d::tests::segment_sampling_handles_linear_step_and_bezier ... ok
+test live2d::tests::unsupported_version_and_missing_refs_are_rejected ... ok
+test meshopt::tests::color_filter_with_zero_alpha_does_not_panic ... ok
+test meshopt::tests::decode_filter_oct8_matches_the_reference_vector ... ok
+test meshopt::tests::decode_filter_exp_matches_the_reference_vector ... ok
+test meshopt::tests::decode_filter_quat12_matches_the_reference_vector ... ok
+test meshopt::tests::decode_filter_color12_matches_the_reference_vector ... ok
+test meshopt::tests::decode_filter_oct12_matches_the_reference_vector ... ok
+test meshopt::tests::decode_filter_color8_matches_the_reference_vector ... ok
+test meshopt::tests::decode_index_buffer_v0_16_matches_the_reference_vector ... ok
+test meshopt::tests::decode_gltf_buffer_dispatches_by_mode ... ok
+test meshopt::tests::decode_index_buffer_v0_32_matches_the_reference_vector ... ok
+test meshopt::tests::decode_index_buffer_v1_matches_the_reference_vector ... ok
+test meshopt::tests::decode_index_buffer_v1_more_matches_the_reference_vector ... ok
+test meshopt::tests::decode_index_buffer_v1_three_edges_matches_the_reference_vector ... ok
+test meshopt::tests::decode_index_sequence_matches_the_reference_vector ... ok
+test meshopt::tests::decode_vertex_buffer_matches_the_reference_vector ... ok
+test meshopt::tests::decode_vertex_buffer_mode2_matches_the_reference_vector ... ok
+test meshopt::tests::decode_vertex_buffer_more_matches_the_reference_vector ... ok
+test meshopt::tests::decode_vertex_buffer_v1_bit_xor_rotate_matches_the_reference_vector ... ok
+test meshopt::tests::decode_vertex_buffer_v1_custom_matches_the_reference_vector ... ok
+test meshopt::tests::decode_vertex_buffer_v1_deltas_matches_the_reference_vector ... ok
+test meshopt::tests::decode_vertex_buffer_v1_matches_the_reference_vector ... ok
+test meshopt::tests::filter_and_mode_names_parse ... ok
+test meshopt::tests::every_decoder_guard_reports_a_meshopt_error ... ok
+test meshopt::tests::index_sequence_round_trips ... ok
+test meshopt::tests::malformed_leb128_and_half_packets_are_errors ... ok
+test meshopt::tests::malformed_streams_are_rejected ... ok
+test meshopt::tests::oversized_declared_streams_are_rejected_before_allocating ... ok
+test meshopt::tests::vertex_buffer_v0_group_widths_round_trip ... ok
+test meshopt::tests::vertex_buffer_round_trips ... ok
+test meshopt::tests::vertex_buffer_v0_multilane_verbatim_fuzz_corpus ... ok
+test meshopt::tests::vertex_buffer_v1_group_width_matrix ... ok
+test meshopt::tests::vertex_buffer_v1_control_modes_round_trip ... ok
+test meshopt::tests::vertex_buffer_v1_two_bit_group_round_trip ... ok
+test meshopt::tests::vertex_buffer_v0_verbatim_partial_group_regression ... ok
+test meshopt::tests::vertex_round_trip_composes_with_filters ... ok
+test meshopt::tests::vertex_buffer_v0_round_trips ... ok
+test optimizer::tests::decimation_ratio_reflects_the_vertex_budget ... ok
+test meshopt::tests::vertex_buffer_verbatim_group_round_trips ... ok
+test optimizer::tests::textures_are_clamped_to_the_device_limit ... ok
+test package::tests::assembler_checks_the_header_early_and_bounds_the_upload ... ok
+test package::tests::bad_magic_and_version_are_rejected ... ok
+test package::tests::ktx2_summary_is_shared_by_the_model_and_the_package ... ok
+test package::tests::assembler_rebuilds_a_package_from_chunks ... ok
+test package::tests::compile_seal_round_trip ... ok
+test package::tests::capability_gate_rejects_a_package_the_device_cannot_run ... ok
+test package::tests::ktx2_size_mismatch_fails_verification ... ok
+test package::tests::manifest_carries_the_locality_metric ... ok
+test package::tests::truncated_and_over_long_headers_are_rejected ... ok
+test package::tests::package_order_summary_survives_the_container ... ok
+test package::tests::tampered_packages_fail_integrity ... ok
+test tests::source_model_flows_to_both_backends ... ok
+test meshopt::tests::fuzz_corpus_with_byte_mutations_never_panics ... ok
+test meshopt::tests::truncated_and_random_streams_never_panic ... ok
+test meshopt::tests::vertex_buffer_v0_multiblock_group_modes_corpus ... ok
+
+test result: ok. 127 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/lib.rs (target/debug/deps/mdc_node_native-d7950a246d76d4b8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/mdc_protocol-cb5368fcdc97972a)
+
+running 44 tests
+test geometry::tests::canvas_bpp_half_psram_gate ... ok
+test geometry::tests::rgb565_and_dual_budget_for_ips35 ... ok
+test tests::legacy_frame_round_trip_with_phase_zero ... ok
+test tests::frame_payload_rejects_wrong_geometry ... ok
+test tests::chunked_frame_begin_chunk_commit_round_trip ... ok
+test tests::group_skew_parses_milliunits_and_clamps ... ok
+test tests::negotiate_mirror_intersects_mode_fps_and_format ... ok
+test tests::mirror_frame_payload_round_trip_reuses_frame_phases ... ok
+test tests::focus_keyframes_sample_and_drive_the_focus_field ... ok
+test tests::oversized_control_is_rejected_before_cbor ... ok
+test tests::loads_reserved_diagnostic_vector ... ok
+test tests::path_stroke_width_reads_a_mode_token ... ok
+test tests::pixel_format_enum_keeps_the_wire_string ... ok
+test tests::rejects_bad_checksum ... ok
+test tests::rejects_major_unknown_type_and_negotiated_limit ... ok
+test tests::relative_path_commands_accumulate_and_smooth_cubics_parse ... ok
+test tests::reserved_diagnostic_types_decode_without_breaking ... ok
+test tests::round_trip_and_partial ... ok
+test tests::scene_animation_easing_shapes_segments_without_moving_endpoints ... ok
+test tests::mirror_command_round_trips_over_cbor ... ok
+test tests::old_surface_without_display_profile_still_decodes ... ok
+test tests::scene_colour_keyframes_drive_colour_values_only ... ok
+test tests::old_capabilities_without_mirror_fields_still_decode ... ok
+test tests::scene_colour_parses_short_hex_and_names ... ok
+test tests::scene_delay_and_speed_scale_the_animation_clock ... ok
+test tests::loads_protocol_vectors ... ok
+test tests::renderer_capability_is_optional_and_round_trips ... ok
+test tests::boot_and_run_ids_are_additive_and_default_to_zero ... ok
+test tests::scene_frame_track_is_additive_on_the_wire ... ok
+test tests::scene_lint_reports_animation_keys_and_bad_tracks ... ok
+test tests::scene_animation_new_fields_are_additive ... ok
+test tests::scene_path_command_stream_is_bounded ... ok
+test tests::scene_polygon_bezier_and_arc_parsing_is_bounded ... ok
+test tests::control_structs_round_trip ... ok
+test tests::scene_rotate_keyframes_snap_to_quarter_turns ... ok
+test tests::scene_scale_and_offset_tracks_transform_the_rect ... ok
+test tests::tile_payload_round_trip ... ok
+test tests::sprite_frame_keys_are_stepwise_and_do_not_touch_other_payloads ... ok
+test tests::diagnostic_payloads_round_trip ... ok
+test tests::zero_length_packet_is_valid_and_trailing_packet_is_not_lost ... ok
+test tests::scene_scale_and_offset_transform_point_geometry ... ok
+test tests::scene_capability_and_command_round_trip ... ok
+test tests::scene_rect_geometry_and_colour ... ok
+test tests::config_capability_and_command_round_trip ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/mdc_provision-97068018e3aedd01)
+
+running 8 tests
+test tests::install_requires_identity_readback_and_releases_port ... ok
+test tests::flash_lease_blocks_a_second_open_until_release_or_timeout ... ok
+test tests::mismatched_readback_fails ... ok
+test tests::fake_signature_mismatch_rejects_without_opening_a_port ... ok
+test tests::rejects_unknown_flash_and_hash ... ok
+test tests::verify_artifact_rejects_a_bad_signature_without_opening_a_port ... ok
+test tests::accepts_verified_artifact ... ok
+test preflight::tests::chip_mismatch_and_unknown_flash_paths ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/mdc_rust_hello-34b35460b96146ea)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/mdc_schedule-486adf71f95942b2)
+
+running 11 tests
+test tests::fps_clamp_defers_until_the_interval_elapses ... ok
+test tests::bitrate_adaptation_lowers_fps_and_budget ... ok
+test tests::byte_budget_selects_only_what_fits ... ok
+test tests::dirty_tiles_are_packed_first ... ok
+test tests::a_tile_larger_than_the_budget_still_makes_progress ... ok
+test tests::shared_budget_honours_priority_but_never_starves ... ok
+test tests::dirty_ranges_merge_contiguous_blocks ... ok
+test tests::shared_budget_advances_every_surface_and_converges ... ok
+test tests::weights_share_extra_budget_without_starving ... ok
+test tests::zero_limits_mean_no_clamp ... ok
+test tests::weighted_credit_converges_across_calls ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/bandwidth.rs (target/debug/deps/bandwidth-45610408102b454a)
+
+running 3 tests
+test the_arithmetic_that_requires_a_scheduler ... ok
+test merged_dirty_ranges_reduce_transactions ... ok
+test low_bandwidth_defers_tiles_but_the_frame_converges ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/mdc_sim_peer-e6092e1820ef685b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/faults.rs (target/debug/deps/faults-dbb40361e62a1545)
+
+running 15 tests
+test lost_request_times_out_without_a_false_display ... ok
+test peer_exit_converges_away_from_ready ... ok
+test out_of_order_acks_release_both_surfaces ... ok
+test corrupted_ack_is_rejected_not_displayed ... ok
+test accepted_frame_pixels_reach_the_peer_exactly ... ok
+test duplicate_ack_is_idempotent ... ok
+test mid_link_capability_change_updates_the_session ... ok
+test one_device_exiting_does_not_close_another ... ok
+test split_all_writes_round_trip_a_full_frame ... ok
+test websocket_lost_request_times_out ... ok
+test reboot_updates_run_identity_and_recovers ... ok
+test stalled_peer_times_out_on_ack ... ok
+test split_outbound_packets_still_round_trip ... ok
+test websocket_peer_round_trips_a_frame ... ok
+test delayed_processing_still_completes_the_handshake_and_frame ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.77s
+
+     Running unittests src/lib.rs (target/debug/deps/mdc_simulator-2a43be73e4a9344e)
+
+running 117 tests
+test tests::alpha_atlas_mip_selection_is_visible_to_the_device ... ok
+test tests::atlas_clip_playback_modes_and_speed ... ok
+test tests::additive_blend_brightens_an_overlap ... ok
+test tests::accepts_chunked_frame_and_tile_with_base_check ... ok
+test tests::config_set_get_validate_and_redact ... ok
+test tests::board_config_defaults_apply ... ok
+test tests::accepts_a_baked_sprites_package_and_records_the_grid ... ok
+test tests::dashed_lines_leave_gaps ... ok
+test tests::atlas_animation_runtime_indexes_frames_by_the_clock ... ok
+test tests::atlas_fade_in_darkens_the_first_frame ... ok
+test tests::animation_blend_averages_atlas_clips ... ok
+test tests::atlas_fade_out_darkens_the_last_moment ... ok
+test tests::accepts_a_runtime_package_and_reports_ready ... ok
+test tests::default_profile_is_480x320 ... ok
+test tests::device_without_mirror_rejects_mirror_control ... ok
+test tests::device_filtering_config_sets_the_sampler ... ok
+test tests::animation_blend_averages_mesh_package_clips ... ok
+test tests::device_masks_transparent_texels ... ok
+test tests::drop_next_keeps_previous_pixels ... ok
+test tests::dual_surface_accepts_overlay_and_rejects_unknown ... ok
+test tests::disconnect_cancels_only_the_pointer_still_down ... ok
+test tests::corners_and_two_pointers_cancel_only_the_ones_still_down ... ok
+test tests::dropped_commit_keeps_pixels_and_the_next_frame_displays ... ok
+test tests::eink_full_refresh_clears_ghosting ... ok
+test tests::eink_tiles_leave_a_ghost ... ok
+test tests::fault_injector_drop_delay_disconnect ... ok
+test tests::emit_input_reaches_session_manager ... ok
+test tests::glyphs_cover_digits_letters_and_punctuation ... ok
+test tests::focus_animation_moves_the_radial_centre_over_time ... ok
+test tests::gradient_angle_controls_the_direction ... ok
+test tests::hidden_scene_nodes_are_skipped ... ok
+test tests::hello_capabilities_and_legacy_frame ... ok
+test tests::hit_test_finds_the_topmost_node ... ok
+test tests::group_skew_shears_children ... ok
+test tests::image_fit_pad_composes_with_rotate ... ok
+test tests::image_fit_pad_composes_with_align ... ok
+test tests::image_fit_composes_with_transforms ... ok
+test tests::image_fit_align_with_rotate90 ... ok
+test tests::image_fit_padding_insets_the_letterbox ... ok
+test tests::image_fit_preserves_aspect_ratio ... ok
+test tests::image_fit_per_side_padding ... ok
+test tests::image_fit_quarter_turn_swaps_the_box ... ok
+test tests::image_fit_transform_matrix_identities ... ok
+test tests::image_fit_vertical_alignment ... ok
+test tests::image_node_scales_with_nearest_and_bilinear ... ok
+test tests::image_node_supports_flip_and_rotate ... ok
+test tests::indexed_preview_does_not_draw_the_unindexed_corner ... ok
+test tests::lowercase_glyphs_are_distinct ... ok
+test tests::linux_virt_profile_matches_board_yaml ... ok
+test tests::mesh_clip_cross_fade_blends_and_expires ... ok
+test tests::mirror_capability_follows_profile_and_gates_control ... ok
+test tests::mesh_preview_rasterizes_after_install ... ok
+test tests::mirror_refuses_a_non_primary_surface ... ok
+test tests::mask_invert_and_feather_soften_the_edge ... ok
+test tests::multi_stop_gradients_blend_through_each_stop ... ok
+test tests::ota_begin_freezes_pixels_until_abort ... ok
+test tests::ota_chunk_ranges_are_recorded_and_drive_resume ... ok
+test tests::ota_failure_keeps_installed_firmware ... ok
+test tests::overlay_surface_renders_independently ... ok
+test tests::ota_resume_plan_skips_acknowledged_phases ... ok
+test tests::ota_gated_by_capability ... ok
+test tests::overlay_tile_updates_overlay_and_rejects_out_of_bounds ... ok
+test tests::ota_virtual_timeout_unfreezes_without_changing_firmware ... ok
+test tests::path_arc_and_smooth_quad_render ... ok
+test tests::pending_frame_is_painted_only_after_the_inflight_ack ... ok
+test tests::point_geometry_hit_tests_ignore_empty_bounding_box_corners ... ok
+test tests::radial_focus_moves_the_bright_centre ... ok
+test tests::path_hit_tests_follow_the_stroke_and_scaled_points ... ok
+test tests::radial_gradients_are_brighter_at_the_centre ... ok
+test tests::renderer_capability_follows_the_board_profile ... ok
+test tests::relative_path_commands_and_smooth_cubic_render ... ok
+test tests::scene_animation_delay_and_speed_reach_the_device ... ok
+test tests::scene_animation_samples_on_the_device_clock ... ok
+test tests::saturated_queue_rejects_a_tile ... ok
+test tests::scene_clip_bounds_children ... ok
+test tests::rotation_transforms_touch_and_drops_out_of_bounds ... ok
+test tests::scene_colour_animation_changes_a_rect_over_time ... ok
+test tests::scene_draws_path_command_streams ... ok
+test tests::scene_draws_circles_and_lines ... ok
+test tests::scene_draws_polygons_and_polylines ... ok
+test tests::scene_gradient_interpolates_top_to_bottom ... ok
+test tests::scene_draws_text_and_image_pixels ... ok
+test tests::scene_draws_sectors_arcs_and_bezier_paths ... ok
+test tests::scene_mask_clips_children_to_a_polygon ... ok
+test tests::scene_group_offsets_and_scales_children ... ok
+test tests::scene_rect_opacity_blends_over_the_background ... ok
+test tests::scene_renders_rects_with_bounds_and_z_order ... ok
+test tests::scene_rotate_animation_swaps_axes_and_hit_test ... ok
+test tests::scene_rotate_swaps_the_rect_axes ... ok
+test tests::scene_rounded_rect_clips_the_corners ... ok
+test tests::scene_scale_and_offset_animation_reach_the_device ... ok
+test tests::scene_set_and_clear_are_capability_gated ... ok
+test tests::scene_sprite_blits_an_atlas_frame ... ok
+test tests::scene_text_draws_wrapped_lines ... ok
+test tests::scene_text_scales_with_the_rect ... ok
+test tests::scripted_input_follows_displayed_frame ... ok
+test tests::sheared_image_and_sprite_sample_the_parallelogram ... ok
+test tests::setting_a_scene_stops_the_running_animation ... ok
+test tests::skewed_clip_and_mask_follow_the_shear ... ok
+test tests::animation_crossfades_between_clips ... ok
+test tests::sprite_fit_pad_bilinear_compose ... ok
+test tests::sprite_bilinear_filter_blends_like_an_image ... ok
+test tests::sprite_fit_and_pad_share_the_image_box ... ok
+test tests::sprite_frame_animation_swaps_the_rendered_atlas_frame ... ok
+test tests::text_align_shifts_lines_within_the_rect ... ok
+test tests::surface_weights_config_is_validated_and_survives_reload ... ok
+test tests::text_background_and_underline_draw_bands ... ok
+test tests::sprite_flip_and_rotate_match_image_sampling ... ok
+test tests::text_ellipsis_and_vertical_alignment ... ok
+test tests::text_wraps_to_the_rect_width ... ok
+test tests::z_order_overrides_document_order ... ok
+test tests::text_wrap_mode_selects_line_breaking ... ok
+test tests::device_renders_the_scene_into_the_mirror ... ok
+test tests::device_renders_the_running_atlas_frame_into_the_mirror ... ok
+test tests::dirty_region_mirror_sends_only_changed_ranges ... ok
+test tests::linux_virt_is_800x480_and_rejects_early_tile ... ok
+test tests::eink_busy_keeps_the_previous_frame ... ok
+
+test result: ok. 117 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src/lib.rs (target/debug/deps/mdc_tauri_demo-18e5a2a6d48952d7)
+
+running 2 tests
+test tests::scene_is_not_a_desktop_command ... ok
+test tests::switch_blocks_tiles_until_full_frame_and_inspector_has_no_pixels ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/lib.rs (target/debug/deps/mdc_transport-e063c71edff332ce)
+
+running 13 tests
+test serial_policy::tests::generation_invalidates_inflight ... ok
+test serial_policy::tests::backoff_matches_agentdeck_cadence ... ok
+test tests::serial_close_is_idempotent_and_rejects_io ... ok
+test serial_policy::tests::apply_reset_records_line_toggles_without_sleep_side_effects ... ok
+test serial_policy::tests::parses_post_write_reset_sequence ... ok
+test serial_policy::tests::candidate_port_filter ... ok
+test tests::memory_backpressure_when_queue_full ... ok
+test tests::memory_pair ... ok
+test tests::close_is_idempotent_and_write_after_close_fails ... ok
+test tests::tcp_transport_round_trip_and_close_contract ... ok
+test tests::websocket_close_is_idempotent_and_rejects_io ... ok
+test tests::websocket_rejects_binary_over_configured_limit ... ok
+test tests::accepted_tcp_stream_gets_bounded_reads ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.60s
+
+     Running unittests src/lib.rs (target/debug/deps/mdc_c-6f9a85e94749ba3b)
+
+running 23 tests
+test tests::c_abi_connect_ws_rejects_an_unreachable_url ... ok
+test tests::gesture_config_round_trips_via_c_abi ... ok
+test tests::c_abi_lists_dual_surfaces_and_keeps_main_size ... ok
+test tests::c_abi_session_stats_reports_counters ... ok
+test tests::c_abi_diagnostics_round_trip ... ok
+test tests::c_abi_send_input_reaches_the_device ... ok
+test tests::mirror_and_tiles_align_with_the_node_smoke ... ok
+test tests::mirror_mode_is_reported_via_c_abi ... ok
+test tests::mirror_mode_round_trips_via_c_abi ... ok
+test tests::config_round_trip_and_package_errors_via_c_abi ... ok
+test tests::c_abi_poll_event_with_node_writes_the_hit_node ... ok
+test tests::scene_set_and_clear_via_c_abi ... ok
+test tests::poll_event_reports_disconnect_cancel ... ok
+test tests::tile_reconciliation_ex_matches_node_fields ... ok
+test tests::tile_reconciliation_is_reported_via_c_abi ... ok
+test tests::tile_stats_are_reported_via_c_abi ... ok
+test tests::c_tile_sequence_matches_the_swift_smoke ... ok
+test tests::c_abi_frame_copy_returns_to_zero_after_destroy ... ok
+test tests::c_abi_frame_then_tile_round_trip ... ok
+test tests::mirror_start_emit_and_take ... ok
+test tests::mirror_take_with_surface_and_budget_skips ... ok
+test tests::tcp_session_reaches_ready_against_fake_device ... ok
+test tests::tcp_scripted_input_reaches_poll_event ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.67s
+
+   Doc-tests mdc_assets
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mdc_bake
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mdc_compatibility_tests
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mdc_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mdc_discovery
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mdc_flasher
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mdc_memory_tests
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mdc_mirror
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mdc_model
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mdc_protocol
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mdc_provision
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mdc_schedule
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mdc_simulator
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mdc_tauri_demo
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mdc_transport
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

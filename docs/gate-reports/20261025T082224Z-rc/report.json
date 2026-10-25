@@ -1,0 +1,256 @@
+{
+  "mode": "rc",
+  "started_at": "2026-10-25T08:22:24Z",
+  "finished_at": "2026-10-25T08:35:11Z",
+  "duration_seconds": 767,
+  "ok": true,
+  "repo": {
+    "commit": "52aff99d89e29c3ee88f24ad3c1123d808bc9ecb",
+    "dirty": false
+  },
+  "toolchain": {
+    "rustc": "rustc 1.93.0 (254b59607 2026-01-19)",
+    "cargo": "cargo 1.93.0 (083ac5135 2025-12-15)",
+    "node": "v20.11.1",
+    "python": "3.10.10"
+  },
+  "platform": {
+    "system": "Darwin",
+    "release": "25.5.0",
+    "machine": "arm64"
+  },
+  "limits": {
+    "frame_bytes": 1048576,
+    "control_bytes": 4096,
+    "package_bytes": 16777216,
+    "poll_bytes": 65536,
+    "poll_packets": 32,
+    "rss_growth_kib": 10240
+  },
+  "peak": {
+    "rss_growth_kib": 0,
+    "transactions": 2604243
+  },
+  "long": {
+    "mode": "long",
+    "source": "raw long_soak log",
+    "log": "docs/soak-reports/r09-4311e15.log",
+    "commit": "4311e15",
+    "ok": true,
+    "config": {
+      "warmup_seconds": 300,
+      "steady_seconds": 3600,
+      "idle_seconds": 60,
+      "rss_budget_kib": 10240
+    },
+    "samples": {
+      "baseline": {
+        "rss_kib": 5568,
+        "threads": 2,
+        "fds": 4,
+        "transactions": 212738,
+        "containers": {
+          "rx_bytes": 0,
+          "pending_requests": 0,
+          "pending_control": 0,
+          "pending_frames": 0,
+          "request_deadlines": 0,
+          "finished_acks": 753,
+          "displayed_timings": 256,
+          "held_frames": 0,
+          "diagnostics": 0,
+          "config_cache": 0,
+          "pending_configs": 0,
+          "active_pointers": 0,
+          "mirror_inbox_frames": 0,
+          "mirror_base_frames": 0,
+          "frame_transactions": 0,
+          "manager_events": 107,
+          "devices": 1
+        }
+      },
+      "midpoint": {
+        "rss_kib": 5584,
+        "threads": 2,
+        "fds": 4,
+        "transactions": 1408769,
+        "containers": {
+          "rx_bytes": 0,
+          "pending_requests": 0,
+          "pending_control": 0,
+          "pending_frames": 0,
+          "request_deadlines": 0,
+          "finished_acks": 785,
+          "displayed_timings": 256,
+          "held_frames": 0,
+          "diagnostics": 0,
+          "config_cache": 0,
+          "pending_configs": 0,
+          "active_pointers": 0,
+          "mirror_inbox_frames": 0,
+          "mirror_base_frames": 0,
+          "frame_transactions": 0,
+          "manager_events": 128,
+          "devices": 1
+        }
+      },
+      "end": {
+        "rss_kib": 5376,
+        "threads": 2,
+        "fds": 4,
+        "transactions": 2604243,
+        "containers": {
+          "rx_bytes": 0,
+          "pending_requests": 0,
+          "pending_control": 0,
+          "pending_frames": 0,
+          "request_deadlines": 0,
+          "finished_acks": 248,
+          "displayed_timings": 256,
+          "held_frames": 0,
+          "diagnostics": 0,
+          "config_cache": 0,
+          "pending_configs": 0,
+          "active_pointers": 0,
+          "mirror_inbox_frames": 0,
+          "mirror_base_frames": 0,
+          "frame_transactions": 0,
+          "manager_events": 128,
+          "devices": 1
+        }
+      },
+      "idle": {
+        "rss_kib": 5472,
+        "threads": 2,
+        "fds": 4,
+        "transactions": 2604243,
+        "containers": {
+          "rx_bytes": 0,
+          "pending_requests": 0,
+          "pending_control": 0,
+          "pending_frames": 0,
+          "request_deadlines": 0,
+          "finished_acks": 248,
+          "displayed_timings": 256,
+          "held_frames": 0,
+          "diagnostics": 0,
+          "config_cache": 0,
+          "pending_configs": 0,
+          "active_pointers": 0,
+          "mirror_inbox_frames": 0,
+          "mirror_base_frames": 0,
+          "frame_transactions": 0,
+          "manager_events": 128,
+          "devices": 1
+        }
+      }
+    },
+    "rss_growth_kib": 0,
+    "steps": [
+      {
+        "name": "long-soak",
+        "status": "passed"
+      }
+    ],
+    "sampling_note": "baseline/midpoint/end use 5/30/60-minute samples; later harness adds an early ~10-minute sample"
+  },
+  "skipped_steps": [],
+  "steps": [
+    {
+      "name": "clean-tree",
+      "status": "passed",
+      "seconds": 0,
+      "log": "clean-tree.log"
+    },
+    {
+      "name": "fmt",
+      "status": "passed",
+      "seconds": 1,
+      "log": "fmt.log"
+    },
+    {
+      "name": "clippy",
+      "status": "passed",
+      "seconds": 1,
+      "log": "clippy.log"
+    },
+    {
+      "name": "rust-tests",
+      "status": "passed",
+      "seconds": 651,
+      "log": "rust-tests.log"
+    },
+    {
+      "name": "python-tools",
+      "status": "passed",
+      "seconds": 0,
+      "log": "python-tools.log"
+    },
+    {
+      "name": "board-validation",
+      "status": "passed",
+      "seconds": 0,
+      "log": "board-validation.log"
+    },
+    {
+      "name": "cpp-tests",
+      "status": "passed",
+      "seconds": 14,
+      "log": "cpp-tests.log"
+    },
+    {
+      "name": "node-sdk",
+      "status": "passed",
+      "seconds": 14,
+      "log": "node-sdk.log"
+    },
+    {
+      "name": "fault-matrix",
+      "status": "passed",
+      "seconds": 17,
+      "log": "fault-matrix.log"
+    },
+    {
+      "name": "cxx-peer",
+      "status": "passed",
+      "seconds": 4,
+      "log": "cxx-peer.log"
+    },
+    {
+      "name": "native-smoke",
+      "status": "passed",
+      "seconds": 15,
+      "log": "native-smoke.log"
+    },
+    {
+      "name": "long-soak",
+      "status": "passed",
+      "seconds": 0,
+      "log": "long-soak.log"
+    },
+    {
+      "name": "release-native",
+      "status": "passed",
+      "seconds": 28,
+      "log": "release-native.log"
+    },
+    {
+      "name": "app-check",
+      "status": "passed",
+      "seconds": 21,
+      "log": "app-check.log"
+    },
+    {
+      "name": "app-native",
+      "status": "passed",
+      "seconds": 1,
+      "log": "app-native.log"
+    },
+    {
+      "name": "app-pin",
+      "status": "passed",
+      "seconds": 0,
+      "log": "app-pin.log"
+    }
+  ]
+}

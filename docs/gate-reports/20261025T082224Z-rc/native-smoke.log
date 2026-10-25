@@ -1,0 +1,186 @@
+TAP version 13
+# Subtest: native module is optional until a platform artifact is installed
+ok 1 - native module is optional until a platform artifact is installed
+  ---
+  duration_ms: 3.644833
+  ...
+# Subtest: sendFrame copies caller buffer before native dispatch
+ok 2 - sendFrame copies caller buffer before native dispatch
+  ---
+  duration_ms: 0.753667
+  ...
+# Subtest: installPackage forwards bytes and reports readiness
+ok 3 - installPackage forwards bytes and reports readiness
+  ---
+  duration_ms: 0.409583
+  ...
+# Subtest: dispose prevents new device calls
+ok 4 - dispose prevents new device calls
+  ---
+  duration_ms: 0.081667
+  ...
+# Subtest: dispose cancels SDK event listeners
+ok 5 - dispose cancels SDK event listeners
+  ---
+  duration_ms: 0.175042
+  ...
+# Subtest: sendTile copies caller buffer and forwards surfaceId
+ok 6 - sendTile copies caller buffer and forwards surfaceId
+  ---
+  duration_ms: 0.11375
+  ...
+# Subtest: connectTcp forwards the address to the native binding
+ok 7 - connectTcp forwards the address to the native binding
+  ---
+  duration_ms: 0.0895
+  ...
+# Subtest: serialPorts forwards endpoint hints
+ok 8 - serialPorts forwards endpoint hints
+  ---
+  duration_ms: 0.089458
+  ...
+# Subtest: capabilities forwards the negotiated capability DTO
+ok 9 - capabilities forwards the negotiated capability DTO
+  ---
+  duration_ms: 0.10525
+  ...
+# Subtest: connectSerial trims the path and defaults to 115200
+ok 10 - connectSerial trims the path and defaults to 115200
+  ---
+  duration_ms: 0.325042
+  ...
+# Subtest: nativeLoaded reflects a bound sendFrame
+ok 11 - nativeLoaded reflects a bound sendFrame
+  ---
+  duration_ms: 0.05975
+  ...
+# Subtest: pollEvents re-emits native input events
+ok 12 - pollEvents re-emits native input events
+  ---
+  duration_ms: 0.103625
+  ...
+# Subtest: mirror events and controls go through the public SDK
+ok 13 - mirror events and controls go through the public SDK
+  ---
+  duration_ms: 0.854
+  ...
+# Subtest: tile reconciliation goes through the public SDK
+ok 14 - tile reconciliation goes through the public SDK
+  ---
+  duration_ms: 0.201917
+  ...
+# Subtest: multi-tap radius round-trips and rejects an out-of-range value
+ok 15 - multi-tap radius round-trips and rejects an out-of-range value
+  ---
+  duration_ms: 0.442625
+  ...
+# Subtest: multi-tap window round-trips and rejects an out-of-range value
+ok 16 - multi-tap window round-trips and rejects an out-of-range value
+  ---
+  duration_ms: 0.163958
+  ...
+# Subtest: config get/set go through the public SDK
+ok 17 - config get/set go through the public SDK
+  ---
+  duration_ms: 0.179167
+  ...
+# Subtest: scene set/clear go through the public SDK
+ok 18 - scene set/clear go through the public SDK
+  ---
+  duration_ms: 0.194042
+  ...
+# Subtest: animation helpers go through the public SDK
+ok 19 - animation helpers go through the public SDK
+  ---
+  duration_ms: 0.129916
+  ...
+1..19
+# tests 19
+# suites 0
+# pass 19
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 92.533541
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.13s
+TAP version 13
+# Subtest: native simulator session lists a device and accepts an RGB565 frame
+ok 1 - native simulator session lists a device and accepts an RGB565 frame
+  ---
+  duration_ms: 15.3555
+  ...
+# Subtest: native tile reconciliation keeps its invariants
+ok 2 - native tile reconciliation keeps its invariants
+  ---
+  duration_ms: 0.736583
+  ...
+# Subtest: native bounded mirror take drops an oversized frame
+ok 3 - native bounded mirror take drops an oversized frame
+  ---
+  duration_ms: 26.837959
+  ...
+# Subtest: native mirror mode and tile reconciliation are exposed
+ok 4 - native mirror mode and tile reconciliation are exposed
+  ---
+  duration_ms: 1.076625
+  ...
+# Subtest: native installPackage rejects a malformed package
+ok 5 - native installPackage rejects a malformed package
+  ---
+  duration_ms: 0.72625
+  ...
+# Subtest: native connectTcp sends an RGB565 frame to mdc-sim-peer
+ok 6 - native connectTcp sends an RGB565 frame to mdc-sim-peer
+  ---
+  duration_ms: 2753.1955
+  ...
+# Subtest: native TCP peer exit surfaces a transport error
+ok 7 - native TCP peer exit surfaces a transport error
+  ---
+  duration_ms: 2195.097625
+  ...
+# Subtest: native connectSerial reaches a peer through a real PTY
+ok 8 - native connectSerial reaches a peer through a real PTY
+  ---
+  duration_ms: 988.762834
+  ...
+# Subtest: native serial PTY peer exit surfaces a transport error
+ok 9 - native serial PTY peer exit surfaces a transport error
+  ---
+  duration_ms: 2819.543917
+  ...
+# Subtest: native serial PTY corrupt ACK is rejected
+ok 10 - native serial PTY corrupt ACK is rejected
+  ---
+  duration_ms: 1893.809166
+  ...
+# Subtest: native connectWebSocket sends an RGB565 frame to mdc-sim-peer
+ok 11 - native connectWebSocket sends an RGB565 frame to mdc-sim-peer
+  ---
+  duration_ms: 1848.90075
+  ...
+# Subtest: native diagnostics round trip
+ok 12 - native diagnostics round trip
+  ---
+  duration_ms: 1.42275
+  ...
+# Subtest: native silent peer does not block the JS event loop and cancels promptly
+ok 13 - native silent peer does not block the JS event loop and cancels promptly
+  ---
+  duration_ms: 411.570084
+  ...
+# Subtest: native dual-sim lists overlay and disconnect cancel keeps the pointer
+ok 14 - native dual-sim lists overlay and disconnect cancel keeps the pointer
+  ---
+  duration_ms: 3.979833
+  ...
+1..14
+# tests 14
+# suites 0
+# pass 14
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 13759.593417

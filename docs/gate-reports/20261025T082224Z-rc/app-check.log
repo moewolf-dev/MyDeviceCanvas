@@ -1,0 +1,87 @@
+
+> moetuber@0.1.0 check
+> npm run lint && npm run typecheck && npm run test && npm run build
+
+
+> moetuber@0.1.0 lint
+> eslint . --max-warnings=0
+
+
+> moetuber@0.1.0 typecheck
+> vue-tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json
+
+
+> moetuber@0.1.0 test
+> vitest run
+
+
+ RUN  v2.1.9 /Volumes/13EjectionPlug/hardware/secondary-screen-VTuber-simulator/moetuber
+
+ ✓ tests/output-coordinator.test.ts (6 tests) 22ms
+ ✓ tests/settings.test.ts (5 tests) 24ms
+ ✓ tests/ipc-validation.test.ts (10 tests) 15ms
+ ✓ tests/firmware-service.test.ts (9 tests) 115ms
+ ✓ tests/package-service.test.ts (7 tests) 59ms
+ ✓ tests/model-library.test.ts (11 tests) 112ms
+ ✓ tests/device-state-machine.test.ts (6 tests) 3ms
+ ✓ tests/contracts.test.ts (6 tests) 3ms
+ ✓ tests/device-manager.test.ts (9 tests) 171ms
+ ✓ tests/frame.test.ts (7 tests) 3ms
+ ✓ tests/render-slot.test.ts (5 tests) 4ms
+ ✓ tests/model-parameters.test.ts (4 tests) 5ms
+ ✓ tests/firmware-availability.test.ts (1 test) 2ms
+ ✓ tests/native-smoke.test.ts (1 test) 7ms
+ ✓ tests/package-install.test.ts (1 test) 7ms
+ ✓ tests/serial-ports.test.ts (2 tests) 2ms
+ ✓ tests/environment.test.ts (2 tests) 2ms
+ ✓ tests/render-stats.test.ts (2 tests) 2ms
+ ✓ tests/native-mirror.test.ts (1 test) 432ms
+   ✓ Form B on the linux-virt simulator > negotiates mirror capability and delivers RGBA frames 431ms
+ ✓ tests/obs-server.test.ts (8 tests) 5047ms
+   ✓ OBS server > drops closed stream clients and accepts a reconnect without leaking state 4949ms
+ ✓ tests/download.test.ts (6 tests) 5045ms
+   ✓ download manager > cancels and resumes with a Range request 4929ms
+
+ Test Files  21 passed (21)
+      Tests  109 passed (109)
+   Start at  16:34:57
+   Duration  5.42s (transform 691ms, setup 0ms, collect 1.46s, tests 11.08s, environment 2ms, prepare 1.21s)
+
+
+> moetuber@0.1.0 build
+> npm run typecheck && electron-vite build
+
+
+> moetuber@0.1.0 typecheck
+> vue-tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json
+
+vite v5.4.21 building SSR bundle for production...
+transforming...
+✓ 27 modules transformed.
+rendering chunks...
+out/main/index.js  176.57 kB
+✓ built in 224ms
+vite v5.4.21 building SSR bundle for production...
+transforming...
+✓ 1 modules transformed.
+rendering chunks...
+out/preload/index.cjs  1.18 kB
+✓ built in 6ms
+vite v5.4.21 building for production...
+transforming...
+✓ 91 modules transformed.
+rendering chunks...
+../../out/renderer/index.html                                                             0.45 kB
+../../out/renderer/assets/index-ovSd2euA.css                                             30.08 kB
+../../out/renderer/assets/EmptyState.vue_vue_type_script_setup_true_lang-DhJHleIJ.js      0.98 kB
+../../out/renderer/assets/MonitorPage-ClofS2Cg.js                                         6.11 kB
+../../out/renderer/assets/ModelsPage-B6ScVb2o.js                                          8.13 kB
+../../out/renderer/assets/AccountPage-Bzv6DGjG.js                                         9.58 kB
+../../out/renderer/assets/DiyPage-Dk1NSSqL.js                                            10.38 kB
+../../out/renderer/assets/ObsPage-BRQ3cShI.js                                            15.02 kB
+../../out/renderer/assets/PackagesPage-DK_1GNlC.js                                       16.15 kB
+../../out/renderer/assets/SettingsPage--MzRmkQC.js                                       18.65 kB
+../../out/renderer/assets/DevicesPage-_ym1-fSr.js                                        30.86 kB
+../../out/renderer/assets/index-BpeFAC5M.js                                             483.88 kB
+../../out/renderer/assets/PreviewPage-jhyeUDcd.js                                     1,107.68 kB
+✓ built in 1.52s

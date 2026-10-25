@@ -1,0 +1,22 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
+     Running tests/faults.rs (target/debug/deps/faults-dc4b07bea4ac346f)
+
+running 15 tests
+test lost_request_times_out_without_a_false_display ... ok
+test corrupted_ack_is_rejected_not_displayed ... ok
+test peer_exit_converges_away_from_ready ... ok
+test accepted_frame_pixels_reach_the_peer_exactly ... ok
+test out_of_order_acks_release_both_surfaces ... ok
+test duplicate_ack_is_idempotent ... ok
+test mid_link_capability_change_updates_the_session ... ok
+test one_device_exiting_does_not_close_another ... ok
+test split_all_writes_round_trip_a_full_frame ... ok
+test websocket_lost_request_times_out ... ok
+test reboot_updates_run_identity_and_recovers ... ok
+test stalled_peer_times_out_on_ack ... ok
+test split_outbound_packets_still_round_trip ... ok
+test websocket_peer_round_trips_a_frame ... ok
+test delayed_processing_still_completes_the_handshake_and_frame ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.76s
+

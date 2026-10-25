@@ -1,0 +1,22 @@
+
+> moetuber@0.1.0 build:native
+> node scripts/build-native.mjs
+
+Building Core Node binding for darwin-arm64 (host)
+    Finished `release` profile [optimized] target(s) in 0.24s
+Wrote /Volumes/13EjectionPlug/hardware/secondary-screen-VTuber-simulator/moetuber/resources/native/darwin-arm64/mdc-node-native.node
+Native artifacts written for arm64; core pin 52aff99d89e29c3ee88f24ad3c1123d808bc9ecb
+
+> moetuber@0.1.0 verify:native
+> node scripts/verify-native.mjs
+
+{
+  "ok": true,
+  "artifact": "/Volumes/13EjectionPlug/hardware/secondary-screen-VTuber-simulator/moetuber/resources/native/darwin-arm64/mdc-node-native.node",
+  "node": "v20.11.1",
+  "modules": "115",
+  "platform": "darwin",
+  "arch": "arm64",
+  "device": "sim-esp32-jc3248w535",
+  "surface": "main"
+}

@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running tests/cxx_peer.rs (target/debug/deps/cxx_peer-e0bb20b1af4c2bd9)
+
+running 3 tests
+test cxx_peer_exit_converges_away_from_ready ... ok
+test cxx_runtime_resumes_after_a_short_begin_write ... ok
+test cxx_runtime_reassembles_a_chunked_frame_and_tile ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.61s
+

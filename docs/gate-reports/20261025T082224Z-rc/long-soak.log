@@ -1,0 +1,28 @@
+{
+  "ok": true,
+  "commit": "4311e15",
+  "steady_seconds": 3600,
+  "idle_seconds": 60,
+  "rss_growth_kib": 0,
+  "transactions": 2604243,
+  "ancestor": {
+    "report_commit": "4311e15",
+    "head_commit": "52aff99d89e29c3ee88f24ad3c1123d808bc9ecb",
+    "changed": [
+      ".github/workflows/simulator-gates.yml",
+      "Cargo.lock",
+      "docs/delivery-gate.md",
+      "docs/soak-reports/README.md",
+      "docs/soak-reports/r09-4311e15.json",
+      "docs/soak-reports/r09-4311e15.log",
+      "tests/memory/Cargo.toml",
+      "tests/memory/README.md",
+      "tests/memory/tests/long_soak.rs",
+      "tools/gates.sh",
+      "tools/soak-log-report.py",
+      "tools/test_soak_log_report.py",
+      "tools/test_validate_long_report.py",
+      "tools/validate-long-report.py"
+    ]
+  }
+}

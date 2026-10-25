@@ -1,0 +1,10 @@
+valid: boards/sim/esp32-jc3248w535-sim/board.yaml
+valid: boards/sim/linux-virt/board.yaml
+valid: boards/linux/pi4-hdmi/board.yaml
+valid: boards/linux/waveshare-eink/board.yaml
+valid: boards/esp32/test-valid/board.yaml
+valid: boards/arduino/uno-r4-ili9341/board.yaml
+valid: boards/arduino/uno-tft/board.yaml
+valid: boards/rockchip/rk3399-nanopc-t4/board.yaml
+valid: boards/nvidia/jetson-orin-nano/board.yaml
+valid: boards/esp32/esp32s3-box-3/board.yaml
