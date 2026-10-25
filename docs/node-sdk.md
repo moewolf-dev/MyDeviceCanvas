@@ -19,6 +19,18 @@ mdc.nativeLoaded(); // false when the .node artifact is missing
 `MyDeviceCanvas.create()` opens the simulator board by default. `mdc.dispose()`
 is idempotent and cancels listeners; every method rejects after dispose.
 
+## Async execution
+
+Every public method returns a Promise. The native binding runs the blocking
+part (TCP/WebSocket/serial connect, HELLO, frame pump, package upload) on the
+libuv worker pool, so JS timers and rendering keep running while a peer is slow
+or silent. A silent peer is rejected after a 2 s handshake budget.
+
+`dispose()` never waits for a worker: it sets shared cancellation flags, and an
+in-flight handshake stops on its next read poll (transport reads use a 400 ms
+timeout). Callers should still `await` the connect Promise to observe the typed
+cancellation error.
+
 ## API
 
 | Method | Notes |
@@ -27,7 +39,7 @@ is idempotent and cancels listeners; every method rejects after dispose.
 | `surface.pixelFormat` / `surface.implemented` | N307: canonical wire name plus whether the host/frame path implements it (only RGB565 today) |
 | `surface.sendFrame(bytes)` / `sendTile(tile)` | RGB565; the caller buffer is copied before dispatch |
 | `currentFrameId()` | |
-| `pollEvents()` | drained `NativeEvent[]` (`connected` / `disconnected` / `input` / `mirror` / `error`) |
+| `pollEvents()` | drained `NativeEvent[]` (`connected` / `disconnected` / `input` / `mirror` / `error`); each event has a `generation`, and events from a replaced link are discarded |
 | `on(event, fn)` / `off` | subscription; cancelled by `dispose()` |
 | `startMirror(surfaceId, opts)` / `stopMirror` | Form B; needs the device `mirror` capability; N559 validates `opts.mode` |
 | `mirrorMode()` | N559: the negotiated mode (`full-frame` \| `dirty-region`) |

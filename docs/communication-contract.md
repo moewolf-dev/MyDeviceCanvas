@@ -112,7 +112,12 @@ tags on queued events and Node async cancellation (R05).
   connection must not auto-create a FakeDevice.
 - The app must use only the public SDK.
 
-Current gap: SIM-R05 (the 12.2 s synchronous block is still reproduced).
+Implemented in R05: every public native method now returns a Promise backed by a
+libuv worker task; the JS thread only creates the task. A silent-peer handshake
+is bounded to 2 s, and `dispose` flips shared atomic flags so an in-flight
+handshake aborts on its next poll (transport reads use a 400 ms timeout).
+Measured by `native-smoke.test.js` "silent peer does not block the JS event loop
+and cancels promptly".
 
 ## 9. Capabilities and identity
 
@@ -160,12 +165,12 @@ Current gap: SIM-R05 (the 12.2 s synchronous block is still reproduced).
 | SIM-T04 | short write resumes BEGIN+CHUNK+COMMIT | implemented `short_chunk_resumes_*`, `short_commit_resumes_*` (R03) |
 | SIM-T05 | large package upload stays within window | implemented `large_package_upload_stays_in_the_control_window` (R03) |
 | SIM-T06 | per-request deadline | implemented `per_request_deadline_is_not_extended_by_a_new_request` (R04) |
-| SIM-T07 | Node silent peer does not block timer | open (R05) |
+| SIM-T07 | Node silent peer does not block timer | implemented `native-smoke.test.js` silent-peer timer/cancel test (R05) |
 | SIM-T08 | receive burst budget | open (R07) |
 | SIM-T09 | control decode >4 KiB rejected before decode | open (R07) |
 | SIM-T10 | peer close converges state | implemented `transport_close_converges_away_from_ready` (R04) |
 | SIM-T11 | disconnect drops old mirror frames | implemented `disconnect_drops_the_mirror_inbox_and_base` (R04) |
-| SIM-T12 | unsolicited Capabilities cannot set Ready | implemented `unsolicited_capabilities_do_not_make_a_session_ready` (R04) |
+| SIM-T12 | unsolicited Capabilities cannot set Ready | implemented `unsolicited_capabilities_do_not_make_a_session_ready`; Node events also stamp `generation` (R04) |
 | SIM-T13 | 100000 ACKs do not grow history | open (R07) |
 | SIM-T14 | close/cancel/limits across transports | partial: memory/TCP/WS/serial close idempotence, post-close rejection, accepted-stream timeouts, WebSocket limit (R06); Serial PTY close matrix and 500 ms cancel settle open (R05/R08) |
 | SIM-T15 | multi-device isolation | open (R08) |

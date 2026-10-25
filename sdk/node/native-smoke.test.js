@@ -124,6 +124,9 @@ test("native connectTcp sends an RGB565 frame to mdc-sim-peer", {
   const peer = spawn(peerBin, [address], { stdio: "ignore" });
   const mdc = await MyDeviceCanvas.create();
   try {
+    // Queue one event on the memory link; replacing the endpoint must drop it.
+    await mdc.devices();
+    await mdc._native.simulateInput("main", 77, "down", 1, 1);
     let connected = false;
     let last = "not attempted";
     for (let i = 0; i < 40; i += 1) {
@@ -145,6 +148,14 @@ test("native connectTcp sends an RGB565 frame to mdc-sim-peer", {
     bytes[1] = 0xf8;
     const request = await surface.sendFrame(bytes);
     assert.equal(typeof request, "number");
+    // SIM-R04: events from the replaced memory link are gone, and the new
+    // generation is stamped on every delivered event.
+    const events = await mdc.pollEvents();
+    assert.ok(events.every((event) => event.generation >= 1));
+    assert.ok(
+      !events.some((event) => event.input?.pointerId === 77),
+      "old-generation input survived the endpoint switch",
+    );
     mdc.dispose();
     await assert.rejects(mdc.devices(), /disposed/);
   } finally {
@@ -244,6 +255,41 @@ test("native diagnostics round trip", { skip: !native }, async () => {
   await assert.rejects(mdc.takeDiagnostics(), /disposed/);
 });
 
+test("native silent peer does not block the JS event loop and cancels promptly", { skip: !native }, async () => {
+  // SIM-R05: the handshake runs on the libuv pool; a silent peer must not
+  // starve timers, and dispose must settle the in-flight connect quickly.
+  const server = net.createServer(() => {
+    // Accept and stay silent: no HELLO/Capabilities reply.
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const mdc = await MyDeviceCanvas.create();
+  let maxGap = 0;
+  let last = performance.now();
+  const timer = setInterval(() => {
+    const now = performance.now();
+    maxGap = Math.max(maxGap, now - last);
+    last = now;
+  }, 10);
+  const started = Date.now();
+  try {
+    const pending = mdc
+      .connectTcp(`127.0.0.1:${port}`)
+      .then(() => null, (error) => error);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    mdc.dispose();
+    const error = await pending;
+    const settleMs = Date.now() - started;
+    assert.ok(error instanceof Error, "connect rejects when cancelled");
+    assert.match(error.message, /cancel|HELLO|closed|timed out/i);
+    assert.ok(maxGap < 100, `event loop gap ${maxGap.toFixed(1)}ms`);
+    assert.ok(settleMs < 500, `cancel settled in ${settleMs}ms`);
+  } finally {
+    clearInterval(timer);
+    server.close();
+  }
+});
+
 test("native dual-sim lists overlay and disconnect cancel keeps the pointer", { skip: !native }, async () => {
   const mdc = await MyDeviceCanvas.create();
   const devices = await mdc.openBoard("dual-sim");
@@ -276,7 +322,7 @@ test("native dual-sim lists overlay and disconnect cancel keeps the pointer", { 
   // N455: host session counters are readable from Node.
   const statsSession = await MyDeviceCanvas.create();
   await statsSession.devices();
-  const stats = statsSession._native.stats();
+  const stats = await statsSession._native.stats();
   assert.ok(stats.packetsSent >= 0);
   assert.ok(stats.bytesSent >= 0);
   statsSession.dispose();

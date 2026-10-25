@@ -113,6 +113,8 @@ export interface DiagnosticDto {
   fields?: string;
 }
 export interface NativeEvent {
+  /** SIM-R04: session generation; drop events older than the current link. */
+  generation: number;
   kind: string;
   deviceId?: string;
   input?: InputEventDto;

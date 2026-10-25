@@ -5,9 +5,10 @@ use mdc_simulator::{BoardProfile, FakeDevice, SimError};
 use mdc_transport::{TcpTransport, Transport};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[napi(object)]
 pub struct SurfaceInfo {
@@ -192,6 +193,8 @@ pub struct MirrorStatsDto {
 
 #[napi(object)]
 pub struct NativeEvent {
+    /// SIM-R04: session generation. Events from an older link can be ignored.
+    pub generation: u32,
     /// "input" | "connected" | "disconnected" | "endpointSwitched" | "error" | "mirror"
     pub kind: String,
     #[napi(js_name = "deviceId")]
@@ -227,11 +230,21 @@ struct SimSession {
     session: Session<Box<dyn Transport>>,
     device: Option<FakeDevice>,
     manager: Arc<Mutex<DeviceManager>>,
+    /// SIM-R05: set by `dispose`; long handshakes must stop promptly.
+    cancelled: Arc<AtomicBool>,
 }
+
+/// A peer that never answers HELLO is rejected after this budget instead of
+/// looping for tens of seconds.
+const HANDSHAKE_BUDGET: Duration = Duration::from_millis(2_000);
 
 fn pump_link(sim: &mut SimSession) -> Result<()> {
     let rounds = if sim.device.is_some() { 1 } else { 30 };
+    let started = Instant::now();
     for _ in 0..rounds {
+        if sim.cancelled.load(AtomicOrdering::Acquire) {
+            return Err(Error::from_reason("operation cancelled"));
+        }
         if let Some(device) = sim.device.as_mut() {
             let device_result = device.poll();
             sim.session
@@ -254,6 +267,9 @@ fn pump_link(sim: &mut SimSession) -> Result<()> {
             break;
         }
         if sim.device.is_none() {
+            if started.elapsed() >= HANDSHAKE_BUDGET {
+                break;
+            }
             thread::sleep(Duration::from_millis(5));
         }
     }
@@ -263,6 +279,8 @@ fn pump_link(sim: &mut SimSession) -> Result<()> {
 #[derive(Default)]
 struct State {
     disposed: bool,
+    /// SIM-R04: incremented for every new Session; shared with NativeManager.
+    generation: Arc<AtomicU32>,
     board_id: Option<String>,
     sim: Option<SimSession>,
     last_frame: Option<Vec<u8>>,
@@ -274,6 +292,7 @@ fn ensure_sim(state: &mut State) -> Result<()> {
     if state.sim.is_some() {
         return Ok(());
     }
+    state.generation.fetch_add(1, AtomicOrdering::AcqRel);
     let profile = BoardProfile::from_board_id(state.board_id.as_deref().unwrap_or("default"));
     let (host, mut device) = FakeDevice::pair(profile);
     let manager = Arc::new(Mutex::new(DeviceManager::new()));
@@ -302,6 +321,7 @@ fn ensure_sim(state: &mut State) -> Result<()> {
         session,
         device: Some(device),
         manager,
+        cancelled: Arc::new(AtomicBool::new(false)),
     });
     Ok(())
 }
@@ -312,6 +332,7 @@ fn connect_transport(
     transport: Box<dyn Transport>,
     endpoint: &str,
     label: &str,
+    cancelled: &Arc<AtomicBool>,
 ) -> Result<()> {
     if let Some(mut previous) = state.sim.take() {
         previous.session.disconnect();
@@ -326,6 +347,7 @@ fn connect_transport(
         session,
         device: None,
         manager,
+        cancelled: cancelled.clone(),
     };
     pump_link(&mut live)?;
     if live.session.state != ConnectionState::Ready {
@@ -339,11 +361,15 @@ fn connect_transport(
             .map_err(|_| Error::from_reason("manager lock poisoned"))?
             .connect_session(&device.capabilities.device_id, endpoint);
     }
+    state.generation.fetch_add(1, AtomicOrdering::AcqRel);
     state.sim = Some(live);
     Ok(())
 }
 
-fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<NativeEvent>> {
+fn drain_manager_events(
+    manager: &Arc<Mutex<DeviceManager>>,
+    generation: u32,
+) -> Result<Vec<NativeEvent>> {
     let mut mgr = manager
         .lock()
         .map_err(|_| Error::from_reason("manager lock poisoned"))?;
@@ -351,6 +377,7 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
     for event in mgr.drain_events() {
         out.push(match event {
             ManagerEvent::Added(id) | ManagerEvent::Connected(id) => NativeEvent {
+                generation,
                 kind: "connected".into(),
                 gesture: None,
                 device_id: Some(id),
@@ -359,6 +386,7 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                 mirror: None,
             },
             ManagerEvent::Removed(id) | ManagerEvent::Disconnected(id) => NativeEvent {
+                generation,
                 kind: "disconnected".into(),
                 gesture: None,
                 device_id: Some(id),
@@ -367,6 +395,7 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                 mirror: None,
             },
             ManagerEvent::EndpointSwitched { device_id } => NativeEvent {
+                generation,
                 kind: "endpointSwitched".into(),
                 gesture: None,
                 device_id: Some(device_id),
@@ -375,6 +404,7 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                 mirror: None,
             },
             ManagerEvent::Input { device_id, event } => NativeEvent {
+                generation,
                 kind: "input".into(),
                 gesture: None,
                 device_id: Some(device_id.clone()),
@@ -391,6 +421,7 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                 mirror: None,
             },
             ManagerEvent::Gesture { device_id, gesture } => NativeEvent {
+                generation,
                 kind: "gesture".into(),
                 gesture: Some(GestureDto {
                     kind: match gesture.kind {
@@ -418,6 +449,7 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                 mirror: None,
             },
             ManagerEvent::Error { device_id, message } => NativeEvent {
+                generation,
                 kind: "error".into(),
                 gesture: None,
                 device_id: Some(device_id),
@@ -430,6 +462,7 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                 name,
                 level,
             } => NativeEvent {
+                generation,
                 // N357: telemetry metadata (the full record is in takeDiagnostics).
                 kind: "telemetry".into(),
                 gesture: None,
@@ -449,6 +482,7 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
                 height,
                 ..
             } => NativeEvent {
+                generation,
                 kind: "mirror".into(),
                 gesture: None,
                 device_id: Some(device_id),
@@ -468,7 +502,12 @@ fn drain_manager_events(manager: &Arc<Mutex<DeviceManager>>) -> Result<Vec<Nativ
 
 #[napi]
 pub struct NativeManager {
-    state: Mutex<State>,
+    state: Arc<Mutex<State>>,
+    /// SIM-R05: shared with the worker task so `dispose` can cancel I/O without
+    /// first taking the state lock.
+    cancelled: Arc<AtomicBool>,
+    disposed: Arc<AtomicBool>,
+    generation: Arc<AtomicU32>,
 }
 
 impl Default for NativeManager {
@@ -477,18 +516,9 @@ impl Default for NativeManager {
     }
 }
 
-#[napi]
 impl NativeManager {
-    #[napi(constructor)]
-    pub fn new() -> Self {
-        Self {
-            state: Mutex::new(State::default()),
-        }
-    }
-
     /// Connect (or reuse) FakeDevice simulator and return device DTOs.
-    #[napi]
-    pub fn devices(&self) -> Result<Vec<DeviceInfo>> {
+    fn devices_sync(&self) -> Result<Vec<DeviceInfo>> {
         let mut state = self
             .state
             .lock()
@@ -527,8 +557,7 @@ impl NativeManager {
     }
 
     /// Send RGB565 frame bytes to `surfaceId` via the sim Session.
-    #[napi(js_name = "sendFrame")]
-    pub fn send_frame(&self, surface_id: String, bytes: Buffer) -> Result<u32> {
+    fn send_frame_sync(&self, surface_id: String, bytes: Buffer) -> Result<u32> {
         let mut state = self
             .state
             .lock()
@@ -574,8 +603,7 @@ impl NativeManager {
     }
 
     /// Send an RGB565 tile (blocked after reconnect until a full frame ACK).
-    #[napi(js_name = "sendTile")]
-    pub fn send_tile(&self, tile: TileRequest) -> Result<u32> {
+    fn send_tile_sync(&self, tile: TileRequest) -> Result<u32> {
         let mut state = self
             .state
             .lock()
@@ -611,8 +639,7 @@ impl NativeManager {
     }
 
     /// Peer-reported current frame id (for tile baseFrameId).
-    #[napi(js_name = "currentFrameId")]
-    pub fn current_frame_id(&self) -> Result<u32> {
+    fn current_frame_id_sync(&self) -> Result<u32> {
         let mut state = self
             .state
             .lock()
@@ -632,8 +659,7 @@ impl NativeManager {
     }
 
     /// Drain ManagerEvent queue into JS-friendly DTOs.
-    #[napi(js_name = "pollEvents")]
-    pub fn poll_events(&self) -> Result<Vec<NativeEvent>> {
+    fn poll_events_sync(&self) -> Result<Vec<NativeEvent>> {
         let mut state = self
             .state
             .lock()
@@ -642,9 +668,10 @@ impl NativeManager {
             return Err(Error::from_reason("manager is disposed"));
         }
         ensure_sim(&mut state)?;
+        let generation = state.generation.load(AtomicOrdering::Acquire);
         let sim = state.sim.as_mut().unwrap();
         let pumped = pump_link(sim);
-        let events = drain_manager_events(&sim.manager)?;
+        let events = drain_manager_events(&sim.manager, generation)?;
         if events.is_empty() {
             pumped?;
         }
@@ -652,8 +679,7 @@ impl NativeManager {
     }
 
     /// Sim-only: emit a touch event from FakeDevice toward the host Session.
-    #[napi(js_name = "simulateInput")]
-    pub fn simulate_input(
+    fn simulate_input_sync(
         &self,
         surface_id: String,
         pointer_id: u16,
@@ -692,8 +718,7 @@ impl NativeManager {
     }
 
     /// N400: send a pointer event from the host to the device (capability-gated).
-    #[napi(js_name = "sendInput")]
-    pub fn send_input(
+    fn send_input_sync(
         &self,
         surface_id: String,
         pointer_id: u16,
@@ -726,8 +751,7 @@ impl NativeManager {
     }
 
     /// Form B: ask the device to start/stop mirroring (capability-gated).
-    #[napi(js_name = "startMirror")]
-    pub fn start_mirror(&self, surface_id: String, mode: String, max_fps: u16) -> Result<u32> {
+    fn start_mirror_sync(&self, surface_id: String, mode: String, max_fps: u16) -> Result<u32> {
         let mut state = self
             .state
             .lock()
@@ -745,8 +769,7 @@ impl NativeManager {
         Ok(request)
     }
 
-    #[napi(js_name = "stopMirror")]
-    pub fn stop_mirror(&self, surface_id: String) -> Result<u32> {
+    fn stop_mirror_sync(&self, surface_id: String) -> Result<u32> {
         let mut state = self
             .state
             .lock()
@@ -765,8 +788,7 @@ impl NativeManager {
     }
 
     /// Sim-only: push one mirrored frame from FakeDevice toward the host.
-    #[napi(js_name = "emitMirrorFrame")]
-    pub fn emit_mirror_frame(&self) -> Result<()> {
+    fn emit_mirror_frame_sync(&self) -> Result<()> {
         let mut state = self
             .state
             .lock()
@@ -790,8 +812,7 @@ impl NativeManager {
     }
 
     /// Drain the latest complete mirrored frame (pixels are copied out).
-    #[napi(js_name = "takeMirrorFrame")]
-    pub fn take_mirror_frame(&self) -> Result<Option<MirrorFrameDto>> {
+    fn take_mirror_frame_sync(&self) -> Result<Option<MirrorFrameDto>> {
         let mut state = self
             .state
             .lock()
@@ -812,8 +833,7 @@ impl NativeManager {
 
     /// N528: take the newest mirrored frame only when it fits `max_bytes`;
     /// otherwise the frame is dropped and counted (see `mirrorSkips`).
-    #[napi(js_name = "takeMirrorFrameBounded")]
-    pub fn take_mirror_frame_bounded(&self, max_bytes: u32) -> Result<Option<MirrorFrameDto>> {
+    fn take_mirror_frame_bounded_sync(&self, max_bytes: u32) -> Result<Option<MirrorFrameDto>> {
         let mut state = self
             .state
             .lock()
@@ -840,8 +860,7 @@ impl NativeManager {
     }
 
     /// N528: mirrored frames dropped because the caller's buffer was too small.
-    #[napi(js_name = "mirrorSkips")]
-    pub fn mirror_skips(&self) -> Result<f64> {
+    fn mirror_skips_sync(&self) -> Result<f64> {
         let state = self
             .state
             .lock()
@@ -854,8 +873,7 @@ impl NativeManager {
 
     /// N559: the negotiated mirror mode (`full-frame` | `dirty-region`, empty
     /// before the device confirms). Parity with the Swift/C SDKs.
-    #[napi(js_name = "mirrorMode")]
-    pub fn mirror_mode(&self) -> Result<String> {
+    fn mirror_mode_sync(&self) -> Result<String> {
         let mut state = self
             .state
             .lock()
@@ -868,8 +886,7 @@ impl NativeManager {
         Ok(sim.session.mirror_mode().to_string())
     }
 
-    #[napi(js_name = "mirrorStats")]
-    pub fn mirror_stats(&self) -> Result<MirrorStatsDto> {
+    fn mirror_stats_sync(&self) -> Result<MirrorStatsDto> {
         let mut state = self
             .state
             .lock()
@@ -888,8 +905,7 @@ impl NativeManager {
     }
 
     /// N42: read a device configuration value (sim path).
-    #[napi(js_name = "getConfig")]
-    pub fn get_config(&self, key: String) -> Result<String> {
+    fn get_config_sync(&self, key: String) -> Result<String> {
         let mut state = self
             .state
             .lock()
@@ -907,8 +923,7 @@ impl NativeManager {
     }
 
     /// N784: the current multi-tap radius in pixels.
-    #[napi(js_name = "multiTapRadius")]
-    pub fn multi_tap_radius(&self) -> Result<u16> {
+    fn multi_tap_radius_sync(&self) -> Result<u16> {
         let state = self
             .state
             .lock()
@@ -923,8 +938,7 @@ impl NativeManager {
     }
 
     /// N784: set the multi-tap radius. Values above 4096 are refused.
-    #[napi(js_name = "setMultiTapRadius")]
-    pub fn set_multi_tap_radius(&self, radius: u32) -> Result<u16> {
+    fn set_multi_tap_radius_sync(&self, radius: u32) -> Result<u16> {
         if radius > 4096 {
             return Err(Error::from_reason("multi_tap_radius out of range"));
         }
@@ -944,8 +958,7 @@ impl NativeManager {
     }
 
     /// N794: the current multi-tap window in milliseconds.
-    #[napi(js_name = "multiTapMs")]
-    pub fn multi_tap_ms(&self) -> Result<u32> {
+    fn multi_tap_ms_sync(&self) -> Result<u32> {
         let state = self
             .state
             .lock()
@@ -961,8 +974,7 @@ impl NativeManager {
     }
 
     /// N794: set the multi-tap window. Values above 60000 are refused.
-    #[napi(js_name = "setMultiTapMs")]
-    pub fn set_multi_tap_ms(&self, ms: u32) -> Result<u32> {
+    fn set_multi_tap_ms_sync(&self, ms: u32) -> Result<u32> {
         if u64::from(ms) > mdc_core::MULTI_TAP_MS_MAX {
             return Err(Error::from_reason("multi_tap_ms out of range"));
         }
@@ -982,8 +994,7 @@ impl NativeManager {
     }
 
     /// N42: write a device configuration value and return the accepted value.
-    #[napi(js_name = "setConfig")]
-    pub fn set_config(&self, key: String, value: String) -> Result<String> {
+    fn set_config_sync(&self, key: String, value: String) -> Result<String> {
         let mut state = self
             .state
             .lock()
@@ -1001,8 +1012,7 @@ impl NativeManager {
     }
 
     /// N55: set a vector scene from a JSON SceneNode (sim path).
-    #[napi(js_name = "setScene")]
-    pub fn set_scene(&self, json: String) -> Result<()> {
+    fn set_scene_sync(&self, json: String) -> Result<()> {
         let mut state = self
             .state
             .lock()
@@ -1021,8 +1031,7 @@ impl NativeManager {
         Ok(())
     }
 
-    #[napi(js_name = "clearScene")]
-    pub fn clear_scene(&self) -> Result<()> {
+    fn clear_scene_sync(&self) -> Result<()> {
         let mut state = self
             .state
             .lock()
@@ -1040,8 +1049,7 @@ impl NativeManager {
     }
 
     /// N74: play a baked-atlas clip on the device (via the animation setting).
-    #[napi(js_name = "setAnimation")]
-    pub fn set_animation(&self, clip: String) -> Result<String> {
+    fn set_animation_sync(&self, clip: String) -> Result<String> {
         let mut state = self
             .state
             .lock()
@@ -1058,8 +1066,7 @@ impl NativeManager {
         Ok(sim.session.active_animation().unwrap_or("off").to_string())
     }
 
-    #[napi(js_name = "stopAnimation")]
-    pub fn stop_animation(&self) -> Result<()> {
+    fn stop_animation_sync(&self) -> Result<()> {
         let mut state = self
             .state
             .lock()
@@ -1077,8 +1084,7 @@ impl NativeManager {
     }
 
     /// N837: blend up to four clips (`"idle:700,wave:300"`).
-    #[napi(js_name = "setAnimationBlend")]
-    pub fn set_animation_blend(&self, blend: String) -> Result<String> {
+    fn set_animation_blend_sync(&self, blend: String) -> Result<String> {
         let mut state = self
             .state
             .lock()
@@ -1100,8 +1106,7 @@ impl NativeManager {
     }
 
     /// N837: the blend the device last accepted (`"off"` when inactive).
-    #[napi(js_name = "animationBlend")]
-    pub fn animation_blend(&self) -> Result<String> {
+    fn animation_blend_sync(&self) -> Result<String> {
         let state = self
             .state
             .lock()
@@ -1121,8 +1126,7 @@ impl NativeManager {
     }
 
     /// N233: upload a runtime package (`.mdcpkg` bytes) and report readiness.
-    #[napi(js_name = "installPackage")]
-    pub fn install_package(&self, bytes: Buffer) -> Result<bool> {
+    fn install_package_sync(&self, bytes: Buffer) -> Result<bool> {
         let mut state = self
             .state
             .lock()
@@ -1144,8 +1148,7 @@ impl NativeManager {
     }
 
     /// N238: true once the last accepted package is render-ready.
-    #[napi(js_name = "packageReady")]
-    pub fn package_ready(&self) -> Result<bool> {
+    fn package_ready_sync(&self) -> Result<bool> {
         let state = self
             .state
             .lock()
@@ -1159,8 +1162,7 @@ impl NativeManager {
     }
 
     /// Open a named simulator board before the first `devices()` call.
-    #[napi(js_name = "openBoard")]
-    pub fn open_board(&self, board_id: String) -> Result<()> {
+    fn open_board_sync(&self, board_id: String) -> Result<()> {
         let mut state = self
             .state
             .lock()
@@ -1176,8 +1178,7 @@ impl NativeManager {
     }
 
     /// Sim-only: drop the link and emit cancel for pointers that are still down.
-    #[napi(js_name = "simulateDisconnect")]
-    pub fn simulate_disconnect(&self) -> Result<()> {
+    fn simulate_disconnect_sync(&self) -> Result<()> {
         let mut state = self
             .state
             .lock()
@@ -1203,8 +1204,7 @@ impl NativeManager {
     }
 
     /// Replace the session with a TCP connection to a simulator peer (`host:port`).
-    #[napi(js_name = "connectTcp")]
-    pub fn connect_tcp(&self, address: String) -> Result<()> {
+    fn connect_tcp_sync(&self, address: String) -> Result<()> {
         let mut state = self
             .state
             .lock()
@@ -1214,12 +1214,17 @@ impl NativeManager {
         }
         let tcp = TcpTransport::connect(address.trim(), Duration::from_millis(400))
             .map_err(|e| Error::from_reason(e.to_string()))?;
-        connect_transport(&mut state, Box::new(tcp), address.trim(), "tcp")
+        connect_transport(
+            &mut state,
+            Box::new(tcp),
+            address.trim(),
+            "tcp",
+            &self.cancelled,
+        )
     }
 
     /// N455: the host-side session counters.
-    #[napi(js_name = "stats")]
-    pub fn stats(&self) -> Result<SessionStatsDto> {
+    fn stats_sync(&self) -> Result<SessionStatsDto> {
         let mut state = self
             .state
             .lock()
@@ -1244,8 +1249,7 @@ impl NativeManager {
     }
 
     /// N576: the host's partial-update reconciliation (parity with C `mdc_session_tile_reconciliation`).
-    #[napi(js_name = "tileReconciliation")]
-    pub fn tile_reconciliation(&self) -> Result<TileReconciliationDto> {
+    fn tile_reconciliation_sync(&self) -> Result<TileReconciliationDto> {
         let mut state = self
             .state
             .lock()
@@ -1267,8 +1271,7 @@ impl NativeManager {
 
     /// APP-R03: enumerate host serial ports. A port is only an endpoint hint;
     /// identity is confirmed by the subsequent HELLO.
-    #[napi(js_name = "serialPorts")]
-    pub fn serial_ports(&self) -> Result<Vec<SerialPortDto>> {
+    fn serial_ports_sync(&self) -> Result<Vec<SerialPortDto>> {
         let ports = mdc_transport::available_serial_ports()
             .map_err(|e| Error::from_reason(e.to_string()))?;
         Ok(ports
@@ -1283,8 +1286,7 @@ impl NativeManager {
     }
 
     /// APP-R03: the negotiated device capabilities, including mirror/config/scene.
-    #[napi(js_name = "capabilities")]
-    pub fn capabilities(&self) -> Result<CapabilitiesInfo> {
+    fn capabilities_sync(&self) -> Result<CapabilitiesInfo> {
         let state = self
             .state
             .lock()
@@ -1346,8 +1348,7 @@ impl NativeManager {
     }
 
     /// N430: replace the session with a serial connection (`/dev/...`).
-    #[napi(js_name = "connectSerial")]
-    pub fn connect_serial(
+    fn connect_serial_sync(
         &self,
         path: String,
         baud: u32,
@@ -1369,12 +1370,17 @@ impl NativeManager {
             },
         )
         .map_err(|e| Error::from_reason(e.to_string()))?;
-        connect_transport(&mut state, Box::new(serial), path.trim(), "serial")
+        connect_transport(
+            &mut state,
+            Box::new(serial),
+            path.trim(),
+            "serial",
+            &self.cancelled,
+        )
     }
 
     /// N340: replace the session with a WebSocket connection (`ws://host:port`).
-    #[napi(js_name = "connectWebSocket")]
-    pub fn connect_web_socket(&self, url: String) -> Result<()> {
+    fn connect_web_socket_sync(&self, url: String) -> Result<()> {
         let mut state = self
             .state
             .lock()
@@ -1384,11 +1390,16 @@ impl NativeManager {
         }
         let ws = mdc_transport::WebSocketTransport::connect(url.trim(), Duration::from_millis(400))
             .map_err(|e| Error::from_reason(e.to_string()))?;
-        connect_transport(&mut state, Box::new(ws), url.trim(), "websocket")
+        connect_transport(
+            &mut state,
+            Box::new(ws),
+            url.trim(),
+            "websocket",
+            &self.cancelled,
+        )
     }
 
-    #[napi(js_name = "lastFrame")]
-    pub fn last_frame(&self) -> Result<Option<Buffer>> {
+    fn last_frame_sync(&self) -> Result<Option<Buffer>> {
         let state = self
             .state
             .lock()
@@ -1400,8 +1411,7 @@ impl NativeManager {
     }
 
     /// N349: emit a metric on the simulator device's diagnostics channel.
-    #[napi(js_name = "emitMetric")]
-    pub fn emit_metric(&self, name: String, value: f64, unit: Option<String>) -> Result<u32> {
+    fn emit_metric_sync(&self, name: String, value: f64, unit: Option<String>) -> Result<u32> {
         let mut state = self
             .state
             .lock()
@@ -1423,8 +1433,7 @@ impl NativeManager {
     }
 
     /// N349: drain the bounded diagnostics channel (metrics, boot info, telemetry).
-    #[napi(js_name = "takeDiagnostics")]
-    pub fn take_diagnostics(&self) -> Result<Vec<DiagnosticDto>> {
+    fn take_diagnostics_sync(&self) -> Result<Vec<DiagnosticDto>> {
         let mut state = self
             .state
             .lock()
@@ -1472,8 +1481,7 @@ impl NativeManager {
     }
 
     /// N349: number of diagnostics waiting.
-    #[napi(js_name = "diagnosticCount")]
-    pub fn diagnostic_count(&self) -> Result<u32> {
+    fn diagnostic_count_sync(&self) -> Result<u32> {
         let state = self
             .state
             .lock()
@@ -1487,18 +1495,352 @@ impl NativeManager {
             .map(|sim| sim.session.diagnostic_count() as u32)
             .unwrap_or(0))
     }
+}
+
+/// A unit-returning native call resolves to JS `undefined`.
+fn unit(result: Result<()>) -> Result<Undefined> {
+    result?;
+    Ok(())
+}
+
+type Work<R> = Box<dyn FnOnce(&NativeManager) -> Result<R> + Send>;
+
+/// SIM-R05: run one blocking native operation on the libuv worker pool. The JS
+/// thread only creates the task and receives a Promise, so timers keep firing
+/// while a silent peer, serial open or handshake is waiting.
+pub struct BlockingTask<R>
+where
+    R: Send + 'static + ToNapiValue + TypeName,
+{
+    manager: NativeManager,
+    work: Option<Work<R>>,
+}
+
+impl<R> Task for BlockingTask<R>
+where
+    R: Send + 'static + ToNapiValue + TypeName,
+{
+    type Output = R;
+    type JsValue = R;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        if self.manager.disposed.load(AtomicOrdering::Acquire) {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        let work = self
+            .work
+            .take()
+            .ok_or_else(|| Error::from_reason("native task ran twice"))?;
+        work(&self.manager)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+impl NativeManager {
+    fn spawn<R>(
+        &self,
+        work: impl FnOnce(&NativeManager) -> Result<R> + Send + 'static,
+    ) -> AsyncTask<BlockingTask<R>>
+    where
+        R: Send + 'static + ToNapiValue + TypeName,
+    {
+        AsyncTask::new(BlockingTask {
+            manager: NativeManager {
+                state: self.state.clone(),
+                cancelled: self.cancelled.clone(),
+                disposed: self.disposed.clone(),
+                generation: self.generation.clone(),
+            },
+            work: Some(Box::new(work)),
+        })
+    }
+}
+
+#[napi]
+impl NativeManager {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        let generation = Arc::new(AtomicU32::new(0));
+        let state = State {
+            generation: generation.clone(),
+            ..State::default()
+        };
+        Self {
+            state: Arc::new(Mutex::new(state)),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            disposed: Arc::new(AtomicBool::new(false)),
+            generation,
+        }
+    }
 
     #[napi]
+    pub fn devices(&self) -> AsyncTask<BlockingTask<Vec<DeviceInfo>>> {
+        self.spawn(|manager| manager.devices_sync())
+    }
+
+    #[napi(js_name = "sendFrame")]
+    pub fn send_frame(&self, surface_id: String, bytes: Buffer) -> AsyncTask<BlockingTask<u32>> {
+        self.spawn(move |manager| manager.send_frame_sync(surface_id, bytes))
+    }
+
+    #[napi(js_name = "sendTile")]
+    pub fn send_tile(&self, tile: TileRequest) -> AsyncTask<BlockingTask<u32>> {
+        self.spawn(move |manager| manager.send_tile_sync(tile))
+    }
+
+    #[napi(js_name = "currentFrameId")]
+    pub fn current_frame_id(&self) -> AsyncTask<BlockingTask<u32>> {
+        self.spawn(|manager| manager.current_frame_id_sync())
+    }
+
+    #[napi(js_name = "pollEvents")]
+    pub fn poll_events(&self) -> AsyncTask<BlockingTask<Vec<NativeEvent>>> {
+        self.spawn(|manager| manager.poll_events_sync())
+    }
+
+    #[napi(js_name = "simulateInput")]
+    pub fn simulate_input(
+        &self,
+        surface_id: String,
+        pointer_id: u16,
+        phase: String,
+        x: u16,
+        y: u16,
+    ) -> AsyncTask<BlockingTask<Undefined>> {
+        self.spawn(move |manager| {
+            unit(manager.simulate_input_sync(surface_id, pointer_id, phase, x, y))
+        })
+    }
+
+    #[napi(js_name = "sendInput")]
+    pub fn send_input(
+        &self,
+        surface_id: String,
+        pointer_id: u16,
+        phase: String,
+        x: u16,
+        y: u16,
+    ) -> AsyncTask<BlockingTask<Undefined>> {
+        self.spawn(move |manager| {
+            unit(manager.send_input_sync(surface_id, pointer_id, phase, x, y))
+        })
+    }
+
+    #[napi(js_name = "startMirror")]
+    pub fn start_mirror(
+        &self,
+        surface_id: String,
+        mode: String,
+        max_fps: u16,
+    ) -> AsyncTask<BlockingTask<u32>> {
+        self.spawn(move |manager| manager.start_mirror_sync(surface_id, mode, max_fps))
+    }
+
+    #[napi(js_name = "stopMirror")]
+    pub fn stop_mirror(&self, surface_id: String) -> AsyncTask<BlockingTask<u32>> {
+        self.spawn(move |manager| manager.stop_mirror_sync(surface_id))
+    }
+
+    #[napi(js_name = "emitMirrorFrame")]
+    pub fn emit_mirror_frame(&self) -> AsyncTask<BlockingTask<Undefined>> {
+        self.spawn(|manager| unit(manager.emit_mirror_frame_sync()))
+    }
+
+    #[napi(js_name = "takeMirrorFrame")]
+    pub fn take_mirror_frame(&self) -> AsyncTask<BlockingTask<Option<MirrorFrameDto>>> {
+        self.spawn(|manager| manager.take_mirror_frame_sync())
+    }
+
+    #[napi(js_name = "takeMirrorFrameBounded")]
+    pub fn take_mirror_frame_bounded(
+        &self,
+        max_bytes: u32,
+    ) -> AsyncTask<BlockingTask<Option<MirrorFrameDto>>> {
+        self.spawn(move |manager| manager.take_mirror_frame_bounded_sync(max_bytes))
+    }
+
+    #[napi(js_name = "mirrorSkips")]
+    pub fn mirror_skips(&self) -> AsyncTask<BlockingTask<f64>> {
+        self.spawn(|manager| manager.mirror_skips_sync())
+    }
+
+    #[napi(js_name = "mirrorMode")]
+    pub fn mirror_mode(&self) -> AsyncTask<BlockingTask<String>> {
+        self.spawn(|manager| manager.mirror_mode_sync())
+    }
+
+    #[napi(js_name = "mirrorStats")]
+    pub fn mirror_stats(&self) -> AsyncTask<BlockingTask<MirrorStatsDto>> {
+        self.spawn(|manager| manager.mirror_stats_sync())
+    }
+
+    #[napi(js_name = "getConfig")]
+    pub fn get_config(&self, key: String) -> AsyncTask<BlockingTask<String>> {
+        self.spawn(move |manager| manager.get_config_sync(key))
+    }
+
+    #[napi(js_name = "multiTapRadius")]
+    pub fn multi_tap_radius(&self) -> AsyncTask<BlockingTask<u16>> {
+        self.spawn(|manager| manager.multi_tap_radius_sync())
+    }
+
+    #[napi(js_name = "setMultiTapRadius")]
+    pub fn set_multi_tap_radius(&self, radius: u32) -> AsyncTask<BlockingTask<u16>> {
+        self.spawn(move |manager| manager.set_multi_tap_radius_sync(radius))
+    }
+
+    #[napi(js_name = "multiTapMs")]
+    pub fn multi_tap_ms(&self) -> AsyncTask<BlockingTask<u32>> {
+        self.spawn(|manager| manager.multi_tap_ms_sync())
+    }
+
+    #[napi(js_name = "setMultiTapMs")]
+    pub fn set_multi_tap_ms(&self, ms: u32) -> AsyncTask<BlockingTask<u32>> {
+        self.spawn(move |manager| manager.set_multi_tap_ms_sync(ms))
+    }
+
+    #[napi(js_name = "setConfig")]
+    pub fn set_config(&self, key: String, value: String) -> AsyncTask<BlockingTask<String>> {
+        self.spawn(move |manager| manager.set_config_sync(key, value))
+    }
+
+    #[napi(js_name = "setScene")]
+    pub fn set_scene(&self, json: String) -> AsyncTask<BlockingTask<Undefined>> {
+        self.spawn(move |manager| unit(manager.set_scene_sync(json)))
+    }
+
+    #[napi(js_name = "clearScene")]
+    pub fn clear_scene(&self) -> AsyncTask<BlockingTask<Undefined>> {
+        self.spawn(|manager| unit(manager.clear_scene_sync()))
+    }
+
+    #[napi(js_name = "setAnimation")]
+    pub fn set_animation(&self, clip: String) -> AsyncTask<BlockingTask<String>> {
+        self.spawn(move |manager| manager.set_animation_sync(clip))
+    }
+
+    #[napi(js_name = "stopAnimation")]
+    pub fn stop_animation(&self) -> AsyncTask<BlockingTask<Undefined>> {
+        self.spawn(|manager| unit(manager.stop_animation_sync()))
+    }
+
+    #[napi(js_name = "setAnimationBlend")]
+    pub fn set_animation_blend(&self, blend: String) -> AsyncTask<BlockingTask<String>> {
+        self.spawn(move |manager| manager.set_animation_blend_sync(blend))
+    }
+
+    #[napi(js_name = "animationBlend")]
+    pub fn animation_blend(&self) -> AsyncTask<BlockingTask<String>> {
+        self.spawn(|manager| manager.animation_blend_sync())
+    }
+
+    #[napi(js_name = "installPackage")]
+    pub fn install_package(&self, bytes: Buffer) -> AsyncTask<BlockingTask<bool>> {
+        self.spawn(move |manager| manager.install_package_sync(bytes))
+    }
+
+    #[napi(js_name = "packageReady")]
+    pub fn package_ready(&self) -> AsyncTask<BlockingTask<bool>> {
+        self.spawn(|manager| manager.package_ready_sync())
+    }
+
+    #[napi(js_name = "openBoard")]
+    pub fn open_board(&self, board_id: String) -> AsyncTask<BlockingTask<Undefined>> {
+        self.spawn(move |manager| unit(manager.open_board_sync(board_id)))
+    }
+
+    #[napi(js_name = "simulateDisconnect")]
+    pub fn simulate_disconnect(&self) -> AsyncTask<BlockingTask<Undefined>> {
+        self.spawn(|manager| unit(manager.simulate_disconnect_sync()))
+    }
+
+    #[napi(js_name = "connectTcp")]
+    pub fn connect_tcp(&self, address: String) -> AsyncTask<BlockingTask<Undefined>> {
+        self.spawn(move |manager| unit(manager.connect_tcp_sync(address)))
+    }
+
+    #[napi(js_name = "stats")]
+    pub fn stats(&self) -> AsyncTask<BlockingTask<SessionStatsDto>> {
+        self.spawn(|manager| manager.stats_sync())
+    }
+
+    #[napi(js_name = "tileReconciliation")]
+    pub fn tile_reconciliation(&self) -> AsyncTask<BlockingTask<TileReconciliationDto>> {
+        self.spawn(|manager| manager.tile_reconciliation_sync())
+    }
+
+    #[napi(js_name = "serialPorts")]
+    pub fn serial_ports(&self) -> AsyncTask<BlockingTask<Vec<SerialPortDto>>> {
+        self.spawn(|manager| manager.serial_ports_sync())
+    }
+
+    #[napi(js_name = "capabilities")]
+    pub fn capabilities(&self) -> AsyncTask<BlockingTask<CapabilitiesInfo>> {
+        self.spawn(|manager| manager.capabilities_sync())
+    }
+
+    #[napi(js_name = "connectSerial")]
+    pub fn connect_serial(
+        &self,
+        path: String,
+        baud: u32,
+        reset_on_open: Option<bool>,
+    ) -> AsyncTask<BlockingTask<Undefined>> {
+        self.spawn(move |manager| unit(manager.connect_serial_sync(path, baud, reset_on_open)))
+    }
+
+    #[napi(js_name = "connectWebSocket")]
+    pub fn connect_web_socket(&self, url: String) -> AsyncTask<BlockingTask<Undefined>> {
+        self.spawn(move |manager| unit(manager.connect_web_socket_sync(url)))
+    }
+
+    #[napi(js_name = "lastFrame")]
+    pub fn last_frame(&self) -> AsyncTask<BlockingTask<Option<Buffer>>> {
+        self.spawn(|manager| manager.last_frame_sync())
+    }
+
+    #[napi(js_name = "emitMetric")]
+    pub fn emit_metric(
+        &self,
+        name: String,
+        value: f64,
+        unit_name: Option<String>,
+    ) -> AsyncTask<BlockingTask<u32>> {
+        self.spawn(move |manager| manager.emit_metric_sync(name, value, unit_name))
+    }
+
+    #[napi(js_name = "takeDiagnostics")]
+    pub fn take_diagnostics(&self) -> AsyncTask<BlockingTask<Vec<DiagnosticDto>>> {
+        self.spawn(|manager| manager.take_diagnostics_sync())
+    }
+
+    #[napi(js_name = "diagnosticCount")]
+    pub fn diagnostic_count(&self) -> AsyncTask<BlockingTask<u32>> {
+        self.spawn(|manager| manager.diagnostic_count_sync())
+    }
+
+    /// SIM-R05: `dispose` never waits for an in-flight worker. It flips the
+    /// shared flags, so the worker's next poll (<= one 400 ms read timeout)
+    /// aborts, and cleanup runs on a detached thread.
+    #[napi]
     pub fn dispose(&self) -> Result<()> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
-        if let Some(mut sim) = state.sim.take() {
-            sim.session.disconnect();
+        if self.disposed.swap(true, AtomicOrdering::AcqRel) {
+            return Ok(());
         }
-        state.disposed = true;
-        state.last_frame = None;
+        self.cancelled.store(true, AtomicOrdering::Release);
+        let state = self.state.clone();
+        thread::spawn(move || {
+            if let Ok(mut state) = state.lock() {
+                if let Some(mut sim) = state.sim.take() {
+                    sim.session.disconnect();
+                }
+                state.disposed = true;
+                state.last_frame = None;
+            }
+        });
         Ok(())
     }
 }
