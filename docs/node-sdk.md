@@ -61,6 +61,7 @@ capabilities.
 | `setScene(node)` / `clearScene()` | CBOR scene |
 | `setAnimation(clip)` / `stopAnimation()` | baked-atlas clip |
 | `setAnimationBlend("idle:700,wave:300")` / `animationBlend()` | weighted atlas or mesh clip blend (N837) |
+| `compileGltf(bytes, { target })` | C08: compile an embedded glTF JSON document on the host (`sprite` or `mesh3d`); returns `.mdcpkg` bytes plus node/mesh/animation counts for `installPackage` |
 | `installPackage(bytes)` | N234: upload `.mdcpkg` bytes (`Uint8Array`); resolves `true` when ready |
 | `packageReady()` | N238: whether the last accepted package is render-ready |
 | `connectTcp(address)` | remote peer instead of the in-process simulator |
@@ -69,6 +70,18 @@ capabilities.
 | `serialPorts()` | APP-R03: enumerate host serial endpoint hints; identity still comes from HELLO |
 | `connectWebSocket(url)` | N340: WebSocket peer (`ws://host:port`) |
 | `emitMetric(name, value, unit)` / `takeDiagnostics()` / `diagnosticCount()` | N349: simulator diagnostics channel (metrics, boot info, telemetry) |
+
+### compileGltf
+
+```js
+const gltf = new TextEncoder().encode(JSON.stringify(document))
+const compiled = await mdc.compileGltf(gltf, { target: "sprite" })
+await mdc.installPackage(compiled.bytes)
+```
+
+Compilation is host-side; it does not need a connected device. Only embedded
+glTF documents are accepted in this batch. Invalid JSON, malformed meshes and an
+unknown target reject with a typed error.
 
 ### installPackage
 

@@ -347,6 +347,23 @@ export class MyDeviceCanvas {
     }
     return this._native.animationBlend();
   }
+  /**
+   * C08: compile an embedded glTF JSON document into a device package.
+   * The returned bytes can be passed to `installPackage` for Form B.
+   */
+  async compileGltf(bytes, options = {}) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (!(bytes instanceof Uint8Array)) throw new TypeError("glTF must be a Uint8Array");
+    const target = options.target ?? "sprite";
+    if (target !== "sprite" && target !== "mesh3d") {
+      throw new RangeError("target must be 'sprite' or 'mesh3d'");
+    }
+    if (typeof this._native.compileGltf !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    const result = await this._native.compileGltf(Buffer.from(bytes), target);
+    return { ...result, bytes: new Uint8Array(result.bytes) };
+  }
   /** N234: upload a runtime package (Uint8Array of `.mdcpkg` bytes). */
   async installPackage(bytes) {
     if (this._disposed) throw new Error("manager is disposed");

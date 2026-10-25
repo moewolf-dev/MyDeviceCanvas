@@ -109,6 +109,38 @@ test("native mirror mode and tile reconciliation are exposed", { skip: !native }
   mdc.dispose();
 });
 
+test("native compileGltf produces a package the simulator accepts", { skip: !native }, async () => {
+  const gltf = {
+    asset: { version: "2.0" },
+    nodes: [{ name: "root", mesh: 0 }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+    accessors: [{ count: 4, type: "VEC3" }],
+  };
+  const mdc = await MyDeviceCanvas.create();
+  await mdc.devices();
+  const compiled = await mdc.compileGltf(
+    new TextEncoder().encode(JSON.stringify(gltf)),
+    { target: "sprite" },
+  );
+  assert.ok(compiled.bytes instanceof Uint8Array);
+  assert.ok(compiled.bytes.length > 0);
+  assert.equal(compiled.target, "sprite");
+  assert.ok(compiled.nodes >= 1);
+  assert.ok(compiled.estimatedBytes >= 0);
+  const accepted = await mdc.installPackage(compiled.bytes);
+  assert.equal(accepted, true);
+  assert.equal(await mdc.packageReady(), true);
+  await assert.rejects(
+    mdc.compileGltf(new Uint8Array([1, 2, 3])),
+    /glTF|package/i,
+  );
+  await assert.rejects(
+    mdc.compileGltf(new TextEncoder().encode("{}"), { target: "nope" }),
+    /target/,
+  );
+  mdc.dispose();
+});
+
 test("native installPackage rejects a malformed package", { skip: !native }, async () => {
   const mdc = await MyDeviceCanvas.create();
   await assert.rejects(mdc.installPackage(new Uint8Array([1, 2, 3])));

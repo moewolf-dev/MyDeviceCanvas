@@ -112,6 +112,14 @@ export interface DiagnosticDto {
   /** JSON of the telemetry fields (telemetry only). */
   fields?: string;
 }
+export interface CompiledPackage {
+  bytes: Uint8Array;
+  target: "sprite" | "mesh3d";
+  nodes: number;
+  meshes: number;
+  animations: string[];
+  estimatedBytes: number;
+}
 export interface NativeEvent {
   /** SIM-R04: session generation; drop events older than the current link. */
   generation: number;
@@ -193,6 +201,10 @@ export declare class MyDeviceCanvas {
   /** N837: the accepted blend, or `"off"`. */
   animationBlend(): Promise<string>;
   /** N234: upload a runtime package (`.mdcpkg` bytes). */
+  compileGltf(
+    bytes: Uint8Array,
+    options?: { target?: "sprite" | "mesh3d" },
+  ): Promise<CompiledPackage>;
   installPackage(bytes: Uint8Array): Promise<boolean>;
   /** N238: true once the last accepted package is render-ready. */
   packageReady(): Promise<boolean>;

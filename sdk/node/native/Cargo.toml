@@ -14,6 +14,7 @@ mdc-core = { path = "../../../crates/mdc-core" }
 mdc-protocol = { path = "../../../crates/mdc-protocol" }
 mdc-transport = { path = "../../../crates/mdc-transport", features = ["websocket", "serial"] }
 mdc-simulator = { path = "../../../crates/mdc-simulator" }
+mdc-model = { path = "../../../crates/mdc-model" }
 serde_json = { workspace = true }
 
 [build-dependencies]

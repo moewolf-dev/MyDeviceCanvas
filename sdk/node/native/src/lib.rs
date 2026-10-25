@@ -206,6 +206,18 @@ pub struct NativeEvent {
     pub mirror: Option<MirrorInfoDto>,
 }
 
+/// C08: host-side glTF → device package compilation result.
+#[napi(object)]
+pub struct CompiledPackageDto {
+    pub bytes: Buffer,
+    pub target: String,
+    pub nodes: u32,
+    pub meshes: u32,
+    pub animations: Vec<String>,
+    #[napi(js_name = "estimatedBytes")]
+    pub estimated_bytes: f64,
+}
+
 /// N474: a recognised pointer gesture.
 #[napi(object)]
 pub struct GestureDto {
@@ -1470,6 +1482,42 @@ impl NativeManager {
         Ok(sim.session.diagnostic_count() as u32)
     }
 
+    /// C08: compile an embedded glTF JSON document into a device package. This
+    /// is a pure host operation; the caller can upload the bytes with
+    /// `installPackage` and then drive Form B.
+    fn compile_gltf_sync(&self, bytes: Buffer, target: String) -> Result<CompiledPackageDto> {
+        let capability = match target.as_str() {
+            "sprite" => mdc_model::RendererCapability::sprite_only(),
+            "mesh3d" => mdc_model::RendererCapability::full_3d(),
+            _ => return Err(Error::from_reason("target must be 'sprite' or 'mesh3d'")),
+        };
+        let model = mdc_model::GltfImporter
+            .import(bytes.as_ref(), &mdc_model::ImportLimits::default())
+            .map_err(|error| Error::from_reason(format!("glTF import: {error}")))?;
+        let package = mdc_model::compile_to_package(&model, &capability)
+            .map_err(|error| Error::from_reason(format!("package compile: {error}")))?;
+        let animations = package
+            .package
+            .animations
+            .iter()
+            .map(|animation| animation.name.clone())
+            .collect();
+        let nodes = package.package.nodes.len() as u32;
+        let meshes = package.package.meshes.len() as u32;
+        let estimated_bytes = package.package.estimated_bytes as f64;
+        let bytes = package
+            .to_bytes()
+            .map_err(|error| Error::from_reason(format!("package encode: {error}")))?;
+        Ok(CompiledPackageDto {
+            bytes: Buffer::from(bytes),
+            target,
+            nodes,
+            meshes,
+            animations,
+            estimated_bytes,
+        })
+    }
+
     /// N349: drain the bounded diagnostics channel (metrics, boot info, telemetry).
     fn take_diagnostics_sync(&self) -> Result<Vec<DiagnosticDto>> {
         let mut state = self
@@ -1808,6 +1856,16 @@ impl NativeManager {
     #[napi(js_name = "tileReconciliation")]
     pub fn tile_reconciliation(&self) -> AsyncTask<BlockingTask<TileReconciliationDto>> {
         self.spawn(|manager| manager.tile_reconciliation_sync())
+    }
+
+    /// C08: compile an embedded glTF document for the device renderer.
+    #[napi(js_name = "compileGltf")]
+    pub fn compile_gltf(
+        &self,
+        bytes: Buffer,
+        target: String,
+    ) -> AsyncTask<BlockingTask<CompiledPackageDto>> {
+        self.spawn(move |manager| manager.compile_gltf_sync(bytes, target))
     }
 
     #[napi(js_name = "serialPorts")]
