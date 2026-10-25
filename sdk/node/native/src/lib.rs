@@ -279,6 +279,9 @@ fn pump_link(sim: &mut SimSession) -> Result<()> {
 #[derive(Default)]
 struct State {
     disposed: bool,
+    /// SIM-R05: once a real endpoint was requested, a failed HELLO must not
+    /// silently fall back to an in-process FakeDevice.
+    connection_attempted: bool,
     /// SIM-R04: incremented for every new Session; shared with NativeManager.
     generation: Arc<AtomicU32>,
     board_id: Option<String>,
@@ -291,6 +294,11 @@ struct State {
 fn ensure_sim(state: &mut State) -> Result<()> {
     if state.sim.is_some() {
         return Ok(());
+    }
+    if state.connection_attempted {
+        return Err(Error::from_reason(
+            "no active connection; the previous endpoint failed",
+        ));
     }
     state.generation.fetch_add(1, AtomicOrdering::AcqRel);
     let profile = BoardProfile::from_board_id(state.board_id.as_deref().unwrap_or("default"));
@@ -1212,6 +1220,7 @@ impl NativeManager {
         if state.disposed {
             return Err(Error::from_reason("manager is disposed"));
         }
+        state.connection_attempted = true;
         let tcp = TcpTransport::connect(address.trim(), Duration::from_millis(400))
             .map_err(|e| Error::from_reason(e.to_string()))?;
         connect_transport(
@@ -1361,6 +1370,7 @@ impl NativeManager {
         if state.disposed {
             return Err(Error::from_reason("manager is disposed"));
         }
+        state.connection_attempted = true;
         let serial = mdc_transport::SerialTransport::open_with_config(
             path.trim(),
             mdc_transport::SerialConfig {
@@ -1388,6 +1398,7 @@ impl NativeManager {
         if state.disposed {
             return Err(Error::from_reason("manager is disposed"));
         }
+        state.connection_attempted = true;
         let ws = mdc_transport::WebSocketTransport::connect(url.trim(), Duration::from_millis(400))
             .map_err(|e| Error::from_reason(e.to_string()))?;
         connect_transport(

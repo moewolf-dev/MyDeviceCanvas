@@ -331,5 +331,7 @@ test("native dual-sim lists overlay and disconnect cancel keeps the pointer", { 
   const serial = await MyDeviceCanvas.create();
   await assert.rejects(serial.connectSerial("   "), /non-empty/);
   await assert.rejects(serial.connectSerial("/no/such/port", 115200));
+  // SIM-R05: a failed real endpoint must not be replaced by a FakeDevice.
+  await assert.rejects(serial.devices(), /no active connection/);
   serial.dispose();
 });

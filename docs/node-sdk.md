@@ -31,6 +31,11 @@ in-flight handshake stops on its next read poll (transport reads use a 400 ms
 timeout). Callers should still `await` the connect Promise to observe the typed
 cancellation error.
 
+Once a TCP/WebSocket/serial endpoint has been requested, a failed HELLO leaves
+the manager without a session. Later calls report `no active connection` instead
+of silently opening an in-process FakeDevice; only a never-connected manager
+defaults to the simulator.
+
 ## API
 
 | Method | Notes |

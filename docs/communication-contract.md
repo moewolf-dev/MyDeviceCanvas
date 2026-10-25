@@ -117,7 +117,8 @@ libuv worker task; the JS thread only creates the task. A silent-peer handshake
 is bounded to 2 s, and `dispose` flips shared atomic flags so an in-flight
 handshake aborts on its next poll (transport reads use a 400 ms timeout).
 Measured by `native-smoke.test.js` "silent peer does not block the JS event loop
-and cancels promptly".
+and cancels promptly". After a real endpoint is requested, a failed handshake
+does not fall back to a FakeDevice; the next call reports `no active connection`.
 
 ## 9. Capabilities and identity
 
