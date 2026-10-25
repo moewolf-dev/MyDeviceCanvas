@@ -42,13 +42,23 @@ package installs every 3000 transactions: ready
 The full gate is:
 
 ```sh
-MDC_LONG_SOAK=1 MDC_SOAK_WARMUP_SECS=300 MDC_SOAK_SECS=3600   MDC_SOAK_IDLE_SECS=60 cargo test -p mdc-memory-tests --test long_soak -- --nocapture
+MDC_LONG_SOAK=1 MDC_SOAK_WARMUP_SECS=300 MDC_SOAK_SECS=3600 \
+  MDC_SOAK_IDLE_SECS=60 cargo test -p mdc-memory-tests --test long_soak -- --nocapture
 ```
 
-That 60-minute run has **not** been recorded yet; R09 stays open until it is.
-These are host/sim gates only — they do not measure ESP32 heap or PSRAM.
+Full 60-minute record (2026-10-25, macOS arm64 debug, commit `4311e15`):
 
-These are **sim / host** gates only — they do not measure ESP32 heap or PSRAM.
+```text
+warmup 300 s + steady 3600 s + idle 60 s; test finished in 3960.04 s
+baseline RSS 5568 KiB -> end 5376 KiB -> idle 5472 KiB
+RSS growth 0 KiB (budget 10240 KiB)
+threads 2 -> 2; fds 4 -> 4
+transactions 2604243
+pending/held/frame_tx 0; ACK <= 4096; timings 256; events <= 128
+report: docs/soak-reports/r09-4311e15.json
+```
+
+These are host/sim gates only — they do not measure ESP32 heap or PSRAM.
 
 ## Form B soak crate (N36)
 

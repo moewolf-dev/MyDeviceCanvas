@@ -22,6 +22,7 @@ struct Sample {
     threads: Option<usize>,
     fds: Option<usize>,
     counts: ContainerCounts,
+    copy_outstanding: usize,
     transactions: u64,
 }
 
@@ -99,6 +100,7 @@ fn sample(session: &Session<Box<dyn Transport>>, transactions: u64) -> Sample {
         threads: thread_count(),
         fds: fd_count(),
         counts: session.container_counts(),
+        copy_outstanding: session.copy_outstanding(),
         transactions,
     }
 }
@@ -122,6 +124,8 @@ struct Harness {
     device: FakeDevice,
     profile: BoardProfile,
     transactions: u64,
+    package_installs: u64,
+    reconnects: u64,
 }
 
 impl Harness {
@@ -138,6 +142,8 @@ impl Harness {
             device,
             profile,
             transactions: 0,
+            package_installs: 0,
+            reconnects: 0,
         }
     }
 
@@ -193,6 +199,7 @@ impl Harness {
             self.device.poll().unwrap();
             self.session.poll().unwrap();
             assert!(self.device.package_ready());
+            self.package_installs = self.package_installs.saturating_add(1);
         }
         if self.transactions.is_multiple_of(2000) {
             // Exercise endpoint replacement without rebuilding the Session.
@@ -201,8 +208,42 @@ impl Harness {
             device.poll().unwrap();
             assert_eq!(self.session.poll().unwrap(), ConnectionState::Ready);
             self.device = device;
+            self.reconnects = self.reconnects.saturating_add(1);
         }
     }
+}
+
+fn counts_json(counts: &ContainerCounts) -> serde_json::Value {
+    serde_json::json!({
+        "rx_bytes": counts.rx_bytes,
+        "pending_requests": counts.pending_requests,
+        "pending_control": counts.pending_control,
+        "pending_frames": counts.pending_frames,
+        "request_deadlines": counts.request_deadlines,
+        "finished_acks": counts.finished_acks,
+        "displayed_timings": counts.displayed_timings,
+        "held_frames": counts.held_frames,
+        "diagnostics": counts.diagnostics,
+        "config_cache": counts.config_cache,
+        "pending_configs": counts.pending_configs,
+        "active_pointers": counts.active_pointers,
+        "mirror_inbox_frames": counts.mirror_inbox_frames,
+        "mirror_base_frames": counts.mirror_base_frames,
+        "frame_transactions": counts.frame_transactions,
+        "manager_events": counts.manager_events,
+        "devices": counts.devices,
+    })
+}
+
+fn sample_json(sample: &Sample) -> serde_json::Value {
+    serde_json::json!({
+        "rss_kib": sample.rss_kib,
+        "threads": sample.threads,
+        "fds": sample.fds,
+        "transactions": sample.transactions,
+        "copy_outstanding": sample.copy_outstanding,
+        "containers": counts_json(&sample.counts),
+    })
 }
 
 #[test]
@@ -222,15 +263,23 @@ fn long_soak_keeps_resources_flat() {
         ..BoardProfile::default()
     };
     let mut harness = Harness::new(profile);
+    let run_started = Instant::now();
 
     harness.run_for(warmup, |_, _| {});
     let baseline = sample(&harness.session, harness.transactions);
     eprintln!("R09 baseline {baseline:?}");
 
     let started = Instant::now();
+    let mut early = None;
     let mut midpoint = None;
     harness.run_for(steady, |session, transactions| {
         let elapsed = started.elapsed();
+        if early.is_none() && elapsed >= steady / 6 {
+            assert_containers_bounded(&session.container_counts());
+            let point = sample(session, transactions);
+            eprintln!("R09 early {point:?}");
+            early = Some(point);
+        }
         if midpoint.is_none() && elapsed >= steady / 2 {
             assert_containers_bounded(&session.container_counts());
             let point = sample(session, transactions);
@@ -240,6 +289,10 @@ fn long_soak_keeps_resources_flat() {
     });
     let end = sample(&harness.session, harness.transactions);
     eprintln!("R09 end {end:?}");
+    let rss_growth = match (baseline.rss_kib, end.rss_kib) {
+        (Some(before), Some(after)) => Some(after.saturating_sub(before)),
+        _ => None,
+    };
     assert_containers_bounded(&end.counts);
     if let (Some(baseline_rss), Some(end_rss)) = (baseline.rss_kib, end.rss_kib) {
         let growth = end_rss.saturating_sub(baseline_rss);
@@ -262,4 +315,41 @@ fn long_soak_keeps_resources_flat() {
     eprintln!("R09 idle {idle_sample:?}");
     assert_containers_bounded(&idle_sample.counts);
     assert_eq!(harness.session.copy_outstanding(), 0);
+
+    if let Some(path) = std::env::var_os("MDC_SOAK_REPORT") {
+        let commit = std::env::var("MDC_SOAK_COMMIT").ok().or_else(|| {
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        });
+        let report = serde_json::json!({
+            "mode": "long",
+            "source": "tests/memory/tests/long_soak.rs",
+            "commit": commit,
+            "ok": true,
+            "duration_seconds": run_started.elapsed().as_secs(),
+            "config": {
+                "warmup_seconds": warmup.as_secs(),
+                "steady_seconds": steady.as_secs(),
+                "idle_seconds": idle.as_secs(),
+                "rss_budget_kib": budget_kib,
+            },
+            "samples": {
+                "baseline": sample_json(&baseline),
+                "early": early.map(|point| sample_json(&point)),
+                "midpoint": midpoint.map(|point| sample_json(&point)),
+                "end": sample_json(&end),
+                "idle": sample_json(&idle_sample),
+            },
+            "rss_growth_kib": rss_growth,
+            "package_installs": harness.package_installs,
+            "reconnects": harness.reconnects,
+            "steps": [{"name": "long-soak", "status": "passed"}],
+        });
+        std::fs::write(&path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+        eprintln!("R09 report {}", path.to_string_lossy());
+    }
 }

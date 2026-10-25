@@ -1,0 +1,123 @@
+{
+  "mode": "long",
+  "source": "raw long_soak log",
+  "log": "docs/soak-reports/r09-4311e15.log",
+  "commit": "4311e15",
+  "ok": true,
+  "config": {
+    "warmup_seconds": 300,
+    "steady_seconds": 3600,
+    "idle_seconds": 60,
+    "rss_budget_kib": 10240
+  },
+  "samples": {
+    "baseline": {
+      "rss_kib": 5568,
+      "threads": 2,
+      "fds": 4,
+      "transactions": 212738,
+      "containers": {
+        "rx_bytes": 0,
+        "pending_requests": 0,
+        "pending_control": 0,
+        "pending_frames": 0,
+        "request_deadlines": 0,
+        "finished_acks": 753,
+        "displayed_timings": 256,
+        "held_frames": 0,
+        "diagnostics": 0,
+        "config_cache": 0,
+        "pending_configs": 0,
+        "active_pointers": 0,
+        "mirror_inbox_frames": 0,
+        "mirror_base_frames": 0,
+        "frame_transactions": 0,
+        "manager_events": 107,
+        "devices": 1
+      }
+    },
+    "midpoint": {
+      "rss_kib": 5584,
+      "threads": 2,
+      "fds": 4,
+      "transactions": 1408769,
+      "containers": {
+        "rx_bytes": 0,
+        "pending_requests": 0,
+        "pending_control": 0,
+        "pending_frames": 0,
+        "request_deadlines": 0,
+        "finished_acks": 785,
+        "displayed_timings": 256,
+        "held_frames": 0,
+        "diagnostics": 0,
+        "config_cache": 0,
+        "pending_configs": 0,
+        "active_pointers": 0,
+        "mirror_inbox_frames": 0,
+        "mirror_base_frames": 0,
+        "frame_transactions": 0,
+        "manager_events": 128,
+        "devices": 1
+      }
+    },
+    "end": {
+      "rss_kib": 5376,
+      "threads": 2,
+      "fds": 4,
+      "transactions": 2604243,
+      "containers": {
+        "rx_bytes": 0,
+        "pending_requests": 0,
+        "pending_control": 0,
+        "pending_frames": 0,
+        "request_deadlines": 0,
+        "finished_acks": 248,
+        "displayed_timings": 256,
+        "held_frames": 0,
+        "diagnostics": 0,
+        "config_cache": 0,
+        "pending_configs": 0,
+        "active_pointers": 0,
+        "mirror_inbox_frames": 0,
+        "mirror_base_frames": 0,
+        "frame_transactions": 0,
+        "manager_events": 128,
+        "devices": 1
+      }
+    },
+    "idle": {
+      "rss_kib": 5472,
+      "threads": 2,
+      "fds": 4,
+      "transactions": 2604243,
+      "containers": {
+        "rx_bytes": 0,
+        "pending_requests": 0,
+        "pending_control": 0,
+        "pending_frames": 0,
+        "request_deadlines": 0,
+        "finished_acks": 248,
+        "displayed_timings": 256,
+        "held_frames": 0,
+        "diagnostics": 0,
+        "config_cache": 0,
+        "pending_configs": 0,
+        "active_pointers": 0,
+        "mirror_inbox_frames": 0,
+        "mirror_base_frames": 0,
+        "frame_transactions": 0,
+        "manager_events": 128,
+        "devices": 1
+      }
+    }
+  },
+  "rss_growth_kib": 0,
+  "steps": [
+    {
+      "name": "long-soak",
+      "status": "passed"
+    }
+  ],
+  "sampling_note": "baseline/midpoint/end use 5/30/60-minute samples; later harness adds an early ~10-minute sample"
+}

@@ -20,3 +20,4 @@ mdc-transport = { path = "../../crates/mdc-transport" }
 mdc-bake = { path = "../../crates/mdc-bake" }
 mdc-schedule = { path = "../../crates/mdc-schedule" }
 image = { version = "=0.24.9", default-features = false, features = ["png"] }
+serde_json.workspace = true
