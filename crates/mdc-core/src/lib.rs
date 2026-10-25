@@ -369,6 +369,15 @@ impl GestureTracker {
         self.config = config;
     }
 
+    /// SIM-R04: drop all in-progress pointers and tap chains.
+    pub fn reset(&mut self) {
+        self.pointers.clear();
+        self.pinch = None;
+        self.swipe = None;
+        self.last_tap = None;
+        self.tap_streak = 0;
+    }
+
     /// N488: the current thresholds.
     pub fn config(&self) -> GestureConfig {
         self.config
@@ -1618,6 +1627,9 @@ pub struct Session<T: Transport> {
     finished_acks: std::collections::BTreeSet<u32>,
     /// Tail of a packet that a short write did not accept.
     unsent: Option<Vec<u8>>,
+    /// SIM-R04: request id of the current HELLO; only its Capabilities reply may
+    /// move the session to Ready.
+    hello_request: Option<u32>,
     /// SIM-R03: resumable frame transaction.
     frame_tx: Option<FrameTransaction>,
     copy_limit: usize,
@@ -1706,6 +1718,7 @@ impl<T: Transport> Session<T> {
             request_floor: 0,
             finished_acks: std::collections::BTreeSet::new(),
             unsent: None,
+            hello_request: None,
             frame_tx: None,
             copy_limit: MAX_FRAME_BYTES * 3,
             copy_budget: HostCopyBudget::new(MAX_FRAME_BYTES * 3),
@@ -1854,7 +1867,7 @@ impl<T: Transport> Session<T> {
             boot_id: self.host_boot_id,
         })
         .map_err(|e| CoreError::Protocol(e.to_string()))?;
-        self.write_packet(MessageType::Hello, hello)?;
+        self.hello_request = Some(self.write_packet(MessageType::Hello, hello)?);
         Ok(())
     }
     /// N398/N436: the host-side session counters.
@@ -2033,6 +2046,7 @@ impl<T: Transport> Session<T> {
                 Ok(None) => break,
                 Err(error) => {
                     if self.rx.is_empty() {
+                        let _ = self.mark_transport_failure();
                         return Err(CoreError::Transport(error.to_string()));
                     }
                     break;
@@ -2126,9 +2140,16 @@ impl<T: Transport> Session<T> {
         self.frame_received_at.clear();
         self.pending_frames.clear();
         self.unsent = None;
+        self.frame_tx = None;
+        self.hello_request = None;
         self.finished_acks.clear();
         self.held_frames.clear();
         self.copy_budget = HostCopyBudget::new(self.copy_limit);
+        self.mirror_assembler = None;
+        self.mirror_last = None;
+        self.mirror_last_frame_id = 0;
+        self.config_cache.clear();
+        self.gestures.reset();
         self.device = None;
         self.max_message = MAX_FRAME_BYTES;
         self.max_chunk = mdc_protocol::DEFAULT_MAX_CHUNK;
@@ -2208,9 +2229,16 @@ impl<T: Transport> Session<T> {
         self.frame_received_at.clear();
         self.pending_frames.clear();
         self.unsent = None;
+        self.frame_tx = None;
+        self.hello_request = None;
         self.finished_acks.clear();
         self.held_frames.clear();
         self.copy_budget = HostCopyBudget::new(self.copy_limit);
+        self.mirror_assembler = None;
+        self.mirror_last = None;
+        self.mirror_last_frame_id = 0;
+        self.config_cache.clear();
+        self.gestures.reset();
     }
     pub fn enable_reconnect(&mut self, enabled: bool) {
         self.reconnect_enabled = enabled;
@@ -2224,6 +2252,7 @@ impl<T: Transport> Session<T> {
         }
         self.reconnect_attempt = self.reconnect_attempt.saturating_add(1);
         self.state = ConnectionState::Reconnecting;
+        self.device = None;
         let delay = self.reconnect_policy.delay_ms(self.reconnect_attempt, 0)?;
         self.reconnect_ready_ms = Some(self.virtual_ms.saturating_add(delay));
         Some(delay)
@@ -3399,7 +3428,25 @@ impl<T: Transport> Session<T> {
     fn handle_packet(&mut self, packet: Packet) -> Result<(), CoreError> {
         match packet.kind {
             MessageType::Capabilities => {
+                if self.state == ConnectionState::Handshaking {
+                    if self.hello_request != Some(packet.request_id) {
+                        return Err(CoreError::Protocol(
+                            "unexpected capabilities reply".into(),
+                        ));
+                    }
+                } else if self.state == ConnectionState::Ready {
+                    // A device may refresh capabilities after the handshake; a
+                    // stale run's packet cannot update the current session.
+                    if packet.request_id < self.request_floor {
+                        return Ok(());
+                    }
+                } else {
+                    return Err(CoreError::Protocol(
+                        "capabilities before handshake".into(),
+                    ));
+                }
                 self.release_request(packet.request_id);
+                self.hello_request = None;
                 let caps: Capabilities = mdc_protocol::decode_control(&packet.payload)
                     .map_err(|e| CoreError::Protocol(e.to_string()))?;
                 if caps.max_message == 0 || caps.max_message as usize > MAX_FRAME_BYTES {
@@ -4265,6 +4312,42 @@ mod tests {
             }).unwrap())
             .unwrap();
         assert_eq!(session.tick(100), Err(CoreError::AckTimeout));
+    }
+
+    #[test]
+    fn unsolicited_capabilities_do_not_make_a_session_ready() {
+        // SIM-R04/SIM-T12.
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        let caps = caps();
+        device
+            .write(
+                &Packet {
+                    version: VERSION,
+                    kind: MessageType::Capabilities,
+                    flags: 0,
+                    request_id: 999,
+                    payload: encode_control(&caps).unwrap(),
+                }
+                .encode(4096)
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(session.poll().is_err());
+        assert_ne!(session.state, ConnectionState::Ready);
+    }
+
+    #[test]
+    fn transport_close_converges_away_from_ready() {
+        // SIM-R04/SIM-T10.
+        let (host, mut device) = MemoryLink::pair();
+        let mut session = Session::new(host);
+        session.connect().unwrap();
+        handshake(&mut session, &mut device);
+        assert_eq!(session.state, ConnectionState::Ready);
+        device.close();
+        assert!(session.poll().is_err());
+        assert_ne!(session.state, ConnectionState::Ready);
     }
 
     #[test]
