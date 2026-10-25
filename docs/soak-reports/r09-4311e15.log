@@ -1,0 +1,14 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running tests/long_soak.rs (target/debug/deps/long_soak-5e5bdc268338bdf8)
+
+running 1 test
+test long_soak_keeps_resources_flat has been running for over 60 seconds
+R09 baseline Sample { rss_kib: Some(5568), threads: Some(2), fds: Some(4), counts: ContainerCounts { rx_bytes: 0, pending_requests: 0, pending_control: 0, pending_frames: 0, request_deadlines: 0, finished_acks: 753, displayed_timings: 256, held_frames: 0, diagnostics: 0, config_cache: 0, pending_configs: 0, active_pointers: 0, mirror_inbox_frames: 0, mirror_base_frames: 0, frame_transactions: 0, manager_events: 107, devices: 1 }, transactions: 212738 }
+R09 midpoint Sample { rss_kib: Some(5584), threads: Some(2), fds: Some(4), counts: ContainerCounts { rx_bytes: 0, pending_requests: 0, pending_control: 0, pending_frames: 0, request_deadlines: 0, finished_acks: 785, displayed_timings: 256, held_frames: 0, diagnostics: 0, config_cache: 0, pending_configs: 0, active_pointers: 0, mirror_inbox_frames: 0, mirror_base_frames: 0, frame_transactions: 0, manager_events: 128, devices: 1 }, transactions: 1408769 }
+R09 end Sample { rss_kib: Some(5376), threads: Some(2), fds: Some(4), counts: ContainerCounts { rx_bytes: 0, pending_requests: 0, pending_control: 0, pending_frames: 0, request_deadlines: 0, finished_acks: 248, displayed_timings: 256, held_frames: 0, diagnostics: 0, config_cache: 0, pending_configs: 0, active_pointers: 0, mirror_inbox_frames: 0, mirror_base_frames: 0, frame_transactions: 0, manager_events: 128, devices: 1 }, transactions: 2604243 }
+R09 RSS growth 0 KiB (budget 10240 KiB)
+R09 idle Sample { rss_kib: Some(5472), threads: Some(2), fds: Some(4), counts: ContainerCounts { rx_bytes: 0, pending_requests: 0, pending_control: 0, pending_frames: 0, request_deadlines: 0, finished_acks: 248, displayed_timings: 256, held_frames: 0, diagnostics: 0, config_cache: 0, pending_configs: 0, active_pointers: 0, mirror_inbox_frames: 0, mirror_base_frames: 0, frame_transactions: 0, manager_events: 128, devices: 1 }, transactions: 2604243 }
+test long_soak_keeps_resources_flat ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3960.04s
+
