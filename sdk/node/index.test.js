@@ -306,3 +306,156 @@ test("animation helpers go through the public SDK", async () => {
   await assert.rejects(mdc.setAnimationBlend(7), /string/);
   assert.deepEqual(calls, ["idle", "off", "idle:700,wave:300"]);
 });
+
+function firmwareFixture(overrides = {}) {
+  const image = overrides.image ?? new Uint8Array([0x4d, 0x44, 0x43, 0x46, 0x57]);
+  const sha256 = "a".repeat(64);
+  return {
+    image,
+    artifact: {
+      boardId: "esp32-jc3248w535-sim",
+      mcu: "esp32-s3",
+      runtime: "0.1.0",
+      protocolMajor: 1,
+      protocolMinor: 0,
+      imageSize: image.byteLength,
+      sha256,
+      source: "catalog",
+      ...(overrides.artifact ?? {}),
+    },
+    board: {
+      boardId: "esp32-jc3248w535-sim",
+      mcu: "esp32-s3",
+      flashBytes: 16 * 1024 * 1024,
+      profileVerified: true,
+      ...(overrides.board ?? {}),
+    },
+    hostProtocolMajor: overrides.hostProtocolMajor ?? 1,
+    hostProtocolMinor: overrides.hostProtocolMinor ?? 0,
+  };
+}
+
+test("firmwarePreflight normalizes the request and forwards it", async () => {
+  let received;
+  const mdc = new MyDeviceCanvas({
+    firmwarePreflight(request) {
+      received = request;
+      return { ok: true, verdict: "ok", reason: null };
+    },
+  });
+  const result = await mdc.firmwarePreflight(firmwareFixture());
+  assert.equal(result.verdict, "ok");
+  assert.equal(received.artifact.sha256, "a".repeat(64));
+  assert.equal(received.artifact.imageSize, 5);
+  assert.equal(received.image.byteLength, 5);
+  assert.equal(received.board.flashBytes, 16 * 1024 * 1024);
+  assert.equal(received.allowUnknownFlash, false);
+  await assert.rejects(
+    mdc.firmwarePreflight(firmwareFixture({ image: new Uint8Array() })),
+    /1\.\./,
+  );
+  await assert.rejects(
+    mdc.firmwarePreflight(
+      firmwareFixture({ artifact: { imageSize: 99 } }),
+    ),
+    /imageSize/,
+  );
+});
+
+test("firmwarePreflight throws a typed rejection", async () => {
+  const mdc = new MyDeviceCanvas({
+    firmwarePreflight() {
+      return { ok: false, verdict: "reject", reason: "BoardMismatch" };
+    },
+  });
+  await assert.rejects(mdc.firmwarePreflight(firmwareFixture()), (error) => {
+    assert.equal(error.code, "FIRMWARE_PREFLIGHT_REJECTED");
+    assert.equal(error.reason, "BoardMismatch");
+    return true;
+  });
+});
+
+test("firmwareInstall validates the mode and surfaces the failing phase", async () => {
+  let received;
+  const accepted = {
+    ok: true,
+    phase: "done",
+    deviceId: "sim-esp32-jc3248w535",
+    error: null,
+  };
+  const mdc = new MyDeviceCanvas({
+    firmwareInstall(request) {
+      received = request;
+      return accepted;
+    },
+  });
+  const result = await mdc.firmwareInstall({
+    preflight: firmwareFixture(),
+    port: "sim://device-1",
+    expectedDeviceId: "sim-esp32-jc3248w535",
+    mode: "sim",
+    simDelayMs: 20,
+  });
+  assert.equal(result.deviceId, "sim-esp32-jc3248w535");
+  assert.equal(received.preflight.image.byteLength, 5);
+  assert.equal(received.port, "sim://device-1");
+  assert.equal(received.mode, "sim");
+  await assert.rejects(
+    mdc.firmwareInstall({
+      preflight: firmwareFixture(),
+      port: "sim://device-1",
+      expectedDeviceId: "id",
+      mode: "real",
+    }),
+    /mode/,
+  );
+
+  const failing = new MyDeviceCanvas({
+    firmwareInstall() {
+      return { ok: false, phase: "lease", deviceId: null, error: "PortBusy" };
+    },
+  });
+  await assert.rejects(
+    failing.firmwareInstall({
+      preflight: firmwareFixture(),
+      port: "sim://device-1",
+      expectedDeviceId: "id",
+    }),
+    (error) => {
+      assert.equal(error.code, "FIRMWARE_INSTALL_FAILED");
+      assert.equal(error.phase, "lease");
+      assert.equal(error.reason, "PortBusy");
+      return true;
+    },
+  );
+});
+
+test("firmware progress, cancel and readback use the public SDK", async () => {
+  let cancelled = false;
+  const mdc = new MyDeviceCanvas({
+    firmwareProgress() {
+      return { phase: "writing", ratio: 0.3, error: null };
+    },
+    cancelFirmware() {
+      cancelled = true;
+    },
+    firmwareReadback(request) {
+      return {
+        deviceId: "dev",
+        boardId: request.port,
+        protocolVersion: 1,
+        firmware: "0.1.0",
+      };
+    },
+  });
+  assert.equal((await mdc.firmwareProgress()).phase, "writing");
+  await mdc.cancelFirmware();
+  assert.equal(cancelled, true);
+  const readback = await mdc.firmwareReadback({ port: "/dev/pty-test" });
+  assert.equal(readback.boardId, "/dev/pty-test");
+  await assert.rejects(mdc.firmwareReadback({ port: "  " }), /non-empty/);
+  await assert.rejects(
+    mdc.firmwareReadback({ port: "/dev/x", timeoutMs: 10 }),
+    /timeoutMs/,
+  );
+});

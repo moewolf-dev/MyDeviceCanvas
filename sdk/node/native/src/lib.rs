@@ -1,14 +1,26 @@
 //! Node native bindings: MemoryLink FakeDevice session (sim path).
 use mdc_core::{ConnectionState, DeviceManager, Frame, ManagerEvent, Session, SessionConfig, Tile};
+use mdc_flasher::{flags_for_board, EspToolFlasher, SimFlasher};
 use mdc_protocol::InputEvent;
+use mdc_provision::{
+    preflight_verdict_bytes, Artifact, BoardFacts, FlashSize, Flasher, ImageGeometry, InstallError,
+    InstallPlan, InstallState, Installer, PortLease, PortLeases, PreflightInputBytes,
+    PreflightVerdict,
+};
 use mdc_simulator::{BoardProfile, FakeDevice, SimError};
 use mdc_transport::{TcpTransport, Transport};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering as AtomicOrdering};
-use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+/// SIM-R06/CORE-R06: one process-wide lease registry so a firmware install and
+/// an open serial session cannot hold the same port at the same time.
+static FIRMWARE_LEASES: LazyLock<PortLeases> = LazyLock::new(PortLeases::default);
+static FIRMWARE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[napi(object)]
 pub struct SurfaceInfo {
@@ -84,6 +96,141 @@ pub struct SerialPortDto {
     pub product: Option<String>,
     #[napi(js_name = "serialNumber")]
     pub serial_number: Option<String>,
+}
+
+/// CORE-R06: firmware metadata mirrored from the signed catalog artifact.
+/// `image` itself travels as a Buffer so the App never builds a flash command.
+#[napi(object)]
+#[derive(Clone)]
+pub struct FirmwareArtifactDto {
+    #[napi(js_name = "boardId")]
+    pub board_id: String,
+    pub mcu: String,
+    pub runtime: String,
+    #[napi(js_name = "protocolMajor")]
+    pub protocol_major: u32,
+    #[napi(js_name = "protocolMinor")]
+    pub protocol_minor: u32,
+    /// Image length in bytes (JS number; checked below).
+    #[napi(js_name = "imageSize")]
+    pub image_size: f64,
+    pub sha256: String,
+    pub source: String,
+    #[napi(js_name = "publicKey")]
+    pub public_key: Option<Buffer>,
+    pub signature: Option<Buffer>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct FirmwareBoardFactsDto {
+    #[napi(js_name = "boardId")]
+    pub board_id: String,
+    pub mcu: String,
+    /// Physical flash bytes; `null`/omitted means Unknown (never guessed).
+    #[napi(js_name = "flashBytes")]
+    pub flash_bytes: Option<f64>,
+    #[napi(js_name = "profileVerified")]
+    pub profile_verified: bool,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct FirmwareImageGeometryDto {
+    #[napi(js_name = "chipFamily")]
+    pub chip_family: String,
+    #[napi(js_name = "flashBytes")]
+    pub flash_bytes: f64,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct FirmwarePreflightRequest {
+    pub image: Buffer,
+    pub artifact: FirmwareArtifactDto,
+    pub board: FirmwareBoardFactsDto,
+    #[napi(js_name = "hostProtocolMajor")]
+    pub host_protocol_major: u32,
+    #[napi(js_name = "hostProtocolMinor")]
+    pub host_protocol_minor: u32,
+    #[napi(js_name = "detectedChipFamily")]
+    pub detected_chip_family: Option<String>,
+    #[napi(js_name = "imageGeometry")]
+    pub image_geometry: Option<FirmwareImageGeometryDto>,
+    #[napi(js_name = "allowUnknownFlash")]
+    pub allow_unknown_flash: Option<bool>,
+    #[napi(js_name = "flashIdUnusable")]
+    pub flash_id_unusable: Option<bool>,
+}
+
+#[napi(object)]
+pub struct FirmwarePreflightResult {
+    pub ok: bool,
+    /// `ok` | `okUnknownFlash` | `reject`
+    pub verdict: String,
+    /// Rejection reason (`BoardMismatch`, `HashMismatch`, ...) when not ok.
+    pub reason: Option<String>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct FirmwareInstallRequest {
+    pub preflight: FirmwarePreflightRequest,
+    pub port: String,
+    #[napi(js_name = "expectedDeviceId")]
+    pub expected_device_id: String,
+    /// `sim` (never touches the port) or `esptool` (host-side writer).
+    pub mode: String,
+    #[napi(js_name = "esptoolPath")]
+    pub esptool_path: Option<String>,
+    /// esptool only: default true. A dry run records argv but writes nothing.
+    #[napi(js_name = "dryRun")]
+    pub dry_run: Option<bool>,
+    /// Simulator only: delay the fake write so progress/cancel can be observed.
+    #[napi(js_name = "simDelayMs")]
+    pub sim_delay_ms: Option<u32>,
+    /// Simulator only: identity the fake flasher reads back. Defaults to
+    /// `expectedDeviceId`; a different value exercises the mismatch path.
+    #[napi(js_name = "simReadbackDeviceId")]
+    pub sim_readback_device_id: Option<String>,
+}
+
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct FirmwareProgressDto {
+    pub phase: String,
+    /// 0..1 when the phase has a meaningful position, else `null`.
+    pub ratio: Option<f64>,
+    pub error: Option<String>,
+}
+
+#[napi(object)]
+pub struct FirmwareInstallResult {
+    pub ok: bool,
+    pub phase: String,
+    #[napi(js_name = "deviceId")]
+    pub device_id: Option<String>,
+    pub error: Option<String>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct FirmwareReadbackRequest {
+    pub port: String,
+    #[napi(js_name = "timeoutMs")]
+    pub timeout_ms: Option<u32>,
+    pub baud: Option<u32>,
+}
+
+#[napi(object)]
+pub struct FirmwareReadbackResult {
+    #[napi(js_name = "deviceId")]
+    pub device_id: String,
+    #[napi(js_name = "boardId")]
+    pub board_id: String,
+    #[napi(js_name = "protocolVersion")]
+    pub protocol_version: u16,
+    pub firmware: String,
 }
 
 #[napi(object)]
@@ -322,6 +469,203 @@ struct State {
     last_frame: Option<Vec<u8>>,
     /// N528: mirrored frames dropped because the caller's cap was too small.
     mirror_skips: u64,
+    /// CORE-R06: the serial path this manager holds, and the matching process
+    /// lease. Both are released when the session is replaced or disposed.
+    serial_path: Option<String>,
+    serial_lease: Option<PortLease>,
+}
+
+/// CORE-R06: reject JS numbers that cannot name a real image length.
+fn image_len(value: f64) -> Result<u64> {
+    if !value.is_finite() || value < 0.0 || value.fract() != 0.0 {
+        return Err(Error::from_reason(
+            "artifact.imageSize must be a whole byte count",
+        ));
+    }
+    Ok(value as u64)
+}
+
+fn artifact_from_dto(dto: &FirmwareArtifactDto) -> Result<Artifact> {
+    Ok(Artifact {
+        board_id: dto.board_id.clone(),
+        mcu: dto.mcu.clone(),
+        runtime: dto.runtime.clone(),
+        protocol_major: dto.protocol_major.min(u32::from(u8::MAX)) as u8,
+        protocol_minor: dto.protocol_minor.min(u32::from(u8::MAX)) as u8,
+        image_size: image_len(dto.image_size)?,
+        sha256: dto.sha256.clone(),
+        source: dto.source.clone(),
+        public_key: dto
+            .public_key
+            .as_ref()
+            .map(|bytes| bytes.to_vec())
+            .unwrap_or_default(),
+        signature: dto
+            .signature
+            .as_ref()
+            .map(|bytes| bytes.to_vec())
+            .unwrap_or_default(),
+    })
+}
+
+fn board_facts_from_dto(dto: &FirmwareBoardFactsDto) -> Result<BoardFacts> {
+    let flash = match dto.flash_bytes {
+        Some(bytes) => FlashSize::Known(image_len(bytes)?),
+        None => FlashSize::Unknown,
+    };
+    Ok(BoardFacts {
+        board_id: dto.board_id.clone(),
+        mcu: dto.mcu.clone(),
+        flash,
+        profile_verified: dto.profile_verified,
+    })
+}
+
+fn preflight_verdict_for(request: &FirmwarePreflightRequest) -> Result<PreflightVerdict> {
+    let artifact = artifact_from_dto(&request.artifact)?;
+    let board = board_facts_from_dto(&request.board)?;
+    let geometry = match request.image_geometry.as_ref() {
+        Some(geometry) => Some(ImageGeometry {
+            chip_family: geometry.chip_family.clone(),
+            flash_bytes: image_len(geometry.flash_bytes)?,
+        }),
+        None => None,
+    };
+    Ok(preflight_verdict_bytes(PreflightInputBytes {
+        bytes: &request.image,
+        artifact: &artifact,
+        board: &board,
+        host: mdc_protocol::Version {
+            major: request.host_protocol_major.min(u32::from(u8::MAX)) as u8,
+            minor: request.host_protocol_minor.min(u32::from(u8::MAX)) as u8,
+        },
+        detected_chip_family: request.detected_chip_family.as_deref(),
+        image_geometry: geometry.as_ref(),
+        allow_unknown_flash: request.allow_unknown_flash.unwrap_or(false),
+        flash_id_unusable: request.flash_id_unusable.unwrap_or(false),
+    }))
+}
+
+fn preflight_result(verdict: PreflightVerdict) -> FirmwarePreflightResult {
+    match verdict {
+        PreflightVerdict::Ok => FirmwarePreflightResult {
+            ok: true,
+            verdict: "ok".into(),
+            reason: None,
+        },
+        PreflightVerdict::OkUnknownFlash => FirmwarePreflightResult {
+            ok: true,
+            verdict: "okUnknownFlash".into(),
+            reason: None,
+        },
+        PreflightVerdict::Reject(error) => FirmwarePreflightResult {
+            ok: false,
+            verdict: "reject".into(),
+            reason: Some(format!("{error:?}")),
+        },
+    }
+}
+
+fn install_phase(state: InstallState) -> &'static str {
+    match state {
+        InstallState::Idle => "idle",
+        InstallState::AcquiringPort => "lease",
+        InstallState::Flashing => "writing",
+        InstallState::Resetting => "rebooting",
+        InstallState::Verifying => "readback",
+        InstallState::Succeeded => "done",
+        InstallState::Cancelled => "cancelled",
+        InstallState::Failed => "failed",
+    }
+}
+
+fn install_ratio(state: InstallState) -> Option<f64> {
+    match state {
+        InstallState::AcquiringPort => Some(0.1),
+        InstallState::Flashing => Some(0.3),
+        InstallState::Resetting => Some(0.7),
+        InstallState::Verifying => Some(0.9),
+        InstallState::Succeeded => Some(1.0),
+        _ => None,
+    }
+}
+
+fn install_error_reason(error: &InstallError) -> String {
+    match error {
+        InstallError::PortBusy => "PortBusy".into(),
+        InstallError::Cancelled => "Cancelled".into(),
+        InstallError::Flasher(message) => format!("Flasher: {message}"),
+        InstallError::IdentityMismatch => "IdentityMismatch".into(),
+    }
+}
+
+fn set_progress(
+    progress: &Mutex<FirmwareProgressDto>,
+    phase: &str,
+    ratio: Option<f64>,
+    error: Option<String>,
+) {
+    if let Ok(mut slot) = progress.lock() {
+        *slot = FirmwareProgressDto {
+            phase: phase.into(),
+            ratio,
+            error,
+        };
+    }
+}
+
+/// Simulator flasher with a cancellable delay so the public SDK can show
+/// progress and settle `cancelFirmware()` before the write completes.
+struct DelayedSimFlasher {
+    inner: SimFlasher,
+    delay: Duration,
+    cancel: Arc<AtomicBool>,
+}
+
+impl DelayedSimFlasher {
+    fn new(device_id: String, delay: Duration, cancel: Arc<AtomicBool>) -> Self {
+        Self {
+            inner: SimFlasher::new(device_id),
+            delay,
+            cancel,
+        }
+    }
+
+    fn wait(&self) -> std::result::Result<(), String> {
+        let mut remaining = self.delay;
+        while !remaining.is_zero() {
+            if self.cancel.load(AtomicOrdering::Acquire) {
+                return Err("cancelled".into());
+            }
+            let slice = remaining.min(Duration::from_millis(20));
+            thread::sleep(slice);
+            remaining = remaining.saturating_sub(slice);
+        }
+        Ok(())
+    }
+}
+
+impl Flasher for DelayedSimFlasher {
+    fn flash(&mut self, plan: &InstallPlan) -> std::result::Result<(), String> {
+        self.wait()?;
+        self.inner.flash(plan)
+    }
+    fn reset(&mut self) -> std::result::Result<(), String> {
+        self.inner.reset()
+    }
+    fn read_device_id(&mut self) -> std::result::Result<String, String> {
+        self.inner.read_device_id()
+    }
+}
+
+/// esptool needs a file; the SDK receives bytes. Write a bounded temp image and
+/// remove it even when the write fails.
+fn write_temp_image(bytes: &[u8]) -> std::result::Result<PathBuf, String> {
+    let serial = FIRMWARE_TEMP_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+    let path =
+        std::env::temp_dir().join(format!("mdc-firmware-{}-{serial}.bin", std::process::id()));
+    std::fs::write(&path, bytes).map_err(|error| format!("temp image: {error}"))?;
+    Ok(path)
 }
 
 fn ensure_sim(state: &mut State) -> Result<()> {
@@ -370,16 +714,20 @@ fn ensure_sim(state: &mut State) -> Result<()> {
 }
 
 /// N340: wire a fresh transport into a session, handshake it, and register the endpoint.
+/// `serial` carries the path plus the process lease when this is a serial link.
 fn connect_transport(
     state: &mut State,
     transport: Box<dyn Transport>,
     endpoint: &str,
     label: &str,
     cancelled: &Arc<AtomicBool>,
+    serial: Option<(String, PortLease)>,
 ) -> Result<()> {
     if let Some(mut previous) = state.sim.take() {
         previous.session.disconnect();
     }
+    state.serial_path = None;
+    state.serial_lease = None;
     let manager = Arc::new(Mutex::new(DeviceManager::new()));
     let mut session = Session::with_config(transport, node_session_config());
     session.set_manager(manager.clone());
@@ -407,6 +755,10 @@ fn connect_transport(
     }
     state.generation.fetch_add(1, AtomicOrdering::AcqRel);
     state.sim = Some(live);
+    if let Some((path, lease)) = serial {
+        state.serial_path = Some(path);
+        state.serial_lease = Some(lease);
+    }
     Ok(())
 }
 
@@ -552,6 +904,9 @@ pub struct NativeManager {
     cancelled: Arc<AtomicBool>,
     disposed: Arc<AtomicBool>,
     generation: Arc<AtomicU32>,
+    /// CORE-R06: firmware install cancellation and the last progress snapshot.
+    firmware_cancel: Arc<AtomicBool>,
+    firmware_progress: Arc<Mutex<FirmwareProgressDto>>,
 }
 
 impl Default for NativeManager {
@@ -1268,6 +1623,7 @@ impl NativeManager {
             address.trim(),
             "tcp",
             &self.cancelled,
+            None,
         )
     }
 
@@ -1395,7 +1751,9 @@ impl NativeManager {
         })
     }
 
-    /// N430: replace the session with a serial connection (`/dev/...`).
+    /// N430/CORE-R06: replace the session with a serial connection (`/dev/...`).
+    /// The port is leased for the session lifetime so a firmware install cannot
+    /// take it, and a firmware install's lease blocks this open.
     fn connect_serial_sync(
         &self,
         path: String,
@@ -1410,8 +1768,23 @@ impl NativeManager {
             return Err(Error::from_reason("manager is disposed"));
         }
         state.connection_attempted = true;
+        let path = path.trim().to_string();
+        let same_path =
+            state.serial_path.as_deref() == Some(path.as_str()) && state.serial_lease.is_some();
+        // A different path must be leased before opening so an in-flight install
+        // cannot be raced. A reconnect on the same path already holds its lease;
+        // keep it in place until the new handle is open so a failed open leaves
+        // the old session and lease untouched.
+        let new_lease =
+            if same_path {
+                None
+            } else {
+                Some(FIRMWARE_LEASES.acquire(&path).map_err(|_| {
+                    Error::from_reason("serial port is leased by a firmware install")
+                })?)
+            };
         let serial = mdc_transport::SerialTransport::open_with_config(
-            path.trim(),
+            &path,
             mdc_transport::SerialConfig {
                 baud: if baud == 0 { 115_200 } else { baud },
                 timeout: Duration::from_millis(400),
@@ -1419,12 +1792,20 @@ impl NativeManager {
             },
         )
         .map_err(|e| Error::from_reason(e.to_string()))?;
+        let lease = match new_lease {
+            Some(lease) => lease,
+            None => state
+                .serial_lease
+                .take()
+                .ok_or_else(|| Error::from_reason("serial lease missing"))?,
+        };
         connect_transport(
             &mut state,
             Box::new(serial),
-            path.trim(),
+            &path,
             "serial",
             &self.cancelled,
+            Some((path.clone(), lease)),
         )
     }
 
@@ -1446,6 +1827,7 @@ impl NativeManager {
             url.trim(),
             "websocket",
             &self.cancelled,
+            None,
         )
     }
 
@@ -1581,6 +1963,256 @@ impl NativeManager {
             .map(|sim| sim.session.diagnostic_count() as u32)
             .unwrap_or(0))
     }
+
+    /// CORE-R06: verify a firmware image against the board facts without
+    /// touching a serial port. Returns a structured verdict, not a throw.
+    fn firmware_preflight_sync(
+        &self,
+        request: FirmwarePreflightRequest,
+    ) -> Result<FirmwarePreflightResult> {
+        if self.disposed.load(AtomicOrdering::Acquire) {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        Ok(preflight_result(preflight_verdict_for(&request)?))
+    }
+
+    /// CORE-R06: preflight + exclusive lease + write + reset + identity readback.
+    /// The `sim` mode never opens the port; `esptool` writes a bounded temp image
+    /// and defaults to a dry run, so real flashing stays opt-in and unverified.
+    fn firmware_install_sync(
+        &self,
+        request: FirmwareInstallRequest,
+        cancel: Arc<AtomicBool>,
+        progress: Arc<Mutex<FirmwareProgressDto>>,
+    ) -> Result<FirmwareInstallResult> {
+        if self.disposed.load(AtomicOrdering::Acquire) {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        cancel.store(false, AtomicOrdering::Release);
+        set_progress(&progress, "preflight", None, None);
+        let verdict = preflight_verdict_for(&request.preflight)?;
+        let preflight = preflight_result(verdict);
+        if !preflight.ok {
+            let reason = preflight.reason.unwrap_or_else(|| "Preflight".into());
+            set_progress(&progress, "failed", None, Some(reason.clone()));
+            return Ok(FirmwareInstallResult {
+                ok: false,
+                phase: "preflight".into(),
+                device_id: None,
+                error: Some(reason),
+            });
+        }
+        let artifact = artifact_from_dto(&request.preflight.artifact)?;
+        let port = request.port.trim().to_string();
+        let expected_device_id = request.expected_device_id.trim().to_string();
+        if port.is_empty() || expected_device_id.is_empty() {
+            let reason = "InvalidRequest".to_string();
+            set_progress(&progress, "failed", None, Some(reason.clone()));
+            return Ok(FirmwareInstallResult {
+                ok: false,
+                phase: "preflight".into(),
+                device_id: None,
+                error: Some(reason),
+            });
+        }
+        let plan = InstallPlan {
+            port: port.clone(),
+            artifact,
+            expected_device_id: expected_device_id.clone(),
+        };
+        let mut installer = Installer::default();
+        let progress_for_cb = progress.clone();
+        let mut on_state = move |state: InstallState| {
+            set_progress(
+                &progress_for_cb,
+                install_phase(state),
+                install_ratio(state),
+                None,
+            );
+        };
+        let mut temp_image: Option<PathBuf> = None;
+        let outcome = match request.mode.as_str() {
+            "sim" => {
+                if !port.starts_with("sim://") {
+                    // Never pretend a real port was flashed by the fake writer.
+                    let reason = "SimModeRequiresSimPort".to_string();
+                    set_progress(&progress, "failed", None, Some(reason.clone()));
+                    return Ok(FirmwareInstallResult {
+                        ok: false,
+                        phase: "preflight".into(),
+                        device_id: None,
+                        error: Some(reason),
+                    });
+                }
+                let delay =
+                    Duration::from_millis(u64::from(request.sim_delay_ms.unwrap_or(0).min(60_000)));
+                let mut flasher = DelayedSimFlasher::new(
+                    request
+                        .sim_readback_device_id
+                        .clone()
+                        .unwrap_or_else(|| expected_device_id.clone()),
+                    delay,
+                    cancel.clone(),
+                );
+                installer.run_with(
+                    &FIRMWARE_LEASES,
+                    &plan,
+                    &mut flasher,
+                    &cancel,
+                    &mut on_state,
+                )
+            }
+            "esptool" => {
+                let image_path = match write_temp_image(&request.preflight.image) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        let reason = format!("Flasher: {error}");
+                        set_progress(&progress, "failed", None, Some(reason.clone()));
+                        return Ok(FirmwareInstallResult {
+                            ok: false,
+                            phase: "failed".into(),
+                            device_id: None,
+                            error: Some(reason),
+                        });
+                    }
+                };
+                temp_image = Some(image_path.clone());
+                let mut flasher = EspToolFlasher::new(&image_path);
+                if let Some(flags) = flags_for_board(&plan.artifact.board_id) {
+                    flasher.flags = flags;
+                }
+                if request.dry_run == Some(false) {
+                    flasher = flasher.with_live_esptool(
+                        request
+                            .esptool_path
+                            .clone()
+                            .unwrap_or_else(|| "esptool.py".into()),
+                    );
+                }
+                installer.run_with(
+                    &FIRMWARE_LEASES,
+                    &plan,
+                    &mut flasher,
+                    &cancel,
+                    &mut on_state,
+                )
+            }
+            other => {
+                let reason = format!("UnknownFirmwareMode: {other}");
+                set_progress(&progress, "failed", None, Some(reason.clone()));
+                return Ok(FirmwareInstallResult {
+                    ok: false,
+                    phase: "preflight".into(),
+                    device_id: None,
+                    error: Some(reason),
+                });
+            }
+        };
+        if let Some(path) = temp_image {
+            let _ = std::fs::remove_file(path);
+        }
+        match outcome {
+            Ok(()) => {
+                set_progress(&progress, "done", Some(1.0), None);
+                Ok(FirmwareInstallResult {
+                    ok: true,
+                    phase: "done".into(),
+                    device_id: Some(expected_device_id),
+                    error: None,
+                })
+            }
+            Err(InstallError::Cancelled) => {
+                set_progress(&progress, "cancelled", None, None);
+                Ok(FirmwareInstallResult {
+                    ok: false,
+                    phase: "cancelled".into(),
+                    device_id: None,
+                    error: Some("Cancelled".into()),
+                })
+            }
+            Err(error) => {
+                let reason = install_error_reason(&error);
+                set_progress(&progress, "failed", None, Some(reason.clone()));
+                Ok(FirmwareInstallResult {
+                    ok: false,
+                    phase: "failed".into(),
+                    device_id: None,
+                    error: Some(reason),
+                })
+            }
+        }
+    }
+
+    /// CORE-R06: open the port under the same lease, perform HELLO, and report
+    /// the device identity/version the peer actually advertises.
+    fn firmware_readback_sync(
+        &self,
+        request: FirmwareReadbackRequest,
+    ) -> Result<FirmwareReadbackResult> {
+        if self.disposed.load(AtomicOrdering::Acquire) {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        let port = request.port.trim().to_string();
+        if port.is_empty() {
+            return Err(Error::from_reason("readback port must be non-empty"));
+        }
+        let timeout_ms = u64::from(request.timeout_ms.unwrap_or(3_000).clamp(200, 15_000));
+        let lease = FIRMWARE_LEASES.acquire(&port).map_err(|_| {
+            Error::from_reason("serial port is leased by a firmware install or an open session")
+        })?;
+        let baud = request.baud.unwrap_or(115_200).max(1);
+        let serial = mdc_transport::SerialTransport::open_with_config(
+            &port,
+            mdc_transport::SerialConfig {
+                baud,
+                timeout: Duration::from_millis(400),
+                reset_on_open: false,
+            },
+        )
+        .map_err(|e| Error::from_reason(e.to_string()))?;
+        let mut session = Session::with_config(
+            Box::new(serial) as Box<dyn Transport>,
+            SessionConfig {
+                connect_timeout_ms: timeout_ms,
+                ack_timeout_ms: 5_000,
+                heartbeat_ms: 5_000,
+                reconnect: false,
+            },
+        );
+        session
+            .connect()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            if let Err(error) = session.poll() {
+                session.disconnect();
+                return Err(Error::from_reason(error.to_string()));
+            }
+            if session.state == ConnectionState::Ready {
+                break;
+            }
+            if Instant::now() >= deadline {
+                session.disconnect();
+                return Err(Error::from_reason(
+                    "firmware readback timed out waiting for HELLO",
+                ));
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        let capabilities = session
+            .device
+            .as_ref()
+            .map(|device| device.capabilities.clone())
+            .ok_or_else(|| Error::from_reason("firmware readback has no capabilities"))?;
+        session.disconnect();
+        drop(lease);
+        Ok(FirmwareReadbackResult {
+            device_id: capabilities.device_id,
+            board_id: capabilities.board_id,
+            protocol_version: capabilities.protocol_version,
+            firmware: capabilities.firmware,
+        })
+    }
 }
 
 /// A unit-returning native call resolves to JS `undefined`.
@@ -1639,6 +2271,8 @@ impl NativeManager {
                 cancelled: self.cancelled.clone(),
                 disposed: self.disposed.clone(),
                 generation: self.generation.clone(),
+                firmware_cancel: self.firmware_cancel.clone(),
+                firmware_progress: self.firmware_progress.clone(),
             },
             work: Some(Box::new(work)),
         })
@@ -1659,6 +2293,12 @@ impl NativeManager {
             cancelled: Arc::new(AtomicBool::new(false)),
             disposed: Arc::new(AtomicBool::new(false)),
             generation,
+            firmware_cancel: Arc::new(AtomicBool::new(false)),
+            firmware_progress: Arc::new(Mutex::new(FirmwareProgressDto {
+                phase: "idle".into(),
+                ratio: None,
+                error: None,
+            })),
         }
     }
 
@@ -1878,6 +2518,52 @@ impl NativeManager {
         self.spawn(|manager| manager.capabilities_sync())
     }
 
+    /// CORE-R06: verify a firmware image without opening a port.
+    #[napi(js_name = "firmwarePreflight")]
+    pub fn firmware_preflight(
+        &self,
+        request: FirmwarePreflightRequest,
+    ) -> AsyncTask<BlockingTask<FirmwarePreflightResult>> {
+        self.spawn(move |manager| manager.firmware_preflight_sync(request))
+    }
+
+    /// CORE-R06: install a firmware image under an exclusive port lease.
+    #[napi(js_name = "firmwareInstall")]
+    pub fn firmware_install(
+        &self,
+        request: FirmwareInstallRequest,
+    ) -> AsyncTask<BlockingTask<FirmwareInstallResult>> {
+        let cancel = self.firmware_cancel.clone();
+        let progress = self.firmware_progress.clone();
+        self.spawn(move |manager| manager.firmware_install_sync(request, cancel, progress))
+    }
+
+    /// CORE-R06: ask the running install to stop at its next stage boundary.
+    #[napi(js_name = "cancelFirmware")]
+    pub fn cancel_firmware(&self) -> Result<()> {
+        self.firmware_cancel.store(true, AtomicOrdering::Release);
+        Ok(())
+    }
+
+    /// CORE-R06: last progress snapshot (poll while `firmwareInstall` is pending).
+    #[napi(js_name = "firmwareProgress")]
+    pub fn firmware_progress(&self) -> Result<FirmwareProgressDto> {
+        Ok(self
+            .firmware_progress
+            .lock()
+            .map_err(|_| Error::from_reason("firmware progress lock poisoned"))?
+            .clone())
+    }
+
+    /// CORE-R06: HELLO readback for the flashed device identity/version.
+    #[napi(js_name = "firmwareReadback")]
+    pub fn firmware_readback(
+        &self,
+        request: FirmwareReadbackRequest,
+    ) -> AsyncTask<BlockingTask<FirmwareReadbackResult>> {
+        self.spawn(move |manager| manager.firmware_readback_sync(request))
+    }
+
     #[napi(js_name = "connectSerial")]
     pub fn connect_serial(
         &self,
@@ -1933,6 +2619,8 @@ impl NativeManager {
                 if let Some(mut sim) = state.sim.take() {
                     sim.session.disconnect();
                 }
+                state.serial_lease = None;
+                state.serial_path = None;
                 state.disposed = true;
                 state.last_frame = None;
             }

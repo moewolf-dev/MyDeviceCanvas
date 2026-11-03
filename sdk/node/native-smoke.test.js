@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import net from "node:net";
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { MyDeviceCanvas } from "./index.js";
@@ -519,4 +520,166 @@ test("native dual-sim lists overlay and disconnect cancel keeps the pointer", { 
   // SIM-R05: a failed real endpoint must not be replaced by a FakeDevice.
   await assert.rejects(serial.devices(), /no active connection/);
   serial.dispose();
+});
+
+function firmwareRequest(image, overrides = {}) {
+  const sha256 = createHash("sha256").update(image).digest("hex");
+  return {
+    image,
+    artifact: {
+      boardId: "esp32-jc3248w535-sim",
+      mcu: "esp32-s3",
+      runtime: "0.1.0",
+      protocolMajor: 1,
+      protocolMinor: 0,
+      imageSize: image.byteLength,
+      sha256,
+      source: "catalog",
+      ...(overrides.artifact ?? {}),
+    },
+    board: {
+      boardId: "esp32-jc3248w535-sim",
+      mcu: "esp32-s3",
+      flashBytes: 16 * 1024 * 1024,
+      profileVerified: true,
+      ...(overrides.board ?? {}),
+    },
+    hostProtocolMajor: 1,
+    hostProtocolMinor: 0,
+    allowUnknownFlash: overrides.allowUnknownFlash ?? false,
+    flashIdUnusable: overrides.flashIdUnusable ?? false,
+  };
+}
+
+test("native firmware preflight accepts a matching artifact and names rejections", { skip: !native }, async () => {
+  const mdc = await MyDeviceCanvas.create();
+  const image = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+  const valid = await mdc.firmwarePreflight(firmwareRequest(image));
+  assert.equal(valid.verdict, "ok");
+  await assert.rejects(
+    mdc.firmwarePreflight(
+      firmwareRequest(image, { artifact: { sha256: "0".repeat(64) } }),
+    ),
+    (error) => error.code === "FIRMWARE_PREFLIGHT_REJECTED" && error.reason === "HashMismatch",
+  );
+  await assert.rejects(
+    mdc.firmwarePreflight(
+      firmwareRequest(image, { artifact: { boardId: "another-board" } }),
+    ),
+    (error) => error.reason === "BoardMismatch",
+  );
+  const unknown = await mdc.firmwarePreflight(
+    firmwareRequest(image, {
+      board: { flashBytes: null },
+      allowUnknownFlash: true,
+    }),
+  );
+  assert.equal(unknown.verdict, "okUnknownFlash");
+  mdc.dispose();
+});
+
+test("native firmware sim install reports progress and rejects a readback mismatch", { skip: !native }, async () => {
+  const mdc = await MyDeviceCanvas.create();
+  const image = new Uint8Array(64);
+  const base = {
+    preflight: firmwareRequest(image),
+    port: "sim://unit-1",
+    expectedDeviceId: "sim-esp32-jc3248w535",
+    mode: "sim",
+  };
+  const pending = mdc.firmwareInstall({ ...base, simDelayMs: 200 });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const during = await mdc.firmwareProgress();
+  assert.equal(during.phase, "writing");
+  const done = await pending;
+  assert.equal(done.deviceId, "sim-esp32-jc3248w535");
+  assert.equal((await mdc.firmwareProgress()).phase, "done");
+
+  await assert.rejects(
+    mdc.firmwareInstall({ ...base, simReadbackDeviceId: "someone-else" }),
+    (error) =>
+      error.code === "FIRMWARE_INSTALL_FAILED" &&
+      error.reason === "IdentityMismatch",
+  );
+  mdc.dispose();
+});
+
+test("native firmware lease blocks a second install and cancel settles", { skip: !native }, async () => {
+  const mdc = await MyDeviceCanvas.create();
+  const image = new Uint8Array(64);
+  const request = {
+    preflight: firmwareRequest(image),
+    port: "sim://unit-2",
+    expectedDeviceId: "sim-esp32-jc3248w535",
+    mode: "sim",
+    simDelayMs: 300,
+  };
+  const first = mdc.firmwareInstall(request);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  await assert.rejects(
+    mdc.firmwareInstall({ ...request, simDelayMs: 0 }),
+    (error) => error.reason === "PortBusy",
+  );
+  const completed = await first;
+  assert.equal(completed.phase, "done", "the lease holder finishes normally");
+
+  const cancellable = mdc.firmwareInstall(request);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  await mdc.cancelFirmware();
+  await assert.rejects(
+    cancellable,
+    (error) => error.phase === "cancelled" && error.reason === "Cancelled",
+  );
+  assert.equal((await mdc.firmwareProgress()).phase, "cancelled");
+  mdc.dispose();
+});
+
+test("native firmware readback performs a real HELLO over a PTY", {
+  skip: !native || !fs.existsSync(peerBin) || process.platform === "win32",
+}, async () => {
+  const port = await reservePort();
+  const address = `127.0.0.1:${port}`;
+  const peer = spawn(peerBin, [address], { stdio: "ignore" });
+  const bridge = spawn("python3", [path.join(repoRoot, "sdk/node/pty_bridge.py"), address], {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  const mdc = await MyDeviceCanvas.create();
+  try {
+    const ptyPath = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("pty bridge timeout")), 5000);
+      bridge.stdout.once("data", (chunk) => {
+        clearTimeout(timer);
+        resolve(String(chunk).trim().split("\n")[0]);
+      });
+      bridge.once("error", reject);
+    });
+    let readback = null;
+    let last = "not attempted";
+    for (let i = 0; i < 40 && !readback; i += 1) {
+      try {
+        readback = await mdc.firmwareReadback({ port: ptyPath, timeoutMs: 2000 });
+      } catch (error) {
+        last = error instanceof Error ? error.message : String(error);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    assert.ok(readback, last);
+    assert.equal(readback.deviceId, "sim-esp32-jc3248w535");
+    // The simulator peer advertises the same id for board and device; the
+    // contract only requires a non-empty advertised board id.
+    assert.ok(readback.boardId.length > 0);
+    assert.equal(typeof readback.protocolVersion, "number");
+    assert.ok(readback.firmware.length > 0);
+
+    // An open session holds the process lease, so readback must refuse.
+    await mdc.connectSerial(ptyPath, 115200);
+    await assert.rejects(
+      mdc.firmwareReadback({ port: ptyPath, timeoutMs: 2000 }),
+      /leased/,
+    );
+  } finally {
+    mdc.dispose();
+    bridge.kill();
+    peer.kill();
+  }
 });

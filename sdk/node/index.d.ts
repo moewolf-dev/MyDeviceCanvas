@@ -24,6 +24,94 @@ export interface SerialPortInfo {
   product?: string;
   serialNumber?: string;
 }
+/** CORE-R06: firmware metadata, mirroring the signed catalog artifact. */
+export interface FirmwareArtifact {
+  boardId: string;
+  mcu: string;
+  runtime: string;
+  protocolMajor: number;
+  protocolMinor: number;
+  imageSize: number;
+  sha256: string;
+  source: string;
+  publicKey?: Uint8Array;
+  signature?: Uint8Array;
+}
+/** CORE-R06: what the host knows about the target board. */
+export interface FirmwareBoardFacts {
+  boardId: string;
+  mcu: string;
+  /** Physical flash bytes; `null`/omitted means Unknown (never guessed). */
+  flashBytes?: number | null;
+  profileVerified: boolean;
+}
+export interface FirmwareImageGeometry {
+  chipFamily: string;
+  flashBytes: number;
+}
+export interface FirmwarePreflightRequest {
+  image: Uint8Array;
+  artifact: FirmwareArtifact;
+  board: FirmwareBoardFacts;
+  hostProtocolMajor: number;
+  hostProtocolMinor: number;
+  detectedChipFamily?: string;
+  imageGeometry?: FirmwareImageGeometry;
+  allowUnknownFlash?: boolean;
+  flashIdUnusable?: boolean;
+}
+export type FirmwarePreflightVerdict = "ok" | "okUnknownFlash" | "reject";
+export interface FirmwarePreflightResult {
+  ok: boolean;
+  verdict: FirmwarePreflightVerdict;
+  reason?: string | null;
+}
+export interface FirmwareInstallRequest {
+  preflight: FirmwarePreflightRequest;
+  port: string;
+  expectedDeviceId: string;
+  /** `sim` never opens the port; `esptool` writes a bounded temp image. */
+  mode?: "sim" | "esptool";
+  esptoolPath?: string;
+  /** esptool only: default true (records argv, writes nothing). */
+  dryRun?: boolean;
+  /** Simulator only: delay the fake write so progress/cancel are observable. */
+  simDelayMs?: number;
+  /** Simulator only: identity the fake flasher reads back (defaults to expected). */
+  simReadbackDeviceId?: string;
+}
+export interface FirmwareProgress {
+  phase:
+    | "idle"
+    | "preflight"
+    | "lease"
+    | "writing"
+    | "rebooting"
+    | "readback"
+    | "done"
+    | "cancelled"
+    | "failed";
+  ratio: number | null;
+  error: string | null;
+}
+export interface FirmwareInstallResult {
+  ok: boolean;
+  phase: string;
+  deviceId: string | null;
+  error: string | null;
+}
+export interface FirmwareReadbackRequest {
+  port: string;
+  timeoutMs?: number;
+  baud?: number;
+}
+/** CORE-R06: the identity the device advertises over a real HELLO. */
+export interface FirmwareReadback {
+  deviceId: string;
+  boardId: string;
+  protocolVersion: number;
+  firmware: string;
+}
 /** APP-R03: negotiated capabilities for the active session. */
 export interface CapabilitiesInfo extends DeviceInfo {
   boardId: string;
@@ -208,6 +296,16 @@ export declare class MyDeviceCanvas {
   installPackage(bytes: Uint8Array): Promise<boolean>;
   /** N238: true once the last accepted package is render-ready. */
   packageReady(): Promise<boolean>;
+  /** CORE-R06: verify a firmware image without opening a port. */
+  firmwarePreflight(request: FirmwarePreflightRequest): Promise<FirmwarePreflightResult>;
+  /** CORE-R06: preflight + lease + write + reset + identity readback. */
+  firmwareInstall(request: FirmwareInstallRequest): Promise<FirmwareInstallResult>;
+  /** CORE-R06: last progress snapshot; poll while an install is pending. */
+  firmwareProgress(): Promise<FirmwareProgress>;
+  /** CORE-R06: cancel at the next stage boundary. */
+  cancelFirmware(): Promise<void>;
+  /** CORE-R06: real HELLO identity/version readback on the leased port. */
+  firmwareReadback(request: FirmwareReadbackRequest): Promise<FirmwareReadback>;
   on(event: string, listener: (value: unknown) => void): () => void;
   off(event: string, listener: (value: unknown) => void): boolean;
   dispose(): void;

@@ -2,6 +2,31 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.104] — firmware preflight/install/readback on the public Node SDK (CORE-R06)
+
+### Added
+
+- `firmwarePreflight(request)`: board/MCU/protocol/image-size/SHA-256/signature
+  verdict from bytes, before any port is opened. Unknown flash stays a rejection
+  unless `allowUnknownFlash` is explicitly set.
+- `firmwareInstall(request)`: preflight + process-wide exclusive port lease +
+  write + reset + identity readback. `mode: "sim"` never opens the port;
+  `mode: "esptool"` writes a bounded temp image and defaults to a dry run.
+- `firmwareProgress()` (polled phase/ratio/error) and `cancelFirmware()`
+  (next-boundary cancellation).
+- `firmwareReadback({ port, timeoutMs?, baud? })`: real HELLO readback of
+  `{deviceId, boardId, protocolVersion, firmware}` on the leased port.
+- Serial sessions and firmware installs now share one process-wide lease, so
+  `connectSerial` refuses a port held by an install and vice versa.
+
+### Notes
+
+- `mdc-provision` gained a bytes-based preflight (`preflight_verdict_bytes`,
+  `verify_artifact_bytes`) and `Installer::run_with` (cancel + progress observer);
+  the file-path APIs delegate to the same checks.
+- Live esptool write/rollback and a physical board remain HIL. The simulator
+  `simReadbackDeviceId` hook exists only to exercise `IdentityMismatch`.
+
 ## [0.1.103] — serial port enumeration (APP-R03)
 
 ### Added

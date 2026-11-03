@@ -64,6 +64,10 @@ capabilities.
 | `compileGltf(bytes, { target })` | C08: compile an embedded glTF JSON document on the host (`sprite` or `mesh3d`); returns `.mdcpkg` bytes plus node/mesh/animation counts for `installPackage` |
 | `installPackage(bytes)` | N234: upload `.mdcpkg` bytes (`Uint8Array`); resolves `true` when ready |
 | `packageReady()` | N238: whether the last accepted package is render-ready |
+| `firmwarePreflight(request)` | CORE-R06: board/MCU/protocol/size/hash/signature verdict before any port opens |
+| `firmwareInstall(request)` | CORE-R06: preflight + exclusive port lease + write + reset + identity readback; `sim` or `esptool` (dry run by default) |
+| `firmwareProgress()` / `cancelFirmware()` | CORE-R06: polled phase/ratio/error and next-boundary cancellation |
+| `firmwareReadback({ port, timeoutMs?, baud? })` | CORE-R06: real HELLO identity/version on the leased port |
 | `connectTcp(address)` | remote peer instead of the in-process simulator |
 | `connectSerial(path, baud = 115200, resetOnOpen = false)` | N430/APP-R03: open a named serial port and perform HELLO; path is trimmed, baud 0 uses the native default, `resetOnOpen` applies DTR/RTS before HELLO |
 | `capabilities()` | APP-R03: negotiated frame/tile/touch/OTA limits, mirror modes/FPS, config keys and scene limits |
@@ -95,6 +99,56 @@ if (!ready) throw new Error("device rejected the package");
 The wrapper requires a `Uint8Array` (a `Buffer` qualifies) and forwards a copy.
 A malformed package rejects with the device error; `packageReady()` stays false.
 
+### Firmware install (CORE-R06)
+
+```js
+import fs from "node:fs";
+
+const preflight = {
+  image: fs.readFileSync("firmware.bin"),
+  artifact: {
+    boardId: "esp32-jc3248w535-sim", mcu: "esp32-s3", runtime: "0.1.0",
+    protocolMajor: 1, protocolMinor: 0, imageSize: bytes.length,
+    sha256: "<64 hex>", source: "catalog",
+  },
+  board: {
+    boardId: "esp32-jc3248w535-sim", mcu: "esp32-s3",
+    flashBytes: 16 * 1024 * 1024, profileVerified: true,
+  },
+  hostProtocolMajor: 1, hostProtocolMinor: 0,
+};
+
+await mdc.firmwarePreflight(preflight);          // throws FIRMWARE_PREFLIGHT_REJECTED
+const pending = mdc.firmwareInstall({
+  preflight, port: "sim://device-1",
+  expectedDeviceId: "sim-esp32-jc3248w535", mode: "sim", simDelayMs: 200,
+});
+await mdc.firmwareProgress();                    // { phase: "writing", ratio, error }
+await mdc.cancelFirmware();                      // observed at the next stage
+const done = await pending.catch((error) => error); // code FIRMWARE_INSTALL_FAILED
+
+const readback = await mdc.firmwareReadback({ port: "/dev/cu.usbmodem..." });
+// { deviceId, boardId, protocolVersion, firmware } — from a real HELLO
+```
+
+- Preflight never opens a port and checks board/MCU/protocol major, image
+  size/capacity, SHA-256 and an optional artifact signature. `flashBytes: null`
+  stays `Unknown` and is rejected unless `allowUnknownFlash` is set.
+- The install job holds a process-wide exclusive lease for the whole flow.
+  `mode: "sim"` never opens the port and requires a `sim://` port; `mode:
+  "esptool"` writes the bytes to a bounded temp file and defaults to a dry run
+  (`dryRun: true`). Live esptool writes, rollback and a real board remain HIL.
+- Progress is polled (`firmwareProgress()`), not pushed. `cancelFirmware()` sets
+  a flag checked at each stage boundary; a live esptool process is not
+  preempted mid-write.
+- `firmwareReadback` takes the same lease, performs a real HELLO on the serial
+  port, and returns the advertised identity/version. An open `connectSerial`
+  session holds that lease, so install/readback refuse a busy port and the
+  reverse is also true.
+- `simReadbackDeviceId` is a simulator-only fault hook: the fake flasher reads
+  back a different id so the `IdentityMismatch` path can be tested without
+  hardware.
+
 ## Events
 
 `on("mirror", fn)` carries `{ surfaceId, frameId, width, height }` metadata only
@@ -102,9 +156,10 @@ A malformed package rejects with the device error; `packageReady()` stays false.
 
 ## Non-goals
 
-- No serial transport in the Node binding yet (TCP + in-process simulator; N340 adds WebSocket).
 - No native artifact vendored: build per platform (see `sdk/node/package.json`).
-- No physical-board claim; D05/G03 remain open.
+- BLE, native USB bulk and PCIe transports are not implemented.
+- Live firmware flashing/rollback is not verified on hardware; `esptool` installs
+  default to a dry run and `D05/G03/H06` remain open.
 
 ## Mirror parity (N528)
 

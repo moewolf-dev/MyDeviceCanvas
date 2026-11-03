@@ -380,6 +380,130 @@ export class MyDeviceCanvas {
     if (this._disposed) throw new Error("manager is disposed");
     return (await this._native.packageReady?.()) ?? false;
   }
+  /**
+   * CORE-R06: verify a firmware image against the board facts without opening
+   * a port. Rejects with `FIRMWARE_PREFLIGHT_REJECTED` when the verdict is not
+   * `ok`; `verdict === "okUnknownFlash"` is returned for callers that accepted it.
+   */
+  async firmwarePreflight(request) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.firmwarePreflight !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    const result = await this._native.firmwarePreflight(
+      normalizeFirmwarePreflight(request),
+    );
+    if (!result.ok) {
+      const error = new Error(
+        `firmware preflight rejected: ${result.reason ?? "unknown"}`,
+      );
+      error.code = "FIRMWARE_PREFLIGHT_REJECTED";
+      error.reason = result.reason ?? null;
+      throw error;
+    }
+    return result;
+  }
+  /**
+   * CORE-R06: preflight + exclusive lease + write + reset + identity readback.
+   * `sim` never opens the port; `esptool` defaults to a dry run. Poll
+   * `firmwareProgress()` while this is pending; `cancelFirmware()` stops at the
+   * next stage boundary.
+   */
+  async firmwareInstall(request) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.firmwareInstall !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    if (!request || typeof request !== "object") {
+      throw new TypeError("firmwareInstall expects a request object");
+    }
+    const mode = request.mode ?? "sim";
+    if (mode !== "sim" && mode !== "esptool") {
+      throw new RangeError("firmware mode must be 'sim' or 'esptool'");
+    }
+    if (typeof request.port !== "string" || request.port.trim() === "") {
+      throw new TypeError("firmware port must be a non-empty string");
+    }
+    if (
+      typeof request.expectedDeviceId !== "string" ||
+      request.expectedDeviceId.trim() === ""
+    ) {
+      throw new TypeError("expectedDeviceId must be a non-empty string");
+    }
+    if (request.simDelayMs !== undefined) {
+      assertIntegerInRange(request.simDelayMs, "simDelayMs", 0, 60_000);
+    }
+    if (
+      request.simReadbackDeviceId !== undefined &&
+      (typeof request.simReadbackDeviceId !== "string" ||
+        request.simReadbackDeviceId.trim() === "")
+    ) {
+      throw new TypeError("simReadbackDeviceId must be a non-empty string");
+    }
+    const result = await this._native.firmwareInstall({
+      preflight: normalizeFirmwarePreflight(request.preflight),
+      port: request.port.trim(),
+      expectedDeviceId: request.expectedDeviceId.trim(),
+      mode,
+      esptoolPath: request.esptoolPath,
+      dryRun: request.dryRun === undefined ? undefined : Boolean(request.dryRun),
+      simDelayMs: request.simDelayMs,
+      simReadbackDeviceId: request.simReadbackDeviceId?.trim(),
+    });
+    if (!result.ok) {
+      const error = new Error(
+        `firmware install ${result.phase} failed: ${result.error ?? "unknown"}`,
+      );
+      error.code = "FIRMWARE_INSTALL_FAILED";
+      error.phase = result.phase;
+      error.reason = result.error ?? null;
+      throw error;
+    }
+    return result;
+  }
+  /** CORE-R06: the last install progress snapshot. */
+  async firmwareProgress() {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.firmwareProgress !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.firmwareProgress();
+  }
+  /** CORE-R06: ask the running install to stop at its next stage boundary. */
+  async cancelFirmware() {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.cancelFirmware !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.cancelFirmware();
+  }
+  /**
+   * CORE-R06: open the port under the same lease and return the HELLO identity.
+   * This is a real handshake, not a replay of the artifact metadata.
+   */
+  async firmwareReadback(request) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.firmwareReadback !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    if (!request || typeof request !== "object") {
+      throw new TypeError("firmwareReadback expects a request object");
+    }
+    if (typeof request.port !== "string" || request.port.trim() === "") {
+      throw new TypeError("readback port must be a non-empty string");
+    }
+    if (request.timeoutMs !== undefined) {
+      assertIntegerInRange(request.timeoutMs, "timeoutMs", 200, 15_000);
+    }
+    if (request.baud !== undefined) {
+      assertIntegerInRange(request.baud, "baud", 1, 4_000_000);
+    }
+    return this._native.firmwareReadback({
+      port: request.port.trim(),
+      timeoutMs: request.timeoutMs,
+      baud: request.baud,
+    });
+  }
   on(event, listener) {
     if (this._disposed) throw new Error("manager is disposed");
     if (typeof listener !== "function") {
@@ -406,6 +530,124 @@ export class MyDeviceCanvas {
     this._listeners.clear();
     this._native.dispose?.();
   }
+}
+
+function assertIntegerInRange(value, name, min, max) {
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new RangeError(`${name} must be an integer in ${min}..${max}`);
+  }
+}
+
+const MAX_FIRMWARE_BYTES = 32 * 1024 * 1024;
+
+function normalizeFirmwareBytes(value, name, allowEmpty = false) {
+  if (!(value instanceof Uint8Array)) {
+    throw new TypeError(`${name} must be a Uint8Array`);
+  }
+  if ((!allowEmpty && value.byteLength === 0) || value.byteLength > MAX_FIRMWARE_BYTES) {
+    throw new RangeError(`${name} must be 1..${MAX_FIRMWARE_BYTES} bytes`);
+  }
+  return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+}
+
+function normalizeFirmwarePreflight(request) {
+  if (!request || typeof request !== "object") {
+    throw new TypeError("preflight expects a request object");
+  }
+  const image = normalizeFirmwareBytes(request.image, "firmware image");
+  const artifact = request.artifact ?? {};
+  const board = request.board ?? {};
+  for (const field of ["boardId", "mcu", "runtime"]) {
+    if (typeof artifact[field] !== "string" || artifact[field].trim() === "") {
+      throw new TypeError(`artifact.${field} must be a non-empty string`);
+    }
+  }
+  assertIntegerInRange(artifact.protocolMajor, "artifact.protocolMajor", 0, 255);
+  assertIntegerInRange(artifact.protocolMinor, "artifact.protocolMinor", 0, 255);
+  if (!Number.isInteger(artifact.imageSize) || artifact.imageSize < 1) {
+    throw new RangeError("artifact.imageSize must be a positive integer");
+  }
+  if (artifact.imageSize !== image.byteLength) {
+    throw new RangeError(
+      `artifact.imageSize ${artifact.imageSize} != image bytes ${image.byteLength}`,
+    );
+  }
+  if (typeof artifact.sha256 !== "string" || !/^[0-9a-fA-F]{64}$/.test(artifact.sha256)) {
+    throw new RangeError("artifact.sha256 must be 64 hex characters");
+  }
+  if (typeof artifact.source !== "string") {
+    throw new TypeError("artifact.source must be a string");
+  }
+  for (const field of ["boardId", "mcu"]) {
+    if (typeof board[field] !== "string" || board[field].trim() === "") {
+      throw new TypeError(`board.${field} must be a non-empty string`);
+    }
+  }
+  if (board.flashBytes !== undefined && board.flashBytes !== null) {
+    if (!Number.isInteger(board.flashBytes) || board.flashBytes < 1) {
+      throw new RangeError("board.flashBytes must be a positive integer or null");
+    }
+  }
+  if (typeof board.profileVerified !== "boolean") {
+    throw new TypeError("board.profileVerified must be a boolean");
+  }
+  assertIntegerInRange(request.hostProtocolMajor, "hostProtocolMajor", 0, 255);
+  assertIntegerInRange(request.hostProtocolMinor, "hostProtocolMinor", 0, 255);
+  if (
+    request.detectedChipFamily !== undefined &&
+    typeof request.detectedChipFamily !== "string"
+  ) {
+    throw new TypeError("detectedChipFamily must be a string");
+  }
+  let imageGeometry;
+  if (request.imageGeometry !== undefined && request.imageGeometry !== null) {
+    const geometry = request.imageGeometry;
+    if (typeof geometry.chipFamily !== "string" || geometry.chipFamily.trim() === "") {
+      throw new TypeError("imageGeometry.chipFamily must be a non-empty string");
+    }
+    if (!Number.isInteger(geometry.flashBytes) || geometry.flashBytes < 1) {
+      throw new RangeError("imageGeometry.flashBytes must be a positive integer");
+    }
+    imageGeometry = {
+      chipFamily: geometry.chipFamily,
+      flashBytes: geometry.flashBytes,
+    };
+  }
+  const publicKey =
+    artifact.publicKey === undefined || artifact.publicKey === null
+      ? undefined
+      : normalizeFirmwareBytes(artifact.publicKey, "artifact.publicKey", true);
+  const signature =
+    artifact.signature === undefined || artifact.signature === null
+      ? undefined
+      : normalizeFirmwareBytes(artifact.signature, "artifact.signature", true);
+  return {
+    image,
+    artifact: {
+      boardId: artifact.boardId,
+      mcu: artifact.mcu,
+      runtime: artifact.runtime,
+      protocolMajor: artifact.protocolMajor,
+      protocolMinor: artifact.protocolMinor,
+      imageSize: artifact.imageSize,
+      sha256: artifact.sha256.toLowerCase(),
+      source: artifact.source,
+      publicKey,
+      signature,
+    },
+    board: {
+      boardId: board.boardId,
+      mcu: board.mcu,
+      flashBytes: board.flashBytes ?? undefined,
+      profileVerified: board.profileVerified,
+    },
+    hostProtocolMajor: request.hostProtocolMajor,
+    hostProtocolMinor: request.hostProtocolMinor,
+    detectedChipFamily: request.detectedChipFamily,
+    imageGeometry,
+    allowUnknownFlash: Boolean(request.allowUnknownFlash),
+    flashIdUnusable: Boolean(request.flashIdUnusable),
+  };
 }
 
 import { createRequire } from "node:module";
