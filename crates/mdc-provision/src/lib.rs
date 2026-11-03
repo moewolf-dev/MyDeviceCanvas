@@ -1,4 +1,6 @@
+mod facts;
 mod preflight;
+pub use facts::{known_board_facts, KnownBoard, KNOWN_BOARDS};
 pub use preflight::{
     preflight_verdict, preflight_verdict_bytes, ImageGeometry, PreflightInput, PreflightInputBytes,
     PreflightVerdict,

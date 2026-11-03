@@ -729,3 +729,24 @@ test("native disconnect closes a PTY session and keeps the manager usable", {
     peer.kill();
   }
 });
+
+test("native boardFacts reports known and unknown boards without guessing", { skip: !native }, async () => {
+  const mdc = await MyDeviceCanvas.create();
+  const sim = await mdc.boardFacts("esp32-jc3248w535-sim");
+  assert.equal(sim.known, true);
+  assert.equal(sim.mcu, "esp32-s3");
+  assert.equal(sim.flashBytes, 16 * 1024 * 1024);
+  assert.equal(sim.profileVerified, true);
+
+  const reference = await mdc.boardFacts("jc3248w535");
+  assert.equal(reference.known, true);
+  assert.equal(reference.profileVerified, false, "physical board stays unverified");
+
+  const unknown = await mdc.boardFacts("not-a-board");
+  assert.equal(unknown.known, false);
+  assert.equal(unknown.profileVerified, false);
+  assert.equal(unknown.mcu, "");
+  assert.equal(unknown.flashBytes ?? null, null);
+  await assert.rejects(mdc.boardFacts("  "), /non-empty/);
+  mdc.dispose();
+});

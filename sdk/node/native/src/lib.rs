@@ -3,9 +3,9 @@ use mdc_core::{ConnectionState, DeviceManager, Frame, ManagerEvent, Session, Ses
 use mdc_flasher::{flags_for_board, EspToolFlasher, SimFlasher};
 use mdc_protocol::InputEvent;
 use mdc_provision::{
-    preflight_verdict_bytes, Artifact, BoardFacts, FlashSize, Flasher, ImageGeometry, InstallError,
-    InstallPlan, InstallState, Installer, PortLease, PortLeases, PreflightInputBytes,
-    PreflightVerdict,
+    known_board_facts, preflight_verdict_bytes, Artifact, BoardFacts, FlashSize, Flasher,
+    ImageGeometry, InstallError, InstallPlan, InstallState, Installer, PortLease, PortLeases,
+    PreflightInputBytes, PreflightVerdict,
 };
 use mdc_simulator::{BoardProfile, FakeDevice, SimError};
 use mdc_transport::{TcpTransport, Transport};
@@ -231,6 +231,21 @@ pub struct FirmwareReadbackResult {
     #[napi(js_name = "protocolVersion")]
     pub protocol_version: u16,
     pub firmware: String,
+}
+
+/// CORE-R06: host-side board facts used to build a firmware preflight request.
+/// `known: false` means the id is not in this SDK's table; the caller must not
+/// guess MCU/flash values.
+#[napi(object)]
+pub struct BoardFactsDto {
+    #[napi(js_name = "boardId")]
+    pub board_id: String,
+    pub mcu: String,
+    #[napi(js_name = "flashBytes")]
+    pub flash_bytes: Option<f64>,
+    #[napi(js_name = "profileVerified")]
+    pub profile_verified: bool,
+    pub known: bool,
 }
 
 #[napi(object)]
@@ -1989,6 +2004,36 @@ impl NativeManager {
             .unwrap_or(0))
     }
 
+    /// CORE-R06: board facts for firmware preflight, without parsing YAML.
+    fn board_facts_sync(&self, board_id: String) -> Result<BoardFactsDto> {
+        if self.disposed.load(AtomicOrdering::Acquire) {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        let board_id = board_id.trim();
+        if board_id.is_empty() {
+            return Err(Error::from_reason("board id must be non-empty"));
+        }
+        Ok(match known_board_facts(board_id) {
+            Some(facts) => BoardFactsDto {
+                board_id: facts.board_id,
+                mcu: facts.mcu,
+                flash_bytes: match facts.flash {
+                    FlashSize::Known(bytes) => Some(bytes as f64),
+                    FlashSize::Unknown => None,
+                },
+                profile_verified: facts.profile_verified,
+                known: true,
+            },
+            None => BoardFactsDto {
+                board_id: board_id.to_string(),
+                mcu: String::new(),
+                flash_bytes: None,
+                profile_verified: false,
+                known: false,
+            },
+        })
+    }
+
     /// CORE-R06: verify a firmware image against the board facts without
     /// touching a serial port. Returns a structured verdict, not a throw.
     fn firmware_preflight_sync(
@@ -2541,6 +2586,12 @@ impl NativeManager {
     #[napi(js_name = "capabilities")]
     pub fn capabilities(&self) -> AsyncTask<BlockingTask<CapabilitiesInfo>> {
         self.spawn(|manager| manager.capabilities_sync())
+    }
+
+    /// CORE-R06: host-side board facts for firmware preflight.
+    #[napi(js_name = "boardFacts")]
+    pub fn board_facts(&self, board_id: String) -> AsyncTask<BlockingTask<BoardFactsDto>> {
+        self.spawn(move |manager| manager.board_facts_sync(board_id))
     }
 
     /// CORE-R06: verify a firmware image without opening a port.

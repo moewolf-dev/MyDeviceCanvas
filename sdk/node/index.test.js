@@ -475,3 +475,25 @@ test("disconnect closes the session but keeps the manager", async () => {
   mdc.dispose();
   await assert.rejects(mdc.disconnect(), /disposed/);
 });
+
+test("boardFacts validates and forwards the board id", async () => {
+  let received;
+  const mdc = new MyDeviceCanvas({
+    boardFacts(boardId) {
+      received = boardId;
+      return {
+        boardId,
+        mcu: "esp32-s3",
+        flashBytes: 16777216,
+        profileVerified: true,
+        known: true,
+      };
+    },
+  });
+  const facts = await mdc.boardFacts(" esp32-jc3248w535-sim ");
+  assert.equal(received, "esp32-jc3248w535-sim");
+  assert.equal(facts.flashBytes, 16777216);
+  await assert.rejects(mdc.boardFacts("  "), /non-empty/);
+  mdc.dispose();
+  await assert.rejects(mdc.boardFacts("x"), /disposed/);
+});

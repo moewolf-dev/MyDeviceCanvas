@@ -24,6 +24,16 @@ export interface SerialPortInfo {
   product?: string;
   serialNumber?: string;
 }
+/** CORE-R06: host-side board facts for a firmware preflight request. */
+export interface BoardFacts {
+  boardId: string;
+  mcu: string;
+  flashBytes?: number | null;
+  profileVerified: boolean;
+  /** False when the SDK has no verified profile for this id; do not guess. */
+  known: boolean;
+}
+
 /** CORE-R06: firmware metadata, mirroring the signed catalog artifact. */
 export interface FirmwareArtifact {
   boardId: string;
@@ -298,6 +308,8 @@ export declare class MyDeviceCanvas {
   installPackage(bytes: Uint8Array): Promise<boolean>;
   /** N238: true once the last accepted package is render-ready. */
   packageReady(): Promise<boolean>;
+  /** CORE-R06: host-side facts for `firmwarePreflight`. */
+  boardFacts(boardId: string): Promise<BoardFacts>;
   /** CORE-R06: verify a firmware image without opening a port. */
   firmwarePreflight(request: FirmwarePreflightRequest): Promise<FirmwarePreflightResult>;
   /** CORE-R06: preflight + lease + write + reset + identity readback. */

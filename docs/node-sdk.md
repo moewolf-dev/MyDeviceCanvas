@@ -64,6 +64,7 @@ capabilities.
 | `compileGltf(bytes, { target })` | C08: compile an embedded glTF JSON document on the host (`sprite` or `mesh3d`); returns `.mdcpkg` bytes plus node/mesh/animation counts for `installPackage` |
 | `installPackage(bytes)` | N234: upload `.mdcpkg` bytes (`Uint8Array`); resolves `true` when ready |
 | `packageReady()` | N238: whether the last accepted package is render-ready |
+| `boardFacts(boardId)` | CORE-R06: host-side MCU/flash/verified facts; `known: false` must not be guessed |
 | `firmwarePreflight(request)` | CORE-R06: board/MCU/protocol/size/hash/signature verdict before any port opens |
 | `firmwareInstall(request)` | CORE-R06: preflight + exclusive port lease + write + reset + identity readback; `sim` or `esptool` (dry run by default) |
 | `firmwareProgress()` / `cancelFirmware()` | CORE-R06: polled phase/ratio/error and next-boundary cancellation |

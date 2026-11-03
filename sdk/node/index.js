@@ -393,6 +393,20 @@ export class MyDeviceCanvas {
     return (await this._native.packageReady?.()) ?? false;
   }
   /**
+   * CORE-R06: host-side board facts for a firmware preflight request.
+   * `known: false` means the SDK has no verified profile; do not guess.
+   */
+  async boardFacts(boardId) {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.boardFacts !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    if (typeof boardId !== "string" || boardId.trim() === "") {
+      throw new TypeError("boardId must be a non-empty string");
+    }
+    return this._native.boardFacts(boardId.trim());
+  }
+  /**
    * CORE-R06: verify a firmware image against the board facts without opening
    * a port. Rejects with `FIRMWARE_PREFLIGHT_REJECTED` when the verdict is not
    * `ok`; `verdict === "okUnknownFlash"` is returned for callers that accepted it.
