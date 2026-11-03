@@ -61,8 +61,10 @@ App environment contract cannot silently pass on Node 24.
 
 ## CI template
 
-`.github/workflows/simulator-gates.yml` runs `quick` and `cross` on push/PR and
-the long soak weekly or on manual dispatch, uploading `target/gates` artifacts.
+`docs/ci/simulator-gates.yml` is the workflow template (moved out of
+`.github/workflows/` because the current push credential lacks the `workflow`
+scope; see `docs/ci/README.md`). It runs `quick` and `cross` on push/PR and the
+long soak weekly or on manual dispatch, uploading `target/gates` artifacts.
 The workflow file has not been executed in this local environment because no
 remote/CI credentials are configured; the local gate output is the evidence.
 
