@@ -9,9 +9,9 @@ surface. It does not add empty implementation packages — per the plan,
 | Transport | Adapter | Status | Notes |
 |---|---|---|---|
 | In-memory | `MemoryLink` | sim-verified | Tests, FakeDevice host path |
-| Serial | `SerialTransport` (macOS) | sim-verified (PTY) | `physical: pending`; DTR/RTS + backoff policy |
-| WebSocket | `WebSocketTransport` | sim-verified | binary messages limited at the adapter |
-| TCP | `TcpTransport` | sim-verified (loopback) | also carries Wi-Fi and gigabit Ethernet |
+| Serial | `SerialTransport` (macOS) | sim-verified (PTY) | `physical: pending`; DTR/RTS + backoff policy; close drops the OS handle |
+| WebSocket | `WebSocketTransport` | sim-verified | message + frame limits installed at handshake (`WebSocketConfig`) and on `set_max_message` |
+| TCP | `TcpTransport` | sim-verified (loopback) | also carries Wi-Fi and gigabit Ethernet; accepted streams get bounded read/write timeouts |
 
 TCP is transport-agnostic: Wi-Fi and gigabit Ethernet both terminate in a TCP
 byte stream, so they reuse `TcpTransport` unchanged. No separate Ethernet

@@ -4,7 +4,7 @@
 //! public Rust Core `Session`, so transport and process boundaries are real.
 use mdc_core::{ConnectionState, CoreError, Frame, Session, SessionConfig};
 use mdc_transport::{TcpTransport, Transport, WebSocketTransport};
-use std::net::TcpListener;
+use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -20,26 +20,38 @@ impl Drop for Peer {
     }
 }
 
-fn reserve_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("reserve port");
-    listener.local_addr().unwrap().port()
-}
-
 fn spawn_peer(flags: &[&str]) -> Peer {
     spawn_peer_board("esp32-jc3248w535-sim", flags)
 }
 
 fn spawn_peer_board(board: &str, flags: &[&str]) -> Peer {
-    let port = reserve_port();
-    let addr = format!("127.0.0.1:{port}");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_mdc-sim-peer"));
-    command
-        .arg(&addr)
+    // Bind port 0 in the peer and read back the address. Reserving a port in
+    // the test process and handing it over races other parallel tests.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mdc-sim-peer"))
+        .arg("127.0.0.1:0")
         .arg(board)
         .args(flags)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let child = command.spawn().expect("spawn mdc-sim-peer");
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn mdc-sim-peer");
+    let stdout = child.stdout.take().expect("peer stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    reader.read_line(&mut line).expect("read peer address");
+    let addr = line
+        .split("listening on ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("unexpected peer banner: {line:?}"))
+        .to_string();
+    // Keep draining later progress lines; a full pipe would block the peer.
+    std::thread::spawn(move || {
+        let mut sink = String::new();
+        while matches!(reader.read_line(&mut sink), Ok(n) if n > 0) {
+            sink.clear();
+        }
+    });
     Peer { child, addr }
 }
 

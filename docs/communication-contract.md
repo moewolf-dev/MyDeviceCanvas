@@ -1,6 +1,6 @@
 # Communication Contract (SIM-R01)
 
-Status: **baseline drafted; R02 is implemented, R03–R10 remain open.**
+Status: **baseline frozen; SIM-R01–R10 are implemented for the simulator.**
 This is the host/simulator reliability contract from Core TODO §108. It is not a
 hardware claim and does not replace `Core:D05/G03/H06`.
 
@@ -113,8 +113,18 @@ Implemented in R04/R06: disconnect/replace/switch clear transactions, mirror
 inbox and base, gestures, config cache and deadlines through one
 `clear_link_state`; serial `close` drops the OS handle and rejects post-close
 I/O; WebSocket close is idempotent and drops the socket; accepted TCP streams get
-bounded timeouts. Remaining: session-generation
-tags on queued events and Node async cancellation (R05).
+bounded timeouts.
+
+R06 closes the transport contract with one shared matrix
+(`crates/mdc-transport/tests/close_contract.rs`) over Memory, TCP, WebSocket and
+a real unix pty: repeated `close`/`cancel` is idempotent and bounded to 500 ms,
+every adapter rejects I/O after close, an idle read returns within its timeout,
+a short write resumes only the unaccepted tail, and a serial pty can be reopened
+after close (the OS handle was actually released). WebSocket message and frame
+limits are installed in `WebSocketConfig` at handshake time (2 MiB default) and
+`set_max_message` updates the live framing layer, so an oversized inbound frame
+is rejected at its header instead of after buffering; the same cap applies to
+outbound writes.
 
 ## 8. SDK execution
 
@@ -192,7 +202,7 @@ does not fall back to a FakeDevice; the next call reports `no active connection`
 | SIM-T11 | disconnect drops old mirror frames | implemented `disconnect_drops_the_mirror_inbox_and_base` (R04) |
 | SIM-T12 | unsolicited Capabilities cannot set Ready | implemented `unsolicited_capabilities_do_not_make_a_session_ready`; Node events also stamp `generation` (R04) |
 | SIM-T13 | 100000 ACKs do not grow history | implemented `finished_ack_history_is_bounded` (R07) |
-| SIM-T14 | close/cancel/limits across transports | implemented: memory/TCP/WS/serial close idempotence, post-close rejection, bounded accepted reads/timeouts, WebSocket limit (R06), Serial PTY peer-exit, Node cancel and C++ peer exit (R08) |
+| SIM-T14 | close/cancel/limits across transports | implemented: shared `crates/mdc-transport/tests/close_contract.rs` matrix over memory/TCP/WS/serial pty (idempotent close/cancel ≤500 ms, post-close rejection, bounded idle read, pty handle release), WebSocket limits installed at handshake and on `set_max_message`, bounded accepted TCP reads/timeouts (R06), Serial PTY peer-exit, Node cancel and C++ peer exit (R08) |
 | SIM-T15 | multi-device isolation | implemented `one_device_exiting_does_not_close_another` (R08, two processes) |
 | SIM-T16 | Rust/C++ differential byte boundaries | shared vectors + `cxx_peer` chunked frame/tile with exact pixel dump (R08) |
 

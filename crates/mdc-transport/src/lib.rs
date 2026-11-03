@@ -382,6 +382,22 @@ impl Transport for SerialTransport {
     }
 }
 
+/// Default WebSocket message/frame cap. Protocol frames are bounded to 1 MiB,
+/// so 2 MiB leaves room for the header while still rejecting a hostile peer
+/// before its payload is buffered.
+#[cfg(feature = "websocket")]
+pub const WEBSOCKET_MAX_MESSAGE: usize = 2 * 1024 * 1024;
+
+#[cfg(feature = "websocket")]
+fn websocket_config(max_message: usize) -> tungstenite::protocol::WebSocketConfig {
+    let limit = max_message.max(1);
+    tungstenite::protocol::WebSocketConfig {
+        max_message_size: Some(limit),
+        max_frame_size: Some(limit),
+        ..Default::default()
+    }
+}
+
 #[cfg(feature = "websocket")]
 pub struct WebSocketTransport {
     socket: Option<tungstenite::WebSocket<std::net::TcpStream>>,
@@ -390,6 +406,16 @@ pub struct WebSocketTransport {
 #[cfg(feature = "websocket")]
 impl WebSocketTransport {
     pub fn connect(url: &str, timeout: std::time::Duration) -> Result<Self, TransportError> {
+        Self::connect_with_max_message(url, timeout, WEBSOCKET_MAX_MESSAGE)
+    }
+
+    /// Connect with an explicit message/frame cap applied at the WebSocket
+    /// framing layer, before any payload is buffered.
+    pub fn connect_with_max_message(
+        url: &str,
+        timeout: std::time::Duration,
+        max_message: usize,
+    ) -> Result<Self, TransportError> {
         let parsed = url::Url::parse(url).map_err(|e| TransportError::Endpoint(e.to_string()))?;
         let host = parsed
             .host()
@@ -408,20 +434,50 @@ impl WebSocketTransport {
         stream
             .set_write_timeout(Some(timeout))
             .map_err(|e| TransportError::Io(e.to_string()))?;
-        let (socket, _) =
-            tungstenite::client(parsed, stream).map_err(|e| TransportError::Io(e.to_string()))?;
+        let (socket, _) = tungstenite::client::client_with_config(
+            parsed,
+            stream,
+            Some(websocket_config(max_message)),
+        )
+        .map_err(|e| TransportError::Io(e.to_string()))?;
         Ok(Self {
             socket: Some(socket),
-            max_message: 1024 * 1024,
+            max_message: max_message.max(1),
         })
     }
 
+    /// Apply the cap to the live WebSocket too, so the framing layer rejects
+    /// the next oversized frame/message before it is read in full.
     pub fn set_max_message(&mut self, max_message: usize) {
-        self.max_message = max_message.max(1);
+        let limit = max_message.max(1);
+        self.max_message = limit;
+        if let Some(socket) = self.socket.as_mut() {
+            socket.set_config(|config| {
+                config.max_message_size = Some(limit);
+                config.max_frame_size = Some(limit);
+            });
+        }
+    }
+
+    /// True until [`Transport::close`] drops the underlying socket.
+    pub fn is_open(&self) -> bool {
+        self.socket.is_some()
+    }
+
+    /// Current message/frame cap enforced by the framing layer.
+    pub fn max_message(&self) -> usize {
+        self.max_message
     }
 
     /// Accept one WebSocket client already taken from a `TcpListener`.
     pub fn accept(stream: std::net::TcpStream) -> Result<Self, TransportError> {
+        Self::accept_with_max_message(stream, WEBSOCKET_MAX_MESSAGE)
+    }
+
+    pub fn accept_with_max_message(
+        stream: std::net::TcpStream,
+        max_message: usize,
+    ) -> Result<Self, TransportError> {
         stream
             .set_read_timeout(Some(std::time::Duration::from_millis(500)))
             .map_err(|e| TransportError::Io(e.to_string()))?;
@@ -431,16 +487,22 @@ impl WebSocketTransport {
         stream
             .set_nodelay(true)
             .map_err(|e| TransportError::Io(e.to_string()))?;
-        let socket = tungstenite::accept(stream).map_err(|e| TransportError::Io(e.to_string()))?;
+        let socket = tungstenite::accept_with_config(stream, Some(websocket_config(max_message)))
+            .map_err(|e| TransportError::Io(e.to_string()))?;
         Ok(Self {
             socket: Some(socket),
-            max_message: 1024 * 1024,
+            max_message: max_message.max(1),
         })
     }
 }
 #[cfg(feature = "websocket")]
 impl Transport for WebSocketTransport {
     fn write(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+        if bytes.len() > self.max_message {
+            return Err(TransportError::Io(
+                "websocket message exceeds negotiated limit".into(),
+            ));
+        }
         let socket = self.socket.as_mut().ok_or(TransportError::Closed)?;
         socket
             .send(tungstenite::Message::Binary(bytes.to_vec()))
@@ -449,14 +511,7 @@ impl Transport for WebSocketTransport {
     fn read(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
         let socket = self.socket.as_mut().ok_or(TransportError::Closed)?;
         match socket.read() {
-            Ok(tungstenite::Message::Binary(bytes)) => {
-                if bytes.len() > self.max_message {
-                    return Err(TransportError::Io(
-                        "websocket message exceeds negotiated limit".into(),
-                    ));
-                }
-                Ok(Some(bytes))
-            }
+            Ok(tungstenite::Message::Binary(bytes)) => Ok(Some(bytes)),
             Ok(tungstenite::Message::Ping(bytes)) => {
                 socket
                     .send(tungstenite::Message::Pong(bytes))
@@ -468,6 +523,9 @@ impl Transport for WebSocketTransport {
             Ok(_) => Err(TransportError::Io(
                 "text WebSocket messages are not supported".into(),
             )),
+            Err(tungstenite::Error::Capacity(message)) => Err(TransportError::Io(format!(
+                "websocket message exceeds negotiated limit: {message}"
+            ))),
             Err(tungstenite::Error::Io(e))
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut =>
@@ -606,19 +664,31 @@ mod tests {
 
     #[cfg(feature = "websocket")]
     #[test]
-    fn websocket_rejects_binary_over_configured_limit() {
+    fn websocket_limit_is_applied_at_handshake_in_both_directions() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             let mut peer = WebSocketTransport::accept(stream).unwrap();
-            peer.write(&[0u8; 32]).unwrap();
+            peer.write(&[0u8; 9]).unwrap();
             thread::sleep(Duration::from_millis(300));
         });
-        let mut client =
-            WebSocketTransport::connect(&format!("ws://127.0.0.1:{port}/"), Duration::from_secs(2))
-                .unwrap();
-        client.set_max_message(8);
+        let mut client = WebSocketTransport::connect_with_max_message(
+            &format!("ws://127.0.0.1:{port}/"),
+            Duration::from_secs(2),
+            8,
+        )
+        .unwrap();
+        assert_eq!(client.max_message(), 8);
+        // The local cap also applies to outbound messages.
+        assert_eq!(
+            client.write(&[0u8; 9]),
+            Err(TransportError::Io(
+                "websocket message exceeds negotiated limit".into()
+            ))
+        );
+        // The framing layer rejects the peer's 9-byte frame at its header,
+        // before the payload is buffered.
         let err = loop {
             match client.read() {
                 Ok(None) => continue,

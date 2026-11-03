@@ -174,7 +174,10 @@ fn main() {
     }
     let profile = BoardProfile::from_board_id(&board);
     let listener = TcpListener::bind(&bind).expect("bind");
-    println!("mdc-sim-peer listening on {bind} board={board}");
+    // Print the actual bound address so tests can pass `127.0.0.1:0` instead of
+    // reserving a port in a separate process (which races other tests).
+    let bound = listener.local_addr().expect("local_addr");
+    println!("mdc-sim-peer listening on {bound} board={board}");
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(s) => s,

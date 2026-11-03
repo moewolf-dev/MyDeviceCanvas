@@ -553,6 +553,7 @@ dependencies = [
 name = "mdc-transport"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "serialport",
  "thiserror",
  "tungstenite",
