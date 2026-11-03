@@ -94,7 +94,11 @@ run.
 | cross | scripted; fault matrix 15 + C++ peer 3 + native smoke 14 |
 | long quick probe (5 s + 30 s + 5 s) | passed: 21385 transactions, RSS +128 KiB, threads/FDs flat |
 | long 60-minute gate | passed from `4311e15`: 3960 s, RSS +0 KiB, 2,604,243 transactions, `docs/soak-reports/r09-4311e15.json` |
-| rc | **not yet run** |
+| rc | passed at `52aff99` (2026-10-25); report `docs/gate-reports/20261025T082224Z-rc/report.json` |
 
-R09/R10 stay open until the 60-minute report and a clean `rc` report are attached
-to the task record. Runtime heap/PSRAM measurements are still out of scope.
+The archived 60-minute report is only reusable while every change between
+`4311e15` and HEAD stays under `tests/`, `tools/`, `docs/`, `.github/` or a
+test-only `Cargo.lock` entry. R06 and the rustc 1.99 lint cleanup changed
+`crates/` after that report, so a new `rc` must re-run the long soak first; the
+old rc report is historical evidence, not a green light for the current HEAD.
+Runtime heap/PSRAM measurements are still out of scope.
