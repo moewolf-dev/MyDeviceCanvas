@@ -1754,7 +1754,7 @@ fn downscale_bgra(width: u32, height: u32, bytes: &[u8], factor: u32) -> Vec<u8>
 fn rgb565_frame_to_ppm(width: u32, height: u32, rgb565: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgb565.len() / 2 * 3 + 32);
     out.extend_from_slice(format!("P6\n{width} {height}\n255\n").as_bytes());
-    for chunk in rgb565.chunks_exact(2) {
+    for chunk in rgb565.as_chunks::<2>().0 {
         let value = u16::from_le_bytes([chunk[0], chunk[1]]);
         let r = ((value >> 11) & 0x1f) as u8;
         let g = ((value >> 5) & 0x3f) as u8;
@@ -6300,7 +6300,9 @@ mod tests {
         let dithered = mdc_bake::bayer_dither_rgb565(4, 4, &grey, 4);
         assert_ne!(dithered, grey, "dithering changes the image");
         let unique: std::collections::BTreeSet<u16> = dithered
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|b| u16::from_le_bytes([b[0], b[1]]))
             .collect();
         assert!(unique.len() > 1, "more than one value appears");

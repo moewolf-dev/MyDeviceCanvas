@@ -1308,7 +1308,7 @@ pub fn generate_tangents(geometry: &mdc_model::MeshGeometry) -> Vec<[f32; 4]> {
     let count = geometry.positions.len();
     let mut tangent = vec![[0.0f32; 3]; count];
     let mut bitangent = vec![[0.0f32; 3]; count];
-    for tri in geometry.indices.chunks_exact(3) {
+    for tri in geometry.indices.as_chunks::<3>().0 {
         let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
         let (Some(p0), Some(p1), Some(p2)) = (
             geometry.positions.get(i0),
@@ -1719,7 +1719,9 @@ fn triangle_shades_ambients(
     }
     let use_normals = !normals.is_empty() && normals.len() >= positions.len();
     indices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .enumerate()
         .map(|(ti, tri)| {
             let normal = if use_normals {
@@ -1767,7 +1769,7 @@ fn occlusion_factors(
         return None;
     }
     let mut out = Vec::with_capacity(geometry.indices.len() / 3);
-    for tri in geometry.indices.chunks_exact(3) {
+    for tri in geometry.indices.as_chunks::<3>().0 {
         let mut u = 0.0f32;
         let mut v = 0.0f32;
         for &i in tri {
@@ -3678,7 +3680,9 @@ mod tests {
         assert_eq!(at(8, 8), 0xF800);
         assert!(frame
             .rgb565
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .all(|px| u16::from_le_bytes([px[0], px[1]]) != 0x001F));
     }
 
@@ -3751,7 +3755,7 @@ mod tests {
 
         let texture = crate::TextureMap::from_rgb565(2, 1, vec![0x00, 0xF8, 0xE0, 0x07]).unwrap();
         let textured = render_frame_at(&model, 0, 0.0, (16, 16), Some(&texture), 0x001F).unwrap();
-        assert!(textured.rgb565.chunks_exact(2).any(|px| px == [0x00, 0xF8]));
+        assert!(textured.rgb565.as_chunks::<2>().0.contains(&[0x00, 0xF8]));
     }
 
     #[test]
@@ -3780,7 +3784,9 @@ mod tests {
         let frame = render_geometry_at(&model, 0, 0.0, (16, 16), None, 0xF800).unwrap();
         let covered = frame
             .rgb565
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .filter(|px| px.iter().any(|b| *b != 0))
             .count();
         // A fitted quad at 16×16 covers many pixels, far more than one triangle.
@@ -3896,7 +3902,9 @@ mod tests {
         let frame = render_package_mesh(&package.package, (16, 16)).unwrap();
         assert!(frame
             .rgb565
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .any(|px| px.iter().any(|b| *b != 0)));
     }
 
@@ -4328,7 +4336,9 @@ mod tests {
         };
         let sum = |f: &BakedTexture| -> u64 {
             f.rgb565
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|b| u64::from(u16::from_le_bytes([b[0], b[1]])) >> 5)
                 .sum()
         };

@@ -296,7 +296,7 @@ pub(crate) fn raster_points(
     }
     let mut pixels = vec![0u8; (width as usize) * (height as usize) * 2];
     if indices.len() >= 3 {
-        for triangle in indices.chunks_exact(3) {
+        for triangle in indices.as_chunks::<3>().0 {
             let (Some(a), Some(b), Some(c)) = (
                 points.get(triangle[0] as usize).copied(),
                 points.get(triangle[1] as usize).copied(),
@@ -912,7 +912,7 @@ fn average_color(colors: &[u16]) -> u16 {
 pub fn quantize_palette(width: u32, height: u32, rgb565: &[u8], max_colors: u32) -> PaletteImage {
     let max_colors = max_colors.clamp(2, 256) as usize;
     let mut counts: std::collections::BTreeSet<u16> = std::collections::BTreeSet::new();
-    for chunk in rgb565.chunks_exact(2) {
+    for chunk in rgb565.as_chunks::<2>().0 {
         counts.insert(u16::from_le_bytes([chunk[0], chunk[1]]));
     }
     let mut boxes: Vec<Vec<u16>> = vec![counts.into_iter().collect()];
@@ -945,7 +945,9 @@ pub fn quantize_palette(width: u32, height: u32, rgb565: &[u8], max_colors: u32)
         }
     }
     let indices = rgb565
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| {
             map.get(&u16::from_le_bytes([c[0], c[1]]))
                 .copied()
@@ -1218,7 +1220,7 @@ pub fn index_cache_misses(geometry: &mdc_model::MeshGeometry, cache_size: usize)
 /// N644: hit/miss counters for an index order under a FIFO vertex cache.
 pub fn index_cache_stats(geometry: &mdc_model::MeshGeometry, cache_size: usize) -> (u64, u64) {
     let mut cache = mdc_model::VertexCache::new(cache_size);
-    for triangle in geometry.indices.chunks_exact(3) {
+    for triangle in geometry.indices.as_chunks::<3>().0 {
         for &vertex in triangle {
             cache.touch(vertex);
         }
@@ -1275,7 +1277,9 @@ pub fn optimize_index_order_report(
 pub fn optimize_index_order(geometry: &mut mdc_model::MeshGeometry, cache_size: usize) -> u64 {
     let triangles: Vec<[u32; 3]> = geometry
         .indices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|t| [t[0], t[1], t[2]])
         .collect();
     if triangles.len() < 2 {
@@ -2055,12 +2059,16 @@ mod tests {
         // The triangle set is unchanged, only its order.
         let mut before: Vec<[u32; 3]> = geometry
             .indices
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|t| [t[0], t[1], t[2]])
             .collect();
         let mut after: Vec<[u32; 3]> = reordered
             .indices
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|t| [t[0], t[1], t[2]])
             .collect();
         before.sort_unstable();
@@ -2234,7 +2242,9 @@ mod tests {
         let before = index_cache_misses(&geometry, 4);
         let mut before_set: Vec<[u32; 3]> = geometry
             .indices
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|t| [t[0], t[1], t[2]])
             .collect();
         for triangle in &mut before_set {
@@ -2247,7 +2257,9 @@ mod tests {
         assert_eq!(geometry.indices.len(), 12, "triangle count preserved");
         let mut after_set: Vec<[u32; 3]> = geometry
             .indices
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|t| [t[0], t[1], t[2]])
             .collect();
         for triangle in &mut after_set {

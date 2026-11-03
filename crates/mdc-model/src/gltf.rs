@@ -273,7 +273,7 @@ impl GltfImporter {
                     let index_data = indices
                         .get("bufferView")
                         .and_then(Value::as_u64)
-                        .and_then(&view_bytes)?;
+                        .and_then(view_bytes)?;
                     let index_offset = indices
                         .get("byteOffset")
                         .and_then(Value::as_u64)
@@ -281,7 +281,7 @@ impl GltfImporter {
                     let value_data = values
                         .get("bufferView")
                         .and_then(Value::as_u64)
-                        .and_then(&view_bytes)?;
+                        .and_then(view_bytes)?;
                     let value_offset = values
                         .get("byteOffset")
                         .and_then(Value::as_u64)
@@ -2760,10 +2760,10 @@ fn read_skeletons(
                     let bytes = accessor
                         .get("bufferView")
                         .and_then(Value::as_u64)
-                        .and_then(&view_bytes);
+                        .and_then(view_bytes);
                     let floats =
                         decode_float_accessor(accessor, bytes, 16, joint_nodes.len().max(1));
-                    for chunk in floats.chunks_exact(16) {
+                    for chunk in floats.as_chunks::<16>().0 {
                         let mut matrix = [0.0f32; 16];
                         matrix.copy_from_slice(chunk);
                         inverse_bind.push(matrix);

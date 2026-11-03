@@ -2332,7 +2332,9 @@ fn smooth_specular_adds_a_highlight() {
     assert_ne!(smooth.rgb565, spec.rgb565, "specular changes the frame");
     let sum = |f: &mdc_bake::BakedTexture| -> u64 {
         f.rgb565
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|b| u64::from(u16::from_le_bytes([b[0], b[1]])) >> 5)
             .sum()
     };
@@ -2721,7 +2723,9 @@ fn specular_factor_scales_the_highlight() {
     };
     let sum = |f: &mdc_bake::BakedTexture| -> u64 {
         f.rgb565
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|b| u64::from(u16::from_le_bytes([b[0], b[1]])) >> 5)
             .sum()
     };
@@ -3191,7 +3195,9 @@ fn clearcoat_adds_a_second_highlight() {
     };
     let sum = |f: &mdc_bake::BakedTexture| -> u64 {
         f.rgb565
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|b| u64::from(u16::from_le_bytes([b[0], b[1]])) >> 5)
             .sum()
     };
@@ -3335,7 +3341,9 @@ fn sheen_adds_a_rim_highlight() {
     };
     let sum = |f: &mdc_bake::BakedTexture| -> u64 {
         f.rgb565
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|b| u64::from(u16::from_le_bytes([b[0], b[1]])) >> 5)
             .sum()
     };
@@ -3421,7 +3429,9 @@ fn generated_tangents_enable_normal_mapping() {
     };
     let sum = |f: &mdc_bake::BakedTexture| -> u64 {
         f.rgb565
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|b| u64::from(u16::from_le_bytes([b[0], b[1]])) >> 5)
             .sum()
     };

@@ -814,7 +814,7 @@ fn rgb565_mul(a: u16, b: u16) -> u16 {
 
 fn fade_toward_black(pixels: &mut [u8], quarters: u8) {
     let keep = u32::from(quarters.min(3));
-    for chunk in pixels.chunks_exact_mut(2) {
+    for chunk in pixels.as_chunks_mut::<2>().0 {
         let value = u16::from_le_bytes([chunk[0], chunk[1]]);
         let channel = |shift: u32, mask: u16| {
             let sample = u32::from((value >> shift) & mask);
@@ -1340,7 +1340,7 @@ fn fill_polygon(
             crossings.push(x0 as f32 + (x1 - x0) as f32 * t);
         }
         crossings.sort_by(|a, b| a.total_cmp(b));
-        for pair in crossings.chunks_exact(2) {
+        for pair in crossings.as_chunks::<2>().0 {
             let x0 = pair[0].ceil().max(0.0) as i32;
             let x1 = pair[1].floor().min(width as f32 - 1.0) as i32;
             for x in x0..=x1 {
@@ -1472,7 +1472,7 @@ fn polygon_mask(width: u32, height: u32, points: &[(i32, i32)]) -> Vec<bool> {
             crossings.push(x0 as f32 + (x1 - x0) as f32 * t);
         }
         crossings.sort_by(|a, b| a.total_cmp(b));
-        for pair in crossings.chunks_exact(2) {
+        for pair in crossings.as_chunks::<2>().0 {
             let x0 = pair[0].ceil().max(0.0) as i32;
             let x1 = pair[1].floor().min(width as f32 - 1.0) as i32;
             for x in x0..=x1 {
@@ -3749,7 +3749,7 @@ impl FakeDevice {
             }
             None => {
                 // A visible placeholder so the surface is not blank.
-                for chunk in self.overlay_pixels.chunks_exact_mut(2) {
+                for chunk in self.overlay_pixels.as_chunks_mut::<2>().0 {
                     chunk.copy_from_slice(&0xFFFFu16.to_le_bytes());
                 }
                 true
@@ -4598,7 +4598,7 @@ impl FakeDevice {
             .filter(|t| t.validate() && self.preview_uv.len() >= points.len());
         let color = self.preview_color;
         if indices.len() >= 3 {
-            for tri in indices.chunks_exact(3) {
+            for tri in indices.as_chunks::<3>().0 {
                 let three = (
                     points.get(tri[0] as usize).copied(),
                     points.get(tri[1] as usize).copied(),

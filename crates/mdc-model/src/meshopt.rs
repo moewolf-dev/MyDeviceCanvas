@@ -1568,7 +1568,9 @@ mod tests {
         let encoded = encode_index_sequence(&values);
         let decoded = unwrap_decode(decode_index_sequence(values.len(), 4, &encoded));
         let round: Vec<u32> = decoded
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         assert_eq!(round, values);
@@ -1578,7 +1580,9 @@ mod tests {
         let encoded = encode_index_sequence(&small);
         let decoded = unwrap_decode(decode_index_sequence(small.len(), 2, &encoded));
         let round: Vec<u32> = decoded
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| u32::from(u16::from_le_bytes([c[0], c[1]])))
             .collect();
         assert_eq!(round, small);

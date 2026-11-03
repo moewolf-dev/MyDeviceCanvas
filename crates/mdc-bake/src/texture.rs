@@ -725,7 +725,9 @@ pub(crate) fn draw_indexed(
     }
     let triangles: Vec<[usize; 3]> = if indices.len() >= 3 {
         indices
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
             .collect()
     } else if points.len() >= 3 {

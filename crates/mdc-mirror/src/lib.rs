@@ -81,7 +81,7 @@ where
 /// Convert tightly packed RGB565 little-endian into BGRA8888.
 /// `dst` length must be `src.len() / 2 * 4`.
 pub fn rgb565_to_bgra(src: &[u8], dst: &mut [u8]) {
-    for (i, chunk) in src.chunks_exact(2).enumerate() {
+    for (i, chunk) in src.as_chunks::<2>().0.iter().enumerate() {
         let v = u16::from_le_bytes([chunk[0], chunk[1]]);
         let r = (v >> 11) & 0x1f;
         let g = (v >> 5) & 0x3f;
@@ -584,7 +584,7 @@ pub fn encode_ppm(width: u16, height: u16, bgra: &[u8]) -> Vec<u8> {
     let pixels = usize::from(width) * usize::from(height);
     let mut out = Vec::with_capacity(pixels * 3 + 32);
     out.extend_from_slice(format!("P6\n{width} {height}\n255\n").as_bytes());
-    for chunk in bgra.chunks_exact(4) {
+    for chunk in bgra.as_chunks::<4>().0 {
         out.push(chunk[2]); // R
         out.push(chunk[1]); // G
         out.push(chunk[0]); // B
@@ -2016,10 +2016,7 @@ fn pump_websocket(
         }
     }
     let (mut pings, mut closes, mut messages, mut reserved) = (0u64, 0u64, 0u64, 0u64);
-    loop {
-        let Some((fin, rsv1, opcode, payload)) = ws_parse_client_frame(&mut client.ws_in) else {
-            break;
-        };
+    while let Some((fin, rsv1, opcode, payload)) = ws_parse_client_frame(&mut client.ws_in) {
         // N558: `permessage-deflate` is never negotiated, so a frame that sets the
         // reserved bit is counted and dropped rather than mis-read as plain data.
         // N567: with `reject_reserved`, it instead fails the connection (1002).
@@ -2063,13 +2060,11 @@ fn pump_websocket(
                 }
             }
             // N548: a continuation frame finishes the in-progress message.
-            0x0 => {
-                if client.ws_fragmenting {
-                    ws_append_fragment(client, &payload);
-                    if fin {
-                        client.ws_fragmenting = false;
-                        messages += 1;
-                    }
+            0x0 if client.ws_fragmenting => {
+                ws_append_fragment(client, &payload);
+                if fin {
+                    client.ws_fragmenting = false;
+                    messages += 1;
                 }
             }
             _ => {}
@@ -2559,7 +2554,7 @@ fn sha1(data: &[u8]) -> [u8; 20] {
         msg.push(0);
     }
     msg.extend_from_slice(&bit_len.to_be_bytes());
-    for chunk in msg.chunks_exact(64) {
+    for chunk in msg.as_chunks::<64>().0 {
         let mut w = [0u32; 80];
         for (i, slot) in w.iter_mut().take(16).enumerate() {
             *slot = u32::from_be_bytes([

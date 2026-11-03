@@ -165,7 +165,7 @@ impl MeshGeometry {
     /// locality metric without depending on the bake crate.
     pub fn cache_misses(&self, cache_size: usize) -> u64 {
         let mut cache = VertexCache::new(cache_size);
-        for triangle in self.indices.chunks_exact(3) {
+        for triangle in self.indices.as_chunks::<3>().0 {
             for &vertex in triangle {
                 cache.touch(vertex);
             }
@@ -176,7 +176,7 @@ impl MeshGeometry {
     /// N644: the vertex-cache hit rate for an index order (0 when empty).
     pub fn cache_hit_rate(&self, cache_size: usize) -> f64 {
         let mut cache = VertexCache::new(cache_size);
-        for triangle in self.indices.chunks_exact(3) {
+        for triangle in self.indices.as_chunks::<3>().0 {
             for &vertex in triangle {
                 cache.touch(vertex);
             }
