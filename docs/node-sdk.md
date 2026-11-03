@@ -104,11 +104,12 @@ A malformed package rejects with the device error; `packageReady()` stays false.
 ```js
 import fs from "node:fs";
 
+const image = fs.readFileSync("firmware.bin");
 const preflight = {
-  image: fs.readFileSync("firmware.bin"),
+  image,
   artifact: {
     boardId: "esp32-jc3248w535-sim", mcu: "esp32-s3", runtime: "0.1.0",
-    protocolMajor: 1, protocolMinor: 0, imageSize: bytes.length,
+    protocolMajor: 1, protocolMinor: 0, imageSize: image.length,
     sha256: "<64 hex>", source: "catalog",
   },
   board: {
@@ -124,8 +125,9 @@ const pending = mdc.firmwareInstall({
   expectedDeviceId: "sim-esp32-jc3248w535", mode: "sim", simDelayMs: 200,
 });
 await mdc.firmwareProgress();                    // { phase: "writing", ratio, error }
-await mdc.cancelFirmware();                      // observed at the next stage
-const done = await pending.catch((error) => error); // code FIRMWARE_INSTALL_FAILED
+const done = await pending;                      // { ok: true, phase: "done", deviceId }
+// await mdc.cancelFirmware() instead makes `pending` reject at the next boundary
+// with FIRMWARE_INSTALL_FAILED and phase "cancelled".
 
 const readback = await mdc.firmwareReadback({ port: "/dev/cu.usbmodem..." });
 // { deviceId, boardId, protocolVersion, firmware } — from a real HELLO
