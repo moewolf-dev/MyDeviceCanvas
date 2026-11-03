@@ -3734,6 +3734,19 @@ impl FakeDevice {
                 dqs: self.profile.renderer_dqs,
                 max_texture: self.profile.renderer_max_texture,
                 max_vertices: self.profile.renderer_max_vertices,
+                // CORE-R11: mesh backends accept parameter updates; sprite
+                // packages keep Form A parameter behavior for now.
+                params: if self.profile.renderer_mesh2d || self.profile.renderer_mesh3d {
+                    mdc_protocol::RendererParamCapability {
+                        max_per_update: 64,
+                        max_id_bytes: 128,
+                        max_pending: 64,
+                        max_fps: 30,
+                        kinds: vec!["node_trs".into(), "material_color".into(), "morph".into()],
+                    }
+                } else {
+                    mdc_protocol::RendererParamCapability::default()
+                },
             }),
             // N41: supported configuration keys from the board profile.
             config: mdc_protocol::ConfigCapability {
