@@ -98,8 +98,8 @@ mod tests {
         };
         let mut flasher = SimFlasher::new("sim-esp32-jc3248w535");
         let mut installer = Installer::default();
-        let mut leases = PortLeases::default();
-        assert!(installer.run(&mut leases, &plan, &mut flasher).is_ok());
+        let leases = PortLeases::default();
+        assert!(installer.run(&leases, &plan, &mut flasher).is_ok());
         assert_eq!(installer.state, InstallState::Succeeded);
         assert_eq!(flasher.written.len(), 64);
         assert_eq!(flasher.reset_count, 1);

@@ -38,7 +38,46 @@ pub struct PreflightInput<'a> {
     pub flash_id_unusable: bool,
 }
 
+/// Byte-input variant of [`PreflightInput`] for SDK callers that already hold
+/// the image bytes (Node Buffer) instead of a filesystem path.
+#[derive(Debug, Clone)]
+pub struct PreflightInputBytes<'a> {
+    pub bytes: &'a [u8],
+    pub artifact: &'a Artifact,
+    pub board: &'a BoardFacts,
+    pub host: Version,
+    pub detected_chip_family: Option<&'a str>,
+    pub image_geometry: Option<&'a ImageGeometry>,
+    pub allow_unknown_flash: bool,
+    pub flash_id_unusable: bool,
+}
+
 pub fn preflight_verdict(input: PreflightInput<'_>) -> PreflightVerdict {
+    let metadata = match std::fs::metadata(input.path) {
+        Ok(metadata) => metadata,
+        Err(_) => return PreflightVerdict::Reject(PreflightError::MissingFile),
+    };
+    let bytes = match std::fs::read(input.path) {
+        Ok(bytes) => bytes,
+        Err(_) => return PreflightVerdict::Reject(PreflightError::MissingFile),
+    };
+    // Report a size mismatch before reading the whole file when possible.
+    if metadata.len() != input.artifact.image_size {
+        return PreflightVerdict::Reject(PreflightError::ImageTooLarge);
+    }
+    preflight_verdict_bytes(PreflightInputBytes {
+        bytes: &bytes,
+        artifact: input.artifact,
+        board: input.board,
+        host: input.host,
+        detected_chip_family: input.detected_chip_family,
+        image_geometry: input.image_geometry,
+        allow_unknown_flash: input.allow_unknown_flash,
+        flash_id_unusable: input.flash_id_unusable,
+    })
+}
+
+pub fn preflight_verdict_bytes(input: PreflightInputBytes<'_>) -> PreflightVerdict {
     if !input.board.profile_verified {
         return PreflightVerdict::Reject(PreflightError::UnverifiedProfile);
     }
@@ -85,11 +124,7 @@ pub fn preflight_verdict(input: PreflightInput<'_>) -> PreflightVerdict {
         FlashSize::Unknown => None,
     };
 
-    let metadata = match std::fs::metadata(input.path) {
-        Ok(m) => m,
-        Err(_) => return PreflightVerdict::Reject(PreflightError::MissingFile),
-    };
-    if metadata.len() != input.artifact.image_size {
+    if input.bytes.len() as u64 != input.artifact.image_size {
         return PreflightVerdict::Reject(PreflightError::ImageTooLarge);
     }
     if let Some(cap) = capacity {
@@ -101,18 +136,25 @@ pub fn preflight_verdict(input: PreflightInput<'_>) -> PreflightVerdict {
         return PreflightVerdict::Reject(PreflightError::UnknownFlash);
     }
 
-    let bytes = match std::fs::read(input.path) {
-        Ok(b) => b,
-        Err(_) => return PreflightVerdict::Reject(PreflightError::MissingFile),
-    };
     use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(&bytes);
+    let digest = Sha256::digest(input.bytes);
     let actual = digest
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
     if actual != input.artifact.sha256.to_ascii_lowercase() {
         return PreflightVerdict::Reject(PreflightError::HashMismatch);
+    }
+
+    // A present key or signature must verify; an unsigned artifact stays valid.
+    if !input.artifact.public_key.is_empty() || !input.artifact.signature.is_empty() {
+        if let Err(error) = crate::verify_signature(
+            &input.artifact.public_key,
+            input.bytes,
+            &input.artifact.signature,
+        ) {
+            return PreflightVerdict::Reject(error);
+        }
     }
 
     if capacity.is_none() {

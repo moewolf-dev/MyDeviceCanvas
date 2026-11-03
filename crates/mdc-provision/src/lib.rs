@@ -1,10 +1,14 @@
 mod preflight;
-pub use preflight::{preflight_verdict, ImageGeometry, PreflightInput, PreflightVerdict};
+pub use preflight::{
+    preflight_verdict, preflight_verdict_bytes, ImageGeometry, PreflightInput, PreflightInputBytes,
+    PreflightVerdict,
+};
 
 use mdc_protocol::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,45 +92,33 @@ pub fn verify_artifact(
     board: &BoardFacts,
     host: Version,
 ) -> Result<(), PreflightError> {
-    if !board.profile_verified {
-        return Err(PreflightError::UnverifiedProfile);
-    }
-    if artifact.board_id != board.board_id {
-        return Err(PreflightError::BoardMismatch);
-    }
-    if artifact.mcu != board.mcu {
-        return Err(PreflightError::McuMismatch);
-    }
-    if artifact.protocol_major != host.major {
-        return Err(PreflightError::ProtocolMajorMismatch);
-    }
-    if artifact.sha256.len() != 64
-        || !artifact.sha256.bytes().all(|b| b.is_ascii_hexdigit())
-        || artifact.image_size == 0
-    {
-        return Err(PreflightError::InvalidMetadata);
-    }
-    let capacity = match board.flash {
-        FlashSize::Known(bytes) => bytes,
-        FlashSize::Unknown => return Err(PreflightError::UnknownFlash),
-    };
-    let metadata = std::fs::metadata(path).map_err(|_| PreflightError::MissingFile)?;
-    if artifact.image_size > capacity || metadata.len() != artifact.image_size {
-        return Err(PreflightError::ImageTooLarge);
-    }
+    // Keep the path-specific failures distinct from metadata checks.
+    std::fs::metadata(path).map_err(|_| PreflightError::MissingFile)?;
     let bytes = std::fs::read(path).map_err(|_| PreflightError::MissingFile)?;
-    let digest = Sha256::digest(&bytes);
-    let actual = digest
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
-    if actual != artifact.sha256.to_ascii_lowercase() {
-        return Err(PreflightError::HashMismatch);
+    verify_artifact_bytes(&bytes, artifact, board, host)
+}
+
+/// Byte-input variant of [`verify_artifact`] for callers that already hold the
+/// image (the Node SDK receives a Buffer and must not re-read the file).
+pub fn verify_artifact_bytes(
+    bytes: &[u8],
+    artifact: &Artifact,
+    board: &BoardFacts,
+    host: Version,
+) -> Result<(), PreflightError> {
+    match preflight_verdict_bytes(PreflightInputBytes {
+        bytes,
+        artifact,
+        board,
+        host,
+        detected_chip_family: None,
+        image_geometry: None,
+        allow_unknown_flash: false,
+        flash_id_unusable: false,
+    }) {
+        PreflightVerdict::Reject(error) => Err(error),
+        PreflightVerdict::Ok | PreflightVerdict::OkUnknownFlash => Ok(()),
     }
-    if artifact.public_key.is_empty() && artifact.signature.is_empty() {
-        return Ok(());
-    }
-    verify_signature(&artifact.public_key, &bytes, &artifact.signature)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,42 +234,81 @@ impl Installer {
     }
     pub fn run<F: Flasher>(
         &mut self,
-        leases: &mut PortLeases,
+        leases: &PortLeases,
         plan: &InstallPlan,
         flasher: &mut F,
     ) -> Result<(), InstallError> {
-        if self.cancelled {
+        let never = AtomicBool::new(false);
+        self.run_with(leases, plan, flasher, &never, &mut |_| {})
+    }
+
+    /// Observable variant used by the public SDK: `cancel` is checked at every
+    /// stage boundary and before/after the flasher call, so a simulator job can
+    /// abort within its delay window. `progress` receives each state transition.
+    /// A real esptool write cannot be preempted mid-process; it is observed at
+    /// the next boundary (documented in `docs/node-sdk.md`).
+    pub fn run_with<F: Flasher>(
+        &mut self,
+        leases: &PortLeases,
+        plan: &InstallPlan,
+        flasher: &mut F,
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(InstallState),
+    ) -> Result<(), InstallError> {
+        let is_cancelled = |installer: &Self| installer.cancelled || cancel.load(Ordering::Acquire);
+        if is_cancelled(self) {
+            self.transition(InstallState::Cancelled, progress);
             return Err(InstallError::Cancelled);
         }
-        self.state = InstallState::AcquiringPort;
-        let _lease = leases.acquire(&plan.port)?;
-        if self.cancelled {
+        self.transition(InstallState::AcquiringPort, progress);
+        let _lease = match leases.acquire(&plan.port) {
+            Ok(lease) => lease,
+            Err(error) => {
+                self.transition(InstallState::Failed, progress);
+                return Err(error);
+            }
+        };
+        if is_cancelled(self) {
+            self.transition(InstallState::Cancelled, progress);
             return Err(InstallError::Cancelled);
         }
-        self.state = InstallState::Flashing;
-        flasher.flash(plan).map_err(|e| {
-            self.state = InstallState::Failed;
-            InstallError::Flasher(e)
+        self.transition(InstallState::Flashing, progress);
+        let flashed = flasher.flash(plan);
+        if let Err(error) = flashed {
+            if is_cancelled(self) {
+                self.transition(InstallState::Cancelled, progress);
+                return Err(InstallError::Cancelled);
+            }
+            self.transition(InstallState::Failed, progress);
+            return Err(InstallError::Flasher(error));
+        }
+        // Even a cancelled write is reset: leaving the device in the bootloader
+        // is worse than completing the pulse.
+        self.transition(InstallState::Resetting, progress);
+        flasher.reset().map_err(|error| {
+            self.transition(InstallState::Failed, progress);
+            InstallError::Flasher(error)
         })?;
-        if self.cancelled {
+        if is_cancelled(self) {
+            self.transition(InstallState::Cancelled, progress);
             return Err(InstallError::Cancelled);
         }
-        self.state = InstallState::Resetting;
-        flasher.reset().map_err(|e| {
-            self.state = InstallState::Failed;
-            InstallError::Flasher(e)
-        })?;
-        self.state = InstallState::Verifying;
-        let id = flasher.read_device_id().map_err(|e| {
-            self.state = InstallState::Failed;
-            InstallError::Flasher(e)
+        self.transition(InstallState::Verifying, progress);
+        let id = flasher.read_device_id().map_err(|error| {
+            self.transition(InstallState::Failed, progress);
+            InstallError::Flasher(error)
         })?;
         if id != plan.expected_device_id {
-            self.state = InstallState::Failed;
+            self.transition(InstallState::Failed, progress);
             return Err(InstallError::IdentityMismatch);
         }
-        self.state = InstallState::Succeeded;
+        self.transition(InstallState::Succeeded, progress);
         Ok(())
+    }
+
+    fn transition(&mut self, state: InstallState, progress: &mut dyn FnMut(InstallState)) {
+        self.state = state;
+        progress(state);
     }
 }
 
@@ -423,7 +454,7 @@ mod tests {
             },
             expected_device_id: "id".into(),
         };
-        let mut leases = PortLeases::default();
+        let leases = PortLeases::default();
         let first = leases.acquire("/dev/test").unwrap();
         assert_eq!(
             leases.acquire("/dev/test").err(),
@@ -435,7 +466,7 @@ mod tests {
             id: "id".into(),
             flashed: false,
         };
-        assert!(installer.run(&mut leases, &plan, &mut flasher).is_ok());
+        assert!(installer.run(&leases, &plan, &mut flasher).is_ok());
         assert_eq!(installer.state, InstallState::Succeeded);
         assert!(flasher.flashed);
         assert!(leases.acquire("/dev/test").is_ok());
@@ -475,15 +506,113 @@ mod tests {
             expected_device_id: "expected".into(),
         };
         let mut installer = Installer::default();
-        let mut leases = PortLeases::default();
+        let leases = PortLeases::default();
         let mut flasher = FakeFlasher {
             id: "other".into(),
             flashed: false,
         };
         assert_eq!(
-            installer.run(&mut leases, &plan, &mut flasher),
+            installer.run(&leases, &plan, &mut flasher),
             Err(InstallError::IdentityMismatch)
         );
         assert_eq!(installer.state, InstallState::Failed);
+    }
+
+    #[test]
+    fn bytes_preflight_matches_the_file_path_and_verifies_signatures() {
+        use preflight::{preflight_verdict_bytes, PreflightInputBytes};
+        let image = b"signed-firmware";
+        let hash = format!("{:x}", Sha256::digest(image));
+        let key = b"fake-public-key";
+        let mut signed = artifact(Path::new("ignored"), hash, image.len() as u64);
+        signed.public_key = key.to_vec();
+        signed.signature = sign_artifact(key, image);
+        let board = BoardFacts {
+            board_id: "board".into(),
+            mcu: "esp32-s3".into(),
+            flash: FlashSize::Known(4096),
+            profile_verified: true,
+        };
+        let verdict = |bytes: &[u8], artifact: &Artifact| {
+            preflight_verdict_bytes(PreflightInputBytes {
+                bytes,
+                artifact,
+                board: &board,
+                host: Version { major: 1, minor: 0 },
+                detected_chip_family: None,
+                image_geometry: None,
+                allow_unknown_flash: false,
+                flash_id_unusable: false,
+            })
+        };
+        assert_eq!(verdict(image, &signed), preflight::PreflightVerdict::Ok);
+        // A truncated buffer is rejected before hashing as a display image.
+        assert_eq!(
+            verdict(&image[..3], &signed),
+            preflight::PreflightVerdict::Reject(PreflightError::ImageTooLarge)
+        );
+        let mut forged = signed.clone();
+        forged.signature = b"not-the-signature".to_vec();
+        assert_eq!(
+            verdict(image, &forged),
+            preflight::PreflightVerdict::Reject(PreflightError::SignatureMismatch)
+        );
+        assert_eq!(
+            verify_artifact_bytes(image, &signed, &board, Version { major: 1, minor: 0 }),
+            Ok(())
+        );
+    }
+
+    struct CancellingFlasher {
+        cancel: std::sync::Arc<AtomicBool>,
+        resets: u32,
+    }
+    impl Flasher for CancellingFlasher {
+        fn flash(&mut self, _: &InstallPlan) -> Result<(), String> {
+            self.cancel.store(true, Ordering::Release);
+            Ok(())
+        }
+        fn reset(&mut self) -> Result<(), String> {
+            self.resets = self.resets.saturating_add(1);
+            Ok(())
+        }
+        fn read_device_id(&mut self) -> Result<String, String> {
+            Ok("id".into())
+        }
+    }
+
+    #[test]
+    fn run_with_reports_progress_and_cancels_at_a_stage_boundary() {
+        let plan = InstallPlan {
+            port: "sim://cancel".into(),
+            artifact: artifact(Path::new("ignored"), "0".repeat(64), 1),
+            expected_device_id: "id".into(),
+        };
+        let leases = PortLeases::default();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let mut flasher = CancellingFlasher {
+            cancel: cancel.clone(),
+            resets: 0,
+        };
+        let mut seen = Vec::new();
+        let mut installer = Installer::default();
+        let result = installer.run_with(&leases, &plan, &mut flasher, &cancel, &mut |state| {
+            seen.push(state)
+        });
+        assert_eq!(result, Err(InstallError::Cancelled));
+        assert_eq!(installer.state, InstallState::Cancelled);
+        // The reset still ran so the device is not left in the bootloader, and
+        // the job never claimed a verified identity.
+        assert_eq!(flasher.resets, 1);
+        assert_eq!(
+            seen,
+            vec![
+                InstallState::AcquiringPort,
+                InstallState::Flashing,
+                InstallState::Resetting,
+                InstallState::Cancelled,
+            ]
+        );
+        assert!(leases.acquire("sim://cancel").is_ok(), "lease released");
     }
 }

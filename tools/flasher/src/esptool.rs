@@ -373,8 +373,8 @@ mod tests {
             expected_device_id: "device-a".into(),
         };
         let mut installer = Installer::default();
-        let mut leases = PortLeases::default();
-        assert!(installer.run(&mut leases, &plan, &mut flasher).is_ok());
+        let leases = PortLeases::default();
+        assert!(installer.run(&leases, &plan, &mut flasher).is_ok());
         assert!(!flasher.last_argv.is_empty());
         assert_eq!(flasher.reset_count, 1);
         let _ = std::fs::remove_file(image);

@@ -3052,8 +3052,8 @@ fn cmd_flash_sim(opts: &GlobalOpts, image: &str) -> Result<(), Box<dyn std::erro
     if plan.port.starts_with("sim://") {
         let mut flasher = SimFlasher::new(plan.expected_device_id.clone());
         let mut installer = Installer::default();
-        let mut leases = PortLeases::default();
-        installer.run(&mut leases, &plan, &mut flasher)?;
+        let leases = PortLeases::default();
+        installer.run(&leases, &plan, &mut flasher)?;
         println!(
             "flash-sim ok board={board} bytes={} reset={}",
             flasher.written.len(),
@@ -3069,8 +3069,8 @@ fn cmd_flash_sim(opts: &GlobalOpts, image: &str) -> Result<(), Box<dyn std::erro
     flasher.dry_run = std::env::var("MDC_ESPTOOL_LIVE").is_err();
     flasher.identity_override = Some(plan.expected_device_id.clone());
     let mut installer = Installer::default();
-    let mut leases = PortLeases::default();
-    installer.run(&mut leases, &plan, &mut flasher)?;
+    let leases = PortLeases::default();
+    installer.run(&leases, &plan, &mut flasher)?;
     println!("esptool argv: {}", flasher.last_argv.join(" "));
     println!("flash plan ok (dry_run={})", flasher.dry_run);
     Ok(())
