@@ -45,6 +45,8 @@ pub enum MessageType {
     Config = 0x33,
     /// Host -> device vector scene (CBOR SceneCommand, N53).
     Scene = 0x34,
+    /// CORE-R11: Host -> device model parameter update (CBOR ModelParamsCommand).
+    ModelParams = 0x35,
     Ping = 0x40,
     Pong = 0x41,
     Ack = 0x50,
@@ -83,6 +85,7 @@ impl TryFrom<u8> for MessageType {
             0x32 => Ok(Self::Package),
             0x33 => Ok(Self::Config),
             0x34 => Ok(Self::Scene),
+            0x35 => Ok(Self::ModelParams),
             0x40 => Ok(Self::Ping),
             0x41 => Ok(Self::Pong),
             0x50 => Ok(Self::Ack),
@@ -125,6 +128,8 @@ pub enum CodecError {
     Checksum,
     #[error("unknown frame phase {0}")]
     UnknownPhase(u8),
+    #[error("invalid model params: {0}")]
+    InvalidModelParams(&'static str),
 }
 
 fn checksum(bytes: &[u8]) -> u32 {
@@ -358,6 +363,28 @@ pub fn negotiate_mirror(
     })
 }
 
+/// CORE-R11: model parameter addressing support on the device renderer.
+/// `max_per_update == 0` means the device does not accept parameter updates.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct RendererParamCapability {
+    #[serde(default)]
+    pub max_per_update: u16,
+    #[serde(default)]
+    pub max_id_bytes: u16,
+    #[serde(default)]
+    pub max_pending: u16,
+    #[serde(default)]
+    pub max_fps: u16,
+    /// `node_trs` | `material_color` | `material_pbr` | `morph`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kinds: Vec<String>,
+}
+impl RendererParamCapability {
+    pub fn is_disabled(&self) -> bool {
+        self.max_per_update == 0
+    }
+}
+
 /// Form B renderer capability (N17): what a device can draw locally, used to
 /// drive the model compiler's target-backend choice. Absent on pre-renderer
 /// devices; `None` on `Capabilities` means "unknown / Form A only".
@@ -372,6 +399,9 @@ pub struct RendererCapability {
     pub dqs: bool,
     pub max_texture: u32,
     pub max_vertices: u32,
+    /// CORE-R11: omitted when disabled, so pre-parameter peers are unchanged.
+    #[serde(default, skip_serializing_if = "RendererParamCapability::is_disabled")]
+    pub params: RendererParamCapability,
 }
 impl RendererCapability {
     /// A weak MCU: sprites only.
@@ -384,6 +414,7 @@ impl RendererCapability {
             dqs: false,
             max_texture,
             max_vertices: 0,
+            params: RendererParamCapability::default(),
         }
     }
     /// A GPU board: meshes and skeleton.
@@ -396,6 +427,7 @@ impl RendererCapability {
             dqs: false,
             max_texture,
             max_vertices,
+            params: RendererParamCapability::default(),
         }
     }
 }
@@ -1810,6 +1842,52 @@ pub struct SceneCommand {
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene: Option<SceneNode>,
+}
+
+/// CORE-R11: maximum parameter entries in one update.
+pub const MAX_MODEL_PARAMS_PER_UPDATE: usize = 64;
+/// CORE-R11: maximum encoded id length in bytes.
+pub const MAX_MODEL_PARAM_ID_BYTES: usize = 128;
+
+/// One model parameter value. Exactly one of `float`/`rgb565` must be set.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelParamValue {
+    pub id: String,
+    #[serde(rename = "f32", default, skip_serializing_if = "Option::is_none")]
+    pub float: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rgb565: Option<u16>,
+}
+
+/// Host -> device parameter update for the installed package (CORE-R11).
+/// `package_id`/`body_bytes`/`generation` must match the active package or the
+/// device rejects the whole message as stale.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelParamsCommand {
+    pub package_id: u64,
+    pub body_bytes: u64,
+    pub generation: u64,
+    pub params: Vec<ModelParamValue>,
+}
+
+impl ModelParamsCommand {
+    /// Check count, id length and value shape before the device applies anything.
+    pub fn validate(&self) -> Result<(), CodecError> {
+        if self.params.is_empty() || self.params.len() > MAX_MODEL_PARAMS_PER_UPDATE {
+            return Err(CodecError::InvalidModelParams("param count"));
+        }
+        for param in &self.params {
+            if param.id.is_empty() || param.id.len() > MAX_MODEL_PARAM_ID_BYTES {
+                return Err(CodecError::InvalidModelParams("id length"));
+            }
+            match (param.float, param.rgb565) {
+                (Some(value), None) if value.is_finite() => {}
+                (None, Some(_)) => {}
+                _ => return Err(CodecError::InvalidModelParams("value shape")),
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Configuration keys a device accepts via `CONFIG` (N39). Empty means the
@@ -4451,5 +4529,70 @@ mod tests {
             boot_id: 0,
             run_id: 0,
         }
+    }
+
+    #[test]
+    fn model_params_round_trip_and_bounds() {
+        let command = ModelParamsCommand {
+            package_id: 0x1122_3344_5566_7788,
+            body_bytes: 4096,
+            generation: 7,
+            params: vec![
+                ModelParamValue {
+                    id: "node/head/ty".into(),
+                    float: Some(0.25),
+                    rgb565: None,
+                },
+                ModelParamValue {
+                    id: "material/skin/color".into(),
+                    float: None,
+                    rgb565: Some(0xF800),
+                },
+            ],
+        };
+        assert_eq!(command.validate(), Ok(()));
+        let bytes = encode_control(&command).unwrap();
+        let back: ModelParamsCommand = decode_control(&bytes).unwrap();
+        assert_eq!(back, command);
+
+        let mut bad = command.clone();
+        bad.params[0].rgb565 = Some(1);
+        assert_eq!(
+            bad.validate(),
+            Err(CodecError::InvalidModelParams("value shape"))
+        );
+        bad.params[0].rgb565 = None;
+        bad.params[0].float = Some(f32::NAN);
+        assert_eq!(
+            bad.validate(),
+            Err(CodecError::InvalidModelParams("value shape"))
+        );
+        bad.params[0].float = Some(0.0);
+        bad.params[0].id = "x".repeat(MAX_MODEL_PARAM_ID_BYTES + 1);
+        assert_eq!(
+            bad.validate(),
+            Err(CodecError::InvalidModelParams("id length"))
+        );
+        let mut too_many = command.clone();
+        too_many.params = (0..=MAX_MODEL_PARAMS_PER_UPDATE)
+            .map(|i| ModelParamValue {
+                id: format!("node/n{i}/tx"),
+                float: Some(0.0),
+                rgb565: None,
+            })
+            .collect();
+        assert_eq!(
+            too_many.validate(),
+            Err(CodecError::InvalidModelParams("param count"))
+        );
+    }
+
+    #[test]
+    fn renderer_params_are_omitted_when_disabled() {
+        let caps = RendererCapability::full_3d(2048, 1000);
+        let bytes = encode_control(&caps).unwrap();
+        assert!(!bytes.windows(6).any(|window| window == b"params"));
+        let back: RendererCapability = decode_control(&bytes).unwrap();
+        assert_eq!(back, caps);
     }
 }

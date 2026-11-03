@@ -139,7 +139,8 @@ int main() {
 
   // SIM-A01: mirror/package types must pass the byte parser, not only dispatch.
   for (const auto type : {mdc::MessageType::MirrorFrame, mdc::MessageType::MirrorCtrl,
-                          mdc::MessageType::Package}) {
+                          mdc::MessageType::Package, mdc::MessageType::Config,
+                          mdc::MessageType::Scene, mdc::MessageType::ModelParams}) {
     auto wire = mdc::encode_packet(type, 44, {1, 2, 3});
     mdc::Parser type_parser;
     mdc::Packet typed;

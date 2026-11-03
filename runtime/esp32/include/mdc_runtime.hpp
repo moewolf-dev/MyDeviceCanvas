@@ -22,6 +22,12 @@ enum class MessageType : std::uint8_t {
   MirrorCtrl = 0x31,
   /// Host -> device runtime package (N33): phase byte like Frame.
   Package = 0x32,
+  /// Host -> device configuration get/set (CBOR; host runtime only).
+  Config = 0x33,
+  /// Host -> device vector scene (CBOR; host runtime only).
+  Scene = 0x34,
+  /// CORE-R11: host -> device model parameter update (CBOR).
+  ModelParams = 0x35,
   Ping = 0x40,
   Pong = 0x41,
   Ack = 0x50,
