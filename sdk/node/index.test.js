@@ -497,3 +497,20 @@ test("boardFacts validates and forwards the board id", async () => {
   mdc.dispose();
   await assert.rejects(mdc.boardFacts("x"), /disposed/);
 });
+
+test("public TypeScript surface matches the JS wrapper and catalog", async () => {
+  const { readFileSync } = await import("node:fs");
+  const dts = readFileSync(new URL("./index.d.ts", import.meta.url), "utf8");
+  const js = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+  const catalog = readFileSync(new URL("../../docs/sdk-interface-catalog.md", import.meta.url), "utf8");
+  const classBlock = dts.slice(dts.indexOf("export declare class MyDeviceCanvas"));
+  const declared = [...classBlock.matchAll(/^\s{2}(?:static\s+)?([a-zA-Z_]\w*)\s*\(/gm)]
+    .map((match) => match[1])
+    .filter((name) => name !== "constructor");
+  assert.ok(declared.length > 20, "the declarations were parsed");
+  const wrapper = js.slice(js.indexOf("export class MyDeviceCanvas"));
+  for (const name of declared) {
+    assert.match(wrapper, new RegExp(`\\b${name}\\s*\\(`), `index.js implements ${name}`);
+    assert.match(catalog, new RegExp(`\\b${name}\\b`), `catalog documents ${name}`);
+  }
+});
