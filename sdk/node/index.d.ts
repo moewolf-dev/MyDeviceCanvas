@@ -241,6 +241,8 @@ export declare class MyDeviceCanvas {
   connectSerial(path: string, baud?: number, resetOnOpen?: boolean): Promise<void>;
   /** N340: connect over WebSocket (`ws://host:port`). */
   connectWebSocket(url: string): Promise<void>;
+  /** CORE-R02: close the session, release the serial lease, keep the manager. */
+  disconnect(): Promise<void>;
   devices(): Promise<Device[]>;
   capabilities(): Promise<CapabilitiesInfo>;
   serialPorts(): Promise<SerialPortInfo[]>;

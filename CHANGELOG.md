@@ -2,6 +2,23 @@
 
 All notable host / simulator changes for MyDeviceCanvas. Physical board verification stays out of scope until measured on hardware.
 
+## [0.1.105] — explicit disconnect on the public Node SDK (CORE-R02)
+
+### Added
+
+- `MyDeviceCanvas.disconnect()` closes the active serial/TCP/WebSocket or
+  simulator session without disposing the manager. It releases the process-wide
+  serial lease (so a firmware install can take the port) and is idempotent.
+- After an explicit disconnect, calls report `no active connection` instead of
+  creating an implicit FakeDevice; `openBoard()` is the one explicit
+  simulator-reopen path.
+
+### Notes
+
+- Native smoke covers PTY connect → disconnect → `no active connection` →
+  explicit simulator reopen.
+- DTR/RTS timing, hot-plug, real board identity and `CORE:D05` remain open.
+
 ## [0.1.104] — firmware preflight/install/readback on the public Node SDK (CORE-R06)
 
 ### Added

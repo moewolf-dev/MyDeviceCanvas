@@ -104,6 +104,18 @@ export class MyDeviceCanvas {
     }
     return this._native.connectWebSocket(url);
   }
+  /**
+   * CORE-R02: close the active session without disposing the manager.
+   * Releases any serial lease; later calls reject with `no active connection`
+   * until an explicit `connect*`/`openBoard`. Idempotent.
+   */
+  async disconnect() {
+    if (this._disposed) throw new Error("manager is disposed");
+    if (typeof this._native.disconnect !== "function") {
+      throw new Error("未加载 Node 原生 SDK（缺少 mdc-node-native.node）");
+    }
+    return this._native.disconnect();
+  }
   async devices() {
     if (this._disposed) throw new Error("manager is disposed");
     return (await (this._native.devices?.() ?? [])).map(

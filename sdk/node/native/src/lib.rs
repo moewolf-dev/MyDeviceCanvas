@@ -1564,6 +1564,28 @@ impl NativeManager {
     }
 
     /// Open a named simulator board before the first `devices()` call.
+    /// CORE-R02: close the active session (serial/TCP/WS or simulator) without
+    /// disposing the manager. Releasing the serial lease lets a firmware install
+    /// take the port; the next call reports `no active connection` instead of
+    /// creating an implicit FakeDevice. Idempotent.
+    fn disconnect_sync(&self) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::from_reason("native state lock poisoned"))?;
+        if state.disposed {
+            return Err(Error::from_reason("manager is disposed"));
+        }
+        if let Some(mut sim) = state.sim.take() {
+            sim.session.disconnect();
+        }
+        state.serial_lease = None;
+        state.serial_path = None;
+        state.last_frame = None;
+        state.generation.fetch_add(1, AtomicOrdering::AcqRel);
+        Ok(())
+    }
+
     fn open_board_sync(&self, board_id: String) -> Result<()> {
         let mut state = self
             .state
@@ -1575,6 +1597,9 @@ impl NativeManager {
         if state.sim.is_some() {
             return Err(Error::from_reason("simulator is already open"));
         }
+        // An explicit simulator request is the one path allowed to create a
+        // FakeDevice after a real endpoint or a disconnect.
+        state.connection_attempted = false;
         state.board_id = Some(board_id);
         ensure_sim(&mut state)
     }
@@ -2572,6 +2597,12 @@ impl NativeManager {
         reset_on_open: Option<bool>,
     ) -> AsyncTask<BlockingTask<Undefined>> {
         self.spawn(move |manager| unit(manager.connect_serial_sync(path, baud, reset_on_open)))
+    }
+
+    /// CORE-R02: close the session without disposing the manager.
+    #[napi(js_name = "disconnect")]
+    pub fn disconnect(&self) -> AsyncTask<BlockingTask<Undefined>> {
+        self.spawn(|manager| unit(manager.disconnect_sync()))
     }
 
     #[napi(js_name = "connectWebSocket")]

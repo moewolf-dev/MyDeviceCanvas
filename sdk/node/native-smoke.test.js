@@ -683,3 +683,49 @@ test("native firmware readback performs a real HELLO over a PTY", {
     peer.kill();
   }
 });
+
+test("native disconnect closes a PTY session and keeps the manager usable", {
+  skip: !native || !fs.existsSync(peerBin) || process.platform === "win32",
+}, async () => {
+  const port = await reservePort();
+  const address = `127.0.0.1:${port}`;
+  const peer = spawn(peerBin, [address], { stdio: "ignore" });
+  const bridge = spawn("python3", [path.join(repoRoot, "sdk/node/pty_bridge.py"), address], {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  const mdc = await MyDeviceCanvas.create();
+  try {
+    const ptyPath = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("pty bridge timeout")), 5000);
+      bridge.stdout.once("data", (chunk) => {
+        clearTimeout(timer);
+        resolve(String(chunk).trim().split("\n")[0]);
+      });
+      bridge.once("error", reject);
+    });
+    let connected = false;
+    let last = "not attempted";
+    for (let i = 0; i < 40; i += 1) {
+      try {
+        await mdc.connectSerial(ptyPath, 115200);
+        connected = true;
+        break;
+      } catch (error) {
+        last = error instanceof Error ? error.message : String(error);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    assert.equal(connected, true, last);
+    assert.equal((await mdc.devices()).length, 1);
+    await mdc.disconnect();
+    await mdc.disconnect(); // idempotent
+    await assert.rejects(mdc.devices(), /no active connection/);
+    // An explicit simulator request is still allowed after a disconnect.
+    await mdc.openBoard("linux-virt");
+    assert.equal((await mdc.devices())[0].info.deviceId, "sim-linux-virt");
+  } finally {
+    mdc.dispose();
+    bridge.kill();
+    peer.kill();
+  }
+});

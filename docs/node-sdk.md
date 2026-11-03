@@ -73,6 +73,7 @@ capabilities.
 | `capabilities()` | APP-R03: negotiated frame/tile/touch/OTA limits, mirror modes/FPS, config keys and scene limits |
 | `serialPorts()` | APP-R03: enumerate host serial endpoint hints; identity still comes from HELLO |
 | `connectWebSocket(url)` | N340: WebSocket peer (`ws://host:port`) |
+| `disconnect()` | CORE-R02: close the session and release the serial/process lease without disposing; later calls report `no active connection` until an explicit connect/openBoard |
 | `emitMetric(name, value, unit)` / `takeDiagnostics()` / `diagnosticCount()` | N349: simulator diagnostics channel (metrics, boot info, telemetry) |
 
 ### compileGltf

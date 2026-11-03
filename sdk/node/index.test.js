@@ -459,3 +459,19 @@ test("firmware progress, cancel and readback use the public SDK", async () => {
     /timeoutMs/,
   );
 });
+
+test("disconnect closes the session but keeps the manager", async () => {
+  let disconnected = 0;
+  const mdc = new MyDeviceCanvas({
+    disconnect() {
+      disconnected += 1;
+    },
+    devices: async () => [],
+  });
+  await mdc.disconnect();
+  assert.equal(disconnected, 1);
+  await mdc.disconnect();
+  assert.equal(disconnected, 2, "idempotent at the wrapper level");
+  mdc.dispose();
+  await assert.rejects(mdc.disconnect(), /disposed/);
+});
